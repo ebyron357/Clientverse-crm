@@ -1,56 +1,74 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { api } from "@/lib/api";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { Toaster } from "@/components/ui/sonner";
+import AppShell from "@/components/AppShell";
+import Login from "@/pages/Login";
+import Dashboard from "@/pages/Dashboard";
+import Pipeline from "@/pages/Pipeline";
+import Directory from "@/pages/Directory";
+import Workspaces from "@/pages/Workspaces";
+import WorkspaceDetail from "@/pages/WorkspaceDetail";
+import Registries from "@/pages/Registries";
+import Audit from "@/pages/Audit";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
+function AuthCallback() {
+  const navigate = useNavigate();
+  const done = useRef(false);
   useEffect(() => {
-    helloWorldApi();
-  }, []);
+    if (done.current) return;
+    done.current = true;
+    const hash = window.location.hash;
+    const sid = new URLSearchParams(hash.replace("#", "")).get("session_id");
+    (async () => {
+      try {
+        await api.post("/auth/google/session", { session_id: sid });
+        window.history.replaceState(null, "", "/");
+        window.location.href = "/dashboard";
+      } catch {
+        navigate("/login");
+      }
+    })();
+  }, [navigate]);
+  return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Signing you in…</div>;
+}
 
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+function Protected({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  return children;
+}
 
-function App() {
+function AppRouter() {
+  const location = useLocation();
+  if (location.hash?.includes("session_id=")) return <AuthCallback />;
   return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route element={<Protected><AppShell /></Protected>}>
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/pipeline" element={<Pipeline />} />
+        <Route path="/directory" element={<Directory />} />
+        <Route path="/workspaces" element={<Workspaces />} />
+        <Route path="/workspaces/:id" element={<WorkspaceDetail />} />
+        <Route path="/registries" element={<Registries />} />
+        <Route path="/audit" element={<Audit />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+    </Routes>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <AppRouter />
+        <Toaster position="top-right" />
+      </BrowserRouter>
+    </AuthProvider>
+  );
+}
