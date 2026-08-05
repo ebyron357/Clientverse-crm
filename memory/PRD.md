@@ -30,6 +30,16 @@ Lifecycle CRM + Client Workspaces + Commitment Ledger + Deliverables/Requests/Ap
 - Automation & Audit domain-event feed.
 - Tests: 15/15 backend + 10/10 E2E flows pass (iteration_1).
 
+## Implemented (2026-08-05) — Slice 6: Undo Window Config, Goal Sparklines, Webhook Pattern Preview — status AVAILABLE
+- Undo Window Config: per-workspace undo grace period (undo_window_minutes) set by admins via PATCH /api/workspaces/{id}/undo-window (clamped 1..1440); mcp_undo enforces the per-workspace window (fallback 60). UI control in WorkspaceDetail header (admin-only).
+- Goal Trend Sparklines: outcome_snapshots recorded on outcome create/update; /api/dashboard goal_rollup goals include trend[]; Command Center rollup renders an inline recharts sparkline per goal.
+- Webhook Pattern Preview: POST /api/webhooks/match-preview scans the last 100 tenant events and returns matched counts by type; the New Endpoint dialog shows a live "N of M match" preview. Wildcard patterns supported via event_matches (exact, trailing ".*", "*").
+- Recovery: fixed TWO recurring server.py file-tail corruptions (duplicated include_router/CORS blocks) introduced during edits; backend confirmed clean (single defs, AST OK, HTTP 200).
+- Tests: iteration_7 — 50/50 backend pass (1 skipped by design) + sparkline fix verified, no bugs.
+
+## Capability: Server Modularization — status PLANNED (deferred)
+- server.py is ~1328 lines. A full split (auth/mcp/webhooks/outcomes/approvals/dashboard modules + shared core) is planned but intentionally DEFERRED this session: two tail-corruptions already occurred from large in-place edits, and a full refactor carries high regression risk with no user-visible change. Per platform governance ("do not sacrifice platform integrity for fast completion"), it will be done as a dedicated, test-gated refactor. Not represented as implemented.
+
 ## Implemented (2026-08-05) — Slice 5: Rollup, Undo Window, Webhook Patterns — status AVAILABLE
 - Outcome Targets Rollup: /api/dashboard returns goal_rollup (total/on-track/at-risk/avg + per-workspace goal progress); Command Center shows a "Client Goal Progress" card with progress bars.
 - Undo Window + Reason: POST /api/mcp/invocations/{id}/undo now requires a non-empty reason (422 otherwise), enforces a 60-min window via executed_at, stays admin-only, and records the reason on the mcp.tool_undone event. Undo prompts for a reason in both MCP Console and Audit trail.
