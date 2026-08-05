@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api, money, HEALTH_BAND } from "@/lib/api";
 import { Badge } from "@/components/AppShell";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip, LineChart, Line } from "recharts";
 import { TrendingUp, Trophy, Briefcase, AlertTriangle } from "lucide-react";
 
 const STAGE_LABELS = { lead: "Lead", qualified: "Qualified", proposal: "Proposal", negotiation: "Negotiation", closed_won: "Won", closed_lost: "Lost" };

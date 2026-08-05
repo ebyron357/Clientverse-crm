@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { api, HEALTH_BAND, STATUS_COLOR } from "@/lib/api";
 import { toast } from "sonner";
+import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -137,8 +138,10 @@ function ListSection({ title, items, columns, actions, onAdd, addLabel, testid }
 
 export default function WorkspaceDetail() {
   const { id } = useParams();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [d, setD] = useState(null);
+  const [undoWin, setUndoWin] = useState("60");
   const [newTitle, setNewTitle] = useState({});
 
   const load = useCallback(async () => {
@@ -161,6 +164,12 @@ export default function WorkspaceDetail() {
 
   const upd = async (url, body, msg) => { await api.patch(url, body); toast.success(msg); load(); };
 
+  useEffect(() => { if (d?.workspace) setUndoWin(String(d.workspace.undo_window_minutes || 60)); }, [d]);
+  const saveUndoWin = async () => {
+    await api.patch(`/workspaces/${id}/undo-window`, { minutes: parseInt(undoWin) || 60 });
+    toast.success("Undo window updated");
+  };
+
   if (!d) return <div className="space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-xl" /></div>;
 
   const { workspace, company, tasks, deliverables, requests, approvals, commitments, health } = d;
@@ -173,7 +182,17 @@ export default function WorkspaceDetail() {
           <h1 className="font-display text-3xl font-bold">{workspace.name}</h1>
           <p className="text-sm text-gray-500 mt-1">{company?.name || "No company"} · <span className="capitalize">{workspace.stage}</span> stage</p>
         </div>
-        <Badge className={`capitalize ${HEALTH_BAND[health.band]}`}>Health {health.score}</Badge>
+        <div className="flex items-center gap-3">
+          {user?.role === "admin" && (
+            <div className="flex items-center gap-1.5" data-testid="undo-window-config">
+              <span className="text-xs text-gray-400">Undo window</span>
+              <Input type="number" value={undoWin} onChange={(e) => setUndoWin(e.target.value)} className="h-8 w-16 text-xs" data-testid="undo-window-input" />
+              <span className="text-xs text-gray-400">min</span>
+              <Button size="sm" variant="outline" className="h-8" onClick={saveUndoWin} data-testid="undo-window-save">Save</Button>
+            </div>
+          )}
+          <Badge className={`capitalize ${HEALTH_BAND[health.band]}`}>Health {health.score}</Badge>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">

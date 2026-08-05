@@ -542,6 +542,10 @@ async def dashboard(user=Depends(get_current_user)):
     at_risk = len([c for c in commitments if c.get("status") in ("at_risk", "breached")])
     # Outcome (goal) rollup across portfolio
     outcomes = await db.outcomes.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
+    osnaps = await db.outcome_snapshots.find({"tenant_id": t}, {"_id": 0}).sort("at", 1).to_list(5000)
+    trend_map = {}
+    for s in osnaps:
+        trend_map.setdefault(s["outcome_id"], []).append(s["pct"])
     def gpct(g):
         return min(100, round((g.get("current_value", 0) / g["target_value"]) * 100)) if g.get("target_value") else None
     ws_rollup = []
@@ -552,7 +556,7 @@ async def dashboard(user=Depends(get_current_user)):
             "id": ws["id"], "name": ws["name"], "goal_count": len(gs),
             "avg_pct": round(sum(pcts) / len(pcts)) if pcts else None,
             "goals": [{"id": g["id"], "title": g["title"], "pct": gpct(g), "status": g.get("status"),
-                       "current_value": g.get("current_value"), "target_value": g.get("target_value"), "unit": g.get("unit")} for g in gs],
+                       "current_value": g.get("current_value"), "target_value": g.get("target_value"), "unit": g.get("unit"), "trend": trend_map.get(g["id"], [])} for g in gs],
         })
     all_pcts = [gpct(g) for g in outcomes if gpct(g) is not None]
     goal_rollup = {
@@ -687,10 +691,13 @@ async def seed_demo(tenant_id, actor):
     cmt1 = {"id": new_id("cmt"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Deliver dashboard by month end", "owner": actor, "due_date": future, "status": "at_risk", "created_at": now_iso()}
     cmt2 = {"id": new_id("cmt"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Weekly status call", "owner": actor, "due_date": future, "status": "open", "created_at": now_iso()}
     await db.commitments.insert_many([cmt1, cmt2])
-    await db.outcomes.insert_many([
-        {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Launch analytics platform", "target": "Production go-live", "target_value": 100, "current_value": 65, "unit": "% complete", "status": "on_track", "linked_commitment_ids": [cmt1["id"]], "created_at": now_iso()},
-        {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Cut reporting time", "target": "Reduce vs baseline", "target_value": 50, "current_value": 28, "unit": "% reduction", "status": "at_risk", "linked_commitment_ids": [cmt1["id"], cmt2["id"]], "created_at": now_iso()},
-    ])
+    out1 = {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Launch analytics platform", "target": "Production go-live", "target_value": 100, "current_value": 65, "unit": "% complete", "status": "on_track", "linked_commitment_ids": [cmt1["id"]], "created_at": now_iso()}
+    out2 = {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Cut reporting time", "target": "Reduce vs baseline", "target_value": 50, "current_value": 28, "unit": "% reduction", "status": "at_risk", "linked_commitment_ids": [cmt1["id"], cmt2["id"]], "created_at": now_iso()}
+    await db.outcomes.insert_many([out1, out2])
+    for i, pct in enumerate([30, 45, 55, 65]):
+        await db.outcome_snapshots.insert_one({"id": new_id("os"), "tenant_id": tenant_id, "outcome_id": out1["id"], "pct": pct, "at": (datetime.now(timezone.utc) - timedelta(days=(4 - i))).isoformat()})
+    for i, pct in enumerate([20, 36, 44, 56]):
+        await db.outcome_snapshots.insert_one({"id": new_id("os"), "tenant_id": tenant_id, "outcome_id": out2["id"], "pct": pct, "at": (datetime.now(timezone.utc) - timedelta(days=(4 - i))).isoformat()})
     for i, sc in enumerate([58, 64, 72, 69, 78]):
         ts = (datetime.now(timezone.utc) - timedelta(days=(5 - i))).isoformat()
         band = "healthy" if sc >= 75 else ("at_risk" if sc >= 50 else "critical")
@@ -1037,13 +1044,19 @@ async def mcp_undo(inv_id: str, inp: UndoInput, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Only successful Level 2 writes can be undone")
     if inv.get("undone"):
         raise HTTPException(status_code=400, detail="Already undone")
+    ws_id = (inv.get("args") or {}).get("workspace_id")
+    window_min = UNDO_WINDOW_MINUTES
+    if ws_id:
+        wsd = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+        if wsd and wsd.get("undo_window_minutes"):
+            window_min = wsd["undo_window_minutes"]
     ref = inv.get("executed_at") or inv.get("timestamp")
     try:
         ref_dt = datetime.fromisoformat(ref)
         if ref_dt.tzinfo is None:
             ref_dt = ref_dt.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) - ref_dt > timedelta(minutes=UNDO_WINDOW_MINUTES):
-            raise HTTPException(status_code=400, detail=f"Undo window ({UNDO_WINDOW_MINUTES} min) has expired")
+        if datetime.now(timezone.utc) - ref_dt > timedelta(minutes=window_min):
+            raise HTTPException(status_code=400, detail=f"Undo window ({window_min} min) has expired")
     except HTTPException:
         raise
     except Exception:
@@ -1062,6 +1075,20 @@ async def mcp_undo(inv_id: str, inp: UndoInput, user=Depends(get_current_user)):
     await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"undone": True, "status": "undone", "undone_by": user["email"], "undone_at": now_iso(), "undo_reason": reason}})
     await record_event("mcp.tool_undone", "mcp_tool", inv["tool"], user["tenant_id"], user["email"], workspace_id=ws_id, payload={"invocation_id": inv_id, "restored": restored, "reason": reason})
     return {"ok": True, "restored": restored, "reason": reason}
+
+class UndoWindowInput(BaseModel):
+    minutes: int
+
+@api.patch("/workspaces/{ws_id}/undo-window")
+async def set_undo_window(ws_id: str, inp: UndoWindowInput, user=Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin permission required")
+    ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Not found")
+    m = max(1, min(1440, inp.minutes))
+    await db.workspaces.update_one({"id": ws_id}, {"$set": {"undo_window_minutes": m}})
+    return {"ok": True, "undo_window_minutes": m}
 
 # ----------------------------- Webhooks (live signed delivery) -----------------------------
 
@@ -1194,6 +1221,20 @@ async def webhook_sink(request: Request):
     _ = await request.body()
     return {"received": True}
 
+class PreviewInput(BaseModel):
+    patterns: List[str] = []
+
+@api.post("/webhooks/match-preview")
+async def webhook_match_preview(inp: PreviewInput, user=Depends(get_current_user)):
+    events = await db.domain_events.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("timestamp", -1).to_list(100)
+    matched = [e for e in events if event_matches(e["event_type"], inp.patterns)]
+    counts = {}
+    for e in matched:
+        counts[e["event_type"]] = counts.get(e["event_type"], 0) + 1
+    by_type = sorted([{"event_type": k, "count": v} for k, v in counts.items()], key=lambda x: -x["count"])
+    return {"scanned": len(events), "matched": len(matched), "by_type": by_type,
+            "samples": [{"event_type": e["event_type"], "timestamp": e["timestamp"], "actor": e["actor"]} for e in matched[:8]]}
+
 # ----------------------------- Client Outcome Graph -----------------------------
 
 async def record_health_snapshot(tenant_id: str, workspace_id: str):
@@ -1206,6 +1247,12 @@ async def record_health_snapshot(tenant_id: str, workspace_id: str):
     await db.health_snapshots.insert_one({"id": new_id("hs"), "tenant_id": tenant_id, "workspace_id": workspace_id,
                                           "score": h["score"], "band": h["band"], "at": now_iso()})
     return h
+
+async def snapshot_outcome(o):
+    if not o.get("target_value"):
+        return
+    pct = min(100, round((o.get("current_value", 0) / o["target_value"]) * 100))
+    await db.outcome_snapshots.insert_one({"id": new_id("os"), "tenant_id": o["tenant_id"], "outcome_id": o["id"], "pct": pct, "at": now_iso()})
 
 class OutcomeInput(BaseModel):
     workspace_id: str
@@ -1238,6 +1285,7 @@ async def update_outcome(oid: str, inp: OutcomePatch, user=Depends(get_current_u
 async def create_outcome(inp: OutcomeInput, user=Depends(get_current_user)):
     doc = {"id": new_id("out"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.outcomes.insert_one(dict(doc))
+    await snapshot_outcome(doc)
     await record_event("health.factor_changed", "outcome", doc["id"], user["tenant_id"], user["email"],
                        workspace_id=inp.workspace_id, payload={"title": inp.title})
     return {k: v for k, v in doc.items() if k != "_id"}

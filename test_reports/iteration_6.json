@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration-6 verified 3 new features + regression. Backend: 50 passed / 1 skipped total across 4 test files (backend_test, test_iteration4, test_iteration5, test_iteration6). New test_iteration6.py adds 8 tests (undo-window PATCH/clamp/admin-only, goal trend array, webhook match-preview). UI: (1) Undo Window Config PASS — control renders on WorkspaceDetail header, value 9 persists after PATCH /api/workspaces/{id}/undo-window and page reload. (3) Webhook Pattern Preview PASS — 'New Endpoint' dialog shows live 'N of last M events match this subscription' with matched event-type chips (verified: 'commitment.*' -> 2 of 51 events, chips commitment.created x1 + commitment.at_risk x1). (2) Goal Trend Sparklines FAIL on FRONTEND — backend goal_rollup returns 'trend' arrays correctly (seeded goal trend=[30,45,55,65] confirmed by test), but Dashboard.jsx does NOT render any 'goal-sparkline-*' element (grep -rn sparkline frontend/src returns no matches). 5 rollup-goal-* rows render as plain progress bars only. Regression breadth OK: login, Dashboard KPIs+funnel+health portfolio+goal rollup, Pipeline, Directory, Workspaces list/detail, MCP undo (reason required 422), Registries webhooks list+dialog+chips all healthy.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Dashboard.jsx (Client Goal Progress card)", "issue": "Goal Trend Sparkline feature not implemented in the frontend. Backend dashboard endpoint returns goal_rollup.workspaces[].goals[].trend arrays, but Dashboard.jsx does not import/render any sparkline component and there is no [data-testid^='goal-sparkline-'] element in the DOM (0 found for 5 rollup-goal-* rows). 'grep -rn sparkline frontend/src/' returns no matches at all.", "selector": "[data-testid^='goal-sparkline-']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration6.py",
+    "/app/backend/tests/test_iteration5.py",
+    "/app/backend/tests/test_iteration4.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iteration6.xml"
+  ],
+  "action_items": [
+    "Implement the Goal Trend Sparkline on Dashboard.jsx: for each goal row, render a tiny inline SVG/canvas sparkline of goal.trend[] with data-testid={`goal-sparkline-${g.id}`}, placed next to the progress bar. Backend already exposes the data — this is purely a frontend rendering task.",
+    "(nice-to-have) The 'Undo window' input has no visible label on smaller viewports because it sits in the workspace header — consider a tooltip explaining 'per-workspace MCP undo grace period (minutes)'."
+  ],
+  "critical_code_review_comments": [
+    "Frontend Dashboard.jsx does not render sparklines despite the feature spec — this is a full-implementation miss, not a bug in rendering conditions (no sparkline code exists at all).",
+    "server.py is 1328 lines — still exceeds the 700-line guideline; splitting into modules (auth, mcp, webhooks, outcomes, approvals, dashboard) remains overdue but not blocking.",
+    "PATCH /api/workspaces/{id}/undo-window silently clamps 0 and 100000 to 1 and 1440 respectively and returns 200 — consider returning 422 for out-of-range inputs, or at minimum documenting the clamp behavior, so API consumers don't rely on being able to send arbitrary values.",
+    "event_matches() still only supports trailing '.*' and exact '*'. The pattern preview UI exposes chips like commitment.at_risk (exact) alongside commitment.* (wildcard), which is fine, but arbitrary user-typed patterns like 'commit*' or '*.created' will silently match nothing.",
+    "webhook_match_preview() scans only the last 100 domain_events regardless of tenant volume — for large tenants the 'scanned' count is misleadingly small. Consider passing a limit parameter or documenting the fixed 100-event window in the UI."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration6.py (NEW — 8 tests for undo-window PATCH + clamps + admin-only, goal trend array shape, webhook match-preview schema/patterns)"
+  ],
+  "success_rate": {"backend": "100% (8/8 iter6, 50/51 total, 1 skipped by design)", "frontend": "67% (2/3 features: undo-window PASS, webhook preview PASS, sparklines FAIL)"},
+  "test_credentials": "tvpro357@gmail.com / ClientVerse2026!",
+  "seed_data_creation": "TEST_iter6_*@example.com registered as non-admin user for 403 check. Undo window on seeded workspace left at 60 after clamp test cleanup.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration-6 confirmed 2 of 3 new features work end-to-end. The single miss is a FRONTEND-only gap: Dashboard.jsx has no sparkline rendering code. Backend data contract is correct (goal_rollup.workspaces[].goals[].trend is an array; seeded value [30,45,55,65]). Once main agent adds an inline SVG sparkline with data-testid=`goal-sparkline-${g.id}` beside each rollup-goal-* progress row, re-run test_iteration6.py + a quick Playwright count of [data-testid^='goal-sparkline-'] on /dashboard. Undo window control lives in WorkspaceDetail header (workspace-card-* click navigates to /workspaces/:id), values persist via PATCH /api/workspaces/{id}/undo-window and are clamped 1..1440. Webhook 'New Endpoint' dialog pattern chips include commitment.* approval.* task.* deliverable.* mcp.* commitment.at_risk approval.requested task.created '*' — the preview panel text-format is 'N of last M events match this subscription.' followed by matched-event chips like 'commitment.created ×1'.",
+  "rca of the issue": "Goal Trend Sparklines feature: backend implementation is complete (snapshot_outcome() writes outcome_snapshots rows on outcome create/update; dashboard() reads and attaches per-goal trend arrays), but the frontend Dashboard.jsx was never updated to render the sparklines. Verified by (a) backend test asserting seeded trend=[30,45,55,65] passes, (b) `grep -rn sparkline frontend/src/` returns zero matches, (c) DOM query for [data-testid^='goal-sparkline-'] on /dashboard returns 0 elements while [data-testid^='rollup-goal-'] returns 5. Fix: add a small inline SVG polyline component inside the goal row in /app/frontend/src/pages/Dashboard.jsx (around line 110 where rollup-goal-* is rendered) that draws g.trend[] and carries data-testid={`goal-sparkline-${g.id}`}."
+}

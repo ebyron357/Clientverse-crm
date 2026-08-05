@@ -41,6 +41,14 @@ export default function WebhookManager() {
   const [open, setOpen] = useState(false);
   const [verify, setVerify] = useState(null);
   const [form, setForm] = useState({ name: "", url: "", events: [] });
+  const [preview, setPreview] = useState(null);
+
+  useEffect(() => {
+    if (!open || form.events.length === 0) { setPreview(null); return; }
+    let active = true;
+    api.post("/webhooks/match-preview", { patterns: form.events }).then((r) => active && setPreview(r.data)).catch(() => {});
+    return () => { active = false; };
+  }, [form.events, open]);
 
   const load = async () => {
     const [h, d] = await Promise.all([api.get("/webhooks"), api.get("/webhook-deliveries?limit=60")]);
@@ -78,6 +86,15 @@ export default function WebhookManager() {
                       className={`text-[11px] font-mono px-2 py-1 rounded border transition-colors ${form.events.includes(ev) ? "bg-[#0A0A0A] text-white border-black" : "bg-gray-50 text-gray-600 border-gray-200"}`}>{ev}</button>
                   ))}
                 </div>
+                {preview && (
+                  <div className="text-xs bg-gray-50 border border-gray-200 rounded-lg p-3 mt-2" data-testid="pattern-preview">
+                    <span className="font-medium">{preview.matched}</span> of last {preview.scanned} events match this subscription.
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {preview.by_type.map((b) => <span key={b.event_type} className="font-mono px-1.5 py-0.5 rounded bg-white border border-gray-200 text-gray-600">{b.event_type} ×{b.count}</span>)}
+                      {preview.by_type.length === 0 && <span className="text-gray-400">No recent matches.</span>}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             <DialogFooter><Button onClick={create} data-testid="save-webhook-button" className="bg-[#0A0A0A] hover:bg-[#262626]">Create</Button></DialogFooter>
