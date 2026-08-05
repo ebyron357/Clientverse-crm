@@ -30,8 +30,17 @@ Lifecycle CRM + Client Workspaces + Commitment Ledger + Deliverables/Requests/Ap
 - Automation & Audit domain-event feed.
 - Tests: 15/15 backend + 10/10 E2E flows pass (iteration_1).
 
+## Implemented (2026-08-05) — Slice 2: Governed MCP Server — status AVAILABLE
+- Live MCP server exposing 5 Level-1 read tools (search_contacts, get_client_health, list_open_commitments, get_pipeline_summary, list_tasks) through a policy wrapper.
+- Governance enforced server-side: tenant scope, tool allowlist, kill switch (admin-only, 423), Level>1 denied, required-arg validation (422), per-tool rate limit (429), timeout (504), idempotency key replay, execution history (mcp_tool_invocations), correlation IDs.
+- Domain events: mcp.tool_invoked / mcp.tool_failed → Audit feed.
+- MCP Console UI (/mcp): tool catalog with level/scope/timeout/rate badges, invoke panel (workspace-aware args), kill switch, execution history with retry.
+- Endpoints: GET /api/mcp/tools, GET /api/mcp/server, PATCH /api/mcp/server/kill, POST /api/mcp/invoke, GET /api/mcp/invocations.
+- Tests: E2E frontend + backend pass (iteration_2), no regressions.
+
 ## Backlog (prioritized)
-- P0: Wire live MCP server (Level 1 read tools) + real webhook delivery with signing/retry/DLQ.
+- P0: Governed MCP server Level 1 read tools — DONE (see below). Next: Level 2 reversible writes with approval gating.
+- P0: Real webhook delivery with signing/retry/DLQ + delivery history.
 - P0: Streaming AI responses + cost/token telemetry per run.
 - P1: Real integration OAuth connect flow (Gmail/Calendar/Stripe adapters).
 - P1: Role/permission enforcement beyond admin (member role, field-level access).
