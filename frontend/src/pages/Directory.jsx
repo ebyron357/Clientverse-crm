@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Building2, User } from "lucide-react";
 
@@ -56,7 +56,7 @@ export default function Directory() {
             <Dialog open={coOpen} onOpenChange={setCoOpen}>
               <DialogTrigger asChild><Button data-testid="new-company-button" className="bg-[#0A0A0A] hover:bg-[#262626]"><Plus className="w-4 h-4 mr-1" />New Company</Button></DialogTrigger>
               <DialogContent>
-                <DialogHeader><DialogTitle>New Company</DialogTitle></DialogHeader>
+                <DialogHeader><DialogTitle>New Company</DialogTitle><DialogDescription>Add a client company.</DialogDescription></DialogHeader>
                 <div className="space-y-4">
                   <div><Label>Name</Label><Input data-testid="company-name-input" value={co.name} onChange={(e) => setCo({ ...co, name: e.target.value })} className="mt-1" /></div>
                   <div><Label>Industry</Label><Input value={co.industry} onChange={(e) => setCo({ ...co, industry: e.target.value })} className="mt-1" /></div>
@@ -94,7 +94,7 @@ export default function Directory() {
             <Dialog open={ctOpen} onOpenChange={setCtOpen}>
               <DialogTrigger asChild><Button data-testid="new-contact-button" className="bg-[#0A0A0A] hover:bg-[#262626]"><Plus className="w-4 h-4 mr-1" />New Contact</Button></DialogTrigger>
               <DialogContent>
-                <DialogHeader><DialogTitle>New Contact</DialogTitle></DialogHeader>
+                <DialogHeader><DialogTitle>New Contact</DialogTitle><DialogDescription>Add a stakeholder contact.</DialogDescription></DialogHeader>
                 <div className="space-y-4">
                   <div><Label>Name</Label><Input data-testid="contact-name-input" value={ct.name} onChange={(e) => setCt({ ...ct, name: e.target.value })} className="mt-1" /></div>
                   <div><Label>Email</Label><Input value={ct.email} onChange={(e) => setCt({ ...ct, email: e.target.value })} className="mt-1" /></div>

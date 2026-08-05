@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus } from "lucide-react";
 
@@ -55,7 +55,7 @@ export default function Pipeline() {
             <Button data-testid="new-opportunity-button" className="bg-[#0A0A0A] hover:bg-[#262626]"><Plus className="w-4 h-4 mr-1" /> New Opportunity</Button>
           </DialogTrigger>
           <DialogContent>
-            <DialogHeader><DialogTitle>New Opportunity</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>New Opportunity</DialogTitle><DialogDescription>Add a deal to your pipeline.</DialogDescription></DialogHeader>
             <div className="space-y-4">
               <div><Label>Name</Label><Input data-testid="opp-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1" /></div>
               <div><Label>Value ($)</Label><Input type="number" data-testid="opp-value-input" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} className="mt-1" /></div>

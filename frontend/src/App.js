@@ -12,6 +12,7 @@ import Directory from "@/pages/Directory";
 import Workspaces from "@/pages/Workspaces";
 import WorkspaceDetail from "@/pages/WorkspaceDetail";
 import Registries from "@/pages/Registries";
+import Mcp from "@/pages/Mcp";
 import Audit from "@/pages/Audit";
 
 function AuthCallback() {
@@ -55,6 +56,7 @@ function AppRouter() {
         <Route path="/workspaces" element={<Workspaces />} />
         <Route path="/workspaces/:id" element={<WorkspaceDetail />} />
         <Route path="/registries" element={<Registries />} />
+        <Route path="/mcp" element={<Mcp />} />
         <Route path="/audit" element={<Audit />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

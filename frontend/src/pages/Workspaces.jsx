@@ -6,7 +6,7 @@ import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, ArrowRight } from "lucide-react";
 
@@ -43,7 +43,7 @@ export default function Workspaces() {
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild><Button data-testid="new-workspace-button" className="bg-[#0A0A0A] hover:bg-[#262626]"><Plus className="w-4 h-4 mr-1" />New Workspace</Button></DialogTrigger>
           <DialogContent>
-            <DialogHeader><DialogTitle>New Client Workspace</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>New Client Workspace</DialogTitle><DialogDescription>Create a client delivery hub.</DialogDescription></DialogHeader>
             <div className="space-y-4">
               <div><Label>Name</Label><Input data-testid="workspace-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1" /></div>
               <div><Label>Company</Label>

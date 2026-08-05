@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-  LayoutDashboard, GitBranch, Users, Briefcase, Boxes, Activity, LogOut, Orbit,
+  LayoutDashboard, GitBranch, Users, Briefcase, Boxes, Activity, LogOut, Orbit, Terminal,
 } from "lucide-react";
 
 const NAV = [
@@ -10,6 +10,7 @@ const NAV = [
   { to: "/directory", label: "Directory", icon: Users, id: "directory" },
   { to: "/workspaces", label: "Client Workspaces", icon: Briefcase, id: "workspaces" },
   { to: "/registries", label: "Registries", icon: Boxes, id: "registries" },
+  { to: "/mcp", label: "MCP Console", icon: Terminal, id: "mcp" },
   { to: "/audit", label: "Automation & Audit", icon: Activity, id: "audit" },
 ];
 

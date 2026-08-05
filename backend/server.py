@@ -4,6 +4,8 @@ import jwt
 import bcrypt
 import logging
 import requests
+import asyncio
+import time
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
@@ -671,6 +673,209 @@ async def seed_registries():
     await db.webhooks.insert_many([
         {"id": new_id("wh"), "tenant_id": t, "name": "Ops Alerts", "url": "https://hooks.example/ops", "events": ["commitment.at_risk", "approval.requested"], "status": "AVAILABLE", "signed": True, "description": "Signed delivery with retry + DLQ.", "created_at": now_iso()},
     ])
+
+# ----------------------------- MCP: Governed Server (Level 1 read tools, live) -----------------------------
+
+MCP_SERVER_ID = "clientverse-read-tools"
+MCP_RATE_LIMIT_PER_MIN = 30
+
+MCP_TOOL_CATALOG = [
+    {
+        "name": "search_contacts", "level": 1, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
+        "category": "relationships", "description": "Search stakeholder contacts by name, email, or role.",
+        "scopes": ["contacts:read"], "records_read": ["contact"], "records_written": [],
+        "tenant_scoped": True, "workspace_scoped": False, "approval_required": False,
+        "rate_limit_per_min": MCP_RATE_LIMIT_PER_MIN, "cost_behavior": "none", "timeout_seconds": 10,
+        "idempotent": True, "input_schema": {"query": {"type": "string", "required": False, "placeholder": "e.g. Dana"}},
+    },
+    {
+        "name": "get_client_health", "level": 1, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
+        "category": "outcomes", "description": "Return explainable client health score + factors for a workspace.",
+        "scopes": ["health:read"], "records_read": ["commitment", "task", "deliverable", "client_request"], "records_written": [],
+        "tenant_scoped": True, "workspace_scoped": True, "approval_required": False,
+        "rate_limit_per_min": MCP_RATE_LIMIT_PER_MIN, "cost_behavior": "none", "timeout_seconds": 10,
+        "idempotent": True, "input_schema": {"workspace_id": {"type": "workspace", "required": True}},
+    },
+    {
+        "name": "list_open_commitments", "level": 1, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
+        "category": "outcomes", "description": "List all open / at-risk / breached commitments for the tenant.",
+        "scopes": ["commitments:read"], "records_read": ["commitment"], "records_written": [],
+        "tenant_scoped": True, "workspace_scoped": False, "approval_required": False,
+        "rate_limit_per_min": MCP_RATE_LIMIT_PER_MIN, "cost_behavior": "none", "timeout_seconds": 10,
+        "idempotent": True, "input_schema": {},
+    },
+    {
+        "name": "get_pipeline_summary", "level": 1, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
+        "category": "revenue", "description": "Return pipeline funnel counts and open pipeline value.",
+        "scopes": ["opportunities:read"], "records_read": ["opportunity"], "records_written": [],
+        "tenant_scoped": True, "workspace_scoped": False, "approval_required": False,
+        "rate_limit_per_min": MCP_RATE_LIMIT_PER_MIN, "cost_behavior": "none", "timeout_seconds": 10,
+        "idempotent": True, "input_schema": {},
+    },
+    {
+        "name": "list_tasks", "level": 1, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
+        "category": "client_operations", "description": "List delivery tasks, optionally scoped to a workspace.",
+        "scopes": ["tasks:read"], "records_read": ["task"], "records_written": [],
+        "tenant_scoped": True, "workspace_scoped": True, "approval_required": False,
+        "rate_limit_per_min": MCP_RATE_LIMIT_PER_MIN, "cost_behavior": "none", "timeout_seconds": 10,
+        "idempotent": True, "input_schema": {"workspace_id": {"type": "workspace", "required": False}},
+    },
+]
+MCP_TOOLS = {t["name"]: t for t in MCP_TOOL_CATALOG}
+
+
+async def _tool_search_contacts(user, args):
+    q = (args.get("query") or "").strip().lower()
+    rows = await db.contacts.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).to_list(2000)
+    if q:
+        rows = [r for r in rows if q in f"{r.get('name','')} {r.get('email','')} {r.get('role','')}".lower()]
+    return {"count": len(rows), "contacts": rows[:25]}
+
+async def _tool_get_client_health(user, args):
+    wid = args.get("workspace_id")
+    ws = await db.workspaces.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not ws:
+        raise ValueError("workspace_id not found in this tenant")
+    scoped = {"tenant_id": user["tenant_id"], "workspace_id": wid}
+    commitments = await db.commitments.find(scoped, {"_id": 0}).to_list(500)
+    tasks = await db.tasks.find(scoped, {"_id": 0}).to_list(500)
+    dl = await db.deliverables.find(scoped, {"_id": 0}).to_list(500)
+    rq = await db.client_requests.find(scoped, {"_id": 0}).to_list(500)
+    return {"workspace": ws["name"], "health": compute_health(commitments, tasks, dl, rq)}
+
+async def _tool_list_open_commitments(user, args):
+    rows = await db.commitments.find({"tenant_id": user["tenant_id"], "status": {"$in": ["open", "at_risk", "breached"]}}, {"_id": 0}).to_list(500)
+    return {"count": len(rows), "commitments": rows}
+
+async def _tool_get_pipeline_summary(user, args):
+    opps = await db.opportunities.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).to_list(2000)
+    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
+    return {"funnel": funnel, "open_value": sum(o.get("value", 0) for o in opps if o.get("stage") not in ("closed_won", "closed_lost"))}
+
+async def _tool_list_tasks(user, args):
+    q = {"tenant_id": user["tenant_id"]}
+    if args.get("workspace_id"):
+        q["workspace_id"] = args["workspace_id"]
+    rows = await db.tasks.find(q, {"_id": 0}).to_list(500)
+    return {"count": len(rows), "tasks": rows}
+
+TOOL_IMPL = {
+    "search_contacts": _tool_search_contacts,
+    "get_client_health": _tool_get_client_health,
+    "list_open_commitments": _tool_list_open_commitments,
+    "get_pipeline_summary": _tool_get_pipeline_summary,
+    "list_tasks": _tool_list_tasks,
+}
+
+
+async def get_mcp_server(tenant_id):
+    doc = await db.mcp_server_state.find_one({"server_id": MCP_SERVER_ID, "tenant_id": tenant_id}, {"_id": 0})
+    if not doc:
+        doc = {"server_id": MCP_SERVER_ID, "tenant_id": tenant_id, "name": "ClientVerse Read Tools",
+               "version": "1.0.0", "level": 1, "status": "AVAILABLE", "kill_switch": False,
+               "allowlist": list(MCP_TOOLS.keys()), "created_at": now_iso()}
+        await db.mcp_server_state.insert_one(dict(doc))
+    return doc
+
+@api.get("/mcp/server")
+async def mcp_server(user=Depends(get_current_user)):
+    return await get_mcp_server(user["tenant_id"])
+
+@api.get("/mcp/tools")
+async def mcp_tools(user=Depends(get_current_user)):
+    server = await get_mcp_server(user["tenant_id"])
+    return {"server": server, "tools": MCP_TOOL_CATALOG}
+
+class KillInput(BaseModel):
+    enabled: bool
+
+@api.patch("/mcp/server/kill")
+async def mcp_kill(inp: KillInput, user=Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin permission required")
+    await get_mcp_server(user["tenant_id"])
+    await db.mcp_server_state.update_one({"server_id": MCP_SERVER_ID, "tenant_id": user["tenant_id"]},
+                                         {"$set": {"kill_switch": inp.enabled}})
+    await record_event("plugin.disabled" if inp.enabled else "integration.connected", "mcp_server", MCP_SERVER_ID,
+                       user["tenant_id"], user["email"], payload={"kill_switch": inp.enabled})
+    return {"ok": True, "kill_switch": inp.enabled}
+
+class InvokeInput(BaseModel):
+    tool: str
+    args: dict = {}
+    idempotency_key: Optional[str] = None
+
+@api.post("/mcp/invoke")
+async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
+    tenant = user["tenant_id"]
+    correlation_id = new_id("cor")
+    inv_id = new_id("mcpinv")
+
+    async def fail(status_code, reason, level=None):
+        await db.mcp_tool_invocations.insert_one({
+            "id": inv_id, "tenant_id": tenant, "tool": inp.tool, "level": level, "args": inp.args,
+            "status": "failed", "error": reason, "latency_ms": 0, "correlation_id": correlation_id,
+            "actor": user["email"], "timestamp": now_iso(), "idempotency_key": inp.idempotency_key,
+        })
+        await record_event("mcp.tool_failed", "mcp_tool", inp.tool, tenant, user["email"],
+                           payload={"reason": reason, "invocation_id": inv_id})
+        raise HTTPException(status_code=status_code, detail=reason)
+
+    tool = MCP_TOOLS.get(inp.tool)
+    if not tool:
+        await fail(400, f"Tool '{inp.tool}' is not allowlisted on this MCP server")
+    if tool["level"] > 1:
+        await fail(403, "Only Level 1 (read-only) tools are enabled for live execution", tool["level"])
+
+    server = await get_mcp_server(tenant)
+    if server.get("kill_switch"):
+        await fail(423, "MCP server is disabled by kill switch", tool["level"])
+    if inp.tool not in server.get("allowlist", []):
+        await fail(403, "Tool not in tenant allowlist", tool["level"])
+
+    # required arg validation
+    for field, spec in tool["input_schema"].items():
+        if spec.get("required") and not inp.args.get(field):
+            await fail(422, f"Missing required argument: {field}", tool["level"])
+
+    # idempotency
+    if inp.idempotency_key:
+        prior = await db.mcp_tool_invocations.find_one(
+            {"tenant_id": tenant, "idempotency_key": inp.idempotency_key, "status": "success"}, {"_id": 0})
+        if prior:
+            return {**prior, "idempotent_replay": True}
+
+    # rate limit
+    since = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    recent = await db.mcp_tool_invocations.count_documents(
+        {"tenant_id": tenant, "tool": inp.tool, "timestamp": {"$gte": since}})
+    if recent >= tool["rate_limit_per_min"]:
+        await fail(429, "Rate limit exceeded for this tool", tool["level"])
+
+    await record_event("mcp.tool_invoked", "mcp_tool", inp.tool, tenant, user["email"],
+                       payload={"invocation_id": inv_id, "level": tool["level"]})
+    start = time.perf_counter()
+    try:
+        result = await asyncio.wait_for(TOOL_IMPL[inp.tool](user, inp.args), timeout=tool["timeout_seconds"])
+        latency = int((time.perf_counter() - start) * 1000)
+        record = {
+            "id": inv_id, "tenant_id": tenant, "tool": inp.tool, "level": tool["level"], "args": inp.args,
+            "status": "success", "result": result, "error": None, "latency_ms": latency,
+            "correlation_id": correlation_id, "actor": user["email"], "timestamp": now_iso(),
+            "idempotency_key": inp.idempotency_key,
+            "policy": {"scopes": tool["scopes"], "approval_required": tool["approval_required"], "timeout_seconds": tool["timeout_seconds"]},
+        }
+        await db.mcp_tool_invocations.insert_one(dict(record))
+        return record
+    except asyncio.TimeoutError:
+        await fail(504, "Tool execution timed out", tool["level"])
+    except Exception as e:
+        await fail(502, f"Tool execution error: {e}", tool["level"])
+
+@api.get("/mcp/invocations")
+async def mcp_invocations(limit: int = Query(100), user=Depends(get_current_user)):
+    docs = await db.mcp_tool_invocations.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
+    return docs
 
 @app.on_event("startup")
 async def on_startup():
