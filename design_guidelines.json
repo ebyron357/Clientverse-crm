@@ -1,0 +1,143 @@
+{
+  "theme": "light",
+  "archetype": "Swiss & High-Contrast (Authority, Clarity, Truth) tailored for SaaS",
+  "typography": {
+    "headings": {
+      "family": "Cabinet Grotesk",
+      "weights": ["500", "700", "800"],
+      "usage": "Use for all module titles, dashboard numbers, and panel headers. Apply tracking-tight for all sizes above text-xl.",
+      "import": "@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@500,700,800&display=swap');"
+    },
+    "body": {
+      "family": "Satoshi",
+      "weights": ["400", "500", "700"],
+      "usage": "Use for all dense tabular data, descriptions, forms, and general UI text.",
+      "import": "@import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap');"
+    }
+  },
+  "colors": {
+    "background": "#FAFAFA",
+    "surface": "#FFFFFF",
+    "primary": "#0A0A0A",
+    "primary_hover": "#262626",
+    "accent": "#2563EB",
+    "border": "#E5E5E5",
+    "text_primary": "#171717",
+    "text_secondary": "#525252",
+    "text_tertiary": "#A3A3A3",
+    "ai_semantics": {
+      "source_data": {
+        "bg": "bg-slate-50",
+        "text": "text-slate-600",
+        "border": "border-slate-200 border-dashed"
+      },
+      "inference": {
+        "bg": "bg-amber-50",
+        "text": "text-amber-800",
+        "border": "border-amber-200 border-solid"
+      },
+      "recommendation": {
+        "bg": "bg-indigo-50",
+        "text": "text-indigo-700",
+        "border": "border-indigo-200 border-solid"
+      },
+      "approved_action": {
+        "bg": "bg-emerald-50",
+        "text": "text-emerald-800",
+        "border": "border-emerald-300 border-solid"
+      },
+      "executed_action": {
+        "bg": "bg-slate-900",
+        "text": "text-white",
+        "border": "border-slate-900 border-solid shadow-sm"
+      }
+    },
+    "capability_statuses": {
+      "RESEARCHING": "bg-gray-100 text-gray-600 border-gray-200",
+      "PLANNED": "bg-blue-50 text-blue-700 border-blue-200",
+      "ALPHA": "bg-purple-50 text-purple-700 border-purple-200",
+      "BETA": "bg-orange-50 text-orange-700 border-orange-200",
+      "AVAILABLE": "bg-emerald-50 text-emerald-700 border-emerald-200",
+      "DEPRECATED": "bg-red-50 text-red-700 border-red-200 line-through decoration-red-300"
+    },
+    "health_scores": {
+      "healthy": "text-emerald-700 bg-emerald-50",
+      "at_risk": "text-amber-700 bg-amber-50",
+      "critical": "text-red-700 bg-red-50"
+    }
+  },
+  "layouts": {
+    "app_shell": {
+      "sidebar": "w-64 fixed left-0 top-0 bottom-0 bg-[#FAFAFA] border-r border-[#E5E5E5] flex flex-col py-6 px-4",
+      "main_content": "ml-64 min-h-screen bg-[#FAFAFA] p-8",
+      "navigation": "flex flex-col gap-1 mt-8"
+    },
+    "dashboard_grid": {
+      "container": "grid grid-cols-1 md:grid-cols-4 lg:grid-cols-12 gap-6",
+      "card": "col-span-12 md:col-span-4 lg:col-span-4 bg-white border border-[#E5E5E5] rounded-xl p-6 shadow-[0_2px_12px_rgba(0,0,0,0.02)]",
+      "wide_card": "col-span-12 md:col-span-8 lg:col-span-8 bg-white border border-[#E5E5E5] rounded-xl p-6 shadow-[0_2px_12px_rgba(0,0,0,0.02)]",
+      "full_width": "col-span-12 bg-white border border-[#E5E5E5] rounded-xl p-6 shadow-[0_2px_12px_rgba(0,0,0,0.02)]"
+    }
+  },
+  "component_styling": {
+    "cards": "bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-shadow duration-200",
+    "buttons": {
+      "primary": "bg-[#0A0A0A] text-white hover:bg-[#262626] font-medium px-4 py-2 rounded-lg transition-colors duration-200 shadow-sm",
+      "secondary": "bg-white text-[#171717] border border-gray-200 hover:bg-gray-50 font-medium px-4 py-2 rounded-lg transition-colors duration-200 shadow-sm",
+      "danger": "bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 font-medium px-4 py-2 rounded-lg transition-colors duration-200"
+    },
+    "badges": "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border",
+    "inputs": "bg-white border border-gray-200 text-gray-900 rounded-lg focus:ring-2 focus:ring-black focus:border-black block w-full p-2.5 outline-none transition-shadow",
+    "tables": "w-full text-sm text-left text-gray-600. Headings should be uppercase, text-xs, tracking-[0.05em], text-gray-500 font-semibold border-b border-gray-200 pb-3",
+    "tabs": "flex space-x-1 border-b border-gray-200"
+  },
+  "visual_enhancers": {
+    "borders": "Use strict 1px solid borders (`border-gray-200` or `border-gray-100`). Avoid soft blurred glowing shadows on cards.",
+    "hover_states": "Interactive elements MUST have a clear visual shift. Table rows should get `hover:bg-gray-50`.",
+    "icons": "Use Phosphor Icons (phosphor-icons/react) for a dense, highly legible technical aesthetic.",
+    "data_density": "Use compact spacing (`gap-2`, `gap-3`) inside data cards. Utilize Flexbox heavily for aligning metrics and labels."
+  },
+  "accessibility": {
+    "focus": "All interactive elements must have `focus:ring-2 focus:ring-black focus:outline-none`",
+    "contrast": "Ensure all text meets at least 4.5:1 contrast ratio against its background. Text on AI action tags must be heavily saturated.",
+    "testing": "All interactive elements (buttons, links, tabs, forms) MUST include a `data-testid` attribute using kebab-case and role-based naming (e.g., `data-testid=\"nav-dashboard-link\"`)."
+  },
+  "image_urls": {
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjh8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMGF2YXRhcnxlbnwwfHx8fDE3ODU4OTIxMzF8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Male avatar for client contacts or assigned agents",
+        "category": "user_avatar"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1580489944761-15a19d654956?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjh8MHwxfHNlYXJjaHw0fHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMGF2YXRhcnxlbnwwfHx8fDE3ODU4OTIxMzF8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Female avatar for client stakeholders",
+        "category": "user_avatar"
+      }
+    ],
+    "logos": [
+      {
+        "url": "https://images.unsplash.com/photo-1770210217380-d78a69acdc77?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzN8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjB0ZWNoJTIwY29tcGFueSUyMGxvZ298ZW58MHx8fHwxNzg1ODkyMTMxfDA&ixlib=rb-4.1.0&q=85",
+        "description": "AI capability or Company Logo placeholder",
+        "category": "company_logo"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Build out the dashboard layout using the defined `layouts.app_shell` grid to ensure the dense operations console feel.",
+    "Integrate the typography variables globally in `tailwind.config.js` or `index.css`.",
+    "Implement the AI semantic tags specifically when rendering the 'Evidence-backed AI panel' and 'Automation / Audit history timeline'. AI insights should never look like normal text - wrap them in the defined ai_semantics styles.",
+    "Use Recharts for the 'Client Outcome Graph' and 'Explainable Client Health' data visualizations. Do not use D3 for simple charting.",
+    "Apply the `capability_statuses` classes to any Registry items (Integrations, Plugins, MCPs).",
+    "Do NOT use HTML `<select>` or native `<input type='date'>`. You must use Shadcn components for these.",
+    "Ensure every single button, dropdown item, and tab has a `data-testid`.",
+    "No purple-on-white defaults! Adhere strictly to the monochromatic + structural gray + emerald/blue accents system."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": {
+    "spacing": "Use generous padding inside containers but keep dense grids for data. Use `p-6` or `p-8` for card interiors.",
+    "animations": "Add subtle transition-all duration-200 for hover states. No jarring bouncing animations.",
+    "shadows": "Rely on borders (`border border-gray-200`) more than shadows. Shadows should be subtle (`shadow-sm`) and used only for floating elements or hover states.",
+    "text_alignment": "Left-align dense data, forms, and paragraphs. Only center-align empty states or explicit marketing callouts.",
+    "icons": "Use Phosphor Icons (phosphor-icons/react). Do not use emoji characters as UI icons."
+  }
+}
