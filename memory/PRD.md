@@ -30,6 +30,12 @@ Lifecycle CRM + Client Workspaces + Commitment Ledger + Deliverables/Requests/Ap
 - Automation & Audit domain-event feed.
 - Tests: 15/15 backend + 10/10 E2E flows pass (iteration_1).
 
+## Implemented (2026-08-05) — Slice 4: Undo, Webhook Signature Docs, Outcome Targets — status AVAILABLE
+- Undo Actions: admin-only POST /api/mcp/invocations/{id}/undo reverses a successful Level-2 MCP write (deletes the created task/note), marks it undone, emits mcp.tool_undone. Undo buttons on MCP Console history rows and on the Audit trail (executed-write events).
+- Webhook Signature Docs: per-endpoint "Verify" dialog exposes the HMAC signing secret + a copyable Node.js verification snippet and lists the signature headers.
+- Outcome Targets: outcomes carry target_value/current_value/unit; progress bars on the Outcome Graph; add via shadcn Dialog; inline current-value updates via PATCH /api/outcomes/{id}.
+- Tests: iteration_4 — 21/21 backend + all frontend flows pass (new /app/backend/tests/test_iteration4.py).
+
 ## Implemented (2026-08-05) — Slice 3: Write governance, Webhooks, Outcome Graph — status AVAILABLE
 - MCP Level 2 reversible write tools (create_task, add_note) gated behind approval: invoke returns pending_approval, creates an mcp_write approval; approving in the workspace executes the tool (execute_pending_mcp) and flips the invocation to success. Rejecting cancels.
 - Live Webhooks: HMAC-SHA256 signed delivery, auto-dispatch on every domain event to subscribed endpoints, up to 3 retry attempts with backoff, dead-letter (DLQ) on final failure, delivery log with attempt history, manual replay, enable/disable toggle, secret rotation, test-event, built-in sink. Endpoints /api/webhooks*, /api/webhook-deliveries*. UI: WebhookManager in Registries → Webhooks tab.
