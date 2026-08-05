@@ -30,6 +30,12 @@ Lifecycle CRM + Client Workspaces + Commitment Ledger + Deliverables/Requests/Ap
 - Automation & Audit domain-event feed.
 - Tests: 15/15 backend + 10/10 E2E flows pass (iteration_1).
 
+## Implemented (2026-08-05) — Slice 3: Write governance, Webhooks, Outcome Graph — status AVAILABLE
+- MCP Level 2 reversible write tools (create_task, add_note) gated behind approval: invoke returns pending_approval, creates an mcp_write approval; approving in the workspace executes the tool (execute_pending_mcp) and flips the invocation to success. Rejecting cancels.
+- Live Webhooks: HMAC-SHA256 signed delivery, auto-dispatch on every domain event to subscribed endpoints, up to 3 retry attempts with backoff, dead-letter (DLQ) on final failure, delivery log with attempt history, manual replay, enable/disable toggle, secret rotation, test-event, built-in sink. Endpoints /api/webhooks*, /api/webhook-deliveries*. UI: WebhookManager in Registries → Webhooks tab.
+- Client Outcome Graph: per-workspace goals (outcomes) linking to commitments and health, plus health-over-time snapshots (record_health_snapshot on outcome-affecting events). Endpoints POST /api/outcomes, GET /api/workspaces/{id}/outcome-graph. UI: OutcomeGraph component in WorkspaceDetail → Outcome Graph tab.
+- Tests: iteration_3 — 100% backend + frontend, no regressions.
+
 ## Implemented (2026-08-05) — Slice 2: Governed MCP Server — status AVAILABLE
 - Live MCP server exposing 5 Level-1 read tools (search_contacts, get_client_health, list_open_commitments, get_pipeline_summary, list_tasks) through a policy wrapper.
 - Governance enforced server-side: tenant scope, tool allowlist, kill switch (admin-only, 423), Level>1 denied, required-arg validation (422), per-tool rate limit (429), timeout (504), idempotency key replay, execution history (mcp_tool_invocations), correlation IDs.

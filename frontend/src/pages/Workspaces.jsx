@@ -20,10 +20,10 @@ export default function Workspaces() {
   const navigate = useNavigate();
 
   const load = async () => {
-    const [w, c, d] = await Promise.all([api.get("/workspaces"), api.get("/companies"), api.get("/dashboard")]);
-    const healthMap = Object.fromEntries((d.data.portfolio || []).map((p) => [p.id, p.health]));
-    setRows(w.data.map((x) => ({ ...x, health: healthMap[x.id] })));
-    setCompanies(c.data);
+    const [w, c, d] = await Promise.allSettled([api.get("/workspaces"), api.get("/companies"), api.get("/dashboard")]);
+    const healthMap = d.status === "fulfilled" ? Object.fromEntries((d.value.data.portfolio || []).map((p) => [p.id, p.health])) : {};
+    if (w.status === "fulfilled") setRows(w.value.data.map((x) => ({ ...x, health: healthMap[x.id] })));
+    if (c.status === "fulfilled") setCompanies(c.value.data);
   };
   useEffect(() => { load(); }, []);
 
