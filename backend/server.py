@@ -6,6 +6,10 @@ import logging
 import requests
 import asyncio
 import time
+import hmac
+import hashlib
+import secrets
+import json as _json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
@@ -71,7 +75,17 @@ async def record_event(event_type: str, resource_type: str, resource_id: str,
         "causation_id": None, "payload": payload or {}, "privacy": privacy,
     }
     await db.domain_events.insert_one(ev)
-    return ev
+    clean = {k: v for k, v in ev.items() if k != "_id"}
+    try:
+        asyncio.create_task(dispatch_webhooks_for_event(clean))
+    except Exception:
+        pass
+    if workspace_id and event_type in HEALTH_AFFECTING:
+        try:
+            await record_health_snapshot(tenant_id, workspace_id)
+        except Exception:
+            pass
+    return clean
 
 # ----------------------------- auth -----------------------------
 
@@ -447,7 +461,14 @@ async def decide_approval(apr_id: str, inp: TaskStatus, user=Depends(get_current
         raise HTTPException(status_code=404, detail="Not found")
     await db.approvals.update_one({"id": apr_id}, {"$set": {"status": inp.status, "decided_by": user["email"], "decided_at": now_iso()}})
     await record_event("approval.completed", "approval", apr_id, user["tenant_id"], user["email"], workspace_id=a["workspace_id"], payload={"decision": inp.status})
-    return {"ok": True}
+    result = {"ok": True}
+    if a.get("kind") == "mcp_write" and a.get("pending_action_id"):
+        if inp.status == "approved":
+            result["execution"] = await execute_pending_mcp(a["pending_action_id"], user)
+        else:
+            await db.mcp_pending_actions.update_one({"id": a["pending_action_id"]}, {"$set": {"status": "rejected"}})
+            await db.mcp_tool_invocations.update_one({"approval_id": apr_id}, {"$set": {"status": "rejected"}})
+    return result
 
 class CommitmentInput(BaseModel):
     workspace_id: str
@@ -641,10 +662,17 @@ async def seed_demo(tenant_id, actor):
     await db.client_requests.insert_many([
         {"id": new_id("req"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Add revenue forecast widget", "priority": "high", "status": "open", "created_at": now_iso()},
     ])
-    await db.commitments.insert_many([
-        {"id": new_id("cmt"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Deliver dashboard by month end", "owner": actor, "due_date": future, "status": "at_risk", "created_at": now_iso()},
-        {"id": new_id("cmt"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Weekly status call", "owner": actor, "due_date": future, "status": "open", "created_at": now_iso()},
+    cmt1 = {"id": new_id("cmt"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Deliver dashboard by month end", "owner": actor, "due_date": future, "status": "at_risk", "created_at": now_iso()}
+    cmt2 = {"id": new_id("cmt"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Weekly status call", "owner": actor, "due_date": future, "status": "open", "created_at": now_iso()}
+    await db.commitments.insert_many([cmt1, cmt2])
+    await db.outcomes.insert_many([
+        {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Launch analytics platform", "target": "Go-live in 30 days", "status": "on_track", "linked_commitment_ids": [cmt1["id"]], "created_at": now_iso()},
+        {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Cut reporting time by 50%", "target": "End of quarter", "status": "at_risk", "linked_commitment_ids": [cmt1["id"], cmt2["id"]], "created_at": now_iso()},
     ])
+    for i, sc in enumerate([58, 64, 72, 69, 78]):
+        ts = (datetime.now(timezone.utc) - timedelta(days=(5 - i))).isoformat()
+        band = "healthy" if sc >= 75 else ("at_risk" if sc >= 50 else "critical")
+        await db.health_snapshots.insert_one({"id": new_id("hs"), "tenant_id": tenant_id, "workspace_id": wid, "score": sc, "band": band, "at": ts})
     await db.approvals.insert_one({"id": new_id("apr"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Send Q1 renewal proposal to client", "kind": "external_effect", "status": "requested", "created_at": now_iso()})
     await record_event("client_workspace.created", "workspace", wid, tenant_id, actor, workspace_id=wid, payload={"name": ws["name"]})
     await record_event("commitment.at_risk", "commitment", "seed", tenant_id, actor, workspace_id=wid, payload={"title": "Deliver dashboard by month end"})
@@ -671,7 +699,8 @@ async def seed_registries():
         {"id": new_id("plg"), "tenant_id": t, "name": "Slack Notifier", "version": "0.9.0", "publisher": "Community", "type": "communications provider", "status": "BETA", "permissions": ["events:consume"], "description": "Post workspace events to Slack.", "created_at": now_iso()},
     ])
     await db.webhooks.insert_many([
-        {"id": new_id("wh"), "tenant_id": t, "name": "Ops Alerts", "url": "https://hooks.example/ops", "events": ["commitment.at_risk", "approval.requested"], "status": "AVAILABLE", "signed": True, "description": "Signed delivery with retry + DLQ.", "created_at": now_iso()},
+        {"id": new_id("wh"), "tenant_id": t, "name": "Ops Alerts (external)", "url": "https://hooks.invalid.example/ops", "events": ["commitment.at_risk", "approval.requested"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_ops_" + secrets.token_hex(8), "description": "External endpoint — unreachable in demo, shows retry + dead-letter.", "created_at": now_iso()},
+        {"id": new_id("wh"), "tenant_id": t, "name": "Local Test Sink", "url": "http://localhost:8001/api/webhooks/sink", "events": ["commitment.at_risk", "approval.requested", "task.created", "mcp.tool_invoked", "webhook.test", "commitment.fulfilled", "deliverable.approved"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_sink_" + secrets.token_hex(8), "description": "Built-in sink returning 200 — shows successful signed delivery.", "created_at": now_iso()},
     ])
 
 # ----------------------------- MCP: Governed Server (Level 1 read tools, live) -----------------------------
@@ -720,6 +749,24 @@ MCP_TOOL_CATALOG = [
         "rate_limit_per_min": MCP_RATE_LIMIT_PER_MIN, "cost_behavior": "none", "timeout_seconds": 10,
         "idempotent": True, "input_schema": {"workspace_id": {"type": "workspace", "required": False}},
     },
+    {
+        "name": "create_task", "level": 2, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
+        "category": "client_operations", "description": "Create a delivery task in a workspace (reversible). Requires approval.",
+        "scopes": ["tasks:write"], "records_read": [], "records_written": ["task"],
+        "tenant_scoped": True, "workspace_scoped": True, "approval_required": True,
+        "rate_limit_per_min": MCP_RATE_LIMIT_PER_MIN, "cost_behavior": "none", "timeout_seconds": 10,
+        "idempotent": False, "reversible": True,
+        "input_schema": {"workspace_id": {"type": "workspace", "required": True}, "title": {"type": "string", "required": True, "placeholder": "Task title"}},
+    },
+    {
+        "name": "add_note", "level": 2, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
+        "category": "client_operations", "description": "Add an internal note to a workspace (reversible). Requires approval.",
+        "scopes": ["notes:write"], "records_read": [], "records_written": ["note"],
+        "tenant_scoped": True, "workspace_scoped": True, "approval_required": True,
+        "rate_limit_per_min": MCP_RATE_LIMIT_PER_MIN, "cost_behavior": "none", "timeout_seconds": 10,
+        "idempotent": False, "reversible": True,
+        "input_schema": {"workspace_id": {"type": "workspace", "required": True}, "body": {"type": "string", "required": True, "placeholder": "Note text"}},
+    },
 ]
 MCP_TOOLS = {t["name"]: t for t in MCP_TOOL_CATALOG}
 
@@ -766,6 +813,50 @@ TOOL_IMPL = {
     "get_pipeline_summary": _tool_get_pipeline_summary,
     "list_tasks": _tool_list_tasks,
 }
+
+# Level 2 — reversible internal writes (executed only after approval)
+async def _tool_create_task(user, args):
+    tid = new_id("task")
+    doc = {"id": tid, "tenant_id": user["tenant_id"], "workspace_id": args["workspace_id"],
+           "title": args["title"], "assignee": user["email"], "due_date": None,
+           "status": "todo", "created_at": now_iso(), "source": "mcp"}
+    await db.tasks.insert_one(dict(doc))
+    await record_event("task.created", "task", tid, user["tenant_id"], user["email"],
+                       workspace_id=args["workspace_id"], payload={"title": args["title"], "via": "mcp"})
+    return {"created": "task", "id": tid, "reversible": True, "undo": f"delete task {tid}"}
+
+async def _tool_add_note(user, args):
+    nid = new_id("note")
+    doc = {"id": nid, "tenant_id": user["tenant_id"], "workspace_id": args["workspace_id"],
+           "body": args["body"], "author": user["email"], "created_at": now_iso(), "source": "mcp"}
+    await db.notes.insert_one(dict(doc))
+    await record_event("note.created", "note", nid, user["tenant_id"], user["email"],
+                       workspace_id=args["workspace_id"], payload={"via": "mcp"})
+    return {"created": "note", "id": nid, "reversible": True, "undo": f"delete note {nid}"}
+
+TOOL_IMPL_L2 = {"create_task": _tool_create_task, "add_note": _tool_add_note}
+
+async def execute_pending_mcp(pending_id, user):
+    p = await db.mcp_pending_actions.find_one({"id": pending_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not p or p.get("status") != "pending_approval":
+        return {"status": "skipped"}
+    inv_id = p["invocation_id"]
+    tool = MCP_TOOLS.get(p["tool"])
+    start = time.perf_counter()
+    try:
+        result = await asyncio.wait_for(TOOL_IMPL_L2[p["tool"]](user, p["args"]), timeout=tool["timeout_seconds"])
+        latency = int((time.perf_counter() - start) * 1000)
+        await db.mcp_pending_actions.update_one({"id": pending_id}, {"$set": {"status": "executed"}})
+        await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"status": "success", "result": result, "latency_ms": latency}})
+        await record_event("agent.run_completed", "mcp_tool", p["tool"], user["tenant_id"], user["email"],
+                           workspace_id=p.get("workspace_id"), payload={"invocation_id": inv_id, "executed_after_approval": True})
+        return {"status": "success", "result": result, "invocation_id": inv_id}
+    except Exception as e:
+        await db.mcp_pending_actions.update_one({"id": pending_id}, {"$set": {"status": "failed"}})
+        await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"status": "failed", "error": str(e)}})
+        await record_event("mcp.tool_failed", "mcp_tool", p["tool"], user["tenant_id"], user["email"],
+                           workspace_id=p.get("workspace_id"), payload={"invocation_id": inv_id, "error": str(e)})
+        return {"status": "failed", "error": str(e)}
 
 
 async def get_mcp_server(tenant_id):
@@ -824,8 +915,8 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
     tool = MCP_TOOLS.get(inp.tool)
     if not tool:
         await fail(400, f"Tool '{inp.tool}' is not allowlisted on this MCP server")
-    if tool["level"] > 1:
-        await fail(403, "Only Level 1 (read-only) tools are enabled for live execution", tool["level"])
+    if tool["level"] > 2:
+        await fail(403, "Level 3+ tools are not enabled for execution", tool["level"])
 
     server = await get_mcp_server(tenant)
     if server.get("kill_switch"):
@@ -852,6 +943,34 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
     if recent >= tool["rate_limit_per_min"]:
         await fail(429, "Rate limit exceeded for this tool", tool["level"])
 
+    # Level 2 — reversible write gated behind an approval request
+    if tool["level"] == 2:
+        pending_id = new_id("mcpp")
+        approval_id = new_id("apr")
+        ws_id = inp.args.get("workspace_id")
+        await db.mcp_pending_actions.insert_one({
+            "id": pending_id, "tenant_id": tenant, "tool": inp.tool, "args": inp.args,
+            "status": "pending_approval", "approval_id": approval_id, "workspace_id": ws_id,
+            "invocation_id": inv_id, "created_by": user["email"], "created_at": now_iso(),
+        })
+        await db.approvals.insert_one({
+            "id": approval_id, "tenant_id": tenant, "workspace_id": ws_id,
+            "title": f"MCP write: {inp.tool}", "kind": "mcp_write", "status": "requested",
+            "pending_action_id": pending_id, "created_at": now_iso(),
+        })
+        await db.mcp_tool_invocations.insert_one({
+            "id": inv_id, "tenant_id": tenant, "tool": inp.tool, "level": 2, "args": inp.args,
+            "status": "pending_approval", "result": None, "error": None, "latency_ms": 0,
+            "correlation_id": correlation_id, "actor": user["email"], "timestamp": now_iso(),
+            "idempotency_key": inp.idempotency_key, "approval_id": approval_id,
+        })
+        await record_event("mcp.tool_invoked", "mcp_tool", inp.tool, tenant, user["email"],
+                           workspace_id=ws_id, payload={"invocation_id": inv_id, "level": 2, "status": "pending_approval"})
+        await record_event("approval.requested", "approval", approval_id, tenant, user["email"],
+                           workspace_id=ws_id, payload={"title": f"MCP write: {inp.tool}"})
+        return {"id": inv_id, "tool": inp.tool, "level": 2, "status": "pending_approval",
+                "approval_id": approval_id, "message": "Approval required — approve in the client workspace to execute."}
+
     await record_event("mcp.tool_invoked", "mcp_tool", inp.tool, tenant, user["email"],
                        payload={"invocation_id": inv_id, "level": tool["level"]})
     start = time.perf_counter()
@@ -876,6 +995,172 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
 async def mcp_invocations(limit: int = Query(100), user=Depends(get_current_user)):
     docs = await db.mcp_tool_invocations.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
     return docs
+
+# ----------------------------- Webhooks (live signed delivery) -----------------------------
+
+WEBHOOK_MAX_ATTEMPTS = 3
+HEALTH_AFFECTING = {"commitment.created", "commitment.at_risk", "commitment.fulfilled",
+                    "task.created", "task.completed", "deliverable.created", "deliverable.approved",
+                    "client_request.created"}
+
+def sign_payload(secret: str, body: bytes) -> str:
+    return hmac.new((secret or "").encode(), body, hashlib.sha256).hexdigest()
+
+async def _do_delivery(delivery: dict, webhook: dict) -> str:
+    body = _json.dumps(delivery["payload"], default=str).encode()
+    sig = sign_payload(webhook.get("secret", ""), body)
+    headers = {
+        "Content-Type": "application/json",
+        "X-ClientVerse-Signature": f"sha256={sig}",
+        "X-ClientVerse-Delivery": delivery["id"],
+        "X-ClientVerse-Event": delivery["event_type"],
+        "X-ClientVerse-Timestamp": delivery["created_at"],
+    }
+    attempts = list(delivery.get("attempts", []))
+    for n in range(len(attempts) + 1, WEBHOOK_MAX_ATTEMPTS + 1):
+        try:
+            resp = await asyncio.to_thread(requests.post, webhook["url"], data=body, headers=headers, timeout=6)
+            code = resp.status_code
+            attempts.append({"n": n, "status_code": code, "error": None, "at": now_iso()})
+            if 200 <= code < 300:
+                await db.webhook_deliveries.update_one({"id": delivery["id"]},
+                    {"$set": {"status": "delivered", "attempts": attempts, "delivered_at": now_iso(), "dlq": False}})
+                return "delivered"
+        except Exception as e:
+            attempts.append({"n": n, "status_code": None, "error": str(e)[:200], "at": now_iso()})
+        await asyncio.sleep(0.25 * n)
+    await db.webhook_deliveries.update_one({"id": delivery["id"]},
+        {"$set": {"status": "failed", "attempts": attempts, "dlq": True}})
+    return "failed"
+
+async def dispatch_webhooks_for_event(ev: dict):
+    try:
+        hooks = await db.webhooks.find({"tenant_id": ev.get("tenant_id"), "enabled": True}, {"_id": 0}).to_list(100)
+    except Exception:
+        return
+    for wh in hooks:
+        if ev.get("event_type") not in (wh.get("events") or []):
+            continue
+        delivery = {"id": new_id("whd"), "tenant_id": ev["tenant_id"], "webhook_id": wh["id"],
+                    "webhook_name": wh.get("name"), "event_type": ev["event_type"], "event_id": ev.get("id"),
+                    "payload": {"event": ev}, "status": "pending", "attempts": [], "dlq": False, "created_at": now_iso()}
+        await db.webhook_deliveries.insert_one(dict(delivery))
+        asyncio.create_task(_do_delivery(delivery, wh))
+
+class WebhookInput(BaseModel):
+    name: str
+    url: str
+    events: List[str] = []
+
+class WebhookPatch(BaseModel):
+    enabled: Optional[bool] = None
+    rotate_secret: Optional[bool] = None
+
+@api.get("/webhooks")
+async def list_webhooks(user=Depends(get_current_user)):
+    return await db.webhooks.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+@api.post("/webhooks")
+async def create_webhook(inp: WebhookInput, user=Depends(get_current_user)):
+    doc = {"id": new_id("wh"), "tenant_id": user["tenant_id"], "name": inp.name, "url": inp.url,
+           "events": inp.events, "status": "AVAILABLE", "signed": True, "enabled": True,
+           "secret": "whsec_" + secrets.token_hex(16), "description": "Custom endpoint.", "created_at": now_iso()}
+    await db.webhooks.insert_one(dict(doc))
+    await record_event("integration.connected", "webhook", doc["id"], user["tenant_id"], user["email"], payload={"name": inp.name})
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+@api.patch("/webhooks/{wid}")
+async def patch_webhook(wid: str, inp: WebhookPatch, user=Depends(get_current_user)):
+    wh = await db.webhooks.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not wh:
+        raise HTTPException(status_code=404, detail="Not found")
+    upd = {}
+    if inp.enabled is not None:
+        upd["enabled"] = inp.enabled
+    if inp.rotate_secret:
+        upd["secret"] = "whsec_" + secrets.token_hex(16)
+    if upd:
+        await db.webhooks.update_one({"id": wid}, {"$set": upd})
+    return {"ok": True, **{k: v for k, v in upd.items() if k != "secret"}}
+
+@api.post("/webhooks/{wid}/test")
+async def test_webhook(wid: str, user=Depends(get_current_user)):
+    wh = await db.webhooks.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not wh:
+        raise HTTPException(status_code=404, detail="Not found")
+    ev = {"id": new_id("evt"), "event_type": "webhook.test", "tenant_id": user["tenant_id"],
+          "actor": user["email"], "timestamp": now_iso(), "payload": {"message": "This is a ClientVerse test event"}}
+    delivery = {"id": new_id("whd"), "tenant_id": user["tenant_id"], "webhook_id": wid, "webhook_name": wh.get("name"),
+                "event_type": "webhook.test", "event_id": ev["id"], "payload": {"event": ev},
+                "status": "pending", "attempts": [], "dlq": False, "created_at": now_iso()}
+    await db.webhook_deliveries.insert_one(dict(delivery))
+    status = await _do_delivery(delivery, wh)
+    return {"status": status, "delivery_id": delivery["id"]}
+
+@api.get("/webhook-deliveries")
+async def list_deliveries(limit: int = Query(100), user=Depends(get_current_user)):
+    return await db.webhook_deliveries.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+
+@api.post("/webhook-deliveries/{did}/replay")
+async def replay_delivery(did: str, user=Depends(get_current_user)):
+    d = await db.webhook_deliveries.find_one({"id": did, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Not found")
+    wh = await db.webhooks.find_one({"id": d["webhook_id"], "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not wh:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    await db.webhook_deliveries.update_one({"id": did}, {"$set": {"attempts": [], "status": "pending", "dlq": False}})
+    d["attempts"] = []
+    status = await _do_delivery(d, wh)
+    return {"status": status}
+
+@api.post("/webhooks/sink")
+async def webhook_sink(request: Request):
+    _ = await request.body()
+    return {"received": True}
+
+# ----------------------------- Client Outcome Graph -----------------------------
+
+async def record_health_snapshot(tenant_id: str, workspace_id: str):
+    scoped = {"tenant_id": tenant_id, "workspace_id": workspace_id}
+    commitments = await db.commitments.find(scoped, {"_id": 0}).to_list(500)
+    tasks = await db.tasks.find(scoped, {"_id": 0}).to_list(500)
+    dl = await db.deliverables.find(scoped, {"_id": 0}).to_list(500)
+    rq = await db.client_requests.find(scoped, {"_id": 0}).to_list(500)
+    h = compute_health(commitments, tasks, dl, rq)
+    await db.health_snapshots.insert_one({"id": new_id("hs"), "tenant_id": tenant_id, "workspace_id": workspace_id,
+                                          "score": h["score"], "band": h["band"], "at": now_iso()})
+    return h
+
+class OutcomeInput(BaseModel):
+    workspace_id: str
+    title: str
+    target: Optional[str] = None
+    status: str = "on_track"
+    linked_commitment_ids: List[str] = []
+
+@api.post("/outcomes")
+async def create_outcome(inp: OutcomeInput, user=Depends(get_current_user)):
+    doc = {"id": new_id("out"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
+    await db.outcomes.insert_one(dict(doc))
+    await record_event("health.factor_changed", "outcome", doc["id"], user["tenant_id"], user["email"],
+                       workspace_id=inp.workspace_id, payload={"title": inp.title})
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+@api.get("/workspaces/{ws_id}/outcome-graph")
+async def outcome_graph(ws_id: str, user=Depends(get_current_user)):
+    ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Not found")
+    scoped = {"tenant_id": user["tenant_id"], "workspace_id": ws_id}
+    goals = await db.outcomes.find(scoped, {"_id": 0}).to_list(200)
+    commitments = await db.commitments.find(scoped, {"_id": 0}).to_list(500)
+    tasks = await db.tasks.find(scoped, {"_id": 0}).to_list(500)
+    dl = await db.deliverables.find(scoped, {"_id": 0}).to_list(500)
+    rq = await db.client_requests.find(scoped, {"_id": 0}).to_list(500)
+    health = compute_health(commitments, tasks, dl, rq)
+    history = await db.health_snapshots.find(scoped, {"_id": 0}).sort("at", 1).to_list(200)
+    return {"workspace": ws, "goals": goals, "commitments": commitments, "health": health, "health_history": history}
 
 @app.on_event("startup")
 async def on_startup():

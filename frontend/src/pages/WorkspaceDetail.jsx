@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import OutcomeGraph from "@/components/OutcomeGraph";
 import { ArrowLeft, Plus, Sparkles, FileText, Mail } from "lucide-react";
 
 function Health({ health }) {
@@ -183,6 +184,7 @@ export default function WorkspaceDetail() {
       <Tabs defaultValue="commitments">
         <TabsList>
           <TabsTrigger value="commitments" data-testid="tab-commitments">Commitment Ledger</TabsTrigger>
+          <TabsTrigger value="outcome" data-testid="tab-outcome">Outcome Graph</TabsTrigger>
           <TabsTrigger value="tasks" data-testid="tab-tasks">Tasks</TabsTrigger>
           <TabsTrigger value="deliverables" data-testid="tab-deliverables">Deliverables</TabsTrigger>
           <TabsTrigger value="requests" data-testid="tab-requests">Requests</TabsTrigger>
@@ -198,6 +200,10 @@ export default function WorkspaceDetail() {
                 <SelectContent>{["open", "at_risk", "breached", "fulfilled"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
               </Select>
             )} />
+        </TabsContent>
+
+        <TabsContent value="outcome" className="mt-6">
+          <OutcomeGraph workspaceId={id} />
         </TabsContent>
 
         <TabsContent value="tasks" className="mt-6">

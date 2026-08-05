@@ -149,16 +149,26 @@ export default function Mcp() {
 
                 {result && (
                   <div className="mt-4" data-testid="mcp-result">
-                    <div className="flex flex-wrap gap-2 text-xs mb-2">
-                      <span className={`px-2 py-1 rounded border flex items-center gap-1 ${result.status === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"}`}>
-                        {result.status === "success" ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}{result.status}
-                      </span>
-                      <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">{result.latency_ms}ms</span>
-                      <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">{result.id}</span>
-                    </div>
-                    <div className="bg-slate-50 border border-slate-200 border-dashed rounded-lg p-3 max-h-72 overflow-auto">
-                      <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap">{JSON.stringify(result.result, null, 2)}</pre>
-                    </div>
+                    {result.status === "pending_approval" ? (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                        <div className="text-xs uppercase tracking-wide text-amber-700 font-semibold mb-1">Approval required (Level 2)</div>
+                        <p className="text-sm text-amber-800">{result.message}</p>
+                        <p className="text-xs text-amber-600 mt-2 font-mono">approval: {result.approval_id}</p>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap gap-2 text-xs mb-2">
+                          <span className={`px-2 py-1 rounded border flex items-center gap-1 ${result.status === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"}`}>
+                            {result.status === "success" ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}{result.status}
+                          </span>
+                          <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">{result.latency_ms}ms</span>
+                          <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">{result.id}</span>
+                        </div>
+                        <div className="bg-slate-50 border border-slate-200 border-dashed rounded-lg p-3 max-h-72 overflow-auto">
+                          <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap">{JSON.stringify(result.result, null, 2)}</pre>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </>
@@ -179,7 +189,7 @@ export default function Mcp() {
                 <tr key={inv.id} className="border-b border-gray-100 hover:bg-gray-50" data-testid={`mcp-invocation-${inv.id}`}>
                   <td className="px-5 py-3 font-mono text-xs">{inv.tool}</td>
                   <td className="px-5 py-3">
-                    <Badge className={inv.status === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"}>{inv.status}</Badge>
+                    <Badge className={inv.status === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : inv.status === "pending_approval" ? "bg-amber-50 text-amber-700 border-amber-200" : inv.status === "rejected" ? "bg-gray-100 text-gray-600 border-gray-200" : "bg-red-50 text-red-700 border-red-200"}>{inv.status}</Badge>
                     {inv.error && <span className="text-xs text-red-500 ml-2">{inv.error}</span>}
                   </td>
                   <td className="px-5 py-3 text-gray-500">{inv.latency_ms}ms</td>

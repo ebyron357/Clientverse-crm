@@ -5,6 +5,7 @@ import { Badge } from "@/components/AppShell";
 import { CAP_STATUS } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import WebhookManager from "@/components/WebhookManager";
 import { Plug, Server, Puzzle, Webhook, ShieldCheck } from "lucide-react";
 
 const TABS = [
@@ -68,7 +69,7 @@ export default function Registries() {
         </TabsList>
         {TABS.map((t) => (
           <TabsContent key={t.key} value={t.key} className="mt-6">
-            {loading ? <Skeleton className="h-40 rounded-xl" /> : (
+            {t.key === "webhooks" ? <WebhookManager /> : loading ? <Skeleton className="h-40 rounded-xl" /> : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {(data[t.key] || []).map((it) => <Row key={it.id} item={it} />)}
                 {(data[t.key] || []).length === 0 && <div className="text-sm text-gray-400 py-8">No entries.</div>}
