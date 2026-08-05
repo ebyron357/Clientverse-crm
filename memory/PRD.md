@@ -30,6 +30,13 @@ Lifecycle CRM + Client Workspaces + Commitment Ledger + Deliverables/Requests/Ap
 - Automation & Audit domain-event feed.
 - Tests: 15/15 backend + 10/10 E2E flows pass (iteration_1).
 
+## Implemented (2026-08-05) — Slice 5: Rollup, Undo Window, Webhook Patterns — status AVAILABLE
+- Outcome Targets Rollup: /api/dashboard returns goal_rollup (total/on-track/at-risk/avg + per-workspace goal progress); Command Center shows a "Client Goal Progress" card with progress bars.
+- Undo Window + Reason: POST /api/mcp/invocations/{id}/undo now requires a non-empty reason (422 otherwise), enforces a 60-min window via executed_at, stays admin-only, and records the reason on the mcp.tool_undone event. Undo prompts for a reason in both MCP Console and Audit trail.
+- Webhook Event Filters: dispatch supports wildcard subscriptions via event_matches() — exact, trailing ".*" prefix (e.g. commitment.*), and "*". Create dialog offers pattern chips.
+- Recovery: fixed a backend file-tail corruption (duplicated block → IndentationError) that had taken the server down; single clean definitions confirmed.
+- Tests: iteration_5 — 43 backend tests pass + full frontend E2E + regression breadth, no bugs (test_iteration5.py added).
+
 ## Implemented (2026-08-05) — Slice 4: Undo, Webhook Signature Docs, Outcome Targets — status AVAILABLE
 - Undo Actions: admin-only POST /api/mcp/invocations/{id}/undo reverses a successful Level-2 MCP write (deletes the created task/note), marks it undone, emits mcp.tool_undone. Undo buttons on MCP Console history rows and on the Audit trail (executed-write events).
 - Webhook Signature Docs: per-endpoint "Verify" dialog exposes the HMAC signing secret + a copyable Node.js verification snippet and lists the signature headers.
