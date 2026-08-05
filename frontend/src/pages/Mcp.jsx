@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, CAP_STATUS } from "@/lib/api";
 import { toast } from "sonner";
+import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Terminal, ShieldAlert, Zap, Clock, CheckCircle2, XCircle, RotateCw } from "lucide-react";
+import { Terminal, ShieldAlert, Zap, Clock, CheckCircle2, XCircle, RotateCw, Undo2 } from "lucide-react";
 
 const LEVEL_COLOR = {
   1: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -18,6 +19,7 @@ const LEVEL_COLOR = {
 };
 
 export default function Mcp() {
+  const { user } = useAuth();
   const [data, setData] = useState(null);
   const [server, setServer] = useState(null);
   const [workspaces, setWorkspaces] = useState([]);
@@ -66,6 +68,14 @@ export default function Mcp() {
     if (!tool) return toast.error("Tool no longer available");
     pick(tool); setArgs(inv.args || {});
     invoke(tool, inv.args || {});
+  };
+
+  const undo = async (inv) => {
+    try {
+      const { data: res } = await api.post(`/mcp/invocations/${inv.id}/undo`);
+      toast.success(res.restored || "Reversed");
+      loadHistory();
+    } catch (e) { toast.error(e.response?.data?.detail || "Undo failed"); }
   };
 
   if (!data) return <div className="space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-xl" /></div>;
@@ -195,7 +205,12 @@ export default function Mcp() {
                   <td className="px-5 py-3 text-gray-500">{inv.latency_ms}ms</td>
                   <td className="px-5 py-3 text-gray-400 text-xs">{new Date(inv.timestamp).toLocaleTimeString()}</td>
                   <td className="px-5 py-3">
-                    <Button size="sm" variant="outline" className="h-7" onClick={() => retry(inv)} data-testid={`mcp-retry-${inv.id}`}><RotateCw className="w-3 h-3 mr-1" />Retry</Button>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" className="h-7" onClick={() => retry(inv)} data-testid={`mcp-retry-${inv.id}`}><RotateCw className="w-3 h-3 mr-1" />Retry</Button>
+                      {user?.role === "admin" && inv.level === 2 && inv.status === "success" && (
+                        <Button size="sm" variant="outline" className="h-7 text-red-600 border-red-200 hover:bg-red-50" onClick={() => undo(inv)} data-testid={`mcp-undo-${inv.id}`}><Undo2 className="w-3 h-3 mr-1" />Undo</Button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

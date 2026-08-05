@@ -666,8 +666,8 @@ async def seed_demo(tenant_id, actor):
     cmt2 = {"id": new_id("cmt"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Weekly status call", "owner": actor, "due_date": future, "status": "open", "created_at": now_iso()}
     await db.commitments.insert_many([cmt1, cmt2])
     await db.outcomes.insert_many([
-        {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Launch analytics platform", "target": "Go-live in 30 days", "status": "on_track", "linked_commitment_ids": [cmt1["id"]], "created_at": now_iso()},
-        {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Cut reporting time by 50%", "target": "End of quarter", "status": "at_risk", "linked_commitment_ids": [cmt1["id"], cmt2["id"]], "created_at": now_iso()},
+        {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Launch analytics platform", "target": "Production go-live", "target_value": 100, "current_value": 65, "unit": "% complete", "status": "on_track", "linked_commitment_ids": [cmt1["id"]], "created_at": now_iso()},
+        {"id": new_id("out"), "tenant_id": tenant_id, "workspace_id": wid, "title": "Cut reporting time", "target": "Reduce vs baseline", "target_value": 50, "current_value": 28, "unit": "% reduction", "status": "at_risk", "linked_commitment_ids": [cmt1["id"], cmt2["id"]], "created_at": now_iso()},
     ])
     for i, sc in enumerate([58, 64, 72, 69, 78]):
         ts = (datetime.now(timezone.utc) - timedelta(days=(5 - i))).isoformat()
@@ -996,6 +996,32 @@ async def mcp_invocations(limit: int = Query(100), user=Depends(get_current_user
     docs = await db.mcp_tool_invocations.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
     return docs
 
+@api.post("/mcp/invocations/{inv_id}/undo")
+async def mcp_undo(inv_id: str, user=Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin permission required")
+    inv = await db.mcp_tool_invocations.find_one({"id": inv_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Not found")
+    if inv.get("level") != 2 or inv.get("status") != "success":
+        raise HTTPException(status_code=400, detail="Only successful Level 2 writes can be undone")
+    if inv.get("undone"):
+        raise HTTPException(status_code=400, detail="Already undone")
+    result = inv.get("result") or {}
+    created, rid = result.get("created"), result.get("id")
+    ws_id = (inv.get("args") or {}).get("workspace_id")
+    if created == "task" and rid:
+        await db.tasks.delete_one({"id": rid, "tenant_id": user["tenant_id"]})
+        restored = f"Removed task {rid}"
+    elif created == "note" and rid:
+        await db.notes.delete_one({"id": rid, "tenant_id": user["tenant_id"]})
+        restored = f"Removed note {rid}"
+    else:
+        raise HTTPException(status_code=400, detail="This action is not reversible")
+    await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"undone": True, "status": "undone", "undone_by": user["email"], "undone_at": now_iso()}})
+    await record_event("mcp.tool_undone", "mcp_tool", inv["tool"], user["tenant_id"], user["email"], workspace_id=ws_id, payload={"invocation_id": inv_id, "restored": restored})
+    return {"ok": True, "restored": restored}
+
 # ----------------------------- Webhooks (live signed delivery) -----------------------------
 
 WEBHOOK_MAX_ATTEMPTS = 3
@@ -1136,8 +1162,28 @@ class OutcomeInput(BaseModel):
     workspace_id: str
     title: str
     target: Optional[str] = None
+    target_value: Optional[float] = None
+    current_value: float = 0
+    unit: Optional[str] = None
     status: str = "on_track"
     linked_commitment_ids: List[str] = []
+
+class OutcomePatch(BaseModel):
+    current_value: Optional[float] = None
+    target_value: Optional[float] = None
+    status: Optional[str] = None
+    title: Optional[str] = None
+
+@api.patch("/outcomes/{oid}")
+async def update_outcome(oid: str, inp: OutcomePatch, user=Depends(get_current_user)):
+    o = await db.outcomes.find_one({"id": oid, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not o:
+        raise HTTPException(status_code=404, detail="Not found")
+    upd = {k: v for k, v in inp.model_dump().items() if v is not None}
+    if upd:
+        await db.outcomes.update_one({"id": oid}, {"$set": upd})
+        await record_event("health.factor_changed", "outcome", oid, user["tenant_id"], user["email"], workspace_id=o["workspace_id"], payload={"updated": list(upd.keys())})
+    return {"ok": True, **upd}
 
 @api.post("/outcomes")
 async def create_outcome(inp: OutcomeInput, user=Depends(get_current_user)):

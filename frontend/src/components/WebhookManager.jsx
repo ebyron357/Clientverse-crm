@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Send, RotateCw, KeyRound, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { Plus, Send, RotateCw, KeyRound, CheckCircle2, XCircle, Clock, ShieldCheck, Copy } from "lucide-react";
 
 const EVENT_OPTIONS = ["commitment.at_risk", "commitment.fulfilled", "approval.requested", "approval.completed", "task.created", "deliverable.approved", "mcp.tool_invoked"];
 
@@ -17,10 +17,29 @@ const DSTATUS = {
   pending: "bg-amber-50 text-amber-700 border-amber-200",
 };
 
+const snippet = (secret) => `// Verify a ClientVerse webhook (Node.js / Express)
+const crypto = require("crypto");
+const SECRET = "${secret}";
+
+app.post("/hooks", express.raw({ type: "*/*" }), (req, res) => {
+  const header = req.headers["x-clientverse-signature"] || "";
+  const received = header.replace("sha256=", "");
+  const expected = crypto.createHmac("sha256", SECRET)
+    .update(req.body)            // raw request body bytes
+    .digest("hex");
+  const ok = crypto.timingSafeEqual(
+    Buffer.from(received), Buffer.from(expected)
+  );
+  if (!ok) return res.status(401).send("bad signature");
+  // trusted: JSON.parse(req.body)
+  res.sendStatus(200);
+});`;
+
 export default function WebhookManager() {
   const [hooks, setHooks] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
   const [open, setOpen] = useState(false);
+  const [verify, setVerify] = useState(null);
   const [form, setForm] = useState({ name: "", url: "", events: [] });
 
   const load = async () => {
@@ -29,28 +48,17 @@ export default function WebhookManager() {
   };
   useEffect(() => { load(); }, []);
 
-  const toggle = async (wh, enabled) => {
-    await api.patch(`/webhooks/${wh.id}`, { enabled });
-    toast.success(enabled ? "Endpoint enabled" : "Endpoint disabled");
-    load();
-  };
-  const rotate = async (wh) => { await api.patch(`/webhooks/${wh.id}`, { rotate_secret: true }); toast.success("Secret rotated"); };
-  const test = async (wh) => {
-    const { data } = await api.post(`/webhooks/${wh.id}/test`);
-    toast[data.status === "delivered" ? "success" : "error"](`Test event → ${data.status}`);
-    load();
-  };
-  const replay = async (d) => {
-    const { data } = await api.post(`/webhook-deliveries/${d.id}/replay`);
-    toast[data.status === "delivered" ? "success" : "error"](`Replay → ${data.status}`);
-    load();
-  };
+  const toggle = async (wh, enabled) => { await api.patch(`/webhooks/${wh.id}`, { enabled }); toast.success(enabled ? "Endpoint enabled" : "Endpoint disabled"); load(); };
+  const rotate = async (wh) => { const { data } = await api.patch(`/webhooks/${wh.id}`, { rotate_secret: true }); toast.success("Secret rotated"); load(); };
+  const test = async (wh) => { const { data } = await api.post(`/webhooks/${wh.id}/test`); toast[data.status === "delivered" ? "success" : "error"](`Test event → ${data.status}`); load(); };
+  const replay = async (d) => { const { data } = await api.post(`/webhook-deliveries/${d.id}/replay`); toast[data.status === "delivered" ? "success" : "error"](`Replay → ${data.status}`); load(); };
   const create = async () => {
     if (!form.name || !form.url) return;
     await api.post("/webhooks", form);
     toast.success("Webhook created"); setOpen(false); setForm({ name: "", url: "", events: [] }); load();
   };
   const toggleEvent = (ev) => setForm((f) => ({ ...f, events: f.events.includes(ev) ? f.events.filter((x) => x !== ev) : [...f.events, ev] }));
+  const copy = (text, label) => { navigator.clipboard?.writeText(text); toast.success(`${label} copied`); };
 
   return (
     <div className="space-y-6">
@@ -92,13 +100,42 @@ export default function WebhookManager() {
               {(wh.events || []).slice(0, 4).map((e) => <span key={e} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-50 border border-gray-200 text-gray-500">{e}</span>)}
               {(wh.events || []).length > 4 && <span className="text-[10px] text-gray-400">+{wh.events.length - 4}</span>}
             </div>
-            <div className="flex gap-2 mt-4">
+            <div className="flex flex-wrap gap-2 mt-4">
               <Button size="sm" variant="outline" className="h-8" onClick={() => test(wh)} data-testid={`webhook-test-${wh.id}`}><Send className="w-3 h-3 mr-1" />Send test</Button>
-              <Button size="sm" variant="outline" className="h-8" onClick={() => rotate(wh)} data-testid={`webhook-rotate-${wh.id}`}><KeyRound className="w-3 h-3 mr-1" />Rotate secret</Button>
+              <Button size="sm" variant="outline" className="h-8" onClick={() => setVerify(wh)} data-testid={`webhook-verify-${wh.id}`}><ShieldCheck className="w-3 h-3 mr-1" />Verify</Button>
+              <Button size="sm" variant="outline" className="h-8" onClick={() => rotate(wh)} data-testid={`webhook-rotate-${wh.id}`}><KeyRound className="w-3 h-3 mr-1" />Rotate</Button>
             </div>
           </div>
         ))}
       </div>
+
+      {/* Signature docs dialog */}
+      <Dialog open={!!verify} onOpenChange={(o) => !o && setVerify(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>Verify webhook signatures</DialogTitle><DialogDescription>{verify?.name} — payloads are signed with HMAC-SHA256 in the <code className="font-mono">X-ClientVerse-Signature</code> header.</DialogDescription></DialogHeader>
+          {verify && (
+            <div className="space-y-4" data-testid="webhook-verify-dialog">
+              <div>
+                <Label className="text-xs">Signing secret</Label>
+                <div className="flex gap-2 mt-1">
+                  <Input readOnly value={verify.secret} className="font-mono text-xs" data-testid="webhook-secret-value" />
+                  <Button size="sm" variant="outline" onClick={() => copy(verify.secret, "Secret")} data-testid="copy-secret-button"><Copy className="w-3.5 h-3.5" /></Button>
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <Label className="text-xs">Verification snippet (Node.js)</Label>
+                  <Button size="sm" variant="outline" className="h-7" onClick={() => copy(snippet(verify.secret), "Snippet")} data-testid="copy-snippet-button"><Copy className="w-3 h-3 mr-1" />Copy</Button>
+                </div>
+                <pre className="bg-slate-900 text-slate-100 rounded-lg p-4 text-xs font-mono overflow-auto max-h-72 whitespace-pre-wrap">{snippet(verify.secret)}</pre>
+              </div>
+              <div className="text-xs text-gray-500">
+                Headers sent with every delivery: <code className="font-mono">X-ClientVerse-Signature</code>, <code className="font-mono">X-ClientVerse-Delivery</code>, <code className="font-mono">X-ClientVerse-Event</code>, <code className="font-mono">X-ClientVerse-Timestamp</code>.
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Delivery log */}
       <div>

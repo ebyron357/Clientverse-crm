@@ -3,9 +3,12 @@ import { api, HEALTH_BAND } from "@/lib/api";
 import { toast } from "sonner";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine } from "recharts";
-import { Target, HandshakeIcon, Activity, Plus, ArrowRight } from "lucide-react";
+import { Target, Handshake, Activity, Plus, ArrowRight, Check } from "lucide-react";
 
 const GOAL_STATUS = {
   on_track: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -21,18 +24,33 @@ const CMT_STATUS = {
 
 export default function OutcomeGraph({ workspaceId }) {
   const [d, setD] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ title: "", target: "", target_value: "", unit: "" });
+  const [edits, setEdits] = useState({});
 
   const load = async () => {
     const { data } = await api.get(`/workspaces/${workspaceId}/outcome-graph`);
     setD(data);
   };
-  useEffect(() => { load(); }, [workspaceId]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [workspaceId]);
 
-  const addGoal = async () => {
-    const title = window.prompt("Goal / outcome title");
-    if (!title) return;
-    await api.post("/outcomes", { workspace_id: workspaceId, title, status: "on_track", linked_commitment_ids: [] });
-    toast.success("Outcome added"); load();
+  const create = async () => {
+    if (!form.title) return;
+    await api.post("/outcomes", {
+      workspace_id: workspaceId, title: form.title, target: form.target || null,
+      target_value: form.target_value ? parseFloat(form.target_value) : null, unit: form.unit || null,
+      current_value: 0, status: "on_track", linked_commitment_ids: [],
+    });
+    toast.success("Outcome added"); setOpen(false); setForm({ title: "", target: "", target_value: "", unit: "" }); load();
+  };
+
+  const saveProgress = async (g) => {
+    const val = edits[g.id];
+    if (val === undefined || val === "") return;
+    await api.patch(`/outcomes/${g.id}`, { current_value: parseFloat(val) });
+    toast.success("Progress updated");
+    setEdits((e) => { const n = { ...e }; delete n[g.id]; return n; });
+    load();
   };
 
   if (!d) return <Skeleton className="h-72 rounded-xl" />;
@@ -42,34 +60,67 @@ export default function OutcomeGraph({ workspaceId }) {
 
   return (
     <div className="space-y-6" data-testid="outcome-graph">
-      {/* Graph: goals -> commitments -> health */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
         <div className="flex items-center justify-between mb-6">
           <h3 className="font-display font-bold text-lg">Client Outcome Graph</h3>
-          <Button size="sm" variant="outline" onClick={addGoal} data-testid="add-outcome-button"><Plus className="w-3.5 h-3.5 mr-1" />Add outcome</Button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild><Button size="sm" variant="outline" data-testid="add-outcome-button"><Plus className="w-3.5 h-3.5 mr-1" />Add outcome</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>New Outcome</DialogTitle><DialogDescription>Define a measurable client outcome and its target.</DialogDescription></DialogHeader>
+              <div className="space-y-4">
+                <div><Label>Title</Label><Input data-testid="outcome-title-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="mt-1" /></div>
+                <div><Label>Target description</Label><Input placeholder="e.g. Production go-live" value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} className="mt-1" /></div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><Label>Target value</Label><Input type="number" data-testid="outcome-target-input" placeholder="100" value={form.target_value} onChange={(e) => setForm({ ...form, target_value: e.target.value })} className="mt-1" /></div>
+                  <div><Label>Unit</Label><Input placeholder="% complete" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className="mt-1" /></div>
+                </div>
+              </div>
+              <DialogFooter><Button onClick={create} data-testid="save-outcome-button" className="bg-[#0A0A0A] hover:bg-[#262626]">Create</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr_auto_auto] gap-4 items-start">
           {/* Goals */}
           <div>
             <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-2 flex items-center gap-1"><Target className="w-3.5 h-3.5" />Goals</div>
             <div className="space-y-2">
               {d.goals.length === 0 && <div className="text-xs text-gray-400">No goals yet.</div>}
-              {d.goals.map((g) => (
-                <div key={g.id} className="border border-gray-200 rounded-lg p-3" data-testid={`goal-${g.id}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium">{g.title}</span>
-                    <Badge className={`capitalize ${GOAL_STATUS[g.status] || GOAL_STATUS.on_track}`}>{g.status.replace("_", " ")}</Badge>
-                  </div>
-                  {g.target && <div className="text-xs text-gray-400 mt-1">{g.target}</div>}
-                  {(g.linked_commitment_ids || []).length > 0 && (
-                    <div className="mt-2 space-y-1">
-                      {g.linked_commitment_ids.map((cid) => cmtById[cid] && (
-                        <div key={cid} className="text-[11px] text-gray-500 flex items-center gap-1"><ArrowRight className="w-3 h-3 text-gray-300" />{cmtById[cid].title}</div>
-                      ))}
+              {d.goals.map((g) => {
+                const pct = g.target_value ? Math.min(100, Math.round((g.current_value / g.target_value) * 100)) : null;
+                return (
+                  <div key={g.id} className="border border-gray-200 rounded-lg p-3" data-testid={`goal-${g.id}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium">{g.title}</span>
+                      <Badge className={`capitalize ${GOAL_STATUS[g.status] || GOAL_STATUS.on_track}`}>{g.status.replace("_", " ")}</Badge>
                     </div>
-                  )}
-                </div>
-              ))}
+                    {g.target && <div className="text-xs text-gray-400 mt-0.5">{g.target}</div>}
+                    {pct !== null && (
+                      <div className="mt-2">
+                        <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                          <span>{g.current_value} / {g.target_value} {g.unit || ""}</span>
+                          <span className="font-medium">{pct}%</span>
+                        </div>
+                        <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                          <div className={`h-full ${pct >= 100 ? "bg-emerald-500" : pct >= 50 ? "bg-blue-500" : "bg-amber-500"}`} style={{ width: `${pct}%` }} data-testid={`goal-progress-${g.id}`} />
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-2">
+                          <Input type="number" className="h-7 text-xs w-24" placeholder="Update" value={edits[g.id] ?? ""} onChange={(e) => setEdits({ ...edits, [g.id]: e.target.value })}
+                            onKeyDown={(e) => e.key === "Enter" && saveProgress(g)} data-testid={`goal-update-input-${g.id}`} />
+                          <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => saveProgress(g)} data-testid={`goal-save-${g.id}`}><Check className="w-3 h-3" /></Button>
+                        </div>
+                      </div>
+                    )}
+                    {(g.linked_commitment_ids || []).length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {g.linked_commitment_ids.map((cid) => cmtById[cid] && (
+                          <div key={cid} className="text-[11px] text-gray-500 flex items-center gap-1"><ArrowRight className="w-3 h-3 text-gray-300" />{cmtById[cid].title}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -77,7 +128,7 @@ export default function OutcomeGraph({ workspaceId }) {
 
           {/* Commitments */}
           <div>
-            <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-2 flex items-center gap-1"><HandshakeIcon className="w-3.5 h-3.5" />Commitments</div>
+            <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-2 flex items-center gap-1"><Handshake className="w-3.5 h-3.5" />Commitments</div>
             <div className="space-y-2">
               {d.commitments.length === 0 && <div className="text-xs text-gray-400">No commitments.</div>}
               {d.commitments.map((c) => (
@@ -102,7 +153,6 @@ export default function OutcomeGraph({ workspaceId }) {
         </div>
       </div>
 
-      {/* Health trend */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
         <h3 className="font-display font-bold text-lg mb-1">Health Over Time</h3>
         <p className="text-xs text-gray-400 mb-4">Snapshots captured on every outcome-affecting change.</p>
