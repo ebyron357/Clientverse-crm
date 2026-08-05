@@ -113,8 +113,19 @@ export default function Dashboard() {
                         <span className="font-medium shrink-0 ml-2">{g.pct !== null ? `${g.pct}%` : "—"}</span>
                       </div>
                       {g.pct !== null && (
-                        <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div className={`h-full ${g.pct >= 100 ? "bg-emerald-500" : g.pct >= 50 ? "bg-blue-500" : "bg-amber-500"}`} style={{ width: `${g.pct}%` }} />
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className={`h-full ${g.pct >= 100 ? "bg-emerald-500" : g.pct >= 50 ? "bg-blue-500" : "bg-amber-500"}`} style={{ width: `${g.pct}%` }} />
+                          </div>
+                          {g.trend && g.trend.length > 1 && (
+                            <div className="w-16 h-6 shrink-0" data-testid={`goal-sparkline-${g.id}`}>
+                              <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={g.trend.map((p, i) => ({ i, p }))} margin={{ top: 2, bottom: 2, left: 0, right: 0 }}>
+                                  <Line type="monotone" dataKey="p" stroke="#2563EB" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                                </LineChart>
+                              </ResponsiveContainer>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
