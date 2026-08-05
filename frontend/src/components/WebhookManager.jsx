@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Plus, Send, RotateCw, KeyRound, CheckCircle2, XCircle, Clock, ShieldCheck, Copy } from "lucide-react";
 
-const EVENT_OPTIONS = ["commitment.at_risk", "commitment.fulfilled", "approval.requested", "approval.completed", "task.created", "deliverable.approved", "mcp.tool_invoked"];
+const EVENT_OPTIONS = ["commitment.*", "approval.*", "task.*", "deliverable.*", "mcp.*", "commitment.at_risk", "approval.requested", "task.created", "*"];
 
 const DSTATUS = {
   delivered: "bg-emerald-50 text-emerald-700 border-emerald-200",

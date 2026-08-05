@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration-5 E2E verification of ClientVerse.io after the backend IndentationError recovery. All 3 new features validated backend + frontend, plus regression breadth across 13 endpoints and full-app UI navigation. Backend: 21 passed / 1 skipped (window-expired requires DB backdating, covered by code review) in test_iteration5.py; iteration_4 + regression suites also fully pass (43 passed / 1 skipped overall). Frontend Playwright confirmed: (1) Dashboard shows goal-rollup-card with avg 46%, 10 on-track / 1 at-risk, 3 workspace groups and 11 rollup-goal-* progress bars. (2) MCP Undo prompts for a reason: cancel does nothing, empty reason triggers 'A reason is required' toast (no undo), and a real reason removes the mcp-undo-* row (status flipped to undone). (3) Registries → Webhooks new endpoint dialog exposes chips for 'commitment.*', 'mcp.*', '*' (plus approval.*, task.*, deliverable.*, and specific event names). Backend dispatcher verified: a 'commitment.*' subscription and '*' subscription both received commitment.created, while 'approval.*' did not. All previously working pages (Pipeline, Directory, Audit, MCP) load without error boundaries.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5.py",
+    "/app/backend/tests/test_iteration4.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iteration5.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 1279 lines — still exceeds the 700-line guideline. Split into modules (auth, mcp, webhooks, outcomes, approvals, dashboard) is overdue but not blocking.",
+    "mcp_undo() window check swallows generic exceptions on datetime parsing (except Exception: pass) — if executed_at is stored in an unexpected format the window guard is silently bypassed. Consider logging + falling back to timestamp explicitly.",
+    "event_matches() only supports trailing '.*' wildcards. Users may reasonably expect 'commitment.at_*' or leading wildcards — either document the pattern grammar in the UI or extend to fnmatch.",
+    "Non-admin users receive 403 from mcp_undo only when the invocation is in their own tenant; cross-tenant returns 404 first, which is fine but the error semantics differ. Documenting expected 403 vs 404 would help API consumers.",
+    "iteration4 test file needed reason field update to reflect new 422 contract — this is expected due to the API change but confirms the reason contract is a breaking change for any external callers of POST /mcp/invocations/{id}/undo."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py (added reason field to 3 undo calls to match new 422 contract)",
+    "/app/backend/tests/test_iteration5.py (NEW — 22 tests covering goal_rollup, undo reason/window/admin-only, webhook pattern dispatch, regression breadth)"
+  ],
+  "success_rate": {"backend": "100% (21/21 iter5, 43 total)", "frontend": "100% (3/3 features + regression)"},
+  "test_credentials": "tvpro357@gmail.com / ClientVerse2026!",
+  "seed_data_creation": "TEST_rollup_*, TEST_com_*, TEST_undo_reason_* and a handful of TEST_hook_* webhooks created during testing. Webhooks left in place (harmless, disabled after test) — main agent can prune if desired.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend fully recovered from IndentationError — no duplicate route definitions detected. Key endpoint contracts: GET /api/dashboard returns goal_rollup{total_goals,on_track,at_risk,avg_progress,workspaces[]}; POST /api/mcp/invocations/{id}/undo requires {reason:non-empty} → 422 otherwise, 60-min window enforced via executed_at, admin-only, emits mcp.tool_undone event carrying reason. Webhooks live under /api/webhooks (not /api/registry/webhooks — the latter is read-only via generic registry). event_matches() supports exact match, trailing '.*' prefix wildcards, and '*'. Regression tests confirm all core endpoints healthy.",
+  "rca of the issue": "N/A — no bugs found. Prior IndentationError fix verified: backend loads cleanly, no duplicate dashboard/mcp_undo/dispatch_webhooks/on_startup/root/include_router definitions in /app/backend/server.py; all 43 backend tests pass across three test files."
+}

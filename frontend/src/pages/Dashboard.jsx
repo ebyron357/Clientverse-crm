@@ -87,6 +87,44 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {data.goal_rollup && data.goal_rollup.total_goals > 0 && (
+        <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm mt-6" data-testid="goal-rollup-card">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="font-display font-bold text-lg">Client Goal Progress</h3>
+              <p className="text-xs text-gray-400">Portfolio-wide outcome targets across every client</p>
+            </div>
+            <div className="flex items-center gap-4 text-sm">
+              <div className="text-right"><div className="font-display text-2xl font-bold">{data.goal_rollup.avg_progress}%</div><div className="text-[10px] uppercase tracking-wide text-gray-400">Avg progress</div></div>
+              <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">{data.goal_rollup.on_track} on track</Badge>
+              <Badge className="bg-amber-50 text-amber-700 border-amber-200">{data.goal_rollup.at_risk} at risk</Badge>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+            {data.goal_rollup.workspaces.map((w) => (
+              <div key={w.id} data-testid={`rollup-workspace-${w.id}`}>
+                <button onClick={() => navigate(`/workspaces/${w.id}`)} className="text-sm font-medium hover:text-[#2563EB] transition-colors">{w.name}</button>
+                <div className="mt-2 space-y-2">
+                  {w.goals.map((g) => (
+                    <div key={g.id} data-testid={`rollup-goal-${g.id}`}>
+                      <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                        <span className="truncate">{g.title}</span>
+                        <span className="font-medium shrink-0 ml-2">{g.pct !== null ? `${g.pct}%` : "—"}</span>
+                      </div>
+                      {g.pct !== null && (
+                        <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                          <div className={`h-full ${g.pct >= 100 ? "bg-emerald-500" : g.pct >= 50 ? "bg-blue-500" : "bg-amber-500"}`} style={{ width: `${g.pct}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

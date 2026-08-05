@@ -23,8 +23,11 @@ export default function Audit() {
   useEffect(() => { load(); }, []);
 
   const undo = async (invId) => {
+    const reason = window.prompt("Reason for reversing this action (required):");
+    if (reason === null) return;
+    if (!reason.trim()) return toast.error("A reason is required");
     try {
-      const { data } = await api.post(`/mcp/invocations/${invId}/undo`);
+      const { data } = await api.post(`/mcp/invocations/${invId}/undo`, { reason });
       toast.success(data.restored || "Reversed");
       load();
     } catch (e) { toast.error(e.response?.data?.detail || "Undo failed"); }

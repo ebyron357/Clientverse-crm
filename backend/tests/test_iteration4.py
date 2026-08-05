@@ -106,8 +106,8 @@ class TestMcpUndo:
         ws = admin.get(f"{API}/workspaces/{workspace_id}").json()
         assert any(t["title"] == title for t in ws.get("tasks", [])), "task should exist before undo"
 
-        # Undo
-        r = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo")
+        # Undo (iteration-5: reason required)
+        r = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": "test cleanup"})
         assert r.status_code == 200, r.text
         body = r.json()
         assert body.get("ok") is True
@@ -124,7 +124,7 @@ class TestMcpUndo:
         assert u.get("status") == "undone"
 
         # Second undo blocked
-        r2 = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo")
+        r2 = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": "again"})
         assert r2.status_code == 400, r2.text
 
         # Event emitted
@@ -151,7 +151,7 @@ class TestMcpUndo:
         tok = reg.json().get("access_token") or reg.json().get("token")
         if tok:
             s.headers.update({"Authorization": f"Bearer {tok}"})
-        r = s.post(f"{API}/mcp/invocations/{inv_id}/undo")
+        r = s.post(f"{API}/mcp/invocations/{inv_id}/undo", json={"reason": "cross tenant"})
         assert r.status_code in (403, 404), r.text
 
 

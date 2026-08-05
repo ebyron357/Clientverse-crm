@@ -540,11 +540,33 @@ async def dashboard(user=Depends(get_current_user)):
         h = compute_health(cm, tasks, dl, rq)
         portfolio.append({"id": ws["id"], "name": ws["name"], "stage": ws.get("stage"), "health": h})
     at_risk = len([c for c in commitments if c.get("status") in ("at_risk", "breached")])
+    # Outcome (goal) rollup across portfolio
+    outcomes = await db.outcomes.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
+    def gpct(g):
+        return min(100, round((g.get("current_value", 0) / g["target_value"]) * 100)) if g.get("target_value") else None
+    ws_rollup = []
+    for ws in workspaces:
+        gs = [g for g in outcomes if g.get("workspace_id") == ws["id"]]
+        pcts = [gpct(g) for g in gs if gpct(g) is not None]
+        ws_rollup.append({
+            "id": ws["id"], "name": ws["name"], "goal_count": len(gs),
+            "avg_pct": round(sum(pcts) / len(pcts)) if pcts else None,
+            "goals": [{"id": g["id"], "title": g["title"], "pct": gpct(g), "status": g.get("status"),
+                       "current_value": g.get("current_value"), "target_value": g.get("target_value"), "unit": g.get("unit")} for g in gs],
+        })
+    all_pcts = [gpct(g) for g in outcomes if gpct(g) is not None]
+    goal_rollup = {
+        "total_goals": len(outcomes),
+        "on_track": len([g for g in outcomes if g.get("status") == "on_track"]),
+        "at_risk": len([g for g in outcomes if g.get("status") == "at_risk"]),
+        "avg_progress": round(sum(all_pcts) / len(all_pcts)) if all_pcts else 0,
+        "workspaces": [w for w in ws_rollup if w["goal_count"] > 0],
+    }
     return {
         "pipeline_value": pipeline_value, "won_value": won_value,
         "open_opportunities": len([o for o in opps if o.get("stage") not in ("closed_won", "closed_lost")]),
         "active_workspaces": len(workspaces), "at_risk_commitments": at_risk,
-        "funnel": funnel, "portfolio": portfolio,
+        "funnel": funnel, "portfolio": portfolio, "goal_rollup": goal_rollup,
     }
 
 # ----------------------------- Evidence-backed AI -----------------------------
@@ -847,7 +869,7 @@ async def execute_pending_mcp(pending_id, user):
         result = await asyncio.wait_for(TOOL_IMPL_L2[p["tool"]](user, p["args"]), timeout=tool["timeout_seconds"])
         latency = int((time.perf_counter() - start) * 1000)
         await db.mcp_pending_actions.update_one({"id": pending_id}, {"$set": {"status": "executed"}})
-        await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"status": "success", "result": result, "latency_ms": latency}})
+        await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"status": "success", "result": result, "latency_ms": latency, "executed_at": now_iso()}})
         await record_event("agent.run_completed", "mcp_tool", p["tool"], user["tenant_id"], user["email"],
                            workspace_id=p.get("workspace_id"), payload={"invocation_id": inv_id, "executed_after_approval": True})
         return {"status": "success", "result": result, "invocation_id": inv_id}
@@ -996,10 +1018,18 @@ async def mcp_invocations(limit: int = Query(100), user=Depends(get_current_user
     docs = await db.mcp_tool_invocations.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
     return docs
 
+UNDO_WINDOW_MINUTES = 60
+
+class UndoInput(BaseModel):
+    reason: str = ""
+
 @api.post("/mcp/invocations/{inv_id}/undo")
-async def mcp_undo(inv_id: str, user=Depends(get_current_user)):
+async def mcp_undo(inv_id: str, inp: UndoInput, user=Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin permission required")
+    reason = (inp.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail="A reason is required to reverse an action")
     inv = await db.mcp_tool_invocations.find_one({"id": inv_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not inv:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1007,6 +1037,17 @@ async def mcp_undo(inv_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Only successful Level 2 writes can be undone")
     if inv.get("undone"):
         raise HTTPException(status_code=400, detail="Already undone")
+    ref = inv.get("executed_at") or inv.get("timestamp")
+    try:
+        ref_dt = datetime.fromisoformat(ref)
+        if ref_dt.tzinfo is None:
+            ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - ref_dt > timedelta(minutes=UNDO_WINDOW_MINUTES):
+            raise HTTPException(status_code=400, detail=f"Undo window ({UNDO_WINDOW_MINUTES} min) has expired")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     result = inv.get("result") or {}
     created, rid = result.get("created"), result.get("id")
     ws_id = (inv.get("args") or {}).get("workspace_id")
@@ -1018,9 +1059,9 @@ async def mcp_undo(inv_id: str, user=Depends(get_current_user)):
         restored = f"Removed note {rid}"
     else:
         raise HTTPException(status_code=400, detail="This action is not reversible")
-    await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"undone": True, "status": "undone", "undone_by": user["email"], "undone_at": now_iso()}})
-    await record_event("mcp.tool_undone", "mcp_tool", inv["tool"], user["tenant_id"], user["email"], workspace_id=ws_id, payload={"invocation_id": inv_id, "restored": restored})
-    return {"ok": True, "restored": restored}
+    await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"undone": True, "status": "undone", "undone_by": user["email"], "undone_at": now_iso(), "undo_reason": reason}})
+    await record_event("mcp.tool_undone", "mcp_tool", inv["tool"], user["tenant_id"], user["email"], workspace_id=ws_id, payload={"invocation_id": inv_id, "restored": restored, "reason": reason})
+    return {"ok": True, "restored": restored, "reason": reason}
 
 # ----------------------------- Webhooks (live signed delivery) -----------------------------
 
@@ -1059,13 +1100,21 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
         {"$set": {"status": "failed", "attempts": attempts, "dlq": True}})
     return "failed"
 
+def event_matches(event_type: str, patterns) -> bool:
+    for p in (patterns or []):
+        if p == "*" or p == event_type:
+            return True
+        if p.endswith(".*") and event_type.startswith(p[:-1]):
+            return True
+    return False
+
 async def dispatch_webhooks_for_event(ev: dict):
     try:
         hooks = await db.webhooks.find({"tenant_id": ev.get("tenant_id"), "enabled": True}, {"_id": 0}).to_list(100)
     except Exception:
         return
     for wh in hooks:
-        if ev.get("event_type") not in (wh.get("events") or []):
+        if not event_matches(ev.get("event_type"), wh.get("events")):
             continue
         delivery = {"id": new_id("whd"), "tenant_id": ev["tenant_id"], "webhook_id": wh["id"],
                     "webhook_name": wh.get("name"), "event_type": ev["event_type"], "event_id": ev.get("id"),

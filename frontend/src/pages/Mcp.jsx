@@ -71,8 +71,11 @@ export default function Mcp() {
   };
 
   const undo = async (inv) => {
+    const reason = window.prompt("Reason for reversing this action (required):");
+    if (reason === null) return;
+    if (!reason.trim()) return toast.error("A reason is required");
     try {
-      const { data: res } = await api.post(`/mcp/invocations/${inv.id}/undo`);
+      const { data: res } = await api.post(`/mcp/invocations/${inv.id}/undo`, { reason });
       toast.success(res.restored || "Reversed");
       loadHistory();
     } catch (e) { toast.error(e.response?.data?.detail || "Undo failed"); }
