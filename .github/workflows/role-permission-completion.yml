@@ -42,14 +42,18 @@ jobs:
           fetch-depth: 0
           ref: feature/role-permission-enforcement
       - name: Apply scoped implementation
-        run: python scripts/implement_role_permissions.py
+        run: |
+          python scripts/implement_role_permissions.py
+          python scripts/role_permission_ci_adjustments.py
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - name: Install backend dependencies
-        run: pip install -r backend/requirements.txt
+        run: |
+          grep -v '^emergentintegrations==' backend/requirements.txt > /tmp/requirements-ci.txt
+          pip install -r /tmp/requirements-ci.txt
       - name: Start API
         run: |
           cd backend
