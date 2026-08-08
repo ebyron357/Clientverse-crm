@@ -1,5 +1,15 @@
 # ClientVerse.io — Product Requirements & Architecture
 
+## Implemented (2026-06 — this phase) — Live Integrations V1 — status AVAILABLE (Google needs client credentials)
+- Tenant-scoped provider connections behind a shared adapter contract (Gmail, Google Calendar, Stripe). Provider logic isolated; CRM consumes normalized records (crm_communications, crm_meetings, crm_billing).
+- Secure credential storage: Fernet encryption at rest (`INTEGRATION_ENC_KEY`), tokens never exposed in API/logs/audit (SAFE_CONN_FIELDS), versioned credentials.
+- Google OAuth (authorization code + PKCE S256 + state, offline refresh, revoke on disconnect) with read-only Gmail + Calendar scopes. Gmail/Calendar adapters normalize + match to CRM contacts. LIVE connect blocked pending GOOGLE_CLIENT_ID/SECRET + redirect URI registration.
+- Stripe adapter LIVE read-only (test-mode sandbox key provisioned): customers/invoices/subscriptions matched to companies/contacts. Verified: connect→active, idempotent sync, matched invoice+customer into a workspace.
+- Sync engine: manual + cron (`.emergent/crons.yml` integration-sync every 30 min), bounded, idempotent upserts, retry/backoff, rate-limit + partial-failure handling, per-tenant sync logs.
+- Registry with real 7-state statuses; workspace Activity surface tags External/stale/failing and links to source. Admin-only management (403 for members) enforced server-side; members view derived data.
+- Tests: backend/tests/test_integrations.py 11/11 pass (token-leakage, member denial, tenant isolation, stripe connect+idempotent sync, oauth state rejection, google-not-configured, gmail/calendar/stripe normalizers, disconnect blocks sync, CRM unaffected). Full suite 77 passed / 1 skipped (test_ai_health_summary is a flaky LLM-timing test, passes in isolation). Production build succeeds.
+- EXTERNAL BLOCKER: Google Cloud OAuth Web client (GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET) with redirect URI `<PUBLIC_BACKEND_URL>/api/integrations/google/callback` to enable live Gmail/Calendar connect.
+
 ## Implemented (2026-06 — this phase) — Role & Permission Enforcement — status AVAILABLE
 - Multi-tenant team membership (`memberships`): user/tenant/role/status/invited_by/invited_at/accepted_at/disabled_at. `get_current_user` → `resolve_membership` resolves effective role and blocks disabled members (403); legacy users self-heal.
 - Invitations (`invitations`): admin invite-by-email, secure single-use token (only SHA-256 hash stored), 7-day TTL, statuses pending/accepted/expired/revoked, duplicate-active + already-member rejection, resend/revoke, accept attaches authed user to tenant. Endpoints under `/api/team/*` incl. public `lookup`.

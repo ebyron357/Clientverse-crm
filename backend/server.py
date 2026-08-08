@@ -10,6 +10,9 @@ import hmac
 import hashlib
 import secrets
 import json as _json
+import base64
+from urllib.parse import urlencode
+from fastapi.responses import RedirectResponse
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
@@ -1617,6 +1620,453 @@ async def cron_commitment_risk(request: Request):
         return {"accepted": True, "duplicate": True}
     await db.cron_runs.insert_one({"run_id": run_id, "job": "commitment-risk", "at": now_iso()})
     asyncio.create_task(evaluate_commitment_risk(tenant_id=None, actor="cron"))
+    return {"accepted": True, "run_id": run_id}
+
+# ============================================================================
+#  LIVE INTEGRATIONS V1 — providers, secure credential storage, sync engine
+# ============================================================================
+import json as _json
+import httpx
+import stripe as _stripe
+from cryptography.fernet import Fernet
+
+PROVIDERS = ["gmail", "google_calendar", "stripe"]
+ADAPTER_VERSION = "1.0"
+CONN_STATUSES = ["disconnected", "connecting", "active", "degraded", "expired", "revoked", "error"]
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or f"{FRONTEND_URL}/api/integrations/google/callback"
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",
+]
+
+_FERNET = None
+def _fernet():
+    global _FERNET
+    if _FERNET is None:
+        key = os.environ.get("INTEGRATION_ENC_KEY")
+        if not key:
+            raise HTTPException(status_code=500, detail="Secure credential storage not configured (INTEGRATION_ENC_KEY)")
+        _FERNET = Fernet(key.encode())
+    return _FERNET
+
+def enc_secret(d: dict) -> str:
+    return _fernet().encrypt(_json.dumps(d).encode()).decode()
+
+def dec_secret(s: str) -> dict:
+    return _json.loads(_fernet().decrypt(s.encode()).decode())
+
+SAFE_CONN_FIELDS = {"_id": 0, "enc": 0, "oauth_state": 0, "code_verifier": 0}
+
+def _public_conn(c: dict) -> dict:
+    return {k: v for k, v in c.items() if k not in ("_id", "enc", "oauth_state", "code_verifier")}
+
+async def ensure_connections(tenant_id: str):
+    for p in PROVIDERS:
+        if not await db.integration_connections.find_one({"tenant_id": tenant_id, "provider": p}):
+            await db.integration_connections.insert_one({
+                "id": new_id("conn"), "tenant_id": tenant_id, "provider": p, "status": "disconnected",
+                "account_identity": None, "scopes": [], "connected_by": None, "connected_at": None,
+                "last_sync_at": None, "last_success_at": None, "last_error": None, "revoked_at": None,
+                "credential_version": 0, "adapter_version": ADAPTER_VERSION, "created_at": now_iso(),
+            })
+
+async def set_conn(tenant_id, provider, **fields):
+    await db.integration_connections.update_one({"tenant_id": tenant_id, "provider": provider}, {"$set": fields})
+
+async def _contacts_by_email(tenant_id):
+    rows = await db.contacts.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(5000)
+    return {(r.get("email") or "").lower(): r for r in rows if r.get("email")}
+
+async def _workspace_for_company(tenant_id, company_id):
+    if not company_id:
+        return None
+    ws = await db.workspaces.find_one({"tenant_id": tenant_id, "company_id": company_id}, {"_id": 0, "id": 1})
+    return ws["id"] if ws else None
+
+# ---- Pure normalizers (unit-testable, no network) ----
+
+def normalize_gmail_message(msg: dict) -> dict:
+    headers = {h.get("name", "").lower(): h.get("value", "") for h in (msg.get("payload", {}).get("headers") or [])}
+    ts = None
+    if msg.get("internalDate"):
+        try:
+            ts = datetime.fromtimestamp(int(msg["internalDate"]) / 1000, tz=timezone.utc).isoformat()
+        except Exception:
+            ts = None
+    def _emails(v):
+        import re
+        return [e.lower() for e in re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", v or "")]
+    return {
+        "external_id": msg.get("id"), "thread_id": msg.get("threadId"),
+        "subject": headers.get("subject", "(no subject)"),
+        "from_email": (_emails(headers.get("from")) or [None])[0], "from_raw": headers.get("from"),
+        "to": _emails(headers.get("to")) + _emails(headers.get("cc")),
+        "labels": msg.get("labelIds") or [], "snippet": msg.get("snippet", ""), "ts": ts,
+    }
+
+def normalize_calendar_event(ev: dict) -> dict:
+    start = (ev.get("start") or {}).get("dateTime") or (ev.get("start") or {}).get("date")
+    end = (ev.get("end") or {}).get("dateTime") or (ev.get("end") or {}).get("date")
+    org = (ev.get("organizer") or {}).get("email")
+    attendees = [(a.get("email") or "").lower() for a in (ev.get("attendees") or []) if a.get("email")]
+    conf = None
+    ep = (ev.get("conferenceData") or {}).get("entryPoints") or []
+    for e in ep:
+        if e.get("uri"):
+            conf = e["uri"]; break
+    conf = conf or ev.get("hangoutLink")
+    return {
+        "external_id": ev.get("id"), "title": ev.get("summary", "(untitled)"),
+        "start": start, "end": end, "organizer": (org or "").lower() or None,
+        "attendees": attendees, "conference_link": conf, "status": ev.get("status"),
+    }
+
+def normalize_stripe_customer(c) -> dict:
+    return {"external_id": c.get("id"), "type": "customer", "email": (c.get("email") or "").lower() or None,
+            "name": c.get("name"), "status": "active", "amount": None, "currency": c.get("currency"),
+            "ts": datetime.fromtimestamp(c.get("created", 0), tz=timezone.utc).isoformat() if c.get("created") else None}
+
+def normalize_stripe_invoice(inv) -> dict:
+    return {"external_id": inv.get("id"), "type": "invoice", "email": (inv.get("customer_email") or "").lower() or None,
+            "status": inv.get("status"), "amount": (inv.get("amount_due") or 0) / 100.0, "currency": inv.get("currency"),
+            "payment_status": "paid" if inv.get("paid") else (inv.get("status") or "open"),
+            "ts": datetime.fromtimestamp(inv.get("created", 0), tz=timezone.utc).isoformat() if inv.get("created") else None}
+
+def normalize_stripe_subscription(sub) -> dict:
+    return {"external_id": sub.get("id"), "type": "subscription", "email": None,
+            "status": sub.get("status"), "amount": None,
+            "currency": (sub.get("items", {}).get("data", [{}])[0].get("price", {}) or {}).get("currency"),
+            "customer": sub.get("customer"),
+            "ts": datetime.fromtimestamp(sub.get("created", 0), tz=timezone.utc).isoformat() if sub.get("created") else None}
+
+# ---- Google token helpers ----
+
+async def _google_creds(tenant_id):
+    doc = await db.google_credentials.find_one({"tenant_id": tenant_id}, {"_id": 0})
+    if not doc:
+        return None
+    return dec_secret(doc["enc"]), doc
+
+async def _google_access_token(tenant_id):
+    creds, doc = (await _google_creds(tenant_id)) or (None, None)
+    if not creds:
+        return None
+    exp = creds.get("expires_at", 0)
+    if datetime.now(timezone.utc).timestamp() < exp - 60:
+        return creds["access_token"]
+    # refresh
+    if not creds.get("refresh_token"):
+        return None
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post("https://oauth2.googleapis.com/token", data={
+            "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": creds["refresh_token"], "grant_type": "refresh_token"})
+    if r.status_code != 200:
+        raise RuntimeError(f"token_refresh_failed:{r.status_code}")
+    tok = r.json()
+    creds["access_token"] = tok["access_token"]
+    creds["expires_at"] = datetime.now(timezone.utc).timestamp() + tok.get("expires_in", 3600)
+    await db.google_credentials.update_one({"tenant_id": tenant_id},
+        {"$set": {"enc": enc_secret(creds), "updated_at": now_iso()}})
+    return creds["access_token"]
+
+# ---- Adapters (sync returns a normalized summary; bounded, idempotent upserts) ----
+
+async def _upsert_comm(tenant_id, rec, contacts, actor_provider="gmail"):
+    matched = [contacts[e] for e in ([rec.get("from_email")] + rec.get("to", [])) if e and e in contacts]
+    contact_ids = list({m["id"] for m in matched})
+    if not contact_ids:
+        return False
+    company_id = next((m.get("company_id") for m in matched if m.get("company_id")), None)
+    ws_id = await _workspace_for_company(tenant_id, company_id)
+    doc = {"tenant_id": tenant_id, "provider": actor_provider, "external_id": rec["external_id"],
+           "thread_id": rec.get("thread_id"), "subject": rec["subject"], "from_email": rec.get("from_email"),
+           "to": rec.get("to"), "snippet": rec.get("snippet"), "labels": rec.get("labels"), "ts": rec.get("ts"),
+           "contact_ids": contact_ids, "company_id": company_id, "workspace_id": ws_id, "source": "external",
+           "synced_at": now_iso()}
+    await db.crm_communications.update_one(
+        {"tenant_id": tenant_id, "provider": actor_provider, "external_id": rec["external_id"]},
+        {"$set": doc, "$setOnInsert": {"id": new_id("comm")}}, upsert=True)
+    return True
+
+async def sync_gmail(tenant_id, actor):
+    token = await _google_access_token(tenant_id)
+    if not token:
+        raise RuntimeError("not_connected")
+    contacts = await _contacts_by_email(tenant_id)
+    headers = {"Authorization": f"Bearer {token}"}
+    matched = 0
+    async with httpx.AsyncClient(timeout=25) as client:
+        lst = await client.get("https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                               params={"maxResults": 25}, headers=headers)
+        if lst.status_code == 429:
+            raise RuntimeError("rate_limited")
+        lst.raise_for_status()
+        for m in (lst.json().get("messages") or [])[:25]:
+            gm = await client.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}",
+                                  params={"format": "metadata", "metadataHeaders": ["From", "To", "Cc", "Subject"]},
+                                  headers=headers)
+            if gm.status_code != 200:
+                continue
+            if await _upsert_comm(tenant_id, normalize_gmail_message(gm.json()), contacts, "gmail"):
+                matched += 1
+    return {"scanned": 25, "matched": matched}
+
+async def sync_calendar(tenant_id, actor):
+    token = await _google_access_token(tenant_id)
+    if not token:
+        raise RuntimeError("not_connected")
+    contacts = await _contacts_by_email(tenant_id)
+    headers = {"Authorization": f"Bearer {token}"}
+    matched = 0
+    now = datetime.now(timezone.utc).isoformat()
+    async with httpx.AsyncClient(timeout=25) as client:
+        r = await client.get("https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                             params={"timeMin": now, "maxResults": 25, "singleEvents": "true", "orderBy": "startTime"},
+                             headers=headers)
+        if r.status_code == 429:
+            raise RuntimeError("rate_limited")
+        r.raise_for_status()
+        for ev in (r.json().get("items") or [])[:25]:
+            rec = normalize_calendar_event(ev)
+            emails = rec["attendees"] + ([rec["organizer"]] if rec["organizer"] else [])
+            mm = [contacts[e] for e in emails if e in contacts]
+            if not mm:
+                continue
+            company_id = next((m.get("company_id") for m in mm if m.get("company_id")), None)
+            ws_id = await _workspace_for_company(tenant_id, company_id)
+            doc = {"tenant_id": tenant_id, "provider": "google_calendar", **rec,
+                   "contact_ids": list({m["id"] for m in mm}), "company_id": company_id,
+                   "workspace_id": ws_id, "source": "external", "synced_at": now_iso()}
+            await db.crm_meetings.update_one(
+                {"tenant_id": tenant_id, "external_id": rec["external_id"]},
+                {"$set": doc, "$setOnInsert": {"id": new_id("mtg")}}, upsert=True)
+            matched += 1
+    return {"scanned": 25, "matched": matched}
+
+async def sync_stripe(tenant_id, actor):
+    key = os.environ.get("STRIPE_API_KEY")
+    if not key:
+        raise RuntimeError("not_connected")
+    _stripe.api_key = key
+    contacts = await _contacts_by_email(tenant_id)
+    companies = {c["id"]: c for c in await db.companies.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(5000)}
+    count = 0
+    def match(email):
+        c = contacts.get((email or "").lower())
+        return (c["id"] if c else None, c.get("company_id") if c else None)
+    for norm, items in [
+        (normalize_stripe_customer, _stripe.Customer.list(limit=50).data),
+        (normalize_stripe_invoice, _stripe.Invoice.list(limit=50).data),
+        (normalize_stripe_subscription, _stripe.Subscription.list(limit=50).data),
+    ]:
+        for it in items:
+            rec = norm(it)
+            contact_id, company_id = match(rec.get("email"))
+            ws_id = await _workspace_for_company(tenant_id, company_id)
+            doc = {"tenant_id": tenant_id, "provider": "stripe", **rec, "contact_id": contact_id,
+                   "company_id": company_id, "workspace_id": ws_id, "source": "external", "synced_at": now_iso()}
+            await db.crm_billing.update_one(
+                {"tenant_id": tenant_id, "type": rec["type"], "external_id": rec["external_id"]},
+                {"$set": doc, "$setOnInsert": {"id": new_id("bill")}}, upsert=True)
+            count += 1
+    return {"scanned": count, "matched": count}
+
+SYNC_FUNCS = {"gmail": sync_gmail, "google_calendar": sync_calendar, "stripe": sync_stripe}
+
+async def run_sync(tenant_id, provider, actor):
+    conn = await db.integration_connections.find_one({"tenant_id": tenant_id, "provider": provider}, {"_id": 0})
+    if not conn or conn["status"] in ("disconnected", "revoked"):
+        raise HTTPException(status_code=400, detail="Provider is not connected")
+    await set_conn(tenant_id, provider, status="connecting")
+    await record_event("integration.sync_started", "integration", provider, tenant_id, actor, payload={"provider": provider})
+    log = {"id": new_id("synclog"), "tenant_id": tenant_id, "provider": provider, "started_at": now_iso(),
+           "actor": actor, "attempts": 0, "status": "running", "result": None, "error": None}
+    last_err = None
+    for attempt in range(1, 4):  # bounded retries with backoff
+        log["attempts"] = attempt
+        try:
+            summary = await SYNC_FUNCS[provider](tenant_id, actor)
+            log.update({"status": "completed", "result": summary, "finished_at": now_iso()})
+            await db.integration_sync_logs.insert_one(dict(log))
+            await set_conn(tenant_id, provider, status="active", last_sync_at=now_iso(),
+                           last_success_at=now_iso(), last_error=None)
+            await record_event("integration.sync_completed", "integration", provider, tenant_id, actor, payload=summary)
+            return {**summary, "status": "completed"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            last_err = str(e)[:300]
+            if "rate_limited" in last_err:
+                await asyncio.sleep(min(2 ** attempt, 5))
+                continue
+            if "not_connected" in last_err:
+                break
+            await asyncio.sleep(min(0.5 * attempt, 2))
+    log.update({"status": "failed", "error": last_err, "finished_at": now_iso()})
+    await db.integration_sync_logs.insert_one(dict(log))
+    status = "expired" if last_err and "token_refresh_failed" in last_err else "degraded"
+    await set_conn(tenant_id, provider, status=status, last_sync_at=now_iso(), last_error=last_err)
+    await record_event("integration.sync_failed", "integration", provider, tenant_id, actor,
+                       payload={"provider": provider, "error": last_err})
+    return {"status": "failed", "error": last_err}
+
+# ---- Endpoints ----
+
+@api.get("/integrations/connections")
+async def list_connections(user=Depends(get_current_user)):
+    await ensure_connections(user["tenant_id"])
+    rows = await db.integration_connections.find({"tenant_id": user["tenant_id"]}, SAFE_CONN_FIELDS).to_list(50)
+    return rows
+
+@api.post("/integrations/google/connect")
+async def google_connect(user=Depends(require_role("admin"))):
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=400, detail="Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
+    await ensure_connections(user["tenant_id"])
+    state = secrets.token_urlsafe(24)
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    await db.oauth_states.insert_one({"state": state, "tenant_id": user["tenant_id"], "actor": user["email"],
+        "code_verifier": verifier, "created_at": now_iso(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()})
+    for p in ("gmail", "google_calendar"):
+        await set_conn(user["tenant_id"], p, status="connecting")
+    params = {"client_id": GOOGLE_CLIENT_ID, "redirect_uri": GOOGLE_REDIRECT_URI, "response_type": "code",
+              "scope": " ".join(GOOGLE_SCOPES), "access_type": "offline", "prompt": "consent",
+              "include_granted_scopes": "true", "state": state,
+              "code_challenge": challenge, "code_challenge_method": "S256"}
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    return {"authorization_url": url}
+
+@api.get("/integrations/google/callback")
+async def google_callback(state: str = Query(None), code: str = Query(None), error: str = Query(None)):
+    dest = f"{FRONTEND_URL}/registries?tab=integrations"
+    st = await db.oauth_states.find_one({"state": state}, {"_id": 0}) if state else None
+    if error or not st or not code:
+        return RedirectResponse(url=f"{dest}&oauth=error")
+    try:
+        exp_dt = datetime.fromisoformat(st["expires_at"])
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+        if exp_dt < datetime.now(timezone.utc):
+            return RedirectResponse(url=f"{dest}&oauth=expired")
+    except Exception:
+        pass
+    await db.oauth_states.delete_one({"state": state})
+    tenant_id, actor = st["tenant_id"], st["actor"]
+    async with httpx.AsyncClient(timeout=20) as client:
+        tr = await client.post("https://oauth2.googleapis.com/token", data={
+            "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "code": code,
+            "grant_type": "authorization_code", "redirect_uri": GOOGLE_REDIRECT_URI,
+            "code_verifier": st["code_verifier"]})
+        if tr.status_code != 200:
+            for p in ("gmail", "google_calendar"):
+                await set_conn(tenant_id, p, status="error", last_error="token_exchange_failed")
+            return RedirectResponse(url=f"{dest}&oauth=error")
+        tok = tr.json()
+        ui = await client.get("https://www.googleapis.com/oauth2/v2/userinfo",
+                              headers={"Authorization": f"Bearer {tok['access_token']}"})
+    email = ui.json().get("email") if ui.status_code == 200 else None
+    creds = {"access_token": tok["access_token"], "refresh_token": tok.get("refresh_token"),
+             "expires_at": datetime.now(timezone.utc).timestamp() + tok.get("expires_in", 3600),
+             "scopes": tok.get("scope", "").split()}
+    ver_doc = await db.google_credentials.find_one({"tenant_id": tenant_id}, {"_id": 0, "credential_version": 1})
+    version = ((ver_doc or {}).get("credential_version") or 0) + 1
+    await db.google_credentials.update_one({"tenant_id": tenant_id},
+        {"$set": {"enc": enc_secret(creds), "account_email": email, "credential_version": version, "updated_at": now_iso()}}, upsert=True)
+    for p in ("gmail", "google_calendar"):
+        await set_conn(tenant_id, p, status="active", account_identity=email, scopes=GOOGLE_SCOPES,
+                       connected_by=actor, connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version)
+        await record_event("integration.connected", "integration", p, tenant_id, actor, payload={"provider": p, "account": email})
+    return RedirectResponse(url=f"{dest}&oauth=connected")
+
+@api.post("/integrations/stripe/connect")
+async def stripe_connect(user=Depends(require_role("admin"))):
+    key = os.environ.get("STRIPE_API_KEY")
+    if not key:
+        raise HTTPException(status_code=400, detail="Stripe is not configured (STRIPE_API_KEY).")
+    await ensure_connections(user["tenant_id"])
+    _stripe.api_key = key
+    try:
+        acct = _stripe.Account.retrieve()
+        identity = acct.get("email") or acct.get("id")
+    except Exception as e:
+        await set_conn(user["tenant_id"], "stripe", status="error", last_error=str(e)[:200])
+        raise HTTPException(status_code=400, detail="Could not verify Stripe account")
+    version = 1
+    await set_conn(user["tenant_id"], "stripe", status="active", account_identity=identity,
+                   scopes=["read:customers", "read:invoices", "read:subscriptions"], connected_by=user["email"],
+                   connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version)
+    await record_event("integration.connected", "integration", "stripe", user["tenant_id"], user["email"], payload={"account": identity})
+    return {"ok": True, "account": identity}
+
+@api.post("/integrations/{provider}/disconnect")
+async def disconnect_provider(provider: str, user=Depends(require_role("admin"))):
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+    if provider in ("gmail", "google_calendar"):
+        creds = await db.google_credentials.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0})
+        if creds:
+            try:
+                tok = dec_secret(creds["enc"]).get("refresh_token") or dec_secret(creds["enc"]).get("access_token")
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post("https://oauth2.googleapis.com/revoke", params={"token": tok})
+            except Exception:
+                pass
+        if not await db.integration_connections.find_one({"tenant_id": user["tenant_id"], "provider": ("google_calendar" if provider == "gmail" else "gmail"), "status": "active"}):
+            await db.google_credentials.delete_one({"tenant_id": user["tenant_id"]})
+    await set_conn(user["tenant_id"], provider, status="disconnected", account_identity=None, scopes=[],
+                   revoked_at=now_iso())
+    await record_event("integration.disconnected", "integration", provider, user["tenant_id"], user["email"], payload={"provider": provider})
+    return {"ok": True}
+
+@api.post("/integrations/{provider}/sync")
+async def sync_provider(provider: str, user=Depends(require_role("admin"))):
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+    return await run_sync(user["tenant_id"], provider, user["email"])
+
+@api.get("/integrations/sync-logs")
+async def integration_sync_logs(user=Depends(require_role("admin"))):
+    return await db.integration_sync_logs.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("started_at", -1).to_list(50)
+
+@api.get("/integrations/workspaces/{ws_id}/activity")
+async def workspace_activity(ws_id: str, user=Depends(get_current_user)):
+    ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    comms = await db.crm_communications.find({"tenant_id": user["tenant_id"], "workspace_id": ws_id}, {"_id": 0}).sort("ts", -1).to_list(25)
+    meetings = await db.crm_meetings.find({"tenant_id": user["tenant_id"], "workspace_id": ws_id}, {"_id": 0}).sort("start", 1).to_list(25)
+    billing = await db.crm_billing.find({"tenant_id": user["tenant_id"], "workspace_id": ws_id}, {"_id": 0}).sort("ts", -1).to_list(50)
+    conns = await db.integration_connections.find({"tenant_id": user["tenant_id"]}, SAFE_CONN_FIELDS).to_list(50)
+    return {"communications": comms, "meetings": meetings, "billing": billing, "connections": conns}
+
+@api.post("/cron/integration-sync")
+async def cron_integration_sync(request: Request):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    if not secret or not token or not hmac.compare_digest(token, secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if await db.cron_runs.find_one({"run_id": run_id}):
+        return {"accepted": True, "duplicate": True}
+    await db.cron_runs.insert_one({"run_id": run_id, "job": "integration-sync", "at": now_iso()})
+
+    async def _sweep():
+        actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
+        for c in actives[:200]:
+            try:
+                await run_sync(c["tenant_id"], c["provider"], "cron")
+            except Exception:
+                pass
+    asyncio.create_task(_sweep())
     return {"accepted": True, "run_id": run_id}
 
 @app.on_event("startup")

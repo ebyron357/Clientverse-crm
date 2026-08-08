@@ -122,7 +122,22 @@ Commitments carry an optional `due_date`. The platform continuously keeps the **
 - Emitted `commitment.at_risk` / `commitment.breached` events flow into the **Audit feed**, recompute **explainable health**, and fan out to subscribed **webhooks** (e.g. `commitment.*`).
 - The UI shows each commitment's due countdown (`due in Nd` / `overdue Nd`) and a status badge; a dialog captures title, owner, and due date on creation, and due dates are editable via `PATCH /api/commitments/{id}`.
 
-## 12. Team, roles & permission enforcement
+## 12. Live Integrations V1 (Gmail, Google Calendar, Stripe)
+
+Real, tenant-scoped, admin-managed provider connections that feed **normalized** data into the CRM. Provider logic is isolated behind a shared adapter contract (`SYNC_FUNCS`, `normalize_*`), so new providers can be added without touching CRM core.
+
+- **Secure credentials**: OAuth tokens are encrypted at rest with Fernet using `INTEGRATION_ENC_KEY` (server-side only). Tokens are **never** returned by any API, logged, or placed in audit payloads (`SAFE_CONN_FIELDS` strips `enc`/`oauth_state`/`code_verifier`). Credential rotation is versioned (`credential_version`).
+- **Google OAuth foundation** (`/api/integrations/google/connect` → `/callback`): authorization-code flow with `state` + **PKCE (S256)**, offline refresh tokens, auto-refresh, revocation on disconnect, 10-min single-use state. Read-only scopes only: `gmail.readonly`, `calendar.readonly`, `userinfo.email`. Requires `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`; redirect URI = `<PUBLIC_BACKEND_URL>/api/integrations/google/callback`.
+- **Gmail adapter** (read-only): recent message/thread metadata, from/to, subject, labels, snippet — matched to CRM contacts by email and surfaced in the matched workspace. No sending.
+- **Calendar adapter** (read-only): upcoming events, attendees, organizer, conferencing link — matched to CRM contacts. No writes.
+- **Stripe adapter** (read-only, test mode via `STRIPE_API_KEY`): customers, invoices (+status/amount/currency), subscriptions (+status), matched to companies/contacts. No charges/refunds/subscription writes.
+- **Sync engine** (`run_sync`): manual (`POST /api/integrations/{provider}/sync`) + scheduled (`.emergent/crons.yml` → `POST /api/cron/integration-sync`, every 30 min). Bounded (capped page sizes, max 3 retries with backoff), idempotent upserts keyed by `external_id`, rate-limit aware (429 backoff), partial-failure tolerant, per-tenant sync logs.
+- **Registry** (`GET /api/integrations/connections`): provider, status, connected account, scopes, connected_by/at, last_sync_at, last_success_at, last_error, revoked_at, credential/adapter version. Statuses: disconnected / connecting / active / degraded / expired / revoked / error — never faked.
+- **Client workspace**: `GET /api/integrations/workspaces/{id}/activity` returns matched email, meetings, billing + connection health. UI (`Activity` tab) tags every item as **External**, flags stale data + failing connections, and links to source records.
+- **Permissions**: only admins connect/disconnect/reauthorize/sync/rotate (server-side `require_role("admin")`, 403 for members). Members may view integration-derived CRM data. Audit: integration.connected/disconnected, sync_started/completed/failed, plus authz.denied.
+- **Env**: `INTEGRATION_ENC_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `STRIPE_API_KEY` — see `backend/.env.example`.
+
+## 13. Team, roles & permission enforcement
 
 Multi-tenant team membership with server-side role enforcement (`admin` / `member`).
 
@@ -132,7 +147,7 @@ Multi-tenant team membership with server-side role enforcement (`admin` / `membe
 - **Security**: strict tenant isolation (cross-tenant membership ops return 404), token hashing + expiry + single-use, and **last-admin safety** (cannot demote or disable the final active admin). Denied sensitive actions emit `authz.denied`; team lifecycle emits `team.invitation_*`, `team.role_changed`, `team.member_disabled/enabled` audit events.
 - Seeded demo member: `demo.member@clientverse.io` / `Member2026!` (role `member`) in ClientVerse HQ for testing restrictions.
 
-## 13. Known non-blocking warnings
+## 14. Known non-blocking warnings
 
 - **ESLint (`react-hooks/exhaustive-deps`)** in `OutcomeGraph.jsx` and `Mcp.jsx` — intentional stable `load` dependency; build compiles successfully with warnings.
 - **Recharts** first-paint console warning `width(-1)/height(-1)` from a sparkline `ResponsiveContainer` — cosmetic only; the sparkline renders correctly.

@@ -6,3 +6,10 @@ crons:
     endpoint: "{{BASE_URL}}/api/cron/commitment-risk"
     method: POST
     enabled: true
+  - name: integration-sync
+    description: "Syncs active tenant integrations (Gmail/Calendar/Stripe) every 30 min into normalized CRM records"
+    cron: "*/30 * * * *"
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    endpoint: "{{BASE_URL}}/api/cron/integration-sync"
+    method: POST
+    enabled: true

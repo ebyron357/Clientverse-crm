@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import OutcomeGraph from "@/components/OutcomeGraph";
+import WorkspaceActivity from "@/components/WorkspaceActivity";
 import { ArrowLeft, Plus, Sparkles, FileText, Mail, ShieldAlert } from "lucide-react";
 
 function dueInfo(due) {
@@ -235,6 +236,7 @@ export default function WorkspaceDetail() {
         <TabsList>
           <TabsTrigger value="commitments" data-testid="tab-commitments">Commitment Ledger</TabsTrigger>
           <TabsTrigger value="outcome" data-testid="tab-outcome">Outcome Graph</TabsTrigger>
+          <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
           <TabsTrigger value="tasks" data-testid="tab-tasks">Tasks</TabsTrigger>
           <TabsTrigger value="deliverables" data-testid="tab-deliverables">Deliverables</TabsTrigger>
           <TabsTrigger value="requests" data-testid="tab-requests">Requests</TabsTrigger>
@@ -268,6 +270,10 @@ export default function WorkspaceDetail() {
 
         <TabsContent value="outcome" className="mt-6">
           <OutcomeGraph workspaceId={id} />
+        </TabsContent>
+
+        <TabsContent value="activity" className="mt-6">
+          <WorkspaceActivity workspaceId={id} />
         </TabsContent>
 
         <TabsContent value="tasks" className="mt-6">
