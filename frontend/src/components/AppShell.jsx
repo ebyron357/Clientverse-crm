@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-  LayoutDashboard, GitBranch, Users, Briefcase, Boxes, Activity, LogOut, Orbit, Terminal,
+  LayoutDashboard, GitBranch, Users, Briefcase, Boxes, Activity, LogOut, Orbit, Terminal, ShieldCheck,
 } from "lucide-react";
 
 const NAV = [
@@ -11,6 +11,7 @@ const NAV = [
   { to: "/workspaces", label: "Client Workspaces", icon: Briefcase, id: "workspaces" },
   { to: "/registries", label: "Registries", icon: Boxes, id: "registries" },
   { to: "/mcp", label: "MCP Console", icon: Terminal, id: "mcp" },
+  { to: "/team", label: "Team & Access", icon: ShieldCheck, id: "team", adminOnly: true },
   { to: "/audit", label: "Automation & Audit", icon: Activity, id: "audit" },
 ];
 
@@ -32,7 +33,7 @@ export default function AppShell() {
           </div>
         </div>
         <nav className="flex flex-col gap-1">
-          {NAV.map((n) => (
+          {NAV.filter((n) => !n.adminOnly || user?.role === "admin").map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
@@ -52,6 +53,7 @@ export default function AppShell() {
           <div className="px-2 mb-2">
             <div className="text-sm font-medium truncate" data-testid="current-user-name">{user?.name}</div>
             <div className="text-xs text-gray-400 truncate">{user?.email}</div>
+            {user?.role && <span className="inline-block mt-1 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-gray-200 text-gray-500" data-testid="current-user-role">{user.role}</span>}
           </div>
           <button
             onClick={doLogout}

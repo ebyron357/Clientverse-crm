@@ -21,7 +21,8 @@ export default function Login() {
     try {
       if (mode === "login") await login(form.email, form.password);
       else await register(form);
-      navigate("/dashboard");
+      const redirect = new URLSearchParams(window.location.search).get("redirect");
+      navigate(redirect || "/dashboard");
     } catch (err) {
       setError(formatErr(err.response?.data?.detail) || err.message);
     } finally { setBusy(false); }

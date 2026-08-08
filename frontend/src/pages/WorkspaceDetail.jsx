@@ -307,10 +307,12 @@ export default function WorkspaceDetail() {
           <ListSection title="Approvals (Governance)" items={approvals} testid="approvals-section" onAdd={addApproval} addLabel="Approval"
             columns={(it) => <div className="text-xs text-gray-400 capitalize">{it.kind.replace("_", " ")}{it.decided_by ? ` · by ${it.decided_by}` : ""}</div>}
             actions={(it) => it.status === "requested" ? (
+              user?.role === "admin" ? (
               <>
                 <Button size="sm" className="h-8 bg-emerald-600 hover:bg-emerald-700" onClick={() => upd(`/approvals/${it.id}`, { status: "approved" }, "Approved")} data-testid={`approve-${it.id}`}>Approve</Button>
                 <Button size="sm" variant="outline" className="h-8" onClick={() => upd(`/approvals/${it.id}`, { status: "rejected" }, "Rejected")} data-testid={`reject-${it.id}`}>Reject</Button>
               </>
+              ) : <Badge className="bg-amber-50 text-amber-700 border-amber-200">Awaiting admin</Badge>
             ) : <Badge className={`capitalize ${STATUS_COLOR[it.status] || STATUS_COLOR.requested}`}>{it.status}</Badge>} />
         </TabsContent>
       </Tabs>

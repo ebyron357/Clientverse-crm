@@ -14,6 +14,8 @@ import WorkspaceDetail from "@/pages/WorkspaceDetail";
 import Registries from "@/pages/Registries";
 import Mcp from "@/pages/Mcp";
 import Audit from "@/pages/Audit";
+import Team from "@/pages/Team";
+import AcceptInvite from "@/pages/AcceptInvite";
 
 function AuthCallback() {
   const navigate = useNavigate();
@@ -49,6 +51,7 @@ function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/invite" element={<AcceptInvite />} />
       <Route element={<Protected><AppShell /></Protected>}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/pipeline" element={<Pipeline />} />
@@ -57,6 +60,7 @@ function AppRouter() {
         <Route path="/workspaces/:id" element={<WorkspaceDetail />} />
         <Route path="/registries" element={<Registries />} />
         <Route path="/mcp" element={<Mcp />} />
+        <Route path="/team" element={<Team />} />
         <Route path="/audit" element={<Audit />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

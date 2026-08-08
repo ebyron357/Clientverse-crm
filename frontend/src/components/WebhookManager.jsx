@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
+import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,8 @@ app.post("/hooks", express.raw({ type: "*/*" }), (req, res) => {
 });`;
 
 export default function WebhookManager() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [hooks, setHooks] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
   const [open, setOpen] = useState(false);
@@ -71,6 +74,7 @@ export default function WebhookManager() {
   return (
     <div className="space-y-6">
       <div className="flex justify-end">
+        {isAdmin && (
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild><Button data-testid="new-webhook-button" className="bg-[#0A0A0A] hover:bg-[#262626]"><Plus className="w-4 h-4 mr-1" />New Endpoint</Button></DialogTrigger>
           <DialogContent>
@@ -100,6 +104,7 @@ export default function WebhookManager() {
             <DialogFooter><Button onClick={create} data-testid="save-webhook-button" className="bg-[#0A0A0A] hover:bg-[#262626]">Create</Button></DialogFooter>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
       {/* Endpoints */}
@@ -119,8 +124,8 @@ export default function WebhookManager() {
             </div>
             <div className="flex flex-wrap gap-2 mt-4">
               <Button size="sm" variant="outline" className="h-8" onClick={() => test(wh)} data-testid={`webhook-test-${wh.id}`}><Send className="w-3 h-3 mr-1" />Send test</Button>
-              <Button size="sm" variant="outline" className="h-8" onClick={() => setVerify(wh)} data-testid={`webhook-verify-${wh.id}`}><ShieldCheck className="w-3 h-3 mr-1" />Verify</Button>
-              <Button size="sm" variant="outline" className="h-8" onClick={() => rotate(wh)} data-testid={`webhook-rotate-${wh.id}`}><KeyRound className="w-3 h-3 mr-1" />Rotate</Button>
+              {isAdmin && <Button size="sm" variant="outline" className="h-8" onClick={() => openVerify(wh)} data-testid={`webhook-verify-${wh.id}`}><ShieldCheck className="w-3 h-3 mr-1" />Verify</Button>}
+              {isAdmin && <Button size="sm" variant="outline" className="h-8" onClick={() => rotate(wh)} data-testid={`webhook-rotate-${wh.id}`}><KeyRound className="w-3 h-3 mr-1" />Rotate</Button>}
             </div>
           </div>
         ))}
