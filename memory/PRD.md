@@ -1,5 +1,14 @@
 # ClientVerse.io — Product Requirements & Architecture
 
+## Implemented (2026-06 — this phase) — Commitment SLA Risk Automation — status AVAILABLE
+- Commitments carry an optional `due_date`; `PATCH /api/commitments/{id}` now accepts `status` and/or `due_date` (CommitmentPatch).
+- `evaluate_commitment_risk()` sweep: open commitments due within 48h → `at_risk` (commitment.at_risk); overdue open/at_risk → `breached` (commitment.breached). Emits domain events → Audit + Webhooks + health recompute (commitment.breached added to HEALTH_AFFECTING).
+- `POST /api/commitments/evaluate-risk` (tenant-scoped, on-demand) + `POST /api/cron/commitment-risk` (Bearer `WEBHOOK_CRON_SECRET`, idempotent on X-Webhook-Id, acks 2xx, backgrounds all-tenant sweep).
+- `.emergent/crons.yml` → `commitment-sla` cron every 15 min. `WEBHOOK_CRON_SECRET` added to backend/.env.
+- Frontend WorkspaceDetail: due-date countdown + status badges on the ledger, "Run SLA check" button, and a New Commitment dialog (title/owner/due date).
+- Tests: `backend/tests/test_commitment_sla.py` (4 pass) + full existing suite (50 passed / 1 skipped) + production build succeeds. Verified via curl + screenshots.
+- Recovery note: a server.py tail-corruption (duplicated ending block) reoccurred from a parallel search_replace batch touching the file end; truncated the duplicate, re-applied the CommitmentPatch/sweep block as an isolated edit, AST-verified single defs.
+
 ## Original Problem Statement
 Build ClientVerse.io — an AI-native Client Operations Platform (not a generic CRM) managing the full client lifecycle: WIN → ONBOARD → SERVE → RETAIN → EXPAND. Integration-first, evidence-driven, governed automation, MCP/plugin interoperability, capability governance.
 

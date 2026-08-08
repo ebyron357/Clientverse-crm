@@ -10,8 +10,20 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import OutcomeGraph from "@/components/OutcomeGraph";
-import { ArrowLeft, Plus, Sparkles, FileText, Mail } from "lucide-react";
+import { ArrowLeft, Plus, Sparkles, FileText, Mail, ShieldAlert } from "lucide-react";
+
+function dueInfo(due) {
+  if (!due) return null;
+  const d = new Date(due);
+  const ms = d.getTime() - Date.now();
+  const days = Math.round(ms / 86400000);
+  if (ms < 0) return { label: `overdue ${Math.abs(days)}d`, tone: "text-red-600" };
+  if (days <= 2) return { label: `due in ${days}d`, tone: "text-amber-600" };
+  return { label: `due ${d.toLocaleDateString()}`, tone: "text-gray-400" };
+}
 
 function Health({ health }) {
   return (
@@ -143,6 +155,9 @@ export default function WorkspaceDetail() {
   const [d, setD] = useState(null);
   const [undoWin, setUndoWin] = useState("60");
   const [newTitle, setNewTitle] = useState({});
+  const [cmtDialog, setCmtDialog] = useState(false);
+  const [cmtForm, setCmtForm] = useState({ title: "", owner: "", due_date: "" });
+  const [slaBusy, setSlaBusy] = useState(false);
 
   const load = useCallback(async () => {
     const { data } = await api.get(`/workspaces/${id}`);
@@ -159,7 +174,23 @@ export default function WorkspaceDetail() {
   const addTask = async () => { const t = quickAdd("task"); if (t) { await api.post("/tasks", { workspace_id: id, title: t }); toast.success("Task added"); load(); } };
   const addDeliverable = async () => { const t = quickAdd("deliverable"); if (t) { await api.post("/deliverables", { workspace_id: id, title: t }); toast.success("Added"); load(); } };
   const addRequest = async () => { const t = quickAdd("request"); if (t) { await api.post("/client-requests", { workspace_id: id, title: t }); toast.success("Added"); load(); } };
-  const addCommitment = async () => { const t = quickAdd("commitment"); if (t) { await api.post("/commitments", { workspace_id: id, title: t }); toast.success("Added"); load(); } };
+  const submitCommitment = async () => {
+    if (!cmtForm.title.trim()) { toast.error("Title is required"); return; }
+    await api.post("/commitments", {
+      workspace_id: id, title: cmtForm.title.trim(), owner: cmtForm.owner || null,
+      due_date: cmtForm.due_date ? new Date(cmtForm.due_date).toISOString() : null,
+    });
+    toast.success("Commitment added"); setCmtDialog(false); setCmtForm({ title: "", owner: "", due_date: "" }); load();
+  };
+  const runSlaCheck = async () => {
+    setSlaBusy(true);
+    try {
+      const { data } = await api.post("/commitments/evaluate-risk");
+      toast.success(`SLA check complete · ${data.flagged_at_risk} at-risk, ${data.flagged_breached} breached`);
+      load();
+    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+    finally { setSlaBusy(false); }
+  };
   const addApproval = async () => { const t = quickAdd("approval"); if (t) { await api.post("/approvals", { workspace_id: id, title: t }); toast.success("Requested"); load(); } };
 
   const upd = async (url, body, msg) => { await api.patch(url, body); toast.success(msg); load(); };
@@ -211,8 +242,22 @@ export default function WorkspaceDetail() {
         </TabsList>
 
         <TabsContent value="commitments" className="mt-6">
-          <ListSection title="Commitment Ledger" items={commitments} testid="commitments-section" onAdd={addCommitment} addLabel="Commitment"
-            columns={(it) => <div className="text-xs text-gray-400">{it.owner || "unassigned"}{it.due_date ? ` · due ${new Date(it.due_date).toLocaleDateString()}` : ""}</div>}
+          <div className="flex justify-end mb-3">
+            <Button size="sm" variant="outline" onClick={runSlaCheck} disabled={slaBusy} data-testid="run-sla-check">
+              <ShieldAlert className="w-3.5 h-3.5 mr-1" />{slaBusy ? "Checking…" : "Run SLA check"}
+            </Button>
+          </div>
+          <ListSection title="Commitment Ledger" items={commitments} testid="commitments-section" onAdd={() => setCmtDialog(true)} addLabel="Commitment"
+            columns={(it) => {
+              const di = dueInfo(it.due_date);
+              return (
+                <div className="text-xs flex items-center gap-2 flex-wrap mt-0.5">
+                  <span className="text-gray-400">{it.owner || "unassigned"}</span>
+                  {di && <span className={di.tone}>· {di.label}</span>}
+                  <Badge className={`capitalize text-[10px] ${STATUS_COLOR[it.status] || STATUS_COLOR.open}`}>{it.status.replace("_", " ")}</Badge>
+                </div>
+              );
+            }}
             actions={(it) => (
               <Select value={it.status} onValueChange={(v) => upd(`/commitments/${it.id}`, { status: v }, "Updated")}>
                 <SelectTrigger className="h-8 w-32 text-xs" data-testid={`commitment-status-${it.id}`}><SelectValue /></SelectTrigger>
@@ -269,6 +314,21 @@ export default function WorkspaceDetail() {
             ) : <Badge className={`capitalize ${STATUS_COLOR[it.status] || STATUS_COLOR.requested}`}>{it.status}</Badge>} />
         </TabsContent>
       </Tabs>
+
+      <Dialog open={cmtDialog} onOpenChange={setCmtDialog}>
+        <DialogContent data-testid="commitment-dialog">
+          <DialogHeader><DialogTitle>New Commitment</DialogTitle></DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1"><Label>Title</Label><Input value={cmtForm.title} onChange={(e) => setCmtForm((f) => ({ ...f, title: e.target.value }))} placeholder="e.g. Deliver dashboard by Friday" data-testid="commitment-title-input" /></div>
+            <div className="space-y-1"><Label>Owner</Label><Input value={cmtForm.owner} onChange={(e) => setCmtForm((f) => ({ ...f, owner: e.target.value }))} placeholder="owner@example.com" data-testid="commitment-owner-input" /></div>
+            <div className="space-y-1"><Label>Due date</Label><Input type="date" value={cmtForm.due_date} onChange={(e) => setCmtForm((f) => ({ ...f, due_date: e.target.value }))} data-testid="commitment-due-input" /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCmtDialog(false)}>Cancel</Button>
+            <Button className="bg-[#0A0A0A]" onClick={submitCommitment} data-testid="commitment-submit">Add commitment</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

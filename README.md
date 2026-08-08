@@ -110,7 +110,19 @@ ClientVerse acts as a **governed MCP server** with tiered tools:
 
 Every significant state change emits a normalized domain event (visible on the Automation & Audit feed).
 
-## 11. Known non-blocking warnings
+## 11. Commitment SLA risk automation
+
+Commitments carry an optional `due_date`. The platform continuously keeps the **Commitment Ledger** honest:
+
+- **`POST /api/commitments/evaluate-risk`** (authenticated, tenant-scoped) sweeps the tenant's open/at-risk commitments:
+  - due within **48h** and still `open` → flipped to **`at_risk`** (`commitment.at_risk` event)
+  - past due → flipped to **`breached`** (`commitment.breached` event)
+  It returns `{scanned, flagged_at_risk, flagged_breached, at_risk_ids, breached_ids}`. A **"Run SLA check"** button on the workspace Commitment Ledger triggers it on demand.
+- **Scheduled sweep**: `.emergent/crons.yml` defines the `commitment-sla` cron (every 15 min) calling **`POST /api/cron/commitment-risk`**. The cron endpoint requires `Authorization: Bearer $WEBHOOK_CRON_SECRET`, is idempotent on `X-Webhook-Id`, acks `2xx` immediately, and backgrounds the sweep across all tenants. Set `WEBHOOK_CRON_SECRET` in `backend/.env`.
+- Emitted `commitment.at_risk` / `commitment.breached` events flow into the **Audit feed**, recompute **explainable health**, and fan out to subscribed **webhooks** (e.g. `commitment.*`).
+- The UI shows each commitment's due countdown (`due in Nd` / `overdue Nd`) and a status badge; a dialog captures title, owner, and due date on creation, and due dates are editable via `PATCH /api/commitments/{id}`.
+
+## 12. Known non-blocking warnings
 
 - **ESLint (`react-hooks/exhaustive-deps`)** in `OutcomeGraph.jsx` and `Mcp.jsx` — intentional stable `load` dependency; build compiles successfully with warnings.
 - **Recharts** first-paint console warning `width(-1)/height(-1)` from a sparkline `ResponsiveContainer` — cosmetic only; the sparkline renders correctly.

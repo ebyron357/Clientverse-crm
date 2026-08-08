@@ -484,16 +484,66 @@ async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)
     await record_event("commitment.created", "commitment", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
     return {k: v for k, v in doc.items() if k != "_id"}
 
+class CommitmentPatch(BaseModel):
+    status: Optional[str] = None
+    due_date: Optional[str] = None
+
 @api.patch("/commitments/{cmt_id}")
-async def update_commitment(cmt_id: str, inp: TaskStatus, user=Depends(get_current_user)):
+async def update_commitment(cmt_id: str, inp: CommitmentPatch, user=Depends(get_current_user)):
     c = await db.commitments.find_one({"id": cmt_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Not found")
-    await db.commitments.update_one({"id": cmt_id}, {"$set": {"status": inp.status}})
-    etmap = {"at_risk": "commitment.at_risk", "fulfilled": "commitment.fulfilled"}
+    upd = {}
+    if inp.status is not None:
+        upd["status"] = inp.status
+    if inp.due_date is not None:
+        upd["due_date"] = inp.due_date or None
+    if upd:
+        await db.commitments.update_one({"id": cmt_id}, {"$set": upd})
+    etmap = {"at_risk": "commitment.at_risk", "breached": "commitment.breached", "fulfilled": "commitment.fulfilled"}
     if inp.status in etmap:
         await record_event(etmap[inp.status], "commitment", cmt_id, user["tenant_id"], user["email"], workspace_id=c["workspace_id"], payload={"title": c["title"]})
-    return {"ok": True}
+    return {"ok": True, **upd}
+
+# ----------------------------- Commitment SLA risk automation -----------------------------
+
+COMMITMENT_AT_RISK_HOURS = 48
+
+async def evaluate_commitment_risk(tenant_id=None, actor="system"):
+    """Flag open commitments as at_risk when their due date is near and breached when overdue.
+    Emits commitment.at_risk / commitment.breached domain events (audit + webhooks)."""
+    q = {"status": {"$in": ["open", "at_risk"]}, "due_date": {"$nin": [None, ""]}}
+    if tenant_id:
+        q["tenant_id"] = tenant_id
+    rows = await db.commitments.find(q, {"_id": 0}).to_list(5000)
+    now = datetime.now(timezone.utc)
+    at_risk_ids, breached_ids = [], []
+    for c in rows:
+        due = c.get("due_date")
+        try:
+            due_dt = datetime.fromisoformat(due)
+            if due_dt.tzinfo is None:
+                due_dt = due_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if due_dt < now:
+            if c.get("status") != "breached":
+                await db.commitments.update_one({"id": c["id"]}, {"$set": {"status": "breached"}})
+                await record_event("commitment.breached", "commitment", c["id"], c["tenant_id"], actor,
+                                   workspace_id=c.get("workspace_id"), payload={"title": c.get("title"), "due_date": due, "auto": True})
+                breached_ids.append(c["id"])
+        elif due_dt - now <= timedelta(hours=COMMITMENT_AT_RISK_HOURS):
+            if c.get("status") == "open":
+                await db.commitments.update_one({"id": c["id"]}, {"$set": {"status": "at_risk"}})
+                await record_event("commitment.at_risk", "commitment", c["id"], c["tenant_id"], actor,
+                                   workspace_id=c.get("workspace_id"), payload={"title": c.get("title"), "due_date": due, "auto": True})
+                at_risk_ids.append(c["id"])
+    return {"scanned": len(rows), "flagged_at_risk": len(at_risk_ids), "flagged_breached": len(breached_ids),
+            "at_risk_ids": at_risk_ids, "breached_ids": breached_ids, "threshold_hours": COMMITMENT_AT_RISK_HOURS}
+
+@api.post("/commitments/evaluate-risk")
+async def commitments_evaluate_risk(user=Depends(get_current_user)):
+    return await evaluate_commitment_risk(tenant_id=user["tenant_id"], actor=user["email"])
 
 # ----------------------------- Registries -----------------------------
 
@@ -729,7 +779,7 @@ async def seed_registries():
     ])
     await db.webhooks.insert_many([
         {"id": new_id("wh"), "tenant_id": t, "name": "Ops Alerts (external)", "url": "https://hooks.invalid.example/ops", "events": ["commitment.at_risk", "approval.requested"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_ops_" + secrets.token_hex(8), "description": "External endpoint — unreachable in demo, shows retry + dead-letter.", "created_at": now_iso()},
-        {"id": new_id("wh"), "tenant_id": t, "name": "Local Test Sink", "url": "http://localhost:8001/api/webhooks/sink", "events": ["commitment.at_risk", "approval.requested", "task.created", "mcp.tool_invoked", "webhook.test", "commitment.fulfilled", "deliverable.approved"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_sink_" + secrets.token_hex(8), "description": "Built-in sink returning 200 — shows successful signed delivery.", "created_at": now_iso()},
+        {"id": new_id("wh"), "tenant_id": t, "name": "Local Test Sink", "url": "http://localhost:8001/api/webhooks/sink", "events": ["commitment.at_risk", "commitment.breached", "approval.requested", "task.created", "mcp.tool_invoked", "webhook.test", "commitment.fulfilled", "deliverable.approved"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_sink_" + secrets.token_hex(8), "description": "Built-in sink returning 200 — shows successful signed delivery.", "created_at": now_iso()},
     ])
 
 # ----------------------------- MCP: Governed Server (Level 1 read tools, live) -----------------------------
@@ -1093,7 +1143,7 @@ async def set_undo_window(ws_id: str, inp: UndoWindowInput, user=Depends(get_cur
 # ----------------------------- Webhooks (live signed delivery) -----------------------------
 
 WEBHOOK_MAX_ATTEMPTS = 3
-HEALTH_AFFECTING = {"commitment.created", "commitment.at_risk", "commitment.fulfilled",
+HEALTH_AFFECTING = {"commitment.created", "commitment.at_risk", "commitment.breached", "commitment.fulfilled",
                     "task.created", "task.completed", "deliverable.created", "deliverable.approved",
                     "client_request.created"}
 
@@ -1304,6 +1354,21 @@ async def outcome_graph(ws_id: str, user=Depends(get_current_user)):
     health = compute_health(commitments, tasks, dl, rq)
     history = await db.health_snapshots.find(scoped, {"_id": 0}).sort("at", 1).to_list(200)
     return {"workspace": ws, "goals": goals, "commitments": commitments, "health": health, "health_history": history}
+
+@api.post("/cron/commitment-risk")
+async def cron_commitment_risk(request: Request):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    if not secret or not token or not hmac.compare_digest(token, secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if await db.cron_runs.find_one({"run_id": run_id}):
+        return {"accepted": True, "duplicate": True}
+    await db.cron_runs.insert_one({"run_id": run_id, "job": "commitment-risk", "at": now_iso()})
+    asyncio.create_task(evaluate_commitment_risk(tenant_id=None, actor="cron"))
+    return {"accepted": True, "run_id": run_id}
 
 @app.on_event("startup")
 async def on_startup():
