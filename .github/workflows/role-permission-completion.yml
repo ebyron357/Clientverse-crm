@@ -30,8 +30,8 @@ jobs:
       DB_NAME: clientverse_ci
       JWT_SECRET: ci-role-permission-secret-2026
       FRONTEND_URL: http://localhost:3000
-      ADMIN_EMAIL: admin@example.com
-      ADMIN_PASSWORD: AdminPass123!
+      ADMIN_EMAIL: tvpro357@gmail.com
+      ADMIN_PASSWORD: ClientVerse2026!
       WEBHOOK_CRON_SECRET: ci-webhook-cron-secret
       REACT_APP_BACKEND_URL: http://127.0.0.1:8001
       TEST_API_BASE: http://127.0.0.1:8001
