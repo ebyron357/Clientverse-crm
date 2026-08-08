@@ -1,5 +1,14 @@
 # ClientVerse.io — Product Requirements & Architecture
 
+## Implemented (2026-06 — this phase) — Role & Permission Enforcement — status AVAILABLE
+- Multi-tenant team membership (`memberships`): user/tenant/role/status/invited_by/invited_at/accepted_at/disabled_at. `get_current_user` → `resolve_membership` resolves effective role and blocks disabled members (403); legacy users self-heal.
+- Invitations (`invitations`): admin invite-by-email, secure single-use token (only SHA-256 hash stored), 7-day TTL, statuses pending/accepted/expired/revoked, duplicate-active + already-member rejection, resend/revoke, accept attaches authed user to tenant. Endpoints under `/api/team/*` incl. public `lookup`.
+- Centralized authz: `require_role()` / `require_permission()` + `ROLE_PERMISSIONS`. Admin-gated (403 for members): MCP approvals, kill switch, undo, undo-window, webhook secret reveal (`GET /api/webhooks/{id}/secret`) + rotation + create/patch, team management. Webhook list no longer leaks secrets.
+- Security: tenant isolation (cross-tenant ops → 404), token hashing/expiry/single-use, last-admin safety (cannot demote/disable final active admin). Audit: authz.denied, team.invitation_* , team.role_changed, team.member_disabled/enabled.
+- Frontend: `/team` admin console (members table + role/status controls, invitations, invite dialog with copyable single-use link), `/invite?token=` accept page (loading/pending/expired/revoked/accepted/wrong-account/success states), admin-only nav + role badge, member-gated webhook/approval controls, login `?redirect=` for invite return.
+- Seeded demo member: demo.member@clientverse.io / Member2026! (member) in ClientVerse HQ.
+- Tests: `backend/tests/test_role_permissions.py` 13/13 pass; full backend suite 66 passed / 2 skipped; frontend flows 11/11 pass (iteration_9 + iteration_10 retest); production build succeeds.
+
 ## Implemented (2026-06 — this phase) — Commitment SLA Risk Automation — status AVAILABLE
 - Commitments carry an optional `due_date`; `PATCH /api/commitments/{id}` now accepts `status` and/or `due_date` (CommitmentPatch).
 - `evaluate_commitment_risk()` sweep: open commitments due within 48h → `at_risk` (commitment.at_risk); overdue open/at_risk → `breached` (commitment.breached). Emits domain events → Audit + Webhooks + health recompute (commitment.breached added to HEALTH_AFFECTING).
