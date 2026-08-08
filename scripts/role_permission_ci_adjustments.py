@@ -51,7 +51,7 @@ text = text.replace(old2, new2, 1)
 extra = r'''
 
 def test_admin_can_reject_mcp_write_and_manage_member_lifecycle():
-    ah, mh, accepted, _ = invite_and_accept()
+    ah, mh, accepted, invitation = invite_and_accept()
     workspaces = requests.get(f"{API}/workspaces", headers=mh, timeout=20).json()
     assert workspaces
     pending = requests.post(
@@ -68,7 +68,7 @@ def test_admin_can_reject_mcp_write_and_manage_member_lifecycle():
 
     members = requests.get(f"{API}/team/members", headers=ah, timeout=20)
     assert members.status_code == 200
-    target = next(m for m in members.json() if m["user_id"] == accepted.get("membership_id", "") or m["user"] and m["user"].get("email") != ADMIN["email"])
+    target = next(m for m in members.json() if m.get("user") and m["user"].get("email") == invitation["email"])
     membership_id = target["id"]
     promoted = requests.patch(f"{API}/team/members/{membership_id}/role", headers=ah, json={"role": "admin"}, timeout=20)
     assert promoted.status_code == 200, promoted.text
