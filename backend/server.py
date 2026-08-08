@@ -104,7 +104,7 @@ async def get_current_user(request: Request) -> dict:
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         user.pop("password_hash", None)
-        return user
+        return await resolve_user_membership(user)
     except jwt.InvalidTokenError:
         pass
     # Google session_token path
@@ -122,7 +122,80 @@ async def get_current_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     user.pop("password_hash", None)
-    return user
+    return await resolve_user_membership(user)
+
+
+# ----------------------------- authorization / team policy -----------------------------
+
+ROLE_PERMISSIONS = {
+    "admin": {"*"},
+    "member": {
+        "crm:read", "crm:write", "team:view", "mcp:read", "webhook:read",
+    },
+}
+
+ADMIN_PERMISSIONS = {
+    "mcp:approve", "mcp:kill", "mcp:undo", "mcp:undo_window",
+    "webhook:secret_reveal", "webhook:secret_rotate", "integration:admin",
+    "team:invite", "team:manage", "tenant:governance",
+}
+
+INVITE_TTL_HOURS = 72
+
+
+def _invite_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def has_permission(user: dict, permission: str) -> bool:
+    allowed = ROLE_PERMISSIONS.get(user.get("role"), set())
+    return "*" in allowed or permission in allowed
+
+
+async def resolve_user_membership(user: dict) -> dict:
+    active_tenant = user.get("active_tenant_id") or user.get("tenant_id")
+    membership = await db.team_memberships.find_one(
+        {"tenant_id": active_tenant, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not membership:
+        role = user.get("role") if user.get("role") in ROLE_PERMISSIONS else "member"
+        membership = {
+            "id": new_id("mem"), "tenant_id": active_tenant, "user_id": user["user_id"],
+            "role": role, "status": "active", "invited_by": None, "invited_at": None,
+            "accepted_at": user.get("created_at") or now_iso(), "disabled_at": None,
+            "created_at": user.get("created_at") or now_iso(),
+        }
+        try:
+            await db.team_memberships.insert_one(dict(membership))
+        except Exception:
+            membership = await db.team_memberships.find_one(
+                {"tenant_id": active_tenant, "user_id": user["user_id"]}, {"_id": 0}
+            )
+    if not membership or membership.get("status") != "active":
+        raise HTTPException(status_code=403, detail="Team membership is disabled or inactive")
+    resolved = dict(user)
+    resolved["tenant_id"] = active_tenant
+    resolved["role"] = membership["role"]
+    resolved["membership_status"] = membership["status"]
+    resolved["membership_id"] = membership["id"]
+    return resolved
+
+
+async def enforce_permission(user: dict, permission: str, target_user_id: Optional[str] = None) -> dict:
+    if has_permission(user, permission):
+        return user
+    await record_event(
+        "authorization.denied", "permission", permission, user["tenant_id"], user["email"],
+        payload={"action": permission, "target_user": target_user_id, "result": "denied"},
+        source="authorization",
+    )
+    raise HTTPException(status_code=403, detail="Admin permission required")
+
+
+def require_permission(permission: str):
+    async def dependency(user=Depends(get_current_user)):
+        return await enforce_permission(user, permission)
+    return dependency
 
 class RegisterInput(BaseModel):
     email: EmailStr
@@ -146,6 +219,12 @@ async def register(inp: RegisterInput, response: Response):
         "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
         "picture": None, "created_at": now_iso(), "auth": "password",
     })
+    await db.team_memberships.insert_one({
+        "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "role": "admin", "status": "active",
+        "invited_by": None, "invited_at": None, "accepted_at": now_iso(), "disabled_at": None,
+        "created_at": now_iso(),
+    })
+    await db.users.update_one({"user_id": uid}, {"$set": {"active_tenant_id": tenant_id}})
     token = create_access_token(uid, email)
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
@@ -192,6 +271,7 @@ async def google_session(request: Request, response: Response):
         "created_at": now_iso(),
     })
     set_auth_cookie(response, session_token)
+    user = await resolve_user_membership(user)
     user.pop("password_hash", None)
     return {"user": user, "token": session_token}
 
@@ -203,6 +283,181 @@ async def me(user: dict = Depends(get_current_user)):
 async def logout(response: Response):
     response.delete_cookie("access_token", path="/")
     return {"ok": True}
+
+
+# ----------------------------- Team memberships / invitations -----------------------------
+
+class TeamInviteInput(BaseModel):
+    email: EmailStr
+    role: str = "member"
+
+class TeamRoleInput(BaseModel):
+    role: str
+
+
+def _public_invite(inv: dict) -> dict:
+    return {k: v for k, v in inv.items() if k not in {"_id", "token_hash"}}
+
+
+async def _active_admin_count(tenant_id: str) -> int:
+    return await db.team_memberships.count_documents(
+        {"tenant_id": tenant_id, "role": "admin", "status": "active"}
+    )
+
+
+@api.get("/team/members")
+async def team_members(user=Depends(require_permission("team:view"))):
+    rows = await db.team_memberships.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    out = []
+    for row in rows:
+        u = await db.users.find_one({"user_id": row["user_id"]}, {"_id": 0, "password_hash": 0})
+        out.append({**row, "user": u and {"user_id": u["user_id"], "name": u.get("name"), "email": u.get("email"), "picture": u.get("picture")}})
+    return out
+
+
+@api.get("/team/invitations")
+async def team_invitations(user=Depends(require_permission("team:invite"))):
+    now = now_iso()
+    await db.team_invitations.update_many(
+        {"tenant_id": user["tenant_id"], "status": "pending", "expires_at": {"$lt": now}},
+        {"$set": {"status": "expired"}},
+    )
+    rows = await db.team_invitations.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [_public_invite(r) for r in rows]
+
+
+@api.post("/team/invitations")
+async def create_team_invitation(inp: TeamInviteInput, user=Depends(require_permission("team:invite"))):
+    email = inp.email.lower()
+    if inp.role not in ROLE_PERMISSIONS:
+        raise HTTPException(status_code=422, detail="Role must be admin or member")
+    existing_user = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing_user:
+        existing_member = await db.team_memberships.find_one({
+            "tenant_id": user["tenant_id"], "user_id": existing_user["user_id"], "status": "active"
+        }, {"_id": 0})
+        if existing_member:
+            raise HTTPException(status_code=409, detail="User is already an active tenant member")
+    active = await db.team_invitations.find_one({
+        "tenant_id": user["tenant_id"], "email": email, "status": "pending",
+        "expires_at": {"$gt": now_iso()},
+    }, {"_id": 0})
+    if active:
+        raise HTTPException(status_code=409, detail="An active invitation already exists for this email")
+    token = secrets.token_urlsafe(32)
+    created = now_iso()
+    expires = (datetime.now(timezone.utc) + timedelta(hours=INVITE_TTL_HOURS)).isoformat()
+    doc = {
+        "id": new_id("inv"), "tenant_id": user["tenant_id"], "email": email, "role": inp.role,
+        "status": "pending", "token_hash": _invite_hash(token), "invited_by": user["user_id"],
+        "invited_by_email": user["email"], "invited_at": created, "created_at": created,
+        "expires_at": expires, "accepted_at": None, "revoked_at": None, "resent_at": None,
+        "target_user_id": existing_user and existing_user["user_id"],
+    }
+    await db.team_invitations.insert_one(dict(doc))
+    await record_event("team.invitation.created", "team_invitation", doc["id"], user["tenant_id"], user["email"],
+                       payload={"target_user": doc.get("target_user_id"), "target_email": email, "action": "invitation.created", "result": "success"})
+    return {**_public_invite(doc), "invite_token": token, "accept_path": f"/invite/{token}"}
+
+
+@api.post("/team/invitations/{invite_id}/resend")
+async def resend_team_invitation(invite_id: str, user=Depends(require_permission("team:invite"))):
+    inv = await db.team_invitations.find_one({"id": invite_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if inv.get("status") not in {"pending", "expired"}:
+        raise HTTPException(status_code=409, detail=f"Cannot resend a {inv.get('status')} invitation")
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.now(timezone.utc) + timedelta(hours=INVITE_TTL_HOURS)).isoformat()
+    await db.team_invitations.update_one({"id": invite_id, "tenant_id": user["tenant_id"]}, {"$set": {
+        "token_hash": _invite_hash(token), "status": "pending", "expires_at": expires,
+        "resent_at": now_iso(), "invited_by": user["user_id"], "invited_by_email": user["email"],
+    }})
+    await record_event("team.invitation.resent", "team_invitation", invite_id, user["tenant_id"], user["email"],
+                       payload={"target_user": inv.get("target_user_id"), "target_email": inv["email"], "action": "invitation.resent", "result": "success"})
+    return {"ok": True, "invite_token": token, "accept_path": f"/invite/{token}", "expires_at": expires}
+
+
+@api.post("/team/invitations/{invite_id}/revoke")
+async def revoke_team_invitation(invite_id: str, user=Depends(require_permission("team:invite"))):
+    inv = await db.team_invitations.find_one({"id": invite_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if inv.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="Only pending invitations can be revoked")
+    await db.team_invitations.update_one({"id": invite_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": "revoked", "revoked_at": now_iso()}})
+    await record_event("team.invitation.revoked", "team_invitation", invite_id, user["tenant_id"], user["email"],
+                       payload={"target_user": inv.get("target_user_id"), "target_email": inv["email"], "action": "invitation.revoked", "result": "success"})
+    return {"ok": True}
+
+
+@api.post("/team/invitations/accept/{token}")
+async def accept_team_invitation(token: str, user=Depends(get_current_user)):
+    inv = await db.team_invitations.find_one({"token_hash": _invite_hash(token)}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if inv.get("status") == "revoked":
+        raise HTTPException(status_code=410, detail="Invitation revoked")
+    if inv.get("status") == "accepted":
+        raise HTTPException(status_code=409, detail="Invitation already accepted")
+    if inv.get("status") == "expired" or inv.get("expires_at", "") <= now_iso():
+        await db.team_invitations.update_one({"id": inv["id"]}, {"$set": {"status": "expired"}})
+        raise HTTPException(status_code=410, detail="Invitation expired")
+    if inv.get("email") != user.get("email", "").lower():
+        await record_event("authorization.denied", "team_invitation", inv["id"], inv["tenant_id"], user["email"],
+                           payload={"target_user": user["user_id"], "action": "invitation.accept", "result": "email_mismatch"}, source="authorization")
+        raise HTTPException(status_code=403, detail="Invitation email does not match authenticated user")
+    existing = await db.team_memberships.find_one({"tenant_id": inv["tenant_id"], "user_id": user["user_id"]}, {"_id": 0})
+    member_doc = {
+        "tenant_id": inv["tenant_id"], "user_id": user["user_id"], "role": inv["role"], "status": "active",
+        "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"), "accepted_at": now_iso(), "disabled_at": None,
+    }
+    if existing:
+        await db.team_memberships.update_one({"id": existing["id"], "tenant_id": inv["tenant_id"]}, {"$set": member_doc})
+        membership_id = existing["id"]
+    else:
+        membership_id = new_id("mem")
+        await db.team_memberships.insert_one({"id": membership_id, "created_at": now_iso(), **member_doc})
+    await db.team_invitations.update_one({"id": inv["id"], "status": "pending"}, {"$set": {
+        "status": "accepted", "accepted_at": now_iso(), "accepted_by_user_id": user["user_id"]
+    }})
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"active_tenant_id": inv["tenant_id"]}})
+    await record_event("team.invitation.accepted", "team_membership", membership_id, inv["tenant_id"], user["email"],
+                       payload={"target_user": user["user_id"], "action": "invitation.accepted", "result": "success"})
+    return {"ok": True, "tenant_id": inv["tenant_id"], "membership_id": membership_id, "role": inv["role"]}
+
+
+@api.patch("/team/members/{membership_id}/role")
+async def change_team_member_role(membership_id: str, inp: TeamRoleInput, user=Depends(require_permission("team:manage"))):
+    if inp.role not in ROLE_PERMISSIONS:
+        raise HTTPException(status_code=422, detail="Role must be admin or member")
+    member = await db.team_memberships.find_one({"id": membership_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    if member.get("status") != "active":
+        raise HTTPException(status_code=409, detail="Only active members can change roles")
+    if member.get("role") == "admin" and inp.role != "admin" and await _active_admin_count(user["tenant_id"]) <= 1:
+        raise HTTPException(status_code=409, detail="Cannot demote the last active admin")
+    old_role = member.get("role")
+    await db.team_memberships.update_one({"id": membership_id, "tenant_id": user["tenant_id"]}, {"$set": {"role": inp.role, "updated_at": now_iso()}})
+    await record_event("team.member.role_changed", "team_membership", membership_id, user["tenant_id"], user["email"],
+                       payload={"target_user": member["user_id"], "action": "role.changed", "from": old_role, "to": inp.role, "result": "success"})
+    return {"ok": True, "role": inp.role}
+
+
+@api.delete("/team/members/{membership_id}")
+async def disable_team_member(membership_id: str, user=Depends(require_permission("team:manage"))):
+    member = await db.team_memberships.find_one({"id": membership_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    if member.get("status") != "active":
+        return {"ok": True, "status": member.get("status")}
+    if member.get("role") == "admin" and await _active_admin_count(user["tenant_id"]) <= 1:
+        raise HTTPException(status_code=409, detail="Cannot disable the last active admin")
+    await db.team_memberships.update_one({"id": membership_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": "disabled", "disabled_at": now_iso()}})
+    await record_event("team.member.disabled", "team_membership", membership_id, user["tenant_id"], user["email"],
+                       payload={"target_user": member["user_id"], "action": "member.disabled", "result": "success"})
+    return {"ok": True, "status": "disabled"}
 
 # ----------------------------- generic CRUD factory -----------------------------
 
@@ -459,6 +714,8 @@ async def decide_approval(apr_id: str, inp: TaskStatus, user=Depends(get_current
     a = await db.approvals.find_one({"id": apr_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Not found")
+    if a.get("kind") == "mcp_write":
+        await enforce_permission(user, "mcp:approve")
     await db.approvals.update_one({"id": apr_id}, {"$set": {"status": inp.status, "decided_by": user["email"], "decided_at": now_iso()}})
     await record_event("approval.completed", "approval", apr_id, user["tenant_id"], user["email"], workspace_id=a["workspace_id"], payload={"decision": inp.status})
     result = {"ok": True}
@@ -706,7 +963,23 @@ async def seed():
             await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pw)}})
     # registries seed (idempotent by name)
     await seed_registries()
+    legacy_users = await db.users.find({}, {"_id": 0}).to_list(5000)
+    for legacy in legacy_users:
+        tenant_id = legacy.get("active_tenant_id") or legacy.get("tenant_id")
+        if tenant_id and not await db.team_memberships.find_one({"tenant_id": tenant_id, "user_id": legacy["user_id"]}):
+            await db.team_memberships.insert_one({
+                "id": new_id("mem"), "tenant_id": tenant_id, "user_id": legacy["user_id"],
+                "role": legacy.get("role") if legacy.get("role") in ROLE_PERMISSIONS else "member",
+                "status": "active", "invited_by": None, "invited_at": None,
+                "accepted_at": legacy.get("created_at") or now_iso(), "disabled_at": None,
+                "created_at": legacy.get("created_at") or now_iso(),
+            })
+        if tenant_id and not legacy.get("active_tenant_id"):
+            await db.users.update_one({"user_id": legacy["user_id"]}, {"$set": {"active_tenant_id": tenant_id}})
     await db.users.create_index("email", unique=True)
+    await db.team_memberships.create_index([("tenant_id", 1), ("user_id", 1)], unique=True)
+    await db.team_invitations.create_index("token_hash", unique=True)
+    await db.team_invitations.create_index([("tenant_id", 1), ("email", 1), ("status", 1)])
 
 async def seed_demo(tenant_id, actor):
     co1 = {"id": new_id("co"), "tenant_id": tenant_id, "name": "Northwind Analytics", "industry": "Data & AI", "website": "northwind.example", "tier": "enterprise", "created_at": now_iso()}
@@ -961,8 +1234,7 @@ class KillInput(BaseModel):
 
 @api.patch("/mcp/server/kill")
 async def mcp_kill(inp: KillInput, user=Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin permission required")
+    await enforce_permission(user, "mcp:kill")
     await get_mcp_server(user["tenant_id"])
     await db.mcp_server_state.update_one({"server_id": MCP_SERVER_ID, "tenant_id": user["tenant_id"]},
                                          {"$set": {"kill_switch": inp.enabled}})
@@ -1082,8 +1354,7 @@ class UndoInput(BaseModel):
 
 @api.post("/mcp/invocations/{inv_id}/undo")
 async def mcp_undo(inv_id: str, inp: UndoInput, user=Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin permission required")
+    await enforce_permission(user, "mcp:undo")
     reason = (inp.reason or "").strip()
     if not reason:
         raise HTTPException(status_code=422, detail="A reason is required to reverse an action")
@@ -1131,8 +1402,7 @@ class UndoWindowInput(BaseModel):
 
 @api.patch("/workspaces/{ws_id}/undo-window")
 async def set_undo_window(ws_id: str, inp: UndoWindowInput, user=Depends(get_current_user)):
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin permission required")
+    await enforce_permission(user, "mcp:undo_window")
     ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not ws:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1210,10 +1480,14 @@ class WebhookPatch(BaseModel):
 
 @api.get("/webhooks")
 async def list_webhooks(user=Depends(get_current_user)):
-    return await db.webhooks.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    rows = await db.webhooks.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for row in rows:
+        row["secret_configured"] = bool(row.get("secret"))
+        row.pop("secret", None)
+    return rows
 
 @api.post("/webhooks")
-async def create_webhook(inp: WebhookInput, user=Depends(get_current_user)):
+async def create_webhook(inp: WebhookInput, user=Depends(require_permission("integration:admin"))):
     doc = {"id": new_id("wh"), "tenant_id": user["tenant_id"], "name": inp.name, "url": inp.url,
            "events": inp.events, "status": "AVAILABLE", "signed": True, "enabled": True,
            "secret": "whsec_" + secrets.token_hex(16), "description": "Custom endpoint.", "created_at": now_iso()}
@@ -1222,7 +1496,7 @@ async def create_webhook(inp: WebhookInput, user=Depends(get_current_user)):
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/webhooks/{wid}")
-async def patch_webhook(wid: str, inp: WebhookPatch, user=Depends(get_current_user)):
+async def patch_webhook(wid: str, inp: WebhookPatch, user=Depends(require_permission("integration:admin"))):
     wh = await db.webhooks.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not wh:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1233,7 +1507,19 @@ async def patch_webhook(wid: str, inp: WebhookPatch, user=Depends(get_current_us
         upd["secret"] = "whsec_" + secrets.token_hex(16)
     if upd:
         await db.webhooks.update_one({"id": wid}, {"$set": upd})
+    if inp.rotate_secret:
+        await record_event("webhook.secret_rotated", "webhook", wid, user["tenant_id"], user["email"],
+                           payload={"action": "webhook.secret_rotate", "result": "success"})
     return {"ok": True, **{k: v for k, v in upd.items() if k != "secret"}}
+
+@api.get("/webhooks/{wid}/secret")
+async def reveal_webhook_secret(wid: str, user=Depends(require_permission("webhook:secret_reveal"))):
+    wh = await db.webhooks.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not wh:
+        raise HTTPException(status_code=404, detail="Not found")
+    await record_event("webhook.secret_revealed", "webhook", wid, user["tenant_id"], user["email"],
+                       payload={"action": "webhook.secret_reveal", "result": "success"})
+    return {"id": wid, "secret": wh.get("secret")}
 
 @api.post("/webhooks/{wid}/test")
 async def test_webhook(wid: str, user=Depends(get_current_user)):

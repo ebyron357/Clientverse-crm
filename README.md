@@ -130,3 +130,12 @@ Commitments carry an optional `due_date`. The platform continuously keeps the **
 ---
 
 _Release candidate: ClientVerse connected CRM core. Validated: backend 50 passed / 1 skipped, frontend production build succeeds._
+
+
+## Role & permission enforcement
+
+ClientVerse now persists tenant-scoped team memberships separately from user accounts. Supported roles are `admin` and `member`, with centralized permission policy helpers enforcing governance operations on the server. Admin-only actions include MCP approval/rejection, kill switch, undo, undo-window configuration, webhook secret reveal/rotation, integration credential administration, invitations, membership changes, and tenant governance. Members retain normal tenant-scoped CRM access.
+
+Team invitations are tenant-specific, expiring, single-use, and stored only as SHA-256 token hashes. Admins can create, resend, and revoke invitations. Acceptance requires an authenticated user whose email matches the invitation. The active tenant is switched through `active_tenant_id` while membership records preserve multi-tenant affiliation. The last active admin cannot be demoted or disabled.
+
+The Team / Members UI supports member lists, pending invitations, invite/resend/revoke, role changes, disabling members, and explicit loading, empty, validation, unauthorized, expired, revoked, and disabled-member states. Webhook secrets are masked from normal list responses and available only through the admin-only reveal endpoint.

@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-  LayoutDashboard, GitBranch, Users, Briefcase, Boxes, Activity, LogOut, Orbit, Terminal,
+  LayoutDashboard, GitBranch, Users, Briefcase, Boxes, Activity, LogOut, Orbit, Terminal, UserCog,
 } from "lucide-react";
 
 const NAV = [
@@ -12,6 +12,7 @@ const NAV = [
   { to: "/registries", label: "Registries", icon: Boxes, id: "registries" },
   { to: "/mcp", label: "MCP Console", icon: Terminal, id: "mcp" },
   { to: "/audit", label: "Automation & Audit", icon: Activity, id: "audit" },
+  { to: "/team", label: "Team / Members", icon: UserCog, id: "team" },
 ];
 
 export default function AppShell() {
