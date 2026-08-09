@@ -25,10 +25,25 @@ def _register():
     return r.json()["token"]
 
 
+def _ensure_open_alert(h):
+    """Deterministically guarantee >=1 open alert (removes inter-test data coupling)."""
+    requests.post(f"{API}/alerts/evaluate", headers=h, timeout=90)
+    openq = requests.get(f"{API}/alerts?status=open", headers=h, timeout=15).json()
+    if openq["counts"]["open"] >= 1:
+        return openq
+    ws = requests.get(f"{API}/workspaces", headers=h, timeout=15).json()
+    assert ws, "expected at least one workspace to seed a breach condition"
+    requests.post(f"{API}/commitments", headers=h,
+                  json={"workspace_id": ws[0]["id"], "title": "notif-precondition",
+                        "due_date": "2000-01-01T00:00:00+00:00"}, timeout=15)
+    requests.post(f"{API}/commitments/evaluate-risk", headers=h, timeout=30)
+    requests.post(f"{API}/alerts/evaluate", headers=h, timeout=90)
+    return requests.get(f"{API}/alerts?status=open", headers=h, timeout=15).json()
+
+
 def test_alerts_generate_in_app_notifications():
     h = _h(_tok(ADMIN))
-    requests.post(f"{API}/alerts/evaluate", headers=h, timeout=30)
-    openq = requests.get(f"{API}/alerts?status=open", headers=h, timeout=15).json()
+    openq = _ensure_open_alert(h)
     assert openq["counts"]["open"] >= 1, "expected at least one open alert to drive a notification"
     # a lifecycle transition (acknowledge) emits an in-app notification via the engine
     target = openq["alerts"][0]
@@ -44,7 +59,7 @@ def test_alerts_generate_in_app_notifications():
 
 def test_mark_read_and_read_all():
     h = _h(_tok(ADMIN))
-    requests.post(f"{API}/alerts/evaluate", headers=h, timeout=30)
+    requests.post(f"{API}/alerts/evaluate", headers=h, timeout=90)
     d = requests.get(f"{API}/notifications", headers=h, timeout=15).json()
     if d["unread"]:
         unread = next(n for n in d["notifications"] if not n["read"])

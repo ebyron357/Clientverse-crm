@@ -74,7 +74,18 @@ routers  ->  services  ->  shared
 - Keep services free of `APIRouter`/route handlers; keep `server.py` a bootstrap.
 
 ## Reliability guards
-`backend/tests/test_module_structure.py` fails if: any module stops parsing,
-the app can't import (circular import), business logic/models creep back into
-`server.py`, a route is registered twice, or duplicate `(method, path)` routes
-appear.
+Two layers catch the corruption/regressions that plagued the old monolith:
+
+1. **Standalone script** — `backend/scripts/validate_app_structure.py`. Run it
+   before committing; it **exits non-zero** on any structural failure and prints
+   the business route count. Checks: AST parse of every module, app imports
+   without circular error, FastAPI app created, each router registered exactly
+   once (no duplicate `include_router`), no duplicate `(method, path)` routes,
+   all expected routers present, and `server.py` stays a thin bootstrap.
+   ```
+   python backend/scripts/validate_app_structure.py
+   ```
+2. **Pytest guard** — `backend/tests/test_module_structure.py` enforces the same
+   invariants inside the test suite.
+
+Contributor guidance for where to add new code lives in the repo-root `AGENTS.md`.
