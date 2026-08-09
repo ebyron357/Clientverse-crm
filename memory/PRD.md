@@ -1,5 +1,14 @@
 # ClientVerse.io — Product Requirements & Architecture
 
+## Implemented (2026-06 — this phase) — Server Modularization & Reliability Hardening — status AVAILABLE
+- STRUCTURAL phase only (no product/API/UI behavior change). Split the 2,666-line monolithic `backend/server.py` into a focused package under `backend/app/` while preserving every route path, method, request/response shape, auth, tenant isolation, permissions, audit events, cron, webhook, MCP and integration behavior. Route parity verified: 0 missing, 0 duplicate (86 business routes + root, unchanged).
+- Layout: `server.py` is now a 54-line bootstrap (app + router registration + middleware + startup/shutdown only). `app/shared.py` = infrastructure base (config, db, helpers, auth/authz, record_event, webhook engine, compute_health, health snapshot, insight constants). `app/services/` = domain engines (commitments, mcp, integrations, notifications, alerts). `app/routers/` = 13 FastAPI APIRouter modules (auth, team, crm, delivery, dashboard, ai, mcp, webhooks, outcomes, integrations, insights, notifications, cron). `app/seed.py` = startup seed.
+- Dependency boundaries are acyclic: routers → services → shared; the only inter-service edge is alerts → notifications (one-way). `record_event`'s webhook/health calls live inside `shared`, so the base has no upward dependency. No circular imports.
+- Reliability guards: `backend/tests/test_module_structure.py` (5 tests) fails on syntax corruption, import/circular failure, business-logic creeping back into `server.py`, duplicate route registration, or leftover build artifacts.
+- Docs: `docs/BACKEND_ARCHITECTURE.md` documents entrypoint, layers, dependency boundaries and where to add new features.
+- Tests: full backend suite 105 passed / 2 skipped (serial). Frontend production build succeeds. Two normalizer unit tests repointed from `server.*` to `app.services.integrations.*` (moved symbols; assertions unchanged). One digest test network timeout widened 40s→90s to tolerate real email-proxy latency (assertions unchanged).
+- Branch: feature/server-modularization (NOT merged to main, per instruction).
+
 ## Implemented (2026-06 — this phase) — Alert Notifications & Digests — status AVAILABLE
 - Notification engine (server.py): on meaningful alert transitions (created/critical/acknowledged/resolved/escalated) fans out to in-app (`notifications`) + email, deduped by (alert_id, transition[, escalation_level]) via `notification_deliveries`. Also emits signed/versioned/retryable webhook events (alert.* + mapped domain events like commitment.breached, integration.degraded, billing.invoice_overdue).
 - Email adapter via Emergent managed Resend proxy (`EMERGENT_EMAIL_KEY` + `EMAIL_FROM_NAME`, base URL constant). Retry/backoff on 429/5xx, graceful "not_configured" when key absent (in-app still works). No secrets exposed in API/logs.

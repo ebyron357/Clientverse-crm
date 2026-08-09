@@ -123,7 +123,7 @@ def test_disconnect_marks_disconnected_and_blocks_sync():
 # ---------- pure normalizers (no network) ----------
 
 def test_gmail_normalizer():
-    import server
+    from app.services import integrations as server
     msg = {"id": "m1", "threadId": "t1", "snippet": "hi there", "labelIds": ["INBOX"],
            "internalDate": "1700000000000",
            "payload": {"headers": [{"name": "From", "value": "Alice <alice@acme.com>"},
@@ -136,7 +136,7 @@ def test_gmail_normalizer():
 
 
 def test_calendar_normalizer():
-    import server
+    from app.services import integrations as server
     ev = {"id": "e1", "summary": "Review", "status": "confirmed",
           "start": {"dateTime": "2026-07-01T10:00:00Z"}, "end": {"dateTime": "2026-07-01T11:00:00Z"},
           "organizer": {"email": "Bob@Acme.com"},
@@ -149,7 +149,7 @@ def test_calendar_normalizer():
 
 
 def test_stripe_normalizers():
-    import server
+    from app.services import integrations as server
     inv = server.normalize_stripe_invoice({"id": "in_1", "customer_email": "X@Y.com", "status": "open",
                                            "amount_due": 25000, "currency": "usd", "paid": False, "created": 1700000000})
     assert inv["type"] == "invoice" and inv["amount"] == 250.0 and inv["email"] == "x@y.com"

@@ -121,7 +121,7 @@ def test_digest_run_admin_only_and_returns_status():
     m = _h(_tok(MEMBER))
     assert requests.post(f"{API}/digest/run", headers=m, timeout=20).status_code == 403
     h = _h(_tok(ADMIN))
-    r = requests.post(f"{API}/digest/run", headers=h, timeout=40)
+    r = requests.post(f"{API}/digest/run", headers=h, timeout=90)
     assert r.status_code == 200, r.text
     assert r.json()["status"] in ("delivered", "partial", "not_configured", "failed", "skipped")
 
