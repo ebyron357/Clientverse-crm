@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "@/components/ui/label";
 import OutcomeGraph from "@/components/OutcomeGraph";
 import WorkspaceActivity from "@/components/WorkspaceActivity";
+import WorkspaceTimeline from "@/components/WorkspaceTimeline";
 import { ArrowLeft, Plus, Sparkles, FileText, Mail, ShieldAlert } from "lucide-react";
 
 function dueInfo(due) {
@@ -237,6 +238,7 @@ export default function WorkspaceDetail() {
           <TabsTrigger value="commitments" data-testid="tab-commitments">Commitment Ledger</TabsTrigger>
           <TabsTrigger value="outcome" data-testid="tab-outcome">Outcome Graph</TabsTrigger>
           <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
+          <TabsTrigger value="timeline" data-testid="tab-timeline">Timeline</TabsTrigger>
           <TabsTrigger value="tasks" data-testid="tab-tasks">Tasks</TabsTrigger>
           <TabsTrigger value="deliverables" data-testid="tab-deliverables">Deliverables</TabsTrigger>
           <TabsTrigger value="requests" data-testid="tab-requests">Requests</TabsTrigger>
@@ -274,6 +276,10 @@ export default function WorkspaceDetail() {
 
         <TabsContent value="activity" className="mt-6">
           <WorkspaceActivity workspaceId={id} />
+        </TabsContent>
+
+        <TabsContent value="timeline" className="mt-6">
+          <WorkspaceTimeline workspaceId={id} />
         </TabsContent>
 
         <TabsContent value="tasks" className="mt-6">

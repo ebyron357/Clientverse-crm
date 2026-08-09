@@ -5,6 +5,7 @@ import { Badge } from "@/components/AppShell";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip, LineChart, Line } from "recharts";
 import { TrendingUp, Trophy, Briefcase, AlertTriangle } from "lucide-react";
+import CommandCenterInsights from "@/components/CommandCenterInsights";
 
 const STAGE_LABELS = { lead: "Lead", qualified: "Qualified", proposal: "Proposal", negotiation: "Negotiation", closed_won: "Won", closed_lost: "Lost" };
 
@@ -44,6 +45,8 @@ export default function Dashboard() {
         <Stat icon={Briefcase} label="Active Workspaces" value={data.active_workspaces} sub="In delivery" />
         <Stat icon={AlertTriangle} label="At-risk Commitments" value={data.at_risk_commitments} sub="Needs attention" />
       </div>
+
+      <CommandCenterInsights />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-5 bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
