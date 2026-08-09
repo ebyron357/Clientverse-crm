@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import NotificationBell from "@/components/NotificationBell";
 import {
   LayoutDashboard, GitBranch, Users, Briefcase, Boxes, Activity, LogOut, Orbit, Terminal, ShieldCheck,
 } from "lucide-react";
@@ -64,9 +65,14 @@ export default function AppShell() {
           </button>
         </div>
       </aside>
-      <main className="ml-64 min-h-screen p-8">
-        <Outlet />
-      </main>
+      <div className="ml-64 min-h-screen">
+        <header className="sticky top-0 z-10 flex justify-end px-8 py-4 bg-[#FAFAFA]/80 backdrop-blur">
+          <NotificationBell />
+        </header>
+        <main className="px-8 pb-8">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }
