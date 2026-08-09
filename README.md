@@ -147,6 +147,20 @@ Multi-tenant team membership with server-side role enforcement (`admin` / `membe
 - **Security**: strict tenant isolation (cross-tenant membership ops return 404), token hashing + expiry + single-use, and **last-admin safety** (cannot demote or disable the final active admin). Denied sensitive actions emit `authz.denied`; team lifecycle emits `team.invitation_*`, `team.role_changed`, `team.member_disabled/enabled` audit events.
 - Seeded demo member: `demo.member@clientverse.io` / `Member2026!` (role `member`) in ClientVerse HQ for testing restrictions.
 
+## 15. Known non-blocking warnings
+
+- **ESLint (`react-hooks/exhaustive-deps`)** in `OutcomeGraph.jsx` and `Mcp.jsx` — intentional stable `load` dependency; build compiles successfully with warnings.
+- **Recharts** first-paint console warning `width(-1)/height(-1)` from a sparkline `ResponsiveContainer` — cosmetic only; the sparkline renders correctly.
+
+---
+
+_Release candidate: ClientVerse connected CRM core. Validated: backend 50 passed / 1 skipped, frontend production build succeeds._
+ships** (`memberships` collection): tenant-scoped records tracking `user_id`, `role`, `status` (active/disabled), `invited_by`, `invited_at`, `accepted_at`, `disabled_at`. `get_current_user` resolves the effective role from the membership and **blocks disabled members** (403) on every request. Legacy users self-heal into an active membership.
+- **Invitations** (`invitations` collection): admins invite by email with a **secure single-use token** — only its SHA-256 **hash is stored**, never the plaintext. Statuses: `pending / accepted / expired / revoked` (7-day TTL). Duplicate active invites and inviting an existing active member are rejected. Accepting attaches the authenticated user to the inviting tenant. Endpoints: `POST/GET /api/team/invitations`, `/resend`, `/revoke`, public `GET /api/team/invitations/lookup?token=`, `POST /api/team/invitations/accept`. UI: `/invite?token=` accept page + `/team` admin console.
+- **Centralized authorization**: `require_role(*roles)` / `require_permission(perm)` dependencies + a `ROLE_PERMISSIONS` map. Governance routes are admin-gated server-side (403 for members): MCP approvals, kill switch, undo, undo-window, webhook secret reveal (`GET /api/webhooks/{id}/secret`) & rotation, webhook create/patch, and all team management. UI hiding is UX only — the API enforces.
+- **Security**: strict tenant isolation (cross-tenant membership ops return 404), token hashing + expiry + single-use, and **last-admin safety** (cannot demote or disable the final active admin). Denied sensitive actions emit `authz.denied`; team lifecycle emits `team.invitation_*`, `team.role_changed`, `team.member_disabled/enabled` audit events.
+- Seeded demo member: `demo.member@clientverse.io` / `Member2026!` (role `member`) in ClientVerse HQ for testing restrictions.
+
 ## 14. Known non-blocking warnings
 
 - **ESLint (`react-hooks/exhaustive-deps`)** in `OutcomeGraph.jsx` and `Mcp.jsx` — intentional stable `load` dependency; build compiles successfully with warnings.

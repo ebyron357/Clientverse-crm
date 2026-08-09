@@ -1,5 +1,15 @@
 # ClientVerse.io — Product Requirements & Architecture
 
+## Implemented (2026-06 — this phase) — Integration Insights & Timeline — status AVAILABLE
+- Unified per-workspace timeline aggregated on read (no duplication) from domain_events + Gmail/Calendar/Stripe normalized records; normalized item shape with source/severity/refs/stale/failure; newest-first with source/severity/date/search filters + bounded pagination; indexed (tenant,workspace,timestamp).
+- Deduplicated alert engine (alerts collection, key = tenant+type+source_ref): integration degraded/expired/revoked, repeated sync failure, stale sync, webhook DLQ threshold, commitment breach, critical health drop, overdue invoice. occurrence_count increments on re-eval, auto-resolve on cleared conditions. evaluate/list/acknowledge/resolve endpoints; swept by integration-sync cron.
+- Connection health endpoint (admin) with sync age + reconnect/stale/failure flags; Command Center widgets (Operational Alerts + Connection Health).
+- Explainable health signals endpoint with source_ref + freshness (breached commitments, unresolved approvals, overdue invoices, stale comms, upcoming meetings, critical alerts).
+- UI: Command Center insights + workspace Timeline tab (filters/search/pagination, External/Stale/Failure badges, alerts + signals).
+- Tests: backend/tests/test_insights.py 10/10 pass (timeline shape/filter/pagination, tenant isolation, alert create/dedupe/ack/resolve, permissions, connection-health fields/thresholds, health source refs, no secret leakage, CRM unaffected). Frontend production build succeeds.
+- NOTE: full backend suite = 86 passed / 1 skipped + 2 AI tests (test_ai_health_summary, test_ai_draft) intermittently 502 under concurrent load due to LLM provider latency (~15s/call); both PASS individually (verified HTTP 200). Not a regression — this phase does not touch the AI path.
+- Branch: feature/integration-insights-timeline (NOT merged to main, per instruction).
+
 ## Implemented (2026-06 — this phase) — Live Integrations V1 — status AVAILABLE (Google needs client credentials)
 - Tenant-scoped provider connections behind a shared adapter contract (Gmail, Google Calendar, Stripe). Provider logic isolated; CRM consumes normalized records (crm_communications, crm_meetings, crm_billing).
 - Secure credential storage: Fernet encryption at rest (`INTEGRATION_ENC_KEY`), tokens never exposed in API/logs/audit (SAFE_CONN_FIELDS), versioned credentials.
