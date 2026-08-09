@@ -15,6 +15,7 @@ import Registries from "@/pages/Registries";
 import Mcp from "@/pages/Mcp";
 import Audit from "@/pages/Audit";
 import Team from "@/pages/Team";
+import Notifications from "@/pages/Notifications";
 import AcceptInvite from "@/pages/AcceptInvite";
 
 function AuthCallback() {
@@ -61,6 +62,7 @@ function AppRouter() {
         <Route path="/registries" element={<Registries />} />
         <Route path="/mcp" element={<Mcp />} />
         <Route path="/team" element={<Team />} />
+        <Route path="/notifications" element={<Notifications />} />
         <Route path="/audit" element={<Audit />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

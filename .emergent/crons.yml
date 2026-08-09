@@ -13,3 +13,10 @@ crons:
     endpoint: "{{BASE_URL}}/api/cron/integration-sync"
     method: POST
     enabled: true
+  - name: daily-digest
+    description: "Hourly sweep that delivers each tenant's timezone-aware daily client-health digest and runs alert escalations at their configured digest hour"
+    cron: "0 * * * *"
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    endpoint: "{{BASE_URL}}/api/cron/daily-digest"
+    method: POST
+    enabled: true
