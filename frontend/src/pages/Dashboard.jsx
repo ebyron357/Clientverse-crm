@@ -122,11 +122,9 @@ export default function Dashboard() {
                           </div>
                           {g.trend && g.trend.length > 1 && (
                             <div className="w-16 h-6 shrink-0" data-testid={`goal-sparkline-${g.id}`}>
-                              <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={g.trend.map((p, i) => ({ i, p }))} margin={{ top: 2, bottom: 2, left: 0, right: 0 }}>
-                                  <Line type="monotone" dataKey="p" stroke="#2563EB" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-                                </LineChart>
-                              </ResponsiveContainer>
+                              <LineChart width={64} height={24} data={g.trend.map((p, i) => ({ i, p }))} margin={{ top: 2, bottom: 2, left: 0, right: 0 }}>
+                                <Line type="monotone" dataKey="p" stroke="#2563EB" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                              </LineChart>
                             </div>
                           )}
                         </div>

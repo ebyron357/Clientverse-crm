@@ -1,5 +1,18 @@
 # ClientVerse.io — Product Requirements & Architecture
 
+## Implemented (2026-06 — this phase) — Alert Notifications & Digests — status AVAILABLE
+- Notification engine (server.py): on meaningful alert transitions (created/critical/acknowledged/resolved/escalated) fans out to in-app (`notifications`) + email, deduped by (alert_id, transition[, escalation_level]) via `notification_deliveries`. Also emits signed/versioned/retryable webhook events (alert.* + mapped domain events like commitment.breached, integration.degraded, billing.invoice_overdue).
+- Email adapter via Emergent managed Resend proxy (`EMERGENT_EMAIL_KEY` + `EMAIL_FROM_NAME`, base URL constant). Retry/backoff on 429/5xx, graceful "not_configured" when key absent (in-app still works). No secrets exposed in API/logs.
+- Preferences: tenant defaults (admin) + per-user overrides (`notification_prefs`), merged via `get_prefs`. Controls channels (in_app/email), alert categories (critical/commitments/billing/integrations), daily digest on/off + local digest hour + timezone, escalation window (minutes) + max level.
+- Timezone-aware daily digest: deterministic build from stored CRM data (attention/breached/at_risk/overdue/approvals/alerts/integration_failures/meetings/goals). Optional AI summary is BOUNDED (8s timeout, non-AI HTML fallback) so it never blocks delivery. Idempotent per (tenant, date). Escalation sweep bumps unresolved critical alerts past the configured delay.
+- Endpoints: GET/POST /api/notifications, /api/notifications/{id}/read, /api/notifications/read-all, GET/PUT /api/notifications/preferences[/me|/tenant], GET /api/digest/preview, POST /api/digest/run (admin), POST /api/alerts/escalate (admin), POST /api/cron/daily-digest (Bearer WEBHOOK_CRON_SECRET, idempotent, backgrounds per-tenant sweep at each tenant's local digest hour).
+- Cron: `.emergent/crons.yml` → `daily-digest` hourly (each tenant fires at its own local hour).
+- Frontend: global NotificationBell in AppShell header (unread badge, dropdown with severity icons, mark-read/read-all, deep links, 30s poll) on all authenticated pages; `/notifications` preferences page (My preferences + admin-only Team defaults tabs, "Send digest now"). email-not-configured banner shown only when key absent.
+- Also fixed pre-existing Recharts `width(-1)` console warning: goal sparkline now uses fixed-size LineChart (64×24) instead of ResponsiveContainer in a tiny flex child.
+- Tests: backend/tests/test_notifications.py 13/13 pass (in-app generation on transition, mark read/read-all, 404, tenant isolation, prefs shape + user/tenant set + member-forbidden tenant, digest preview determinism + member 403, digest run admin-only, escalation admin-only, no secret leakage). Frontend flows validated (iteration_11.json, 95%). 
+- Branch: feature/alert-notifications-digests (NOT merged to main, per instruction).
+- Config added to backend/.env: EMERGENT_EMAIL_KEY, EMAIL_FROM_NAME.
+
 ## Implemented (2026-06 — this phase) — Integration Insights & Timeline — status AVAILABLE
 - Unified per-workspace timeline aggregated on read (no duplication) from domain_events + Gmail/Calendar/Stripe normalized records; normalized item shape with source/severity/refs/stale/failure; newest-first with source/severity/date/search filters + bounded pagination; indexed (tenant,workspace,timestamp).
 - Deduplicated alert engine (alerts collection, key = tenant+type+source_ref): integration degraded/expired/revoked, repeated sync failure, stale sync, webhook DLQ threshold, commitment breach, critical health drop, overdue invoice. occurrence_count increments on re-eval, auto-resolve on cleared conditions. evaluate/list/acknowledge/resolve endpoints; swept by integration-sync cron.
