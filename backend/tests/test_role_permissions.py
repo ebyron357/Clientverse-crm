@@ -7,9 +7,10 @@ import pymongo
 
 BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
 API = f"{BASE}/api"
-ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "tvpro357@gmail.com"),
-         "password": os.environ.get("ADMIN_PASSWORD", "ClientVerse2026!")}
-MEMBER = {"email": "demo.member@clientverse.io", "password": "Member2026!"}
+ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"),
+         "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}
+MEMBER = {"email": os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io"),
+          "password": os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")}
 
 _mongo = pymongo.MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
 _db = _mongo[os.environ.get("DB_NAME", "test_database")]
@@ -217,3 +218,45 @@ def test_disabled_member_loses_access():
     # disabled member is now blocked
     assert requests.get(f"{API}/auth/me", headers=_h(itoken), timeout=15).status_code == 403
     assert requests.get(f"{API}/companies", headers=_h(itoken), timeout=15).status_code == 403
+
+
+def test_member_cannot_approve_mcp_write_admin_can():
+    """Ported coverage from PR #1 against the main API shapes."""
+    a = _h(_admin())
+    email, itoken, _ = _register()
+    inv = requests.post(f"{API}/team/invitations", headers=a, json={"email": email, "role": "member"}, timeout=15)
+    assert inv.status_code == 200, inv.text
+    assert requests.post(f"{API}/team/invitations/accept", headers=_h(itoken), json={"token": inv.json()["invite_token"]}, timeout=15).status_code == 200
+    m = _h(itoken)
+    workspaces = requests.get(f"{API}/workspaces", headers=m, timeout=15)
+    assert workspaces.status_code == 200 and workspaces.json()
+    pending = requests.post(
+        f"{API}/mcp/invoke",
+        headers=m,
+        json={"tool": "create_task", "args": {"workspace_id": workspaces.json()[0]["id"], "title": "permission gate task"}},
+        timeout=20,
+    )
+    assert pending.status_code == 200, pending.text
+    approval_id = pending.json().get("approval_id")
+    assert approval_id
+    denied = requests.patch(f"{API}/approvals/{approval_id}", headers=m, json={"status": "approved"}, timeout=15)
+    assert denied.status_code == 403
+    allowed = requests.patch(f"{API}/approvals/{approval_id}", headers=a, json={"status": "approved"}, timeout=15)
+    assert allowed.status_code == 200, allowed.text
+    execution = allowed.json().get("execution") or {}
+    invocation_id = execution.get("invocation_id")
+    if invocation_id:
+        assert requests.post(f"{API}/mcp/invocations/{invocation_id}/undo", headers=m, json={"reason": "member denied"}, timeout=15).status_code == 403
+        assert requests.post(f"{API}/mcp/invocations/{invocation_id}/undo", headers=a, json={"reason": "admin verification"}, timeout=15).status_code == 200
+
+
+def test_register_creates_membership_and_login_returns_role():
+    email, token, user = _register()
+    assert user.get("role") == "admin"
+    me = requests.get(f"{API}/auth/me", headers=_h(token), timeout=15)
+    assert me.status_code == 200 and me.json()["role"] == "admin"
+    # Fresh tenant has exactly one admin membership — last-admin demotion blocked
+    members = requests.get(f"{API}/team/members", headers=_h(token), timeout=15)
+    assert members.status_code == 200 and len(members.json()) == 1
+    mid = members.json()[0]["user_id"]
+    assert requests.patch(f"{API}/team/members/{mid}/role", headers=_h(token), json={"role": "member"}, timeout=15).status_code == 400

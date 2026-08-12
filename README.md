@@ -31,13 +31,13 @@ cp frontend/.env.example frontend/.env
 
 | Variable | Purpose |
 |---|---|
-| `MONGO_URL` | MongoDB connection string |
-| `DB_NAME` | Database name |
-| `CORS_ORIGINS` | Allowed browser origin (the frontend URL) |
-| `FRONTEND_URL` | Public frontend URL (used for CORS + OAuth redirect) |
-| `JWT_SECRET` | Long random hex string for signing JWTs (`openssl rand -hex 32`) |
+| `MONGO_URL` / `DB_NAME` | MongoDB connection |
+| `CORS_ORIGINS` / `FRONTEND_URL` | Browser allowlist + public frontend URL |
+| `PUBLIC_BACKEND_URL` | Public API URL (OAuth redirect derivation) |
+| `JWT_SECRET` | Long random hex (≥32 chars; `openssl rand -hex 32`) |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Seeded admin/owner account |
-| `EMERGENT_LLM_KEY` | Emergent Universal LLM key for evidence-backed AI |
+| `WEBHOOK_CRON_SECRET` | Bearer secret for `/api/cron/*` |
+| `EMERGENT_LLM_KEY` | Optional — evidence-backed AI |
 
 **Frontend (`frontend/.env`)**
 
@@ -145,7 +145,24 @@ Multi-tenant team membership with server-side role enforcement (`admin` / `membe
 - **Invitations** (`invitations` collection): admins invite by email with a **secure single-use token** — only its SHA-256 **hash is stored**, never the plaintext. Statuses: `pending / accepted / expired / revoked` (7-day TTL). Duplicate active invites and inviting an existing active member are rejected. Accepting attaches the authenticated user to the inviting tenant. Endpoints: `POST/GET /api/team/invitations`, `/resend`, `/revoke`, public `GET /api/team/invitations/lookup?token=`, `POST /api/team/invitations/accept`. UI: `/invite?token=` accept page + `/team` admin console.
 - **Centralized authorization**: `require_role(*roles)` / `require_permission(perm)` dependencies + a `ROLE_PERMISSIONS` map. Governance routes are admin-gated server-side (403 for members): MCP approvals, kill switch, undo, undo-window, webhook secret reveal (`GET /api/webhooks/{id}/secret`) & rotation, webhook create/patch, and all team management. UI hiding is UX only — the API enforces.
 - **Security**: strict tenant isolation (cross-tenant membership ops return 404), token hashing + expiry + single-use, and **last-admin safety** (cannot demote or disable the final active admin). Denied sensitive actions emit `authz.denied`; team lifecycle emits `team.invitation_*`, `team.role_changed`, `team.member_disabled/enabled` audit events.
-- Seeded demo member: `demo.member@clientverse.io` / `Member2026!` (role `member`) in ClientVerse HQ for testing restrictions.
+- Seeded demo member: configured via `DEMO_MEMBER_EMAIL` / `DEMO_MEMBER_PASSWORD` (defaults in `.env.example`) for local restriction testing only — change or disable before production use.
+
+## 14. Production environment checklist
+
+See `docs/PRODUCTION.md` for the full variable table. Minimum core production variables:
+
+| Variable | Purpose |
+|---|---|
+| `MONGO_URL` / `DB_NAME` | Database |
+| `JWT_SECRET` | Strong secret (`openssl rand -hex 32`); startup refuses weak/placeholder values |
+| `FRONTEND_URL` / `CORS_ORIGINS` | Browser origin allowlist (comma-separated) |
+| `PUBLIC_BACKEND_URL` | Public API URL (OAuth redirect derivation, docs) |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Initial admin seed (rotate immediately after first login) |
+| `WEBHOOK_CRON_SECRET` | Auth for cron endpoints |
+
+Optional: `INTEGRATION_ENC_KEY`, Google OAuth, `STRIPE_API_KEY`, `EMERGENT_LLM_KEY`, `EMERGENT_EMAIL_KEY`.
+
+Health probe: `GET /api/health` (returns 200 when MongoDB is reachable, 503 otherwise).
 
 ## 15. Known non-blocking warnings
 
@@ -154,18 +171,4 @@ Multi-tenant team membership with server-side role enforcement (`admin` / `membe
 
 ---
 
-_Release candidate: ClientVerse connected CRM core. Validated: backend 50 passed / 1 skipped, frontend production build succeeds._
-ships** (`memberships` collection): tenant-scoped records tracking `user_id`, `role`, `status` (active/disabled), `invited_by`, `invited_at`, `accepted_at`, `disabled_at`. `get_current_user` resolves the effective role from the membership and **blocks disabled members** (403) on every request. Legacy users self-heal into an active membership.
-- **Invitations** (`invitations` collection): admins invite by email with a **secure single-use token** — only its SHA-256 **hash is stored**, never the plaintext. Statuses: `pending / accepted / expired / revoked` (7-day TTL). Duplicate active invites and inviting an existing active member are rejected. Accepting attaches the authenticated user to the inviting tenant. Endpoints: `POST/GET /api/team/invitations`, `/resend`, `/revoke`, public `GET /api/team/invitations/lookup?token=`, `POST /api/team/invitations/accept`. UI: `/invite?token=` accept page + `/team` admin console.
-- **Centralized authorization**: `require_role(*roles)` / `require_permission(perm)` dependencies + a `ROLE_PERMISSIONS` map. Governance routes are admin-gated server-side (403 for members): MCP approvals, kill switch, undo, undo-window, webhook secret reveal (`GET /api/webhooks/{id}/secret`) & rotation, webhook create/patch, and all team management. UI hiding is UX only — the API enforces.
-- **Security**: strict tenant isolation (cross-tenant membership ops return 404), token hashing + expiry + single-use, and **last-admin safety** (cannot demote or disable the final active admin). Denied sensitive actions emit `authz.denied`; team lifecycle emits `team.invitation_*`, `team.role_changed`, `team.member_disabled/enabled` audit events.
-- Seeded demo member: `demo.member@clientverse.io` / `Member2026!` (role `member`) in ClientVerse HQ for testing restrictions.
-
-## 14. Known non-blocking warnings
-
-- **ESLint (`react-hooks/exhaustive-deps`)** in `OutcomeGraph.jsx` and `Mcp.jsx` — intentional stable `load` dependency; build compiles successfully with warnings.
-- **Recharts** first-paint console warning `width(-1)/height(-1)` from a sparkline `ResponsiveContainer` — cosmetic only; the sparkline renders correctly.
-
----
-
-_Release candidate: ClientVerse connected CRM core. Validated: backend 50 passed / 1 skipped, frontend production build succeeds._
+_Release candidate branch: `release/v1-stabilization`. Validate with `cd backend && python -m pytest tests/ -q` against a running API and `cd frontend && yarn build`._

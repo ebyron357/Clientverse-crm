@@ -34,8 +34,20 @@ mclient = AsyncIOMotorClient(mongo_url)
 db = mclient[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
+_UNSAFE_JWT_DEFAULTS = {
+    "", "changeme", "secret", "jwt_secret", "replace-with-a-long-random-hex-string",
+}
+if len(JWT_SECRET) < 32 or JWT_SECRET.strip().lower() in _UNSAFE_JWT_DEFAULTS:
+    if os.environ.get("ALLOW_INSECURE_JWT", "").lower() not in ("1", "true", "yes"):
+        raise RuntimeError(
+            "JWT_SECRET must be a strong secret (>=32 chars). "
+            "Generate with: openssl rand -hex 32. "
+            "Set ALLOW_INSECURE_JWT=1 only for disposable local/dev environments."
+        )
 JWT_ALG = "HS256"
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+_cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
+CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 
 app = FastAPI(title="ClientVerse API", version="v1")
 api = APIRouter(prefix="/api")
@@ -63,8 +75,17 @@ def create_access_token(user_id: str, email: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 def set_auth_cookie(response: Response, token: str):
-    response.set_cookie("access_token", token, httponly=True, secure=True,
-                        samesite="none", max_age=604800, path="/")
+    # Secure cookies only on HTTPS; localhost HTTP needs Secure=False or browsers drop the cookie.
+    secure = FRONTEND_URL.startswith("https://")
+    response.set_cookie(
+        "access_token",
+        token,
+        httponly=True,
+        secure=secure,
+        samesite="none" if secure else "lax",
+        max_age=604800,
+        path="/",
+    )
 
 async def record_event(event_type: str, resource_type: str, resource_id: str,
                        tenant_id: str, actor: str, workspace_id: Optional[str] = None,
@@ -149,9 +170,15 @@ async def register(inp: RegisterInput, response: Response):
         "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
         "picture": None, "created_at": now_iso(), "auth": "password",
     })
+    await db.memberships.insert_one({
+        "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
+        "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
+        "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso(),
+    })
     token = create_access_token(uid, email)
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
+    u = await resolve_membership(u)
     return {"user": u, "token": token}
 
 @api.post("/auth/login")
@@ -163,6 +190,7 @@ async def login(inp: LoginInput, response: Response):
     token = create_access_token(user["user_id"], email)
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
+    u = await resolve_membership(u)
     return {"user": u, "token": token}
 
 @api.post("/auth/google/session")
@@ -196,6 +224,15 @@ async def google_session(request: Request, response: Response):
     })
     set_auth_cookie(response, session_token)
     user.pop("password_hash", None)
+    # Ensure Google-auth users also get a membership row and effective role
+    if not await db.memberships.find_one({"tenant_id": user["tenant_id"], "user_id": user["user_id"]}):
+        await db.memberships.insert_one({
+            "id": new_id("mem"), "tenant_id": user["tenant_id"], "user_id": user["user_id"],
+            "email": user.get("email"), "role": user.get("role", "admin"), "status": "active",
+            "invited_by": None, "invited_at": None, "accepted_at": now_iso(),
+            "disabled_at": None, "created_at": now_iso(),
+        })
+    user = await resolve_membership(user)
     return {"user": user, "token": session_token}
 
 @api.get("/auth/me")
@@ -949,14 +986,18 @@ async def seed_team():
         await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": t, "user_id": au["user_id"], "email": admin_email,
             "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
-    mem_email = "demo.member@clientverse.io"
-    if not await db.users.find_one({"email": mem_email}):
+    mem_email = os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io").lower()
+    mem_pw = os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")
+    existing_member = await db.users.find_one({"email": mem_email})
+    if not existing_member:
         muid = new_id("user")
         await db.users.insert_one({"user_id": muid, "email": mem_email, "name": "Demo Member", "role": "member",
-            "tenant_id": t, "password_hash": hash_password("Member2026!"), "picture": None, "created_at": now_iso(), "auth": "password"})
+            "tenant_id": t, "password_hash": hash_password(mem_pw), "picture": None, "created_at": now_iso(), "auth": "password"})
         await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": t, "user_id": muid, "email": mem_email,
             "role": "member", "status": "active", "invited_by": admin_email, "invited_at": now_iso(),
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
+    elif existing_member.get("password_hash") and not verify_password(mem_pw, existing_member["password_hash"]):
+        await db.users.update_one({"email": mem_email}, {"$set": {"password_hash": hash_password(mem_pw)}})
 
 async def seed_demo(tenant_id, actor):
     co1 = {"id": new_id("co"), "tenant_id": tenant_id, "name": "Northwind Analytics", "industry": "Data & AI", "website": "northwind.example", "tier": "enterprise", "created_at": now_iso()}
@@ -1635,7 +1676,11 @@ ADAPTER_VERSION = "1.0"
 CONN_STATUSES = ["disconnected", "connecting", "active", "degraded", "expired", "revoked", "error"]
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
-GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or f"{FRONTEND_URL}/api/integrations/google/callback"
+# Prefer an explicit redirect URI; otherwise derive from the public backend URL (not the frontend).
+_PUBLIC_BACKEND = (os.environ.get("PUBLIC_BACKEND_URL") or "").rstrip("/")
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or (
+    f"{_PUBLIC_BACKEND}/api/integrations/google/callback" if _PUBLIC_BACKEND else None
+)
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
@@ -1927,6 +1972,11 @@ async def list_connections(user=Depends(get_current_user)):
 async def google_connect(user=Depends(require_role("admin"))):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=400, detail="Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
+    if not GOOGLE_REDIRECT_URI:
+        raise HTTPException(
+            status_code=400,
+            detail="Google OAuth redirect is not configured. Set GOOGLE_REDIRECT_URI or PUBLIC_BACKEND_URL.",
+        )
     await ensure_connections(user["tenant_id"])
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
@@ -2655,10 +2705,23 @@ async def on_shutdown():
 async def root():
     return {"service": "ClientVerse", "version": "v1", "status": "ok"}
 
+@api.get("/health")
+async def health():
+    """Liveness/readiness probe for hosting platforms. Does not expose secrets."""
+    from fastapi.responses import JSONResponse
+    try:
+        await db.command("ping")
+        return {"service": "ClientVerse", "version": "v1", "status": "ok", "database": "up"}
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"service": "ClientVerse", "version": "v1", "status": "degraded", "database": "down"},
+        )
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

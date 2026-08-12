@@ -5,8 +5,10 @@ import requests
 
 BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
 API = f"{BASE}/api"
-ADMIN = {"email": "tvpro357@gmail.com", "password": "ClientVerse2026!"}
-MEMBER = {"email": "demo.member@clientverse.io", "password": "Member2026!"}
+ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"),
+         "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}
+MEMBER = {"email": os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io"),
+          "password": os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")}
 
 
 def _tok(c):

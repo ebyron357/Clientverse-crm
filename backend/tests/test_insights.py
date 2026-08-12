@@ -5,9 +5,10 @@ import requests
 
 BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
 API = f"{BASE}/api"
-ADMIN = {"email": "tvpro357@gmail.com", "password": "ClientVerse2026!"}
-MEMBER = {"email": "demo.member@clientverse.io", "password": "Member2026!"}
-WS = "ws_371468097ec1"
+ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"),
+         "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}
+MEMBER = {"email": os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io"),
+          "password": os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")}
 
 
 def _tok(c):
@@ -18,6 +19,14 @@ def _tok(c):
 
 def _h(t):
     return {"Authorization": f"Bearer {t}"}
+
+
+def _admin_workspace_id():
+    """Discover a real workspace for the seeded admin tenant (never hard-code IDs)."""
+    h = _h(_tok(ADMIN))
+    ws = requests.get(f"{API}/workspaces", headers=h, timeout=15)
+    assert ws.status_code == 200 and ws.json(), "seeded admin tenant must have at least one workspace"
+    return ws.json()[0]["id"]
 
 
 def _register():
@@ -32,7 +41,8 @@ REQUIRED = {"id", "tenant_id", "workspace_id", "source", "event_type", "title", 
 
 def test_timeline_shape_and_normalization():
     h = _h(_tok(ADMIN))
-    d = requests.get(f"{API}/workspaces/{WS}/timeline?limit=10", headers=h, timeout=20).json()
+    ws_id = _admin_workspace_id()
+    d = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=10", headers=h, timeout=20).json()
     assert d["total"] >= 1 and len(d["items"]) <= 10
     for it in d["items"]:
         assert REQUIRED.issubset(it.keys())
@@ -44,23 +54,25 @@ def test_timeline_shape_and_normalization():
 
 def test_timeline_filter_and_pagination():
     h = _h(_tok(ADMIN))
-    full = requests.get(f"{API}/workspaces/{WS}/timeline?limit=100", headers=h, timeout=20).json()
+    ws_id = _admin_workspace_id()
+    full = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=100", headers=h, timeout=20).json()
     total = full["total"]
-    p1 = requests.get(f"{API}/workspaces/{WS}/timeline?limit=3&offset=0", headers=h, timeout=20).json()
-    p2 = requests.get(f"{API}/workspaces/{WS}/timeline?limit=3&offset=3", headers=h, timeout=20).json()
+    p1 = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=3&offset=0", headers=h, timeout=20).json()
+    p2 = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=3&offset=3", headers=h, timeout=20).json()
     assert p1["total"] == total == p2["total"]
     ids1 = {i["id"] for i in p1["items"]}
     ids2 = {i["id"] for i in p2["items"]}
     assert not (ids1 & ids2)  # no overlap across pages
-    st = requests.get(f"{API}/workspaces/{WS}/timeline?sources=stripe&limit=50", headers=h, timeout=20).json()
+    st = requests.get(f"{API}/workspaces/{ws_id}/timeline?sources=stripe&limit=50", headers=h, timeout=20).json()
     assert all(i["source"] == "stripe" for i in st["items"])
-    sev = requests.get(f"{API}/workspaces/{WS}/timeline?severity=critical&limit=50", headers=h, timeout=20).json()
+    sev = requests.get(f"{API}/workspaces/{ws_id}/timeline?severity=critical&limit=50", headers=h, timeout=20).json()
     assert all(i["severity"] == "critical" for i in sev["items"])
 
 
 def test_timeline_tenant_isolation():
     other = _h(_register())
-    r = requests.get(f"{API}/workspaces/{WS}/timeline", headers=other, timeout=15)
+    ws_id = _admin_workspace_id()
+    r = requests.get(f"{API}/workspaces/{ws_id}/timeline", headers=other, timeout=15)
     assert r.status_code == 404
 
 
@@ -95,7 +107,8 @@ def test_alerts_tenant_isolation():
 
 def test_health_signals_have_source_references():
     h = _h(_tok(ADMIN))
-    d = requests.get(f"{API}/workspaces/{WS}/health-signals", headers=h, timeout=15).json()
+    ws_id = _admin_workspace_id()
+    d = requests.get(f"{API}/workspaces/{ws_id}/health-signals", headers=h, timeout=15).json()
     for s in d["signals"]:
         assert s["source_ref"] and "signal" in s and s["severity"] in ("info", "warning", "critical")
         assert "freshness" in s
@@ -105,7 +118,8 @@ def test_permissions_connection_health_admin_only():
     m = _h(_tok(MEMBER))
     assert requests.get(f"{API}/integrations/health", headers=m, timeout=15).status_code == 403
     # members may still view timeline + alerts
-    assert requests.get(f"{API}/workspaces/{WS}/timeline", headers=m, timeout=15).status_code == 200
+    ws_id = _admin_workspace_id()
+    assert requests.get(f"{API}/workspaces/{ws_id}/timeline", headers=m, timeout=15).status_code == 200
     assert requests.get(f"{API}/alerts", headers=m, timeout=15).status_code == 200
 
 
@@ -120,8 +134,9 @@ def test_connection_health_fields_and_thresholds():
 
 def test_no_secret_leakage_in_insights():
     h = _h(_tok(ADMIN))
-    for url in [f"{API}/workspaces/{WS}/timeline?limit=100", f"{API}/alerts", f"{API}/integrations/health",
-                f"{API}/workspaces/{WS}/health-signals"]:
+    ws_id = _admin_workspace_id()
+    for url in [f"{API}/workspaces/{ws_id}/timeline?limit=100", f"{API}/alerts", f"{API}/integrations/health",
+                f"{API}/workspaces/{ws_id}/health-signals"]:
         body = requests.get(url, headers=h, timeout=20).text
         for bad in ('"enc"', '"oauth_state"', '"code_verifier"', '"access_token"', '"refresh_token"', "sk_test_", "sk_live_", "ya29."):
             assert bad not in body, f"{bad} leaked at {url}"
