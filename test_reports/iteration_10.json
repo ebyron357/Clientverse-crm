@@ -20,7 +20,7 @@
   "critical_code_review_comments": [],
   "updated_files": [],
   "success_rate": {"backend": "N/A (frontend-only retest)", "frontend": "100% (3/3 targeted flows)"},
-  "test_credentials": "Admin tvpro357@gmail.com / ClientVerse2026! and Member demo.member@clientverse.io / Member2026! both work.",
+  "test_credentials": "Admin admin@example.com / [REDACTED_TEST_PASSWORD] and Member demo.member@clientverse.io / Member2026! both work.",
   "seed_data_creation": "None. Existing TEST_hook_* webhooks were used for verification.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

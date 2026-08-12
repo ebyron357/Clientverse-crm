@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { api } from "@/lib/api";
+import { api, setStoredToken, clearStoredToken } from "@/lib/api";
 
 const AuthContext = createContext(null);
 export const useAuth = () => useContext(AuthContext);
@@ -13,6 +13,7 @@ export function AuthProvider({ children }) {
       const { data } = await api.get("/auth/me");
       setUser(data);
     } catch {
+      clearStoredToken();
       setUser(false);
     } finally {
       setLoading(false);
@@ -29,17 +30,23 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
+    if (data?.token) setStoredToken(data.token);
     setUser(data.user);
     return data.user;
   };
   const register = async (payload) => {
     const { data } = await api.post("/auth/register", payload);
+    if (data?.token) setStoredToken(data.token);
     setUser(data.user);
     return data.user;
   };
   const logout = async () => {
-    await api.post("/auth/logout");
-    setUser(false);
+    try {
+      await api.post("/auth/logout");
+    } finally {
+      clearStoredToken();
+      setUser(false);
+    }
   };
 
   return (

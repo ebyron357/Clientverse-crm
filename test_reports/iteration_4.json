@@ -22,7 +22,7 @@
     "/app/backend/tests/test_iteration4.py (new — 6 tests for outcome targets, MCP undo lifecycle & cross-tenant isolation, webhook secret exposure)"
   ],
   "success_rate": {"backend": "100% (21/21)", "frontend": "100% (3/3 features + regression)"},
-  "test_credentials": "tvpro357@gmail.com / ClientVerse2026!",
+  "test_credentials": "admin@example.com / [REDACTED_TEST_PASSWORD]",
   "seed_data_creation": "Created during testing: outcome goals TEST_outcome_*, TEST_upd_*, TEST_dlg_goal in a seeded workspace; tasks TEST_undo_UI_task and TEST_audit_undo_task (both subsequently undone as part of the flow, so removed from DB). All 'TEST_' prefixed and safe to leave.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

@@ -31,7 +31,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "not tested (per request)", "frontend": "~91% (10/11 flows pass; webhook Verify broken)"},
-  "test_credentials": "Admin tvpro357@gmail.com / ClientVerse2026! (works). Member demo.member@clientverse.io / Member2026! (works). Registered fresh invitee newuser+<ts>@example.com successfully.",
+  "test_credentials": "Admin admin@example.com / [REDACTED_TEST_PASSWORD] (works). Member demo.member@clientverse.io / Member2026! (works). Registered fresh invitee newuser+<ts>@example.com successfully.",
   "seed_data_creation": "Created several ephemeral invitations against random @example.com emails (accepted one, revoked one, others left pending). No production data touched.",
   "retest_needed": true,
   "main_agent_can_self_test": true,

@@ -57,12 +57,14 @@ def test_timeline_filter_and_pagination():
     ws_id = _admin_workspace_id()
     full = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=100", headers=h, timeout=20).json()
     total = full["total"]
+    assert total >= 1
     p1 = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=3&offset=0", headers=h, timeout=20).json()
     p2 = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=3&offset=3", headers=h, timeout=20).json()
     assert p1["total"] == total == p2["total"]
     ids1 = {i["id"] for i in p1["items"]}
     ids2 = {i["id"] for i in p2["items"]}
-    assert not (ids1 & ids2)  # no overlap across pages
+    if p1["items"] and p2["items"]:
+        assert not (ids1 & ids2)  # no overlap across pages when both pages have rows
     st = requests.get(f"{API}/workspaces/{ws_id}/timeline?sources=stripe&limit=50", headers=h, timeout=20).json()
     assert all(i["source"] == "stripe" for i in st["items"])
     sev = requests.get(f"{API}/workspaces/{ws_id}/timeline?severity=critical&limit=50", headers=h, timeout=20).json()

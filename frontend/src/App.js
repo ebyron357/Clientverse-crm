@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import "@/App.css";
-import { api } from "@/lib/api";
+import { api, setStoredToken } from "@/lib/api";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import AppShell from "@/components/AppShell";
@@ -28,7 +28,8 @@ function AuthCallback() {
     const sid = new URLSearchParams(hash.replace("#", "")).get("session_id");
     (async () => {
       try {
-        await api.post("/auth/google/session", { session_id: sid });
+        const { data } = await api.post("/auth/google/session", { session_id: sid });
+        if (data?.token) setStoredToken(data.token);
         window.history.replaceState(null, "", "/");
         window.location.href = "/dashboard";
       } catch {

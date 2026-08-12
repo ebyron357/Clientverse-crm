@@ -30,7 +30,7 @@
     "/app/backend/tests/test_iteration6.py (NEW — 8 tests for undo-window PATCH + clamps + admin-only, goal trend array shape, webhook match-preview schema/patterns)"
   ],
   "success_rate": {"backend": "100% (8/8 iter6, 50/51 total, 1 skipped by design)", "frontend": "67% (2/3 features: undo-window PASS, webhook preview PASS, sparklines FAIL)"},
-  "test_credentials": "tvpro357@gmail.com / ClientVerse2026!",
+  "test_credentials": "admin@example.com / [REDACTED_TEST_PASSWORD]",
   "seed_data_creation": "TEST_iter6_*@example.com registered as non-admin user for 403 check. Undo window on seeded workspace left at 60 after clamp test cleanup.",
   "retest_needed": true,
   "should_main_agent_self_test": true,

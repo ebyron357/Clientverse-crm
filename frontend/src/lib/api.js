@@ -3,7 +3,41 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
+const TOKEN_KEY = "cv_access_token";
+
+export function getStoredToken() {
+  try {
+    return window.localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredToken(token) {
+  try {
+    if (token) window.localStorage.setItem(TOKEN_KEY, token);
+    else window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore storage failures (private mode) */
+  }
+}
+
+export function clearStoredToken() {
+  setStoredToken(null);
+}
+
 export const api = axios.create({ baseURL: API, withCredentials: true });
+
+api.interceptors.request.use((config) => {
+  const token = getStoredToken();
+  if (token) {
+    config.headers = config.headers || {};
+    if (!config.headers.Authorization) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  }
+  return config;
+});
 
 export const CAP_STATUS = {
   RESEARCHING: "bg-gray-100 text-gray-600 border-gray-200",

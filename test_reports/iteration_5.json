@@ -21,7 +21,7 @@
     "/app/backend/tests/test_iteration5.py (NEW — 22 tests covering goal_rollup, undo reason/window/admin-only, webhook pattern dispatch, regression breadth)"
   ],
   "success_rate": {"backend": "100% (21/21 iter5, 43 total)", "frontend": "100% (3/3 features + regression)"},
-  "test_credentials": "tvpro357@gmail.com / ClientVerse2026!",
+  "test_credentials": "admin@example.com / [REDACTED_TEST_PASSWORD]",
   "seed_data_creation": "TEST_rollup_*, TEST_com_*, TEST_undo_reason_* and a handful of TEST_hook_* webhooks created during testing. Webhooks left in place (harmless, disabled after test) — main agent can prune if desired.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

@@ -18,7 +18,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100%", "frontend": "100%"},
-  "test_credentials": "tvpro357@gmail.com / ClientVerse2026!",
+  "test_credentials": "admin@example.com / [REDACTED_TEST_PASSWORD]",
   "seed_data_creation": "During test: 1 MCP-invoked task 'TEST_MCP_L2_task' in Northwind Delivery workspace, 1 webhook endpoint 'TEST_WH' pointing to https://example.com/hook, 1 outcome goal 'TEST_new_goal'. These are safe test artifacts and can be cleaned up if desired.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

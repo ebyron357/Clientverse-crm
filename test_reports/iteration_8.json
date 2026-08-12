@@ -21,7 +21,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100% (50/50 passed, 1 skipped by design)", "frontend": "100% (all validated flows work)"},
-  "test_credentials": "Admin: tvpro357@gmail.com / ClientVerse2026! (worked)",
+  "test_credentials": "Admin: admin@example.com / [REDACTED_TEST_PASSWORD] (worked)",
   "seed_data_creation": "None. Used existing seed + prior TEST_ data.",
   "retest_needed": false,
   "should_main_agent_self_test": false,
