@@ -29,6 +29,19 @@ def _register():
 
 def test_alerts_generate_in_app_notifications():
     h = _h(_tok(ADMIN))
+    # Create a deterministic breached commitment so evaluation always has signal
+    # (avoids races with other suites that acknowledge/resolve shared alerts).
+    ws = requests.get(f"{API}/workspaces", headers=h, timeout=15).json()
+    assert ws
+    wid = ws[0]["id"]
+    from datetime import datetime, timezone, timedelta
+    past = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    c = requests.post(f"{API}/commitments", headers=h, json={
+        "workspace_id": wid, "title": f"notif-breach-{uuid.uuid4().hex[:6]}",
+        "owner": "ops", "due_date": past, "status": "open",
+    }, timeout=15)
+    assert c.status_code == 200, c.text
+    requests.post(f"{API}/commitments/evaluate-risk", headers=h, timeout=30)
     requests.post(f"{API}/alerts/evaluate", headers=h, timeout=30)
     openq = requests.get(f"{API}/alerts?status=open", headers=h, timeout=15).json()
     assert openq["counts"]["open"] >= 1, "expected at least one open alert to drive a notification"

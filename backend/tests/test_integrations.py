@@ -57,6 +57,9 @@ def test_member_denied_connection_management():
 # ---------- Stripe live read + idempotent sync ----------
 
 def test_stripe_connect_and_idempotent_sync():
+    if not os.environ.get("STRIPE_API_KEY"):
+        import pytest
+        pytest.skip("STRIPE_API_KEY not configured — Stripe live sync requires an external secret")
     h = _h(_tok(ADMIN))
     c = requests.post(f"{API}/integrations/stripe/connect", headers=h, timeout=30)
     assert c.status_code == 200 and c.json()["ok"] is True

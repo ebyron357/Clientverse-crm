@@ -78,17 +78,30 @@ def test_timeline_tenant_isolation():
 
 def test_alert_creation_dedupe_and_lifecycle():
     h = _h(_tok(ADMIN))
+    # Seed a unique breach so this test owns its alert row (xdist-safe).
+    from datetime import datetime, timezone, timedelta
+    ws = requests.get(f"{API}/workspaces", headers=h, timeout=15).json()
+    assert ws
+    past = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
+    title = f"insight-breach-{uuid.uuid4().hex[:6]}"
+    c = requests.post(f"{API}/commitments", headers=h, json={
+        "workspace_id": ws[0]["id"], "title": title, "owner": "ops", "due_date": past, "status": "open",
+    }, timeout=15)
+    assert c.status_code == 200, c.text
+    requests.post(f"{API}/commitments/evaluate-risk", headers=h, timeout=30)
     requests.post(f"{API}/alerts/evaluate", headers=h, timeout=30)
     first = requests.get(f"{API}/alerts?status=open", headers=h, timeout=15).json()
     open_count = first["counts"]["open"]
     assert open_count >= 1
-    target = first["alerts"][0]
+    target = next(a for a in first["alerts"] if title in (a.get("summary") or ""))
     prev_occ = target["occurrence_count"]
     # re-evaluate -> persistent conditions dedupe (increment occurrence, not duplicate rows)
     requests.post(f"{API}/alerts/evaluate", headers=h, timeout=30)
     again = requests.get(f"{API}/alerts?status=open", headers=h, timeout=15).json()
-    assert again["counts"]["open"] == open_count  # no duplicate alerts
-    same = next(a for a in again["alerts"] if a["id"] == target["id"])
+    same_rows = [a for a in again["alerts"] if a.get("source_ref") == target["source_ref"] and a.get("type") == target["type"]]
+    assert len(same_rows) == 1, "dedupe must not create duplicate open rows for the same source_ref"
+    same = same_rows[0]
+    assert same["id"] == target["id"]
     assert same["occurrence_count"] >= prev_occ + 1
     # acknowledge then resolve
     assert requests.post(f"{API}/alerts/{target['id']}/acknowledge", headers=h, timeout=15).status_code == 200

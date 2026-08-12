@@ -121,7 +121,18 @@ class TestWorkspaces:
 
 # --- AI ---
 class TestAI:
+    def _ai_available(self):
+        if not os.environ.get("EMERGENT_LLM_KEY"):
+            return False
+        try:
+            import emergentintegrations  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
     def test_ai_health_summary(self, admin):
+        if not self._ai_available():
+            pytest.skip("EMERGENT_LLM_KEY / emergentintegrations unavailable — AI generation requires external service")
         ws = admin.get(f"{API}/workspaces").json()
         wid = ws[0]["id"]
         r = admin.post(f"{API}/ai/generate", json={"mode": "health_summary", "workspace_id": wid}, timeout=90)
@@ -134,6 +145,8 @@ class TestAI:
         assert any(k in d for k in ["model_version", "model"]), list(d.keys())
 
     def test_ai_draft(self, admin):
+        if not self._ai_available():
+            pytest.skip("EMERGENT_LLM_KEY / emergentintegrations unavailable — AI generation requires external service")
         ws = admin.get(f"{API}/workspaces").json()
         wid = ws[0]["id"]
         r = admin.post(f"{API}/ai/generate", json={"mode": "draft_message", "workspace_id": wid, "instruction": "Send a friendly status update"}, timeout=90)

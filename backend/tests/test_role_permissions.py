@@ -188,23 +188,28 @@ def test_tenant_isolation_membership():
 
 def test_last_admin_protection_and_safe_demotion():
     a = _h(_admin())
+    # Use a disposable invitee — never mutate the shared seeded demo member (xdist-safe).
+    email, itoken, _ = _register()
+    inv = requests.post(f"{API}/team/invitations", headers=a, json={"email": email, "role": "member"}, timeout=15)
+    assert inv.status_code == 200, inv.text
+    assert requests.post(f"{API}/team/invitations/accept", headers=_h(itoken), json={"token": inv.json()["invite_token"]}, timeout=15).status_code == 200
+    me = requests.get(f"{API}/auth/me", headers=_h(itoken), timeout=15).json()
+    member_uid = me["user_id"]
+
     members = requests.get(f"{API}/team/members", headers=a, timeout=15).json()
     admins = [m for m in members if m["role"] == "admin" and m["status"] == "active"]
     admin_uid = next(m["user_id"] for m in admins)
-    member_row = next(m for m in members if m["email"] == MEMBER["email"])
-    member_uid = member_row["user_id"]
 
     # only 1 admin -> cannot self-demote or self-disable
     if len(admins) == 1:
         assert requests.patch(f"{API}/team/members/{admin_uid}/role", headers=a, json={"role": "member"}, timeout=15).status_code == 400
         assert requests.patch(f"{API}/team/members/{admin_uid}/status", headers=a, json={"status": "disabled"}, timeout=15).status_code == 400
 
-    # promote the demo member -> now 2 admins -> demoting one is allowed
+    # promote the invitee -> now 2 admins -> demoting one is allowed
     assert requests.patch(f"{API}/team/members/{member_uid}/role", headers=a, json={"role": "admin"}, timeout=15).status_code == 200
-    assert requests.patch(f"{API}/team/members/{member_uid}/role", headers=a, json={"role": "member"}, timeout=15).status_code == 200  # safe: original admin remains
-    # restore original state (demo member stays member)
+    assert requests.patch(f"{API}/team/members/{member_uid}/role", headers=a, json={"role": "member"}, timeout=15).status_code == 200
     restored = requests.get(f"{API}/team/members", headers=a, timeout=15).json()
-    assert next(m for m in restored if m["email"] == MEMBER["email"])["role"] == "member"
+    assert next(m for m in restored if m["user_id"] == member_uid)["role"] == "member"
 
 
 def test_disabled_member_loses_access():
