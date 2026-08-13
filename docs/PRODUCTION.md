@@ -43,3 +43,21 @@ This document separates configuration by audience and risk. Never commit real se
 - `.env` files with real values
 - JWT secrets, cron secrets, Fernet keys, OAuth client secrets, Stripe keys, email/LLM keys
 - `node_modules/`, `frontend/build/`, Python caches, MongoDB dumps
+
+## Going public with this repository
+
+Before flipping visibility to public:
+
+1. Confirm no real `.env`, key file, or database dump is tracked or present in
+   git history (`git log --diff-filter=A --name-only`). Only `.env.example`
+   files should ever be committed.
+2. Rotate every credential that was used in a shared preview/demo environment —
+   `JWT_SECRET`, `ADMIN_PASSWORD`, `WEBHOOK_CRON_SECRET`, `INTEGRATION_ENC_KEY`,
+   OAuth client secrets, Stripe and Emergent keys.
+3. Unset `DEMO_MEMBER_EMAIL` / `DEMO_MEMBER_PASSWORD` and `ALLOW_INSECURE_JWT`
+   in every non-local environment.
+4. In repository settings, enable branch protection on `main`, private
+   vulnerability reporting, secret scanning, and Dependabot alerts.
+5. Verify CI is green (`.github/workflows/ci.yml`: frontend build + backend API
+   tests) and that `GET /api/health` reports `{"status":"ok","database":"up"}`
+   on the deployed environment.
