@@ -998,8 +998,12 @@ async def seed_team():
         await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": t, "user_id": au["user_id"], "email": admin_email,
             "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
-    mem_email = os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io").lower()
-    mem_pw = os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")
+    mem_email = (os.environ.get("DEMO_MEMBER_EMAIL") or "").lower()
+    mem_pw = os.environ.get("DEMO_MEMBER_PASSWORD") or ""
+    if not mem_email or not mem_pw:
+        # No demo member is seeded unless the operator explicitly configures one.
+        # Never fall back to a well-known email/password in a deployed environment.
+        return
     existing_member = await db.users.find_one({"email": mem_email})
     if not existing_member:
         muid = new_id("user")
