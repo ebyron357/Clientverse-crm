@@ -77,6 +77,7 @@ agenthub/agents/youtube/db
 **/*.tar.gz
 **/*.tar
 **/*.tgz
+*.whl
 *.pack
 *.deb
 *.dylib
