@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, CAP_STATUS } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
@@ -29,16 +29,16 @@ export default function Mcp() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
 
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
     const r = await api.get("/mcp/invocations?limit=50");
     setInvocations(r.data);
-  };
-  const load = async () => {
+  }, []);
+  const load = useCallback(async () => {
     const [t, w] = await Promise.all([api.get("/mcp/tools"), api.get("/workspaces")]);
     setData(t.data.tools); setServer(t.data.server); setWorkspaces(w.data);
     loadHistory();
-  };
-  useEffect(() => { load(); }, []);
+  }, [loadHistory]);
+  useEffect(() => { load(); }, [load]);
 
   const toggleKill = async (enabled) => {
     try {
