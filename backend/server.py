@@ -297,6 +297,13 @@ def require_permission(perm):
         return user
     return _dep
 
+async def assert_workspace(user, workspace_id: str):
+    """Reject client-supplied workspace ids that do not belong to the caller's tenant."""
+    ws = await db.workspaces.find_one({"id": workspace_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return ws
+
 # ----------------------------- Team: invitations & members -----------------------------
 
 INVITE_TTL_DAYS = 7
@@ -644,6 +651,7 @@ class TaskInput(BaseModel):
 
 @api.post("/tasks")
 async def create_task(inp: TaskInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("task"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.tasks.insert_one(doc)
     await record_event("task.created", "task", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -670,6 +678,7 @@ class DeliverableInput(BaseModel):
 
 @api.post("/deliverables")
 async def create_deliverable(inp: DeliverableInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("dlv"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.deliverables.insert_one(doc)
     await record_event("deliverable.created", "deliverable", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -693,6 +702,7 @@ class RequestInput(BaseModel):
 
 @api.post("/client-requests")
 async def create_request(inp: RequestInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("req"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.client_requests.insert_one(doc)
     await record_event("client_request.created", "client_request", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -714,6 +724,7 @@ class ApprovalInput(BaseModel):
 
 @api.post("/approvals")
 async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("apr"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.approvals.insert_one(doc)
     await record_event("approval.requested", "approval", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -744,6 +755,7 @@ class CommitmentInput(BaseModel):
 
 @api.post("/commitments")
 async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("cmt"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.commitments.insert_one(doc)
     await record_event("commitment.created", "commitment", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -1626,6 +1638,7 @@ async def update_outcome(oid: str, inp: OutcomePatch, user=Depends(get_current_u
 
 @api.post("/outcomes")
 async def create_outcome(inp: OutcomeInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("out"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.outcomes.insert_one(dict(doc))
     await snapshot_outcome(doc)
