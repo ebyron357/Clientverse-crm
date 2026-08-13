@@ -73,14 +73,27 @@ sudo supervisorctl restart frontend      # serves on :3000
 ```bash
 # Backend API/integration test suite (hits the running backend)
 cd backend && python -m pytest tests/ -q
-# Latest result: 50 passed, 1 skipped (by design)
+# Latest result: 100 passed, 4 skipped
+# Skips are external-service dependent only: Stripe live sync (STRIPE_API_KEY),
+# two AI generation tests (EMERGENT_LLM_KEY), and one MCP undo-window case that
+# cannot be backdated through the public API.
 ```
+
+The suite drives the HTTP API, so a backend must be running and reachable at
+`REACT_APP_BACKEND_URL` (default `http://localhost:8001`). `ADMIN_EMAIL`,
+`ADMIN_PASSWORD`, `DEMO_MEMBER_EMAIL`, `DEMO_MEMBER_PASSWORD`, `MONGO_URL` and
+`DB_NAME` are read from the environment — never hard-code them in tests.
 
 ## 7. Production build
 
 ```bash
-cd frontend && yarn build     # outputs frontend/build/ (static, deployable)
+cd frontend && yarn install       # clean-clone install requires no private registries
+cd frontend && yarn build         # outputs frontend/build/ (static, deployable)
 ```
+
+The build is warning-free, so it also succeeds on CI runners that set `CI=true`
+(which turns ESLint warnings into errors). Set `REACT_APP_BACKEND_URL` before
+building — it is baked into the bundle at build time.
 
 ## 8. Authentication configuration
 
@@ -145,7 +158,7 @@ Multi-tenant team membership with server-side role enforcement (`admin` / `membe
 - **Invitations** (`invitations` collection): admins invite by email with a **secure single-use token** — only its SHA-256 **hash is stored**, never the plaintext. Statuses: `pending / accepted / expired / revoked` (7-day TTL). Duplicate active invites and inviting an existing active member are rejected. Accepting attaches the authenticated user to the inviting tenant. Endpoints: `POST/GET /api/team/invitations`, `/resend`, `/revoke`, public `GET /api/team/invitations/lookup?token=`, `POST /api/team/invitations/accept`. UI: `/invite?token=` accept page + `/team` admin console.
 - **Centralized authorization**: `require_role(*roles)` / `require_permission(perm)` dependencies + a `ROLE_PERMISSIONS` map. Governance routes are admin-gated server-side (403 for members): MCP approvals, kill switch, undo, undo-window, webhook secret reveal (`GET /api/webhooks/{id}/secret`) & rotation, webhook create/patch, and all team management. UI hiding is UX only — the API enforces.
 - **Security**: strict tenant isolation (cross-tenant membership ops return 404), token hashing + expiry + single-use, and **last-admin safety** (cannot demote or disable the final active admin). Denied sensitive actions emit `authz.denied`; team lifecycle emits `team.invitation_*`, `team.role_changed`, `team.member_disabled/enabled` audit events.
-- Seeded demo member: configured via `DEMO_MEMBER_EMAIL` / `DEMO_MEMBER_PASSWORD` (defaults in `.env.example`) for local restriction testing only — change or disable before production use.
+- Seeded demo member: seeded **only** when both `DEMO_MEMBER_EMAIL` and `DEMO_MEMBER_PASSWORD` are set (defaults in `.env.example` are for local restriction testing only). Leave both unset in production — no fallback demo account is ever created.
 
 ## 14. Production environment checklist
 
@@ -166,9 +179,10 @@ Health probe: `GET /api/health` (returns 200 when MongoDB is reachable, 503 othe
 
 ## 15. Known non-blocking warnings
 
-- **ESLint (`react-hooks/exhaustive-deps`)** in `OutcomeGraph.jsx` and `Mcp.jsx` — intentional stable `load` dependency; build compiles successfully with warnings.
 - **Recharts** first-paint console warning `width(-1)/height(-1)` from a sparkline `ResponsiveContainer` — cosmetic only; the sparkline renders correctly.
+- `GET /api/auth/me` returns **401 once on the login screen** before a session exists. This is the expected bootstrap probe, not an error.
+- `frontend/public/index.html` loads two **third-party assets** (`assets.emergent.sh/scripts/emergent-main.js` and PostHog analytics via `ap.emergent.sh`) plus webfonts from `fonts.googleapis.com` / `api.fontshare.com`. The app renders correctly when they are blocked, but review whether vendor telemetry is acceptable for your deployment before going live.
 
 ---
 
-_Release candidate branch: `release/v1-stabilization`. Validate with `cd backend && python -m pytest tests/ -q` against a running API and `cd frontend && yarn build`._
+_Validate a release candidate with `cd backend && python -m pytest tests/ -q` against a running API and `cd frontend && CI=true yarn build`._

@@ -12,8 +12,9 @@ Emergent Google OAuth also supported: `POST /api/auth/google/session` `{session_
 ## API test
 
 ```bash
-export ADMIN_EMAIL=admin@example.com
-export ADMIN_PASSWORD=AdminPass123!
+# Load your local values instead of hard-coding credentials.
+set -a; source backend/.env; set +a
+
 curl -c cookies.txt -X POST http://localhost:8001/api/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}"
@@ -21,6 +22,11 @@ curl -b cookies.txt http://localhost:8001/api/auth/me
 curl -b cookies.txt http://localhost:8001/api/dashboard
 curl http://localhost:8001/api/health
 ```
+
+The pytest suite reads the same variables (`ADMIN_EMAIL`, `ADMIN_PASSWORD`,
+`DEMO_MEMBER_EMAIL`, `DEMO_MEMBER_PASSWORD`, `MONGO_URL`, `DB_NAME`,
+`REACT_APP_BACKEND_URL`) from the environment — no credentials are stored in the
+test files.
 
 ## Browser (Google session) test
 
