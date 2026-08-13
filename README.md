@@ -1,5 +1,8 @@
 # ClientVerse.io — AI-native Client Operations Platform
 
+[![CI](https://github.com/ebyron357/Clientverse-crm/actions/workflows/ci.yml/badge.svg)](https://github.com/ebyron357/Clientverse-crm/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 ClientVerse manages the complete client lifecycle — **WIN → ONBOARD → SERVE → RETAIN → EXPAND** — with a governed, integration-first core: pipeline, client workspaces, commitment ledger, deliverables/requests/approvals, explainable client health, evidence-backed AI, a governed MCP server, live webhooks, and a per-client Outcome Graph.
 
 **Stack:** FastAPI + MongoDB (backend) · React + Tailwind + shadcn/ui (frontend). Modular monolith.
@@ -17,6 +20,12 @@ cd frontend && yarn install
 ```
 
 Requirements: Python 3.11+, Node 18+, Yarn, MongoDB 5+.
+
+> Optional AI extras: `emergentintegrations` is **not** published on PyPI and is
+> imported lazily, so a clean clone installs and runs without it (AI generation
+> stays disabled unless `EMERGENT_LLM_KEY` is set). Install it separately if you
+> want AI features:
+> `pip install emergentintegrations==0.2.0 --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/`
 
 ## 2. Environment setup
 
@@ -73,7 +82,7 @@ sudo supervisorctl restart frontend      # serves on :3000
 ```bash
 # Backend API/integration test suite (hits the running backend)
 cd backend && python -m pytest tests/ -q
-# Latest result: 100 passed, 4 skipped
+# Latest result: 101 passed, 4 skipped
 # Skips are external-service dependent only: Stripe live sync (STRIPE_API_KEY),
 # two AI generation tests (EMERGENT_LLM_KEY), and one MCP undo-window case that
 # cannot be backdated through the public API.
@@ -181,7 +190,29 @@ Health probe: `GET /api/health` (returns 200 when MongoDB is reachable, 503 othe
 
 - **Recharts** first-paint console warning `width(-1)/height(-1)` from a sparkline `ResponsiveContainer` — cosmetic only; the sparkline renders correctly.
 - `GET /api/auth/me` returns **401 once on the login screen** before a session exists. This is the expected bootstrap probe, not an error.
-- `frontend/public/index.html` loads two **third-party assets** (`assets.emergent.sh/scripts/emergent-main.js` and PostHog analytics via `ap.emergent.sh`) plus webfonts from `fonts.googleapis.com` / `api.fontshare.com`. The app renders correctly when they are blocked, but review whether vendor telemetry is acceptable for your deployment before going live.
+- `frontend/public/index.html` loads **no third-party scripts or analytics** — vendor telemetry was removed for the public release. It still requests the Inter webfont from `fonts.googleapis.com`; the app renders correctly when that request is blocked, and you can self-host the font if you need a fully offline shell.
+
+## 16. Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+
+- **Frontend build** — `yarn install --frozen-lockfile` + `CI=true yarn build` (warnings fail the build).
+- **Backend API tests** — boots MongoDB 7 as a service container, generates ephemeral secrets, starts `uvicorn server:app` on `:8001`, waits for `GET /api/health`, then runs `pytest tests/ -q`.
+
+No secrets are required for CI; every credential it uses is generated per run.
+
+## 17. Project and community files
+
+- [LICENSE](LICENSE) — MIT.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — local setup, validation commands, change guidelines.
+- [SECURITY.md](SECURITY.md) — private vulnerability reporting + deployment hardening checklist.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant v2.1.
+- `.github/ISSUE_TEMPLATE/` and `.github/pull_request_template.md` — issue/PR scaffolding.
+
+Before flipping the repository to public: confirm no real `.env` files or dumps
+exist in history, rotate any credential that was ever used in a shared preview
+environment, and enable branch protection plus private vulnerability reporting
+in the repository settings.
 
 ---
 
