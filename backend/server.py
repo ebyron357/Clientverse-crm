@@ -199,7 +199,10 @@ async def google_session(request: Request, response: Response):
     session_id = body.get("session_id")
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing session_id")
-    r = requests.get("https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+    google_auth_backend = os.environ.get("GOOGLE_AUTH_BACKEND_URL")
+    if not google_auth_backend:
+        raise HTTPException(status_code=400, detail="Google OAuth is not configured (GOOGLE_AUTH_BACKEND_URL)")
+    r = requests.get(f"{google_auth_backend}/auth/v1/env/oauth/session-data",
                      headers={"X-Session-ID": session_id}, timeout=15)
     if r.status_code != 200:
         raise HTTPException(status_code=401, detail="Invalid session_id")
@@ -2390,7 +2393,7 @@ async def workspace_health_signals(ws_id: str, user=Depends(get_current_user)):
 # ============================================================================
 from zoneinfo import ZoneInfo
 
-EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+EMAIL_BASE_URL = os.environ.get("EMAIL_BASE_URL", "https://integrations.emergentagent.com")
 DEFAULT_PREFS = {"channels": {"email": True, "in_app": True}, "critical": True, "commitments": True,
                  "billing": True, "integrations": True, "daily_digest": True, "digest_time": "08:00",
                  "timezone": "UTC", "escalation_minutes": 60, "escalation_max_level": 3}

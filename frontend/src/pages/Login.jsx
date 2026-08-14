@@ -28,10 +28,12 @@ export default function Login() {
     } finally { setBusy(false); }
   };
 
+  const googleAuthUrl = process.env.REACT_APP_GOOGLE_AUTH_URL;
+
   const googleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    if (!googleAuthUrl) return;
     const redirectUrl = window.location.origin + "/dashboard";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    window.location.href = `${googleAuthUrl}?redirect=${encodeURIComponent(redirectUrl)}`;
   };
 
   return (
@@ -85,14 +87,18 @@ export default function Login() {
             {busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
           </Button>
 
-          <div className="relative my-4 text-center">
-            <span className="text-xs text-gray-400 bg-[#FAFAFA] px-2 relative z-10">or</span>
-            <div className="absolute inset-x-0 top-1/2 border-t border-gray-200" />
-          </div>
+          {googleAuthUrl && (
+            <>
+              <div className="relative my-4 text-center">
+                <span className="text-xs text-gray-400 bg-[#FAFAFA] px-2 relative z-10">or</span>
+                <div className="absolute inset-x-0 top-1/2 border-t border-gray-200" />
+              </div>
 
-          <Button type="button" variant="outline" onClick={googleLogin} data-testid="google-login-button" className="w-full">
-            Continue with Google
-          </Button>
+              <Button type="button" variant="outline" onClick={googleLogin} data-testid="google-login-button" className="w-full">
+                Continue with Google
+              </Button>
+            </>
+          )}
 
           <p className="text-sm text-gray-500 mt-6 text-center">
             {mode === "login" ? "No account?" : "Already have one?"}{" "}

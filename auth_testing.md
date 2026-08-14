@@ -12,8 +12,9 @@ Emergent Google OAuth also supported: `POST /api/auth/google/session` `{session_
 ## API test
 
 ```bash
-export ADMIN_EMAIL=admin@example.com
-export ADMIN_PASSWORD=AdminPass123!
+# Set these from your local backend/.env — never hardcode real credentials here.
+export ADMIN_EMAIL="$ADMIN_EMAIL"
+export ADMIN_PASSWORD="$ADMIN_PASSWORD"
 curl -c cookies.txt -X POST http://localhost:8001/api/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}"
