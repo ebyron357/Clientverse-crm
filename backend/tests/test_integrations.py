@@ -3,22 +3,15 @@ import uuid
 
 import requests
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
-API = f"{BASE}/api"
-ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"),
-         "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}
-MEMBER = {"email": os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io"),
-          "password": os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")}
+from conftest import API, ADMIN_CREDS, MEMBER_CREDS, login, auth_header
 
 
 def _tok(creds):
-    r = requests.post(f"{API}/auth/login", json=creds, timeout=15)
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
+    return login(creds)
 
 
 def _h(t):
-    return {"Authorization": f"Bearer {t}"}
+    return auth_header(t)
 
 
 def _register():
@@ -31,7 +24,7 @@ def _register():
 # ---------- token leakage / connection listing ----------
 
 def test_connections_never_leak_tokens():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     r = requests.get(f"{API}/integrations/connections", headers=h, timeout=15)
     assert r.status_code == 200
     body = r.text
@@ -44,7 +37,7 @@ def test_connections_never_leak_tokens():
 # ---------- permissions ----------
 
 def test_member_denied_connection_management():
-    m = _h(_tok(MEMBER))
+    m = _h(_tok(MEMBER_CREDS))
     assert requests.post(f"{API}/integrations/stripe/connect", headers=m, timeout=15).status_code == 403
     assert requests.post(f"{API}/integrations/gmail/sync", headers=m, timeout=15).status_code == 403
     assert requests.post(f"{API}/integrations/stripe/disconnect", headers=m, timeout=15).status_code == 403
@@ -60,16 +53,14 @@ def test_stripe_connect_and_idempotent_sync():
     if not os.environ.get("STRIPE_API_KEY"):
         import pytest
         pytest.skip("STRIPE_API_KEY not configured — Stripe live sync requires an external secret")
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     c = requests.post(f"{API}/integrations/stripe/connect", headers=h, timeout=30)
     assert c.status_code == 200 and c.json()["ok"] is True
     s1 = requests.post(f"{API}/integrations/stripe/sync", headers=h, timeout=60).json()
     assert s1["status"] == "completed"
     s2 = requests.post(f"{API}/integrations/stripe/sync", headers=h, timeout=60).json()
     assert s2["status"] == "completed"
-    # idempotent: same set of records upserted, counts stable
     assert s1["scanned"] == s2["scanned"]
-    # connection reflects a real successful sync
     conns = requests.get(f"{API}/integrations/connections", headers=h, timeout=15).json()
     stripe = next(x for x in conns if x["provider"] == "stripe")
     assert stripe["status"] == "active"
@@ -79,9 +70,8 @@ def test_stripe_connect_and_idempotent_sync():
 # ---------- Google OAuth foundation ----------
 
 def test_google_connect_requires_configuration():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     r = requests.post(f"{API}/integrations/google/connect", headers=h, timeout=15)
-    # env has no GOOGLE_CLIENT_ID in this environment -> clear 400 (never a fake connected state)
     if r.status_code == 400:
         assert "google" in r.json()["detail"].lower()
     else:
@@ -98,15 +88,12 @@ def test_oauth_callback_rejects_bad_state():
 # ---------- tenant isolation ----------
 
 def test_tenant_isolation_activity():
-    # a fresh user in their own tenant cannot read HQ workspace activity
     _, tok = _register()
     h = _h(tok)
-    # find any HQ workspace id from admin
-    ah = _h(_tok(ADMIN))
+    ah = _h(_tok(ADMIN_CREDS))
     ws = requests.get(f"{API}/workspaces", headers=ah, timeout=15).json()[0]["id"]
     r = requests.get(f"{API}/integrations/workspaces/{ws}/activity", headers=h, timeout=15)
     assert r.status_code == 404
-    # their own connections are isolated + all disconnected initially
     conns = requests.get(f"{API}/integrations/connections", headers=h, timeout=15).json()
     assert all(c["status"] == "disconnected" for c in conns)
 
@@ -114,14 +101,12 @@ def test_tenant_isolation_activity():
 # ---------- disconnect / revoke path ----------
 
 def test_disconnect_marks_disconnected_and_blocks_sync():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     requests.post(f"{API}/integrations/stripe/connect", headers=h, timeout=30)
     assert requests.post(f"{API}/integrations/stripe/disconnect", headers=h, timeout=15).status_code == 200
     conns = requests.get(f"{API}/integrations/connections", headers=h, timeout=15).json()
     assert next(x for x in conns if x["provider"] == "stripe")["status"] == "disconnected"
-    # sync on a disconnected provider is rejected
     assert requests.post(f"{API}/integrations/stripe/sync", headers=h, timeout=15).status_code == 400
-    # reconnect for later tests
     requests.post(f"{API}/integrations/stripe/connect", headers=h, timeout=30)
 
 
@@ -165,6 +150,6 @@ def test_stripe_normalizers():
 # ---------- existing CRM still works ----------
 
 def test_existing_crm_unaffected():
-    h = _h(_tok(MEMBER))
+    h = _h(_tok(MEMBER_CREDS))
     for p in ["/companies", "/contacts", "/workspaces", "/dashboard"]:
         assert requests.get(f"{API}{p}", headers=h, timeout=15).status_code == 200

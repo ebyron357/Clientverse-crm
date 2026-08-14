@@ -1,21 +1,16 @@
 """ClientVerse.io backend regression tests"""
 import os
-import time
 import uuid
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://outcome-graph.preview.emergentagent.com").rstrip("/")
-API = f"{BASE_URL}/api"
-
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@example.com")
-ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "AdminPass123!")
+from conftest import API, ADMIN_CREDS, ADMIN_EMAIL, login, auth_header
 
 
 @pytest.fixture(scope="session")
 def admin():
     s = requests.Session()
-    r = s.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=30)
+    r = s.post(f"{API}/auth/login", json=ADMIN_CREDS, timeout=30)
     assert r.status_code == 200, f"admin login failed: {r.status_code} {r.text}"
     token = r.json().get("access_token") or r.json().get("token")
     if token:
@@ -66,7 +61,6 @@ class TestDashboard:
 # --- Pipeline ---
 class TestPipeline:
     def test_create_opportunity_and_move_to_won_creates_workspace(self, admin):
-        # create company first
         c = admin.post(f"{API}/companies", json={"name": f"TEST_Co_{uuid.uuid4().hex[:6]}"})
         assert c.status_code in (200, 201), c.text
         company_id = c.json()["id"]
@@ -77,11 +71,9 @@ class TestPipeline:
         opp = r.json()
         opp_id = opp["id"]
 
-        # baseline workspace count
         ws0 = admin.get(f"{API}/workspaces").json()
         n0 = len(ws0)
 
-        # move to closed_won
         r2 = admin.patch(f"{API}/opportunities/{opp_id}/stage", json={"stage": "closed_won"})
         assert r2.status_code in (200, 204), r2.text
 
@@ -99,7 +91,6 @@ class TestDirectory:
         r = admin.post(f"{API}/contacts", json={"name": "TEST Contact", "email": "test@x.com", "company_id": cid})
         assert r.status_code in (200, 201)
 
-        # list
         assert any(cid == c["id"] for c in admin.get(f"{API}/companies").json())
 
 
@@ -139,7 +130,6 @@ class TestAI:
         assert r.status_code == 200, r.text
         d = r.json()
         assert "output" in d or "text" in d or "content" in d, list(d.keys())
-        # source refs
         assert any(k in d for k in ["sources", "source_records", "references"]), list(d.keys())
         assert "run_id" in d or "id" in d
         assert any(k in d for k in ["model_version", "model"]), list(d.keys())
@@ -178,7 +168,6 @@ class TestTenantIsolation:
         companies = s.get(f"{API}/companies").json()
         workspaces = s.get(f"{API}/workspaces").json()
         events = s.get(f"{API}/events").json()
-        # New tenant should NOT see admin's seeded demo companies
         names = [c.get("name", "") for c in companies]
         assert not any("Acme" in n or "Globex" in n or "Initech" in n for n in names), f"leaked: {names}"
         assert len(workspaces) == 0, f"leaked workspaces: {len(workspaces)}"

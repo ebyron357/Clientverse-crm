@@ -2,20 +2,15 @@ import os
 import requests
 from datetime import datetime, timezone, timedelta
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
-API = f"{BASE}/api"
-ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"),
-         "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}
+from conftest import API, ADMIN_CREDS, login, auth_header
 
 
 def _token():
-    r = requests.post(f"{API}/auth/login", json=ADMIN, timeout=15)
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
+    return login(ADMIN_CREDS)
 
 
 def _headers():
-    return {"Authorization": f"Bearer {_token()}"}
+    return auth_header(_token())
 
 
 def _workspace(h):
@@ -61,9 +56,7 @@ def test_commitment_due_date_is_editable():
 
 
 def test_cron_requires_secret():
-    # missing auth
     assert requests.post(f"{API}/cron/commitment-risk", timeout=15).status_code == 401
-    # wrong secret
     assert requests.post(f"{API}/cron/commitment-risk",
                          headers={"Authorization": "Bearer wrong"}, timeout=15).status_code == 401
 
@@ -71,7 +64,6 @@ def test_cron_requires_secret():
 def test_cron_accepts_valid_secret_and_is_idempotent():
     secret = os.environ.get("WEBHOOK_CRON_SECRET")
     if not secret:
-        # secret only readable inside the pod env; skip if not exposed to the test process
         import pytest
         pytest.skip("WEBHOOK_CRON_SECRET not available to test process")
     h = {"Authorization": f"Bearer {secret}", "X-Webhook-Id": "pytest-run-fixed"}

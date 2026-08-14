@@ -5,25 +5,22 @@ from datetime import datetime, timezone, timedelta
 import requests
 import pymongo
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
-API = f"{BASE}/api"
-ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"),
-         "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}
-MEMBER = {"email": os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io"),
-          "password": os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")}
+from conftest import (
+    API, ADMIN_CREDS, MEMBER_CREDS,
+    MONGO_URL, DB_NAME,
+    login, auth_header,
+)
 
-_mongo = pymongo.MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
-_db = _mongo[os.environ.get("DB_NAME", "test_database")]
+_mongo = pymongo.MongoClient(MONGO_URL)
+_db = _mongo[DB_NAME]
 
 
 def _login(creds):
-    r = requests.post(f"{API}/auth/login", json=creds, timeout=15)
-    assert r.status_code == 200, f"login failed for {creds['email']}: {r.text}"
-    return r.json()["token"]
+    return login(creds)
 
 
 def _h(token):
-    return {"Authorization": f"Bearer {token}"}
+    return auth_header(token)
 
 
 def _register(email=None):
@@ -34,11 +31,11 @@ def _register(email=None):
 
 
 def _admin():
-    return _login(ADMIN)
+    return _login(ADMIN_CREDS)
 
 
 def _member():
-    return _login(MEMBER)
+    return _login(MEMBER_CREDS)
 
 
 # --------------------------- member denials (403) ---------------------------
@@ -120,7 +117,7 @@ def test_duplicate_active_invitation_rejected():
 
 def test_cannot_invite_existing_active_member():
     a = _h(_admin())
-    r = requests.post(f"{API}/team/invitations", headers=a, json={"email": MEMBER["email"], "role": "member"}, timeout=15)
+    r = requests.post(f"{API}/team/invitations", headers=a, json={"email": MEMBER_CREDS["email"], "role": "member"}, timeout=15)
     assert r.status_code == 400
 
 
@@ -265,3 +262,35 @@ def test_register_creates_membership_and_login_returns_role():
     assert members.status_code == 200 and len(members.json()) == 1
     mid = members.json()[0]["user_id"]
     assert requests.patch(f"{API}/team/members/{mid}/role", headers=_h(token), json={"role": "member"}, timeout=15).status_code == 400
+
+
+# ---- permission-specific denials (authz.denied event) ----
+
+def test_member_denied_integration_admin():
+    m = _h(_member())
+    assert requests.post(f"{API}/integrations/stripe/connect", headers=m, timeout=15).status_code == 403
+    assert requests.post(f"{API}/integrations/gmail/sync", headers=m, timeout=15).status_code == 403
+    assert requests.post(f"{API}/integrations/stripe/disconnect", headers=m, timeout=15).status_code == 403
+    assert requests.post(f"{API}/integrations/google/connect", headers=m, timeout=15).status_code == 403
+    assert requests.get(f"{API}/integrations/sync-logs", headers=m, timeout=15).status_code == 403
+
+
+def test_member_denied_governance_config():
+    m = _h(_member())
+    assert requests.put(f"{API}/notifications/preferences/tenant", headers=m,
+                        json={"prefs": {"digest_time": "07:00"}}, timeout=15).status_code == 403
+    assert requests.get(f"{API}/digest/preview", headers=m, timeout=15).status_code == 403
+    assert requests.post(f"{API}/digest/run", headers=m, timeout=20).status_code == 403
+    assert requests.post(f"{API}/alerts/escalate", headers=m, timeout=15).status_code == 403
+
+
+def test_authz_denied_event_emitted():
+    """A representative permission denial should emit authz.denied."""
+    a = _h(_admin())
+    m = _h(_member())
+    # trigger a denial
+    requests.get(f"{API}/team/members", headers=m, timeout=15)
+    # check events
+    events = requests.get(f"{API}/events", headers=a, timeout=15).json()
+    denied = [e for e in events if e.get("event_type") == "authz.denied"]
+    assert len(denied) >= 1, "expected at least one authz.denied event"

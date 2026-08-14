@@ -10,16 +10,13 @@ import time
 import pytest
 import requests
 
-BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL") or "https://outcome-graph.preview.emergentagent.com").rstrip("/")
-API = f"{BASE_URL}/api"
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@example.com")
-ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "AdminPass123!")
+from conftest import API, ADMIN_CREDS, login, auth_header
 
 
 @pytest.fixture(scope="module")
 def admin():
     s = requests.Session()
-    r = s.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=30)
+    r = s.post(f"{API}/auth/login", json=ADMIN_CREDS, timeout=30)
     assert r.status_code == 200, r.text
     tok = r.json().get("access_token") or r.json().get("token")
     if tok:
@@ -56,7 +53,6 @@ class TestGoalRollup:
         for k in ("total_goals", "on_track", "at_risk", "avg_progress", "workspaces"):
             assert k in gr, f"missing {k} in goal_rollup: {list(gr.keys())}"
         assert isinstance(gr["workspaces"], list)
-        # each workspace row has goal_count + goals[]
         for w in gr["workspaces"]:
             assert "id" in w and "name" in w and "goal_count" in w and "goals" in w
             for g in w["goals"]:
@@ -64,7 +60,6 @@ class TestGoalRollup:
                     assert f in g, f"missing {f} in rollup goal: {list(g.keys())}"
 
     def test_rollup_reflects_new_outcome(self, admin, workspace_id):
-        # Create an outcome and check rollup avg_progress moves
         title = f"TEST_rollup_{uuid.uuid4().hex[:6]}"
         r = admin.post(f"{API}/outcomes", json={
             "workspace_id": workspace_id, "title": title, "target": title,
@@ -96,7 +91,6 @@ class TestMcpUndoReason:
         assert approval_id
         pr = admin.patch(f"{API}/approvals/{approval_id}", json={"status": "approved"})
         assert pr.status_code in (200, 204)
-        # Find the success invocation
         invs = admin.get(f"{API}/mcp/invocations").json()
         inv = next((i for i in invs if i.get("tool") == "add_note" and i.get("status") == "success"
                     and (i.get("args") or {}).get("workspace_id") == workspace_id), None)
@@ -107,13 +101,10 @@ class TestMcpUndoReason:
         inv = self._create_note_invocation(admin, workspace_id)
         r = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": ""})
         assert r.status_code == 422, r.text
-        # Whitespace-only should also fail
         r2 = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": "   "})
         assert r2.status_code == 422, r2.text
-        # Missing reason field also 422 (default "")
         r3 = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={})
         assert r3.status_code == 422, r3.text
-        # cleanup: undo it properly
         r4 = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": "cleanup"})
         assert r4.status_code == 200, r4.text
 
@@ -125,12 +116,10 @@ class TestMcpUndoReason:
         body = r.json()
         assert body.get("ok") is True
         assert body.get("reason") == reason
-        # invocation flipped
         invs = admin.get(f"{API}/mcp/invocations").json()
         u = next(i for i in invs if i["id"] == inv["id"])
         assert u.get("status") == "undone"
         assert u.get("undo_reason") == reason
-        # event contains reason
         events = admin.get(f"{API}/events").json()
         ev = next((e for e in events if e.get("event_type") == "mcp.tool_undone"
                    and (e.get("payload") or {}).get("invocation_id") == inv["id"]), None)
@@ -139,7 +128,6 @@ class TestMcpUndoReason:
 
     def test_undo_admin_only(self, admin, workspace_id):
         inv = self._create_note_invocation(admin, workspace_id)
-        # non-admin user (new tenant)
         s = requests.Session()
         email = f"TEST_{uuid.uuid4().hex[:8]}@example.com"
         reg = s.post(f"{API}/auth/register", json={"email": email, "password": "Passw0rd!!", "name": "T"})
@@ -147,10 +135,8 @@ class TestMcpUndoReason:
         tok = reg.json().get("access_token") or reg.json().get("token")
         if tok:
             s.headers.update({"Authorization": f"Bearer {tok}"})
-        # cross-tenant → 404 (tenant scoped) OR 403 (admin gate). New user IS admin of own tenant so it's 404.
         r = s.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": "try"})
         assert r.status_code in (403, 404), r.text
-        # cleanup
         admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": "cleanup"})
 
     def test_undo_window_expired(self, admin, workspace_id):
@@ -168,8 +154,6 @@ class TestWebhookPatterns:
         return r.json()
 
     def test_event_matches_wildcard(self, admin, workspace_id):
-        # Use httpbin.org/status/200 as sink so delivery attempts don't fail infinitely
-        # But we mostly care about the delivery record being created for matching hook only
         h_comm = self._mk_hook(admin, f"TEST_hook_comm_{uuid.uuid4().hex[:6]}",
                                "https://httpbin.org/status/200", ["commitment.*"])
         h_mcp = self._mk_hook(admin, f"TEST_hook_mcp_{uuid.uuid4().hex[:6]}",
@@ -179,7 +163,6 @@ class TestWebhookPatterns:
         h_none = self._mk_hook(admin, f"TEST_hook_none_{uuid.uuid4().hex[:6]}",
                                "https://httpbin.org/status/200", ["approval.*"])
 
-        # Trigger a commitment.created event by creating a commitment
         r = admin.post(f"{API}/commitments", json={
             "workspace_id": workspace_id,
             "title": f"TEST_com_{uuid.uuid4().hex[:6]}",
@@ -188,11 +171,9 @@ class TestWebhookPatterns:
         })
         assert r.status_code in (200, 201), r.text
 
-        time.sleep(2.0)  # give dispatch time to create delivery rows
+        time.sleep(2.0)
 
-        # Fetch deliveries
         deliv = admin.get(f"{API}/webhook-deliveries").json()
-        # Filter by event_type and per-hook_id
         def has_delivery(hook_id, event_type_prefix):
             return any(d.get("webhook_id") == hook_id and d.get("event_type", "").startswith(event_type_prefix)
                        for d in deliv)
@@ -201,7 +182,6 @@ class TestWebhookPatterns:
         assert has_delivery(h_star["id"], "commitment."), "* hook missed commitment.created"
         assert not has_delivery(h_none["id"], "commitment."), "approval.* hook should NOT receive commitment.*"
 
-        # cleanup (endpoint may or may not exist)
         for h in (h_comm, h_mcp, h_star, h_none):
             try:
                 admin.delete(f"{API}/webhooks/{h['id']}")

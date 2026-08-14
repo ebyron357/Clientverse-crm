@@ -1,20 +1,16 @@
 """ClientVerse.io iteration-4 backend tests: Undo, Outcome Targets, Webhook secret exposure."""
 import os
 import uuid
-import time
 import pytest
 import requests
 
-BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL") or "https://outcome-graph.preview.emergentagent.com").rstrip("/")
-API = f"{BASE_URL}/api"
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@example.com")
-ADMIN_PASS = os.environ.get("ADMIN_PASSWORD", "AdminPass123!")
+from conftest import API, ADMIN_CREDS, login, auth_header
 
 
 @pytest.fixture(scope="module")
 def admin():
     s = requests.Session()
-    r = s.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=30)
+    r = s.post(f"{API}/auth/login", json=ADMIN_CREDS, timeout=30)
     assert r.status_code == 200
     tok = r.json().get("access_token") or r.json().get("token")
     if tok:
@@ -32,7 +28,6 @@ def workspace_id(admin):
 # --- Outcome Targets ---
 class TestOutcomeTargets:
     def test_outcome_graph_returns_targets(self, admin):
-        # Find a workspace with seeded goals (target seed = ClientVerse HQ delivery workspace)
         ws_list = admin.get(f"{API}/workspaces").json()
         found = None
         for w in ws_list:
@@ -44,7 +39,6 @@ class TestOutcomeTargets:
         g = found["goals"][0]
         for f in ("target_value", "current_value", "unit", "title"):
             assert f in g, f"missing {f} in goal: {list(g.keys())}"
-        # Verify seeded 'Launch analytics platform' has 65/100
         launch = next((x for x in found["goals"] if "Launch analytics" in x.get("title", "")), None)
         if launch:
             assert launch["current_value"] == 65
@@ -70,7 +64,6 @@ class TestOutcomeTargets:
         oid = c["id"]
         r = admin.patch(f"{API}/outcomes/{oid}", json={"current_value": 55})
         assert r.status_code in (200, 204), r.text
-        # Verify via graph
         graph = admin.get(f"{API}/workspaces/{workspace_id}/outcome-graph").json()
         goal = next((g for g in graph["goals"] if g["id"] == oid), None)
         assert goal and goal["current_value"] == 55
@@ -85,15 +78,12 @@ class TestMcpUndo:
         })
         assert r.status_code == 200, r.text
         d = r.json()
-        # Level 2 create_task should be pending_approval
         assert d.get("status") == "pending_approval", d
         approval_id = d.get("approval_id") or d.get("approval", {}).get("id")
         inv_id = d.get("invocation_id") or d.get("id")
         assert approval_id, d
-        # Approve
         pr = admin.patch(f"{API}/approvals/{approval_id}", json={"status": "approved"})
         assert pr.status_code in (200, 204), pr.text
-        # find invocation
         invs = admin.get(f"{API}/mcp/invocations").json()
         inv = next((i for i in invs if i.get("id") == inv_id or (i.get("tool") == "create_task" and (i.get("args") or {}).get("title") == title and i.get("status") == "success")), None)
         assert inv, f"invocation not found: title={title}"
@@ -102,38 +92,31 @@ class TestMcpUndo:
 
     def test_undo_removes_task_and_blocks_reuse(self, admin, workspace_id):
         inv, title = self._invoke_and_approve_create_task(admin, workspace_id)
-        # Task exists
         ws = admin.get(f"{API}/workspaces/{workspace_id}").json()
         assert any(t["title"] == title for t in ws.get("tasks", [])), "task should exist before undo"
 
-        # Undo (iteration-5: reason required)
         r = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": "test cleanup"})
         assert r.status_code == 200, r.text
         body = r.json()
         assert body.get("ok") is True
         assert "restored" in body
 
-        # Task removed
         ws2 = admin.get(f"{API}/workspaces/{workspace_id}").json()
         assert not any(t["title"] == title for t in ws2.get("tasks", [])), "task should be removed after undo"
 
-        # Invocation marked undone
         invs = admin.get(f"{API}/mcp/invocations").json()
         u = next(i for i in invs if i["id"] == inv["id"])
         assert u.get("undone") is True
         assert u.get("status") == "undone"
 
-        # Second undo blocked
         r2 = admin.post(f"{API}/mcp/invocations/{inv['id']}/undo", json={"reason": "again"})
         assert r2.status_code == 400, r2.text
 
-        # Event emitted
         events = admin.get(f"{API}/events").json()
         assert any(e.get("event_type") == "mcp.tool_undone" and (e.get("payload") or {}).get("invocation_id") == inv["id"] for e in events)
 
     def test_undo_cross_tenant_isolation(self, admin, workspace_id):
         """New-tenant users become admin of their own tenant so tenant-scoping (404) protects cross-tenant undo."""
-        # Create a real invocation in admin tenant
         title = f"TEST_iso_{uuid.uuid4().hex[:6]}"
         r = admin.post(f"{API}/mcp/invoke", json={
             "tool": "create_task", "args": {"workspace_id": workspace_id, "title": title}
@@ -143,7 +126,6 @@ class TestMcpUndo:
         invs = admin.get(f"{API}/mcp/invocations").json()
         inv_id = next(i["id"] for i in invs if (i.get("args") or {}).get("title") == title)
 
-        # New tenant user tries to undo admin's invocation
         s = requests.Session()
         email = f"TEST_{uuid.uuid4().hex[:8]}@example.com"
         reg = s.post(f"{API}/auth/register", json={"email": email, "password": "Passw0rd!!", "name": "T"})

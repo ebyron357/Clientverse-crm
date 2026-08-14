@@ -340,7 +340,7 @@ class MemberStatusInput(BaseModel):
     status: str
 
 @api.get("/team/members")
-async def team_members(user=Depends(require_role("admin"))):
+async def team_members(user=Depends(require_permission("team:manage"))):
     mems = await db.memberships.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", 1).to_list(500)
     out = []
     for m in mems:
@@ -349,12 +349,12 @@ async def team_members(user=Depends(require_role("admin"))):
     return out
 
 @api.get("/team/invitations")
-async def list_invitations(user=Depends(require_role("admin"))):
+async def list_invitations(user=Depends(require_permission("team:manage"))):
     invs = await db.invitations.find({"tenant_id": user["tenant_id"]}, {"_id": 0, "token_hash": 0}).sort("created_at", -1).to_list(500)
     return [_invite_public(await _expire_if_needed(inv)) for inv in invs]
 
 @api.post("/team/invitations")
-async def create_invitation(inp: InviteInput, user=Depends(require_role("admin"))):
+async def create_invitation(inp: InviteInput, user=Depends(require_permission("team:invite"))):
     email = inp.email.lower()
     if inp.role not in ("admin", "member"):
         raise HTTPException(status_code=422, detail="Role must be admin or member")
@@ -377,7 +377,7 @@ async def create_invitation(inp: InviteInput, user=Depends(require_role("admin")
     return {"invitation": _invite_public(inv), "invite_token": token, "invite_url": f"{FRONTEND_URL}/invite?token={token}"}
 
 @api.post("/team/invitations/{inv_id}/resend")
-async def resend_invitation(inv_id: str, user=Depends(require_role("admin"))):
+async def resend_invitation(inv_id: str, user=Depends(require_permission("team:invite"))):
     inv = await db.invitations.find_one({"id": inv_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not inv:
         raise HTTPException(status_code=404, detail="Not found")
@@ -392,7 +392,7 @@ async def resend_invitation(inv_id: str, user=Depends(require_role("admin"))):
     return {"invite_token": token, "invite_url": f"{FRONTEND_URL}/invite?token={token}"}
 
 @api.post("/team/invitations/{inv_id}/revoke")
-async def revoke_invitation(inv_id: str, user=Depends(require_role("admin"))):
+async def revoke_invitation(inv_id: str, user=Depends(require_permission("team:invite"))):
     inv = await db.invitations.find_one({"id": inv_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not inv:
         raise HTTPException(status_code=404, detail="Not found")
@@ -441,7 +441,7 @@ async def accept_invitation(inp: TokenInput, user=Depends(get_current_user)):
     return {"ok": True, "tenant_id": tenant_id, "role": inv["role"]}
 
 @api.patch("/team/members/{target_user_id}/role")
-async def change_member_role(target_user_id: str, inp: RoleInput, user=Depends(require_role("admin"))):
+async def change_member_role(target_user_id: str, inp: RoleInput, user=Depends(require_permission("member:role"))):
     if inp.role not in ("admin", "member"):
         raise HTTPException(status_code=422, detail="Role must be admin or member")
     m = await db.memberships.find_one({"tenant_id": user["tenant_id"], "user_id": target_user_id}, {"_id": 0})
@@ -455,7 +455,7 @@ async def change_member_role(target_user_id: str, inp: RoleInput, user=Depends(r
     return {"ok": True, "role": inp.role}
 
 @api.patch("/team/members/{target_user_id}/status")
-async def change_member_status(target_user_id: str, inp: MemberStatusInput, user=Depends(require_role("admin"))):
+async def change_member_status(target_user_id: str, inp: MemberStatusInput, user=Depends(require_permission("member:disable"))):
     if inp.status not in ("active", "disabled"):
         raise HTTPException(status_code=422, detail="Status must be active or disabled")
     m = await db.memberships.find_one({"tenant_id": user["tenant_id"], "user_id": target_user_id}, {"_id": 0})
@@ -720,7 +720,7 @@ async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/approvals/{apr_id}")
-async def decide_approval(apr_id: str, inp: TaskStatus, user=Depends(require_role("admin"))):
+async def decide_approval(apr_id: str, inp: TaskStatus, user=Depends(require_permission("mcp:approve"))):
     a = await db.approvals.find_one({"id": apr_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Not found")
@@ -986,8 +986,11 @@ async def seed_team():
         await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": t, "user_id": au["user_id"], "email": admin_email,
             "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
-    mem_email = os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io").lower()
-    mem_pw = os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")
+    mem_email = os.environ.get("DEMO_MEMBER_EMAIL", "").lower()
+    mem_pw = os.environ.get("DEMO_MEMBER_PASSWORD", "")
+    if not mem_email or not mem_pw:
+        logger.info("DEMO_MEMBER_EMAIL / DEMO_MEMBER_PASSWORD not set — skipping demo member seed")
+        return
     existing_member = await db.users.find_one({"email": mem_email})
     if not existing_member:
         muid = new_id("user")
@@ -1251,7 +1254,7 @@ class KillInput(BaseModel):
     enabled: bool
 
 @api.patch("/mcp/server/kill")
-async def mcp_kill(inp: KillInput, user=Depends(require_role("admin"))):
+async def mcp_kill(inp: KillInput, user=Depends(require_permission("mcp:kill"))):
     await get_mcp_server(user["tenant_id"])
     await db.mcp_server_state.update_one({"server_id": MCP_SERVER_ID, "tenant_id": user["tenant_id"]},
                                          {"$set": {"kill_switch": inp.enabled}})
@@ -1370,7 +1373,7 @@ class UndoInput(BaseModel):
     reason: str = ""
 
 @api.post("/mcp/invocations/{inv_id}/undo")
-async def mcp_undo(inv_id: str, inp: UndoInput, user=Depends(require_role("admin"))):
+async def mcp_undo(inv_id: str, inp: UndoInput, user=Depends(require_permission("mcp:undo"))):
     reason = (inp.reason or "").strip()
     if not reason:
         raise HTTPException(status_code=422, detail="A reason is required to reverse an action")
@@ -1417,7 +1420,7 @@ class UndoWindowInput(BaseModel):
     minutes: int
 
 @api.patch("/workspaces/{ws_id}/undo-window")
-async def set_undo_window(ws_id: str, inp: UndoWindowInput, user=Depends(require_role("admin"))):
+async def set_undo_window(ws_id: str, inp: UndoWindowInput, user=Depends(require_permission("workspace:undo_window"))):
     ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not ws:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1498,7 +1501,7 @@ async def list_webhooks(user=Depends(get_current_user)):
     return await db.webhooks.find({"tenant_id": user["tenant_id"]}, {"_id": 0, "secret": 0}).sort("created_at", -1).to_list(200)
 
 @api.get("/webhooks/{wid}/secret")
-async def reveal_webhook_secret(wid: str, user=Depends(require_role("admin"))):
+async def reveal_webhook_secret(wid: str, user=Depends(require_permission("webhook:reveal_secret"))):
     wh = await db.webhooks.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not wh:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1506,7 +1509,7 @@ async def reveal_webhook_secret(wid: str, user=Depends(require_role("admin"))):
     return {"id": wid, "secret": wh.get("secret")}
 
 @api.post("/webhooks")
-async def create_webhook(inp: WebhookInput, user=Depends(require_role("admin"))):
+async def create_webhook(inp: WebhookInput, user=Depends(require_permission("webhook:manage"))):
     doc = {"id": new_id("wh"), "tenant_id": user["tenant_id"], "name": inp.name, "url": inp.url,
            "events": inp.events, "status": "AVAILABLE", "signed": True, "enabled": True,
            "secret": "whsec_" + secrets.token_hex(16), "description": "Custom endpoint.", "created_at": now_iso()}
@@ -1515,7 +1518,7 @@ async def create_webhook(inp: WebhookInput, user=Depends(require_role("admin")))
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/webhooks/{wid}")
-async def patch_webhook(wid: str, inp: WebhookPatch, user=Depends(require_role("admin"))):
+async def patch_webhook(wid: str, inp: WebhookPatch, user=Depends(require_permission("webhook:manage"))):
     wh = await db.webhooks.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not wh:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1969,7 +1972,7 @@ async def list_connections(user=Depends(get_current_user)):
     return rows
 
 @api.post("/integrations/google/connect")
-async def google_connect(user=Depends(require_role("admin"))):
+async def google_connect(user=Depends(require_permission("integration:admin"))):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=400, detail="Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
     if not GOOGLE_REDIRECT_URI:
@@ -2036,7 +2039,7 @@ async def google_callback(state: str = Query(None), code: str = Query(None), err
     return RedirectResponse(url=f"{dest}&oauth=connected")
 
 @api.post("/integrations/stripe/connect")
-async def stripe_connect(user=Depends(require_role("admin"))):
+async def stripe_connect(user=Depends(require_permission("integration:admin"))):
     key = os.environ.get("STRIPE_API_KEY")
     if not key:
         raise HTTPException(status_code=400, detail="Stripe is not configured (STRIPE_API_KEY).")
@@ -2056,7 +2059,7 @@ async def stripe_connect(user=Depends(require_role("admin"))):
     return {"ok": True, "account": identity}
 
 @api.post("/integrations/{provider}/disconnect")
-async def disconnect_provider(provider: str, user=Depends(require_role("admin"))):
+async def disconnect_provider(provider: str, user=Depends(require_permission("integration:admin"))):
     if provider not in PROVIDERS:
         raise HTTPException(status_code=404, detail="Unknown provider")
     if provider in ("gmail", "google_calendar"):
@@ -2076,13 +2079,13 @@ async def disconnect_provider(provider: str, user=Depends(require_role("admin"))
     return {"ok": True}
 
 @api.post("/integrations/{provider}/sync")
-async def sync_provider(provider: str, user=Depends(require_role("admin"))):
+async def sync_provider(provider: str, user=Depends(require_permission("integration:admin"))):
     if provider not in PROVIDERS:
         raise HTTPException(status_code=404, detail="Unknown provider")
     return await run_sync(user["tenant_id"], provider, user["email"])
 
 @api.get("/integrations/sync-logs")
-async def integration_sync_logs(user=Depends(require_role("admin"))):
+async def integration_sync_logs(user=Depends(require_permission("integration:admin"))):
     return await db.integration_sync_logs.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("started_at", -1).to_list(50)
 
 @api.get("/integrations/workspaces/{ws_id}/activity")
@@ -2333,7 +2336,7 @@ async def resolve_alert(alert_id: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 @api.get("/integrations/health")
-async def integration_health(user=Depends(require_role("admin"))):
+async def integration_health(user=Depends(require_permission("integration:admin"))):
     conns = await db.integration_connections.find({"tenant_id": user["tenant_id"]}, SAFE_CONN_FIELDS).to_list(50)
     out = []
     for c in conns:
@@ -2634,23 +2637,23 @@ async def set_my_preferences(inp: PrefsInput, user=Depends(get_current_user)):
     return {"ok": True, "effective": await get_prefs(user["tenant_id"], user["user_id"])}
 
 @api.put("/notifications/preferences/tenant")
-async def set_tenant_preferences(inp: PrefsInput, user=Depends(require_role("admin"))):
+async def set_tenant_preferences(inp: PrefsInput, user=Depends(require_permission("governance:config"))):
     await db.notification_prefs.update_one({"tenant_id": user["tenant_id"], "user_id": None},
         {"$set": {"tenant_id": user["tenant_id"], "user_id": None, **_pick(inp.prefs), "updated_at": now_iso(), "updated_by": user["email"]}}, upsert=True)
     await record_event("notification.pref_changed", "prefs", user["tenant_id"], user["tenant_id"], user["email"], payload={"scope": "tenant"})
     return {"ok": True, "tenant_default": await get_prefs(user["tenant_id"])}
 
 @api.get("/digest/preview")
-async def digest_preview(user=Depends(require_role("admin"))):
+async def digest_preview(user=Depends(require_permission("governance:config"))):
     return await build_digest(user["tenant_id"])
 
 @api.post("/digest/run")
-async def digest_run(user=Depends(require_role("admin"))):
+async def digest_run(user=Depends(require_permission("governance:config"))):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return await deliver_digest(user["tenant_id"], today, force=True)
 
 @api.post("/alerts/escalate")
-async def alerts_escalate(user=Depends(require_role("admin"))):
+async def alerts_escalate(user=Depends(require_permission("governance:config"))):
     return {"escalated": await run_escalations(user["tenant_id"])}
 
 @api.post("/cron/daily-digest")

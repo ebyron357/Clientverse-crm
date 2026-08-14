@@ -3,27 +3,20 @@ import uuid
 
 import requests
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
-API = f"{BASE}/api"
-ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"),
-         "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}
-MEMBER = {"email": os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io"),
-          "password": os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")}
+from conftest import API, ADMIN_CREDS, MEMBER_CREDS, login, auth_header
 
 
 def _tok(c):
-    r = requests.post(f"{API}/auth/login", json=c, timeout=15)
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
+    return login(c)
 
 
 def _h(t):
-    return {"Authorization": f"Bearer {t}"}
+    return auth_header(t)
 
 
 def _admin_workspace_id():
     """Discover a real workspace for the seeded admin tenant (never hard-code IDs)."""
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     ws = requests.get(f"{API}/workspaces", headers=h, timeout=15)
     assert ws.status_code == 200 and ws.json(), "seeded admin tenant must have at least one workspace"
     return ws.json()[0]["id"]
@@ -40,20 +33,19 @@ REQUIRED = {"id", "tenant_id", "workspace_id", "source", "event_type", "title", 
 
 
 def test_timeline_shape_and_normalization():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     ws_id = _admin_workspace_id()
     d = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=10", headers=h, timeout=20).json()
     assert d["total"] >= 1 and len(d["items"]) <= 10
     for it in d["items"]:
         assert REQUIRED.issubset(it.keys())
         assert it["severity"] in ("info", "warning", "critical")
-    # newest-first
     ts = [i["occurred_at"] or "" for i in d["items"]]
     assert ts == sorted(ts, reverse=True)
 
 
 def test_timeline_filter_and_pagination():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     ws_id = _admin_workspace_id()
     full = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=100", headers=h, timeout=20).json()
     total = full["total"]
@@ -64,7 +56,7 @@ def test_timeline_filter_and_pagination():
     ids1 = {i["id"] for i in p1["items"]}
     ids2 = {i["id"] for i in p2["items"]}
     if p1["items"] and p2["items"]:
-        assert not (ids1 & ids2)  # no overlap across pages when both pages have rows
+        assert not (ids1 & ids2)
     st = requests.get(f"{API}/workspaces/{ws_id}/timeline?sources=stripe&limit=50", headers=h, timeout=20).json()
     assert all(i["source"] == "stripe" for i in st["items"])
     sev = requests.get(f"{API}/workspaces/{ws_id}/timeline?severity=critical&limit=50", headers=h, timeout=20).json()
@@ -79,8 +71,7 @@ def test_timeline_tenant_isolation():
 
 
 def test_alert_creation_dedupe_and_lifecycle():
-    h = _h(_tok(ADMIN))
-    # Seed a unique breach so this test owns its alert row (xdist-safe).
+    h = _h(_tok(ADMIN_CREDS))
     from datetime import datetime, timezone, timedelta
     ws = requests.get(f"{API}/workspaces", headers=h, timeout=15).json()
     assert ws
@@ -97,7 +88,6 @@ def test_alert_creation_dedupe_and_lifecycle():
     assert open_count >= 1
     target = next(a for a in first["alerts"] if title in (a.get("summary") or ""))
     prev_occ = target["occurrence_count"]
-    # re-evaluate -> persistent conditions dedupe (increment occurrence, not duplicate rows)
     requests.post(f"{API}/alerts/evaluate", headers=h, timeout=30)
     again = requests.get(f"{API}/alerts?status=open", headers=h, timeout=15).json()
     same_rows = [a for a in again["alerts"] if a.get("source_ref") == target["source_ref"] and a.get("type") == target["type"]]
@@ -105,7 +95,6 @@ def test_alert_creation_dedupe_and_lifecycle():
     same = same_rows[0]
     assert same["id"] == target["id"]
     assert same["occurrence_count"] >= prev_occ + 1
-    # acknowledge then resolve
     assert requests.post(f"{API}/alerts/{target['id']}/acknowledge", headers=h, timeout=15).status_code == 200
     ackd = next(a for a in requests.get(f"{API}/alerts", headers=h, timeout=15).json()["alerts"] if a["id"] == target["id"])
     assert ackd["status"] == "acknowledged" and ackd["acknowledged_by"]
@@ -121,7 +110,7 @@ def test_alerts_tenant_isolation():
 
 
 def test_health_signals_have_source_references():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     ws_id = _admin_workspace_id()
     d = requests.get(f"{API}/workspaces/{ws_id}/health-signals", headers=h, timeout=15).json()
     for s in d["signals"]:
@@ -130,16 +119,15 @@ def test_health_signals_have_source_references():
 
 
 def test_permissions_connection_health_admin_only():
-    m = _h(_tok(MEMBER))
+    m = _h(_tok(MEMBER_CREDS))
     assert requests.get(f"{API}/integrations/health", headers=m, timeout=15).status_code == 403
-    # members may still view timeline + alerts
     ws_id = _admin_workspace_id()
     assert requests.get(f"{API}/workspaces/{ws_id}/timeline", headers=m, timeout=15).status_code == 200
     assert requests.get(f"{API}/alerts", headers=m, timeout=15).status_code == 200
 
 
 def test_connection_health_fields_and_thresholds():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     d = requests.get(f"{API}/integrations/health", headers=h, timeout=15).json()
     for p in d["providers"]:
         for k in ("provider", "status", "sync_age_hours", "stale", "reconnect_required", "failure_count"):
@@ -148,7 +136,7 @@ def test_connection_health_fields_and_thresholds():
 
 
 def test_no_secret_leakage_in_insights():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     ws_id = _admin_workspace_id()
     for url in [f"{API}/workspaces/{ws_id}/timeline?limit=100", f"{API}/alerts", f"{API}/integrations/health",
                 f"{API}/workspaces/{ws_id}/health-signals"]:
@@ -158,6 +146,6 @@ def test_no_secret_leakage_in_insights():
 
 
 def test_existing_crm_unaffected():
-    h = _h(_tok(MEMBER))
+    h = _h(_tok(MEMBER_CREDS))
     for p in ["/companies", "/workspaces", "/dashboard"]:
         assert requests.get(f"{API}{p}", headers=h, timeout=15).status_code == 200

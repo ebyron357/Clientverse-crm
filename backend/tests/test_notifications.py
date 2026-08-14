@@ -3,22 +3,15 @@ import uuid
 
 import requests
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
-API = f"{BASE}/api"
-ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"),
-         "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}
-MEMBER = {"email": os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io"),
-          "password": os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")}
+from conftest import API, ADMIN_CREDS, MEMBER_CREDS, login, auth_header
 
 
 def _tok(c):
-    r = requests.post(f"{API}/auth/login", json=c, timeout=15)
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
+    return login(c)
 
 
 def _h(t):
-    return {"Authorization": f"Bearer {t}"}
+    return auth_header(t)
 
 
 def _register():
@@ -28,9 +21,7 @@ def _register():
 
 
 def test_alerts_generate_in_app_notifications():
-    h = _h(_tok(ADMIN))
-    # Create a deterministic breached commitment so evaluation always has signal
-    # (avoids races with other suites that acknowledge/resolve shared alerts).
+    h = _h(_tok(ADMIN_CREDS))
     ws = requests.get(f"{API}/workspaces", headers=h, timeout=15).json()
     assert ws
     wid = ws[0]["id"]
@@ -45,7 +36,6 @@ def test_alerts_generate_in_app_notifications():
     requests.post(f"{API}/alerts/evaluate", headers=h, timeout=30)
     openq = requests.get(f"{API}/alerts?status=open", headers=h, timeout=15).json()
     assert openq["counts"]["open"] >= 1, "expected at least one open alert to drive a notification"
-    # a lifecycle transition (acknowledge) emits an in-app notification via the engine
     target = openq["alerts"][0]
     requests.post(f"{API}/alerts/{target['id']}/acknowledge", headers=h, timeout=15)
     d = requests.get(f"{API}/notifications", headers=h, timeout=15).json()
@@ -58,7 +48,7 @@ def test_alerts_generate_in_app_notifications():
 
 
 def test_mark_read_and_read_all():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     requests.post(f"{API}/alerts/evaluate", headers=h, timeout=30)
     d = requests.get(f"{API}/notifications", headers=h, timeout=15).json()
     if d["unread"]:
@@ -70,7 +60,7 @@ def test_mark_read_and_read_all():
 
 
 def test_mark_read_not_found():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     assert requests.post(f"{API}/notifications/does-not-exist/read", headers=h, timeout=15).status_code == 404
 
 
@@ -81,7 +71,7 @@ def test_notifications_tenant_isolation():
 
 
 def test_get_preferences_shape():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     d = requests.get(f"{API}/notifications/preferences", headers=h, timeout=15).json()
     for k in ("tenant_default", "mine", "effective", "email_configured", "is_admin"):
         assert k in d
@@ -91,26 +81,25 @@ def test_get_preferences_shape():
 
 
 def test_user_can_set_own_preferences():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     r = requests.put(f"{API}/notifications/preferences/me",
                      json={"prefs": {"digest_time": "09:30", "timezone": "America/New_York", "billing": False}},
                      headers=h, timeout=15)
     assert r.status_code == 200, r.text
     eff = r.json()["effective"]
     assert eff["digest_time"] == "09:30" and eff["timezone"] == "America/New_York" and eff["billing"] is False
-    # reset
     requests.put(f"{API}/notifications/preferences/me",
                  json={"prefs": {"digest_time": "08:00", "timezone": "UTC", "billing": True}}, headers=h, timeout=15)
 
 
 def test_member_cannot_set_tenant_defaults():
-    m = _h(_tok(MEMBER))
+    m = _h(_tok(MEMBER_CREDS))
     r = requests.put(f"{API}/notifications/preferences/tenant", json={"prefs": {"digest_time": "07:00"}}, headers=m, timeout=15)
     assert r.status_code == 403
 
 
 def test_admin_can_set_tenant_defaults():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     r = requests.put(f"{API}/notifications/preferences/tenant", json={"prefs": {"escalation_minutes": 45}}, headers=h, timeout=15)
     assert r.status_code == 200, r.text
     assert r.json()["tenant_default"]["escalation_minutes"] == 45
@@ -118,7 +107,7 @@ def test_admin_can_set_tenant_defaults():
 
 
 def test_digest_preview_is_deterministic_from_data():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     r = requests.get(f"{API}/digest/preview", headers=h, timeout=20)
     assert r.status_code == 200, r.text
     d = r.json()
@@ -128,29 +117,29 @@ def test_digest_preview_is_deterministic_from_data():
 
 
 def test_digest_preview_member_forbidden():
-    m = _h(_tok(MEMBER))
+    m = _h(_tok(MEMBER_CREDS))
     assert requests.get(f"{API}/digest/preview", headers=m, timeout=15).status_code == 403
 
 
 def test_digest_run_admin_only_and_returns_status():
-    m = _h(_tok(MEMBER))
+    m = _h(_tok(MEMBER_CREDS))
     assert requests.post(f"{API}/digest/run", headers=m, timeout=20).status_code == 403
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     r = requests.post(f"{API}/digest/run", headers=h, timeout=40)
     assert r.status_code == 200, r.text
     assert r.json()["status"] in ("delivered", "partial", "not_configured", "failed", "skipped")
 
 
 def test_escalation_admin_only():
-    m = _h(_tok(MEMBER))
+    m = _h(_tok(MEMBER_CREDS))
     assert requests.post(f"{API}/alerts/escalate", headers=m, timeout=15).status_code == 403
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     r = requests.post(f"{API}/alerts/escalate", headers=h, timeout=20)
     assert r.status_code == 200 and "escalated" in r.json()
 
 
 def test_no_secret_leakage_in_notifications():
-    h = _h(_tok(ADMIN))
+    h = _h(_tok(ADMIN_CREDS))
     for url in [f"{API}/notifications", f"{API}/notifications/preferences", f"{API}/digest/preview"]:
         body = requests.get(url, headers=h, timeout=20).text
         for bad in ("EMERGENT_EMAIL_KEY", "ek_", "X-Email-Key", "sk_test_", "sk_live_"):
