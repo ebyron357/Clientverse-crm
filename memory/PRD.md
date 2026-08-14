@@ -39,7 +39,7 @@
 - Centralized authz: `require_role()` / `require_permission()` + `ROLE_PERMISSIONS`. Admin-gated (403 for members): MCP approvals, kill switch, undo, undo-window, webhook secret reveal (`GET /api/webhooks/{id}/secret`) + rotation + create/patch, team management. Webhook list no longer leaks secrets.
 - Security: tenant isolation (cross-tenant ops → 404), token hashing/expiry/single-use, last-admin safety (cannot demote/disable final active admin). Audit: authz.denied, team.invitation_* , team.role_changed, team.member_disabled/enabled.
 - Frontend: `/team` admin console (members table + role/status controls, invitations, invite dialog with copyable single-use link), `/invite?token=` accept page (loading/pending/expired/revoked/accepted/wrong-account/success states), admin-only nav + role badge, member-gated webhook/approval controls, login `?redirect=` for invite return.
-- Seeded demo member: demo.member@clientverse.io / Member2026! (member) in ClientVerse HQ.
+- Seeded demo member: configured via DEMO_MEMBER_EMAIL / DEMO_MEMBER_PASSWORD env vars (role `member`) in ClientVerse HQ.
 - Tests: `backend/tests/test_role_permissions.py` 13/13 pass; full backend suite 66 passed / 2 skipped; frontend flows 11/11 pass (iteration_9 + iteration_10 retest); production build succeeds.
 
 ## Implemented (2026-06 — this phase) — Commitment SLA Risk Automation — status AVAILABLE
