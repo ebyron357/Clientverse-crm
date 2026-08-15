@@ -1,85 +1,28 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, HEALTH_BAND } from "@/lib/api";
+import { api, formatErr, HEALTH_BAND } from "@/lib/api";
 import { toast } from "sonner";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, ArrowRight } from "lucide-react";
+import { ArrowRight, BriefcaseBusiness, CircleAlert, HeartPulse, Plus, RefreshCw, Search, Sparkles } from "lucide-react";
 
 const LIFECYCLE = ["onboard", "serve", "retain", "expand"];
+const STAGE_META = { onboard: { label: "Onboard", cls: "bg-violet-50 text-violet-700 border-violet-200" }, serve: { label: "Serve", cls: "bg-cyan-50 text-[#0a6177] border-cyan-200" }, retain: { label: "Retain", cls: "bg-amber-50 text-amber-700 border-amber-200" }, expand: { label: "Expand", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" } };
 
 export default function Workspaces() {
-  const [rows, setRows] = useState([]);
-  const [companies, setCompanies] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", company_id: "", stage: "onboard" });
-  const navigate = useNavigate();
-
-  const load = async () => {
-    const [w, c, d] = await Promise.allSettled([api.get("/workspaces"), api.get("/companies"), api.get("/dashboard")]);
-    const healthMap = d.status === "fulfilled" ? Object.fromEntries((d.value.data.portfolio || []).map((p) => [p.id, p.health])) : {};
-    if (w.status === "fulfilled") setRows(w.value.data.map((x) => ({ ...x, health: healthMap[x.id] })));
-    if (c.status === "fulfilled") setCompanies(c.value.data);
-  };
-  useEffect(() => { load(); }, []);
-
-  const create = async () => {
-    if (!form.name) return;
-    await api.post("/workspaces", { ...form, company_id: form.company_id || null });
-    toast.success("Workspace created"); setOpen(false); setForm({ name: "", company_id: "", stage: "onboard" }); load();
-  };
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="font-display text-3xl font-bold">Client Workspaces</h1>
-          <p className="text-sm text-gray-500 mt-1">ONBOARD → SERVE → RETAIN → EXPAND execution hubs.</p>
-        </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild><Button data-testid="new-workspace-button" className="bg-[#0A0A0A] hover:bg-[#262626]"><Plus className="w-4 h-4 mr-1" />New Workspace</Button></DialogTrigger>
-          <DialogContent>
-            <DialogHeader><DialogTitle>New Client Workspace</DialogTitle><DialogDescription>Create a client delivery hub.</DialogDescription></DialogHeader>
-            <div className="space-y-4">
-              <div><Label>Name</Label><Input data-testid="workspace-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1" /></div>
-              <div><Label>Company</Label>
-                <Select value={form.company_id} onValueChange={(v) => setForm({ ...form, company_id: v })}>
-                  <SelectTrigger className="mt-1" data-testid="workspace-company-select"><SelectValue placeholder="Select" /></SelectTrigger>
-                  <SelectContent>{companies.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-              <div><Label>Lifecycle stage</Label>
-                <Select value={form.stage} onValueChange={(v) => setForm({ ...form, stage: v })}>
-                  <SelectTrigger className="mt-1" data-testid="workspace-stage-select"><SelectValue /></SelectTrigger>
-                  <SelectContent>{LIFECYCLE.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-            </div>
-            <DialogFooter><Button onClick={create} data-testid="save-workspace-button" className="bg-[#0A0A0A] hover:bg-[#262626]">Create</Button></DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {rows.map((w) => (
-          <button key={w.id} onClick={() => navigate(`/workspaces/${w.id}`)} data-testid={`workspace-card-${w.id}`}
-            className="text-left bg-white border border-gray-200 rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="font-display font-bold text-lg">{w.name}</div>
-                <Badge className="mt-1 bg-gray-100 text-gray-600 border-gray-200 capitalize">{w.stage}</Badge>
-              </div>
-              {w.health && <Badge className={HEALTH_BAND[w.health.band]}>{w.health.score}</Badge>}
-            </div>
-            <div className="flex items-center text-xs text-[#2563EB] font-medium mt-4">Open workspace <ArrowRight className="w-3 h-3 ml-1" /></div>
-          </button>
-        ))}
-        {rows.length === 0 && <div className="text-sm text-gray-400 col-span-3 text-center py-12">No workspaces yet. Win an opportunity to auto-create one.</div>}
-      </div>
-    </div>
-  );
+  const navigate = useNavigate(); const [rows, setRows] = useState([]); const [companies, setCompanies] = useState([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [open, setOpen] = useState(false); const [saving, setSaving] = useState(false); const [query, setQuery] = useState(""); const [stage, setStage] = useState("all"); const [form, setForm] = useState({ name: "", company_id: "", stage: "onboard" });
+  const load = useCallback(async () => { setLoading(true); setError(""); const [workspaceResponse, companyResponse, dashboardResponse] = await Promise.allSettled([api.get("/workspaces"), api.get("/companies"), api.get("/dashboard")]); if (workspaceResponse.status !== "fulfilled") { setError("Client workspaces could not be loaded. Your portfolio data is unchanged — try again when the connection is available."); setLoading(false); return; } const healthMap = dashboardResponse.status === "fulfilled" ? Object.fromEntries((dashboardResponse.value.data.portfolio || []).map((item) => [item.id, item.health])) : {}; setRows(workspaceResponse.value.data.map((workspace) => ({ ...workspace, health: healthMap[workspace.id] }))); if (companyResponse.status === "fulfilled") setCompanies(companyResponse.value.data); setLoading(false); }, []);
+  useEffect(() => { load(); }, [load]);
+  const filtered = useMemo(() => rows.filter((workspace) => `${workspace.name} ${companies.find((company) => company.id === workspace.company_id)?.name || ""}`.toLowerCase().includes(query.toLowerCase()) && (stage === "all" || workspace.stage === stage)), [rows, companies, query, stage]);
+  const counts = useMemo(() => Object.fromEntries(LIFECYCLE.map((key) => [key, rows.filter((workspace) => workspace.stage === key).length])), [rows]);
+  const create = async () => { if (!form.name.trim()) { toast.error("Workspace name is required."); return; } setSaving(true); try { const { data } = await api.post("/workspaces", { ...form, name: form.name.trim(), company_id: form.company_id || null }); toast.success("Client workspace created", { description: "Start with the health, commitments, and outcomes that matter to this account." }); setOpen(false); setForm({ name: "", company_id: "", stage: "onboard" }); navigate(`/workspaces/${data.id}`); } catch (requestError) { toast.error("Could not create client workspace", { description: formatErr(requestError.response?.data?.detail) }); } finally { setSaving(false); } };
+  if (error) return <div className="cv-page"><div className="cv-empty"><CircleAlert className="h-9 w-9 text-red-500" /><h1 className="mt-4 font-display text-xl font-bold">Client workspaces unavailable</h1><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{error}</p><Button onClick={load} className="mt-5 cv-action-primary"><RefreshCw className="mr-2 h-4 w-4" />Retry</Button></div></div>;
+  return <div className="cv-page"><div className="cv-page-header"><div><div className="cv-eyebrow">Client success</div><h1 className="cv-page-title">Client Workspaces</h1><p className="cv-page-description">The Client 360 operating view for onboarding, delivery, retention, and account expansion.</p></div><WorkspaceDialog open={open} onOpenChange={setOpen} form={form} setForm={setForm} companies={companies} saving={saving} onSubmit={create} /></div><section className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">{LIFECYCLE.map((key) => <button key={key} onClick={() => setStage(stage === key ? "all" : key)} className={`cv-card p-4 text-left transition-all ${stage === key ? "ring-2 ring-[#4ac4e0]" : "hover:border-slate-300"}`}><div className="flex items-center justify-between"><span className="text-[11px] font-bold uppercase tracking-[0.1em] text-slate-500">{STAGE_META[key].label}</span><span className={`h-2 w-2 rounded-full ${key === "onboard" ? "bg-violet-500" : key === "serve" ? "bg-[#1a9fbf]" : key === "retain" ? "bg-amber-500" : "bg-emerald-500"}`} /></div><div className="mt-2 font-display text-2xl font-extrabold text-[#0a1628]">{counts[key]}</div><div className="mt-1 text-xs text-slate-500">active workspace{counts[key] === 1 ? "" : "s"}</div></button>)}</section><section className="cv-card overflow-hidden"><div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="cv-card-title">Portfolio</h2><p className="cv-card-description">Open any workspace for a full, evidence-backed account operating view.</p></div><div className="flex gap-2"><div className="flex min-w-0 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 sm:w-[300px]"><Search className="h-4 w-4 shrink-0 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" placeholder="Search clients…" aria-label="Search client workspaces" /></div><Select value={stage} onValueChange={setStage}><SelectTrigger className="h-10 w-[130px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All stages</SelectItem>{LIFECYCLE.map((key) => <SelectItem key={key} value={key}>{STAGE_META[key].label}</SelectItem>)}</SelectContent></Select></div></div>{loading ? <WorkspaceSkeleton /> : filtered.length ? <div className="grid grid-cols-1 divide-y divide-slate-100 lg:grid-cols-2 lg:divide-x lg:divide-y-0">{filtered.map((workspace) => <WorkspaceCard key={workspace.id} workspace={workspace} company={companies.find((record) => record.id === workspace.company_id)} onClick={() => navigate(`/workspaces/${workspace.id}`)} />)}</div> : <div className="cv-empty m-5"><Sparkles className="h-9 w-9 text-[#4ac4e0]" /><h2 className="mt-4 font-display text-xl font-bold text-[#0a1628]">No workspaces match your view</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">Adjust your filters or create a Client 360 workspace to organize health, delivery, approvals, and outcome progress for an account.</p><Button onClick={() => setOpen(true)} className="mt-5 cv-action-primary"><Plus className="mr-1.5 h-4 w-4" />New workspace</Button></div>}</section></div>;
 }
+function WorkspaceCard({ workspace, company, onClick }) { const health = workspace.health; const stageMeta = STAGE_META[workspace.stage] || STAGE_META.onboard; return <button onClick={onClick} className="cv-data-row group flex min-h-[152px] w-full items-start gap-4 p-5 text-left"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan-50 text-[#1a9fbf]"><BriefcaseBusiness className="h-5 w-5" /></span><span className="min-w-0 flex-1"><span className="flex items-start justify-between gap-3"><span className="min-w-0"><span className="block truncate text-base font-bold text-[#132038] group-hover:text-[#1a9fbf]">{workspace.name}</span><span className="mt-1 block truncate text-xs text-slate-500">{company?.name || "No company linked"}</span></span>{health && <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${HEALTH_BAND[health.band]}`}>{health.score}</span>}</span><span className="mt-4 flex items-center justify-between gap-3"><Badge className={stageMeta.cls}>{stageMeta.label}</Badge><span className="flex items-center gap-1 text-xs font-semibold text-[#1a9fbf]">Open Client 360 <ArrowRight className="h-3.5 w-3.5" /></span></span>{health && <span className="mt-3 flex items-center gap-2"><HeartPulse className="h-3.5 w-3.5 text-slate-400" /><span className="text-xs text-slate-500">Health is <strong className="capitalize text-slate-700">{health.band.replace("_", " ")}</strong></span></span>}</span></button>; }
+function WorkspaceDialog({ open, onOpenChange, form, setForm, companies, saving, onSubmit }) { const setField = (key, value) => setForm((current) => ({ ...current, [key]: value })); return <Dialog open={open} onOpenChange={onOpenChange}><DialogTrigger asChild><Button className="cv-action-primary"><Plus className="mr-1.5 h-4 w-4" />New workspace</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle className="font-display text-2xl">New Client 360 workspace</DialogTitle><DialogDescription>Start a focused operating view for a client relationship and its delivery commitments.</DialogDescription></DialogHeader><div className="grid gap-4 py-2"><div className="grid gap-1.5"><Label>Workspace name <span className="text-red-500">*</span></Label><Input value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder="e.g. Northstar — Client 360" autoFocus /></div><div className="grid gap-1.5"><Label>Company</Label><Select value={form.company_id} onValueChange={(value) => setField("company_id", value)}><SelectTrigger><SelectValue placeholder="Select a company" /></SelectTrigger><SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label>Lifecycle stage</Label><Select value={form.stage} onValueChange={(value) => setField("stage", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{LIFECYCLE.map((key) => <SelectItem key={key} value={key}>{STAGE_META[key].label}</SelectItem>)}</SelectContent></Select></div></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={saving} onClick={onSubmit} className="cv-action-primary">{saving ? "Creating…" : "Create workspace"}</Button></DialogFooter></DialogContent></Dialog>; }
+function WorkspaceSkeleton() { return <div className="grid grid-cols-1 divide-y divide-slate-100 lg:grid-cols-2 lg:divide-x lg:divide-y-0">{Array.from({ length: 4 }).map((_, index) => <div key={index} className="flex gap-4 p-5"><Skeleton className="h-10 w-10 rounded-xl" /><div className="flex-1"><Skeleton className="h-5 w-48" /><Skeleton className="mt-2 h-3 w-32" /><Skeleton className="mt-5 h-6 w-20 rounded-full" /></div></div>)}</div>; }

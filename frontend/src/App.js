@@ -4,6 +4,7 @@ import "@/App.css";
 import { api, setStoredToken } from "@/lib/api";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
+import AppErrorBoundary from "@/components/AppErrorBoundary";
 import AppShell from "@/components/AppShell";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
@@ -42,7 +43,7 @@ function AuthCallback() {
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>;
+  if (loading) return <div className="flex min-h-screen items-center justify-center bg-[#f7fafc] p-6"><div className="cv-card w-full max-w-sm p-7"><div className="h-2 w-20 animate-pulse rounded-full bg-cyan-100" /><div className="mt-5 h-7 w-44 animate-pulse rounded-lg bg-slate-100" /><div className="mt-3 h-4 w-full animate-pulse rounded-lg bg-slate-100" /><div className="mt-2 h-4 w-4/5 animate-pulse rounded-lg bg-slate-100" /></div></div>;
   if (!user) return <Navigate to="/login" replace />;
   return children;
 }
@@ -73,11 +74,13 @@ function AppRouter() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <AppRouter />
-        <Toaster position="top-right" />
-      </BrowserRouter>
-    </AuthProvider>
+    <AppErrorBoundary>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRouter />
+          <Toaster position="top-right" />
+        </BrowserRouter>
+      </AuthProvider>
+    </AppErrorBoundary>
   );
 }
