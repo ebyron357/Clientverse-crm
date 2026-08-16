@@ -25,6 +25,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depend
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
+from client_value import register_client_value_routes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clientverse")
@@ -2700,6 +2701,11 @@ async def cron_daily_digest(request: Request):
                 pass
     asyncio.create_task(_sweep())
     return {"accepted": True, "run_id": run_id}
+
+
+# Client portal, field operations, commercial coordination, and safe automation
+# are registered here so they inherit the existing tenant, event, and permission helpers.
+register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
 
 @app.on_event("startup")
 async def on_startup():

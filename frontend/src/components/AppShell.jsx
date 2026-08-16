@@ -5,15 +5,15 @@ import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
 import {
-  Activity, Bell, BriefcaseBusiness, Boxes, ChevronRight, CirclePlus,
-  GitBranch, LayoutDashboard, LogOut, Menu, Orbit, PanelLeftClose, Search,
+  Activity, Bell, BriefcaseBusiness, Boxes, CalendarCheck2, ChevronRight, CirclePlus,
+  GitBranch, Handshake, LayoutDashboard, LogOut, Menu, Orbit, PanelLeftClose, Search,
   Settings, ShieldCheck, Terminal, Users, X,
 } from "lucide-react";
 
 const NAV_GROUPS = [
   { label: "Command", items: [{ to: "/dashboard", label: "Command Center", icon: LayoutDashboard, id: "dashboard" }, { to: "/notifications", label: "Action Center", icon: Bell, id: "notifications" }] },
   { label: "Revenue", items: [{ to: "/pipeline", label: "Pipeline", icon: GitBranch, id: "pipeline" }, { to: "/directory", label: "Directory", icon: Users, id: "directory" }] },
-  { label: "Client success", items: [{ to: "/workspaces", label: "Client Workspaces", icon: BriefcaseBusiness, id: "workspaces" }, { to: "/registries", label: "Registries", icon: Boxes, id: "registries" }] },
+  { label: "Client success", items: [{ to: "/workspaces", label: "Client Workspaces", icon: BriefcaseBusiness, id: "workspaces" }, { to: "/client-ops", label: "Client Operations", icon: Handshake, id: "client-ops" }, { to: "/field", label: "Field Ops", icon: CalendarCheck2, id: "field" }, { to: "/registries", label: "Registries", icon: Boxes, id: "registries" }] },
   { label: "Platform", items: [{ to: "/mcp", label: "MCP Console", icon: Terminal, id: "mcp" }, { to: "/audit", label: "Automation & Audit", icon: Activity, id: "audit" }, { to: "/team", label: "Team & Access", icon: ShieldCheck, id: "team", adminOnly: true }, { to: "/settings", label: "Settings", icon: Settings, id: "settings" }] },
 ];
 
@@ -22,6 +22,8 @@ const TITLES = {
   "/pipeline": ["Pipeline", "Move qualified revenue forward with clear next actions"],
   "/directory": ["Directory", "Relationship intelligence for every company and contact"],
   "/workspaces": ["Client Workspaces", "Operate each customer relationship from one command center"],
+  "/client-ops": ["Client Operations", "Coordinate client access, commercial work, field follow-through, and playbooks"],
+  "/field": ["Field Ops", "Mobile-first onsite updates, appointments, and handoffs"],
   "/registries": ["Registries", "Connected records, providers, and operational registries"],
   "/mcp": ["MCP Console", "Governed AI and tool operations"],
   "/audit": ["Automation & Audit", "Evidence, automation, and system activity"],

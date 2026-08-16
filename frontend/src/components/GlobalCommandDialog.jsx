@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard, GitBranch, Users, BriefcaseBusiness, Boxes, Terminal,
+  LayoutDashboard, GitBranch, Users, BriefcaseBusiness, Boxes, Terminal, Handshake, Smartphone,
   ShieldCheck, Activity, Bell, CirclePlus, Search, Settings,
 } from "lucide-react";
 import {
@@ -14,6 +14,8 @@ const PAGES = [
   { label: "Pipeline", detail: "Revenue opportunities", to: "/pipeline", icon: GitBranch },
   { label: "Directory", detail: "Companies and contacts", to: "/directory", icon: Users },
   { label: "Client Workspaces", detail: "Client 360 operating view", to: "/workspaces", icon: BriefcaseBusiness },
+  { label: "Client Operations", detail: "Portal, commercial, field, and playbook workflows", to: "/client-ops", icon: Handshake },
+  { label: "Field Ops", detail: "Mobile-first onsite updates and handoffs", to: "/field", icon: Smartphone },
   { label: "Registries", detail: "Connected records and providers", to: "/registries", icon: Boxes },
   { label: "Notifications", detail: "Preferences and digest controls", to: "/notifications", icon: Bell },
   { label: "Settings", detail: "Account, provider, and access configuration", to: "/settings", icon: Settings },

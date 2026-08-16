@@ -19,6 +19,9 @@ import Team from "@/pages/Team";
 import Notifications from "@/pages/Notifications";
 import AcceptInvite from "@/pages/AcceptInvite";
 import Settings from "@/pages/Settings";
+import ClientOps from "@/pages/ClientOps";
+import FieldOps from "@/pages/FieldOps";
+import ClientPortal from "@/pages/ClientPortal";
 
 function AuthCallback() {
   const navigate = useNavigate();
@@ -56,6 +59,7 @@ function AppRouter() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/invite" element={<AcceptInvite />} />
+      <Route path="/portal/:token" element={<ClientPortal />} />
       <Route element={<Protected><AppShell /></Protected>}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/pipeline" element={<Pipeline />} />
@@ -68,6 +72,8 @@ function AppRouter() {
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/audit" element={<Audit />} />
+        <Route path="/client-ops" element={<ClientOps />} />
+        <Route path="/field" element={<FieldOps />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

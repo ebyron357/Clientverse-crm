@@ -1,0 +1,43 @@
+{
+  "run_label": "CLIENT-VALUE-20260816215309",
+  "api_base": "http://127.0.0.1:8002/api",
+  "authentication": {
+    "admin_login_http": 200,
+    "unauthenticated_client_ops_http": 401
+  },
+  "portal": {
+    "create_http": 200,
+    "public_read_http": 200,
+    "request_http": 200,
+    "token_redacted_from_list": true,
+    "revoked_read_http": 404
+  },
+  "documents_and_billing": {
+    "document_http": 200,
+    "estimate_http": 200,
+    "invoice_http": 200,
+    "duplicate_invoice_prevented": true,
+    "payment_status": "requires_stripe_configuration"
+  },
+  "appointments_and_field": {
+    "appointment_http": 200,
+    "conflict_http": 409,
+    "reminder_http": 200,
+    "reminder_outbound": "disabled",
+    "checkin_http": 200
+  },
+  "growth_and_delivery": {
+    "referral_http": 200,
+    "review_http": 200,
+    "review_outbound": "disabled",
+    "automation_http": 200,
+    "automation_outbound": "disabled",
+    "playbook_http": 200,
+    "duplicate_playbook_prevented": true,
+    "capacity_people": 2
+  },
+  "tenant_isolation": {
+    "cross_tenant_workspace_query_http": 404
+  },
+  "secret_redaction": "Evidence omits account identities, passwords, access tokens, portal tokens, provider credentials, and internal record identifiers."
+}
