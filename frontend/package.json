@@ -63,6 +63,7 @@
   "scripts": {
     "start": "craco start",
     "build": "NODE_ENV=production craco build",
+    "lint": "eslint \"src/**/*.{js,jsx}\" --max-warnings=0",
     "test": "craco test"
   },
   "browserslist": {

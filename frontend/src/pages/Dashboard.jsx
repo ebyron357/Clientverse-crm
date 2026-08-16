@@ -5,7 +5,7 @@ import { Badge } from "@/components/AppShell";
 import OnboardingChecklist from "@/components/OnboardingChecklist";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Bar, BarChart, Cell, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   AlertTriangle, ArrowRight, BriefcaseBusiness, CheckCircle2, CircleAlert,
   CircleDollarSign, ClipboardCheck, RefreshCw, Sparkles, TrendingUp,

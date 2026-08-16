@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { toast } from "sonner";
 import { Badge } from "@/components/AppShell";
 import { CAP_STATUS } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";

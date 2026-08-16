@@ -1,83 +1,65 @@
 # ClientVerse CRM — Final Integrated Acceptance Evidence
 
-This document is the canonical, complete replacement evidence record for the final CRM v1 release-candidate acceptance cycle. It supersedes earlier incremental Settings and integration-verification notes while preserving their supported findings.
+This is the canonical, complete validation record for the final CRM v1 release-candidate cycle. It consolidates the Settings closure, controlled lifecycle acceptance, integration evidence, malformed-input repair, and ESLint release-gate closure.
 
 ## Controlled Acceptance Result
 
-The acceptance harness created controlled data under a unique run label, then exercised real FastAPI endpoints against the local MongoDB-backed certification tenant. The final run recorded **42 passed, 0 failed**. It created a company, contact, opportunity, workspace, commitment, task, approval, outcome, member invitation, member account, and isolated outsider tenant. It did not store or display access tokens, invitation tokens, passwords, or provider credentials in this document.
+The final acceptance harness created controlled data under a unique run label and exercised real FastAPI endpoints against the MongoDB-backed certification tenant. It completed **42 passed, 0 failed**. It created a company, contact, opportunity, workspace, commitment, task, approval, outcome, member invitation, member account, and isolated outsider tenant. This record does not store or display access tokens, invitation tokens, passwords, or provider credentials.
 
 | Domain | Checks completed | Result |
 |---|---|---|
 | Authentication and Dashboard | Administrator login, dashboard load, re-login persistence | **PASS** |
 | Revenue and client activation | Company, contact, opportunity stages, close-won workspace, idempotent repeated close-won | **PASS** |
-| Client delivery | Dated commitment, task, approval request and administrator completion | **PASS** |
+| Client delivery | Dated commitment, task, approval request, and administrator completion | **PASS** |
 | Outcomes and health | Outcome creation, Outcome Graph persistence, explainable health | **PASS** |
-| Operational evidence | Timeline, audit event query, notification query and Action Center rendering | **PASS** |
-| Team and permissions | Invite, register, accept, member dashboard, administrator governance | **PASS** |
-| Settings and integration state | Settings preferences, safe provider status, truthful unconfigured failures | **PASS — state only** |
+| Operational evidence | Timeline, audit event query, notification query, and Action Center rendering | **PASS** |
+| Team and permissions | Invite, register, accept, member dashboard, and administrator governance | **PASS** |
+| Settings and integration state | Settings preferences, safe provider status, and truthful unconfigured failures | **PASS — state only** |
 | Durable persistence | Company, contact, workspace, commitment, task, approved approval, and outcome after re-login | **PASS** |
-
-## Acceptance Journey Detail
-
-| Step | API and browser evidence | Result |
-|---:|---|---|
-| 1–2 | `POST /auth/login`, `GET /dashboard`, administrator Dashboard browser render | **PASS** |
-| 3–4 | `POST /companies`, `POST /contacts` | **PASS** |
-| 5–7 | `POST /opportunities`, then stage patches through `closed_won` | **PASS** |
-| 8 | `GET /workspaces` found one opportunity-linked workspace; repeated close-won did not add another | **PASS** |
-| 9–10 | `POST /commitments` with due date and `POST /tasks` | **PASS** |
-| 11–12 | `POST /approvals`; member patch denied; admin patch approved | **PASS** |
-| 13–14 | `POST /outcomes`, `GET /workspaces/{id}/outcome-graph`, and `GET /workspaces/{id}` | **PASS** |
-| 15–17 | Workspace timeline, audit event query, notification query, and Action Center browser render | **PASS** |
-| 18–20 | Team invitation, controlled registration, invitation acceptance, and member dashboard | **PASS** |
-| 21–22 | Member 403 and administrator 200 checks for approval/team/integration governance | **PASS** |
-| 23–24 | Administrator Settings browser render and connection status query | **PASS — provider status only** |
-| 25–27 | Administrator re-login and durable record verification | **PASS** |
 
 ## Negative, Authorization, and Data Integrity Evidence
 
 | Check | HTTP result | Outcome |
 |---|---:|---|
 | Unauthenticated `GET /workspaces` | 401 | Protected route rejects anonymous access. |
-| Cross-tenant company read | 404 | Isolated tenant cannot read controlled company. |
-| Cross-tenant workspace read | 404 | Isolated tenant cannot read controlled workspace. |
-| Invalid workspace read | 404 | Invalid identifier fails safely. |
-| Task creation for invalid workspace | 404 | Invalid reference does not create a task. |
-| Member approval decision | 403 | Governance action remains server-side admin-only. |
-| Member team listing | 403 | Team administration remains server-side admin-only. |
-| Member Google connection initiation | 403 | Provider-management action remains server-side admin-only. |
+| Cross-tenant company and workspace reads | 404 | Isolated tenant cannot read controlled records. |
+| Invalid workspace read and task creation | 404 | Invalid references fail safely and create no work. |
+| Member approval decision, team list, and Google initiation | 403 | Governance and provider-management controls remain server-side admin-only. |
 | Repeated close-won stage patch | 200; one workspace | Idempotent workspace creation behavior verified. |
-| Malformed contact email | 422 | Validation repair prevents corrupt contact input. |
+| Malformed contact email | 422 | Server-side `EmailStr` validation prevents corrupt contact input. |
 
 ## Integration Evidence and Truthful Blocked State
 
 | Provider | Initial status | Connection attempt | Lifecycle verdict |
 |---|---|---|---|
-| Gmail | `disconnected`; no sensitive fields in connection response | `POST /integrations/google/connect` returned 400 stating that Google OAuth credentials are not configured. | **BLOCKED** — no approved Google OAuth test client/account supplied. |
-| Google Calendar | `disconnected`; no sensitive fields in connection response | Shares the Google OAuth connection flow; same 400 configuration failure. | **BLOCKED** — no approved Google OAuth test client/account supplied. |
-| Stripe | `disconnected`; no sensitive fields in connection response | `POST /integrations/stripe/connect` returned 400 stating that `STRIPE_API_KEY` is not configured. | **BLOCKED** — no approved Stripe test-mode key supplied. |
+| Gmail | `disconnected`; no sensitive fields in connection response | Google connection initiation returned 400 because OAuth credentials are not configured. | **BLOCKED** — no approved Google OAuth test client/account supplied. |
+| Google Calendar | `disconnected`; no sensitive fields in connection response | Shares Google OAuth connection flow; same 400 configuration failure. | **BLOCKED** — no approved Google OAuth test client/account supplied. |
+| Stripe | `disconnected`; no sensitive fields in connection response | Stripe connection initiation returned 400 because `STRIPE_API_KEY` is not configured. | **BLOCKED** — no approved Stripe test-mode key supplied. |
 
-The active certification backend contained none of the provider configuration variable names required for the full lifecycle. Google additionally requires a callback setup through `GOOGLE_REDIRECT_URI` or `PUBLIC_BACKEND_URL` and encrypted credential storage through `INTEGRATION_ENC_KEY`. No fabricated connected state, sync result, disconnect, or reconnect result was recorded.
+The active backend contained none of the provider configuration required for full lifecycle testing. Google additionally requires callback configuration through `GOOGLE_REDIRECT_URI` or `PUBLIC_BACKEND_URL` and encrypted token storage through `INTEGRATION_ENC_KEY`. No fabricated connection, sync, disconnect, or reconnect result was recorded.
 
-## Lifecycle Defect Found and Repaired
+## Lifecycle and Lint Repairs
 
 | Item | Evidence |
 |---|---|
-| Defect | The initial final-acceptance run accepted `not-an-email` with HTTP 200 when creating a contact. |
-| Repair | `ContactInput.email` now uses `Optional[EmailStr]`; a dedicated backend regression test was added. |
-| Retest | Final acceptance run returned HTTP 422 for malformed email and finished with 42 passing checks. |
+| Contact validation defect | The first acceptance run accepted `not-an-email` with HTTP 200. |
+| Contact validation repair | `ContactInput.email` now uses `Optional[EmailStr]` and a dedicated backend regression test. The final harness returned HTTP 422 and passed 42 checks. |
+| ESLint configuration repair | Added `frontend/eslint.config.mjs` and the `npm run lint` script. The configuration applies core recommended rules, React JSX variable tracking, React Hooks recommended rules, and JSX accessibility recommended rules to application source. |
+| ESLint source remediation | Fixed legitimate unused declarations/imports, semantic MCP catalog activation, and dialog autofocus accessibility findings; no application-source ignore or rule suppression was introduced. |
 
 ## Automated Validation
 
 | Command or gate | Exact result |
 |---|---|
 | `node /home/ubuntu/run_final_crm_acceptance.mjs` | **PASS** — `42 passed, 0 failed`. |
-| `cd frontend && REACT_APP_BACKEND_URL=<certification backend> npm run build` | **PASS** — compiled successfully; 323.12 kB JavaScript and 14.38 kB CSS after gzip. |
+| `cd frontend && npm run lint` | **PASS** — exit 0, **0 errors, 0 warnings**. |
+| `cd frontend && REACT_APP_BACKEND_URL=<certification backend> npm run build` | **PASS** — compiled successfully; 323.09 kB JavaScript and 14.38 kB CSS after gzip. |
+| `cd frontend && CI=true npm test -- --watchAll=false` | No test files found; the repository contains zero frontend test matches. |
+| `cd frontend && CI=true npm test -- --watchAll=false --passWithNoTests` | **PASS** — exit 0 with zero tests discovered. |
 | `cd backend && PYTHONPATH=backend ... pytest -q -n 0` | **PASS** — `101 passed, 5 skipped, 5 warnings in 44.49s`. |
-| `npx eslint src --max-warnings=0` | **FAIL** — exit code 2 because ESLint 9 found no flat configuration file. |
 | Browser console review | **PASS** — no uncaught console output during final administrator dashboard, Client 360, notifications, and Settings verification. |
 
-Backend coverage includes the repository’s authentication, role-permission, tenant-isolation, integration normalizer, timeline, notification/digest, and commitment/SLA tests. The five skipped tests are optional provider-dependent checks; their external dependencies are unavailable and the provider blocker is explicitly retained.
+Backend coverage includes authentication, role-permission, tenant-isolation, integration normalizer, timeline, notification/digest, and commitment/SLA tests. The five skipped tests are optional provider-dependent checks; their unavailable external dependencies remain explicit.
 
 ## Visual Evidence
 
@@ -93,6 +75,6 @@ Backend coverage includes the repository’s authentication, role-permission, te
 
 ## Final Release Gate
 
-> **NO-GO.** The core CRM lifecycle and the final controlled acceptance journey passed. The branch remains blocked by missing credential-backed Gmail, Google Calendar, and Stripe lifecycle evidence, and by the absent ESLint static-analysis configuration required by this release gate.
+> **NO-GO.** The core CRM lifecycle, Settings surface, and required ESLint gate passed. Credential-backed Gmail, Google Calendar, and Stripe lifecycle evidence remains mandatory before this release candidate can receive GO.
 
 The canonical release summary and required owner actions are maintained in [RELEASE_CERTIFICATION.md](./RELEASE_CERTIFICATION.md).

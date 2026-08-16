@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Bell, Building2, ChevronRight, CircleUserRound, KeyRound, Link2,
-  LogOut, Mail, ShieldCheck, SlidersHorizontal, Users,
+  Mail, ShieldCheck, SlidersHorizontal, Users,
 } from "lucide-react";
 
 const PROVIDER_LABELS = { gmail: "Gmail", google_calendar: "Google Calendar", stripe: "Stripe" };

@@ -5,7 +5,7 @@ import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
 import {
-  Activity, Bell, BriefcaseBusiness, Boxes, ChevronLeft, ChevronRight, CirclePlus,
+  Activity, Bell, BriefcaseBusiness, Boxes, ChevronRight, CirclePlus,
   GitBranch, LayoutDashboard, LogOut, Menu, Orbit, PanelLeftClose, Search,
   Settings, ShieldCheck, Terminal, Users, X,
 } from "lucide-react";
