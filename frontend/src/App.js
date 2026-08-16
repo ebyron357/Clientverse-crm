@@ -18,6 +18,7 @@ import Audit from "@/pages/Audit";
 import Team from "@/pages/Team";
 import Notifications from "@/pages/Notifications";
 import AcceptInvite from "@/pages/AcceptInvite";
+import Settings from "@/pages/Settings";
 
 function AuthCallback() {
   const navigate = useNavigate();
@@ -65,6 +66,7 @@ function AppRouter() {
         <Route path="/mcp" element={<Mcp />} />
         <Route path="/team" element={<Team />} />
         <Route path="/notifications" element={<Notifications />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/audit" element={<Audit />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, GitBranch, Users, BriefcaseBusiness, Boxes, Terminal,
-  ShieldCheck, Activity, Bell, CirclePlus, Search,
+  ShieldCheck, Activity, Bell, CirclePlus, Search, Settings,
 } from "lucide-react";
 import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem,
@@ -16,6 +16,7 @@ const PAGES = [
   { label: "Client Workspaces", detail: "Client 360 operating view", to: "/workspaces", icon: BriefcaseBusiness },
   { label: "Registries", detail: "Connected records and providers", to: "/registries", icon: Boxes },
   { label: "Notifications", detail: "Preferences and digest controls", to: "/notifications", icon: Bell },
+  { label: "Settings", detail: "Account, provider, and access configuration", to: "/settings", icon: Settings },
   { label: "Team & Access", detail: "Members, roles, and invitations", to: "/team", icon: ShieldCheck },
   { label: "Automation & Audit", detail: "Events, controls, and evidence", to: "/audit", icon: Activity },
   { label: "MCP Console", detail: "Governed AI and tool operations", to: "/mcp", icon: Terminal },

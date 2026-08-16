@@ -1,107 +1,78 @@
 # ClientVerse CRM — Validation Evidence
 
-This document is the canonical detailed evidence log for the 2026-08-16 certification cycle. It supersedes earlier incremental notes that stated a MongoDB-backed authenticated browser environment was unavailable.
+This is the canonical detailed evidence record for the 2026-08-16 certification cycle. It supersedes prior incremental notes and reflects closure of the repository-controlled Settings-surface blocker.
 
-## Environment and Test Data
+## Settings Audit Outcome
 
-| Item | Value used for certification |
+No dedicated `/settings` route, Settings page, or Settings navigation entry existed before this task. Existing capability was distributed across `Action Center` for notification preferences, `Registries` for provider state, `Team & Access` for admin-only governance, and the authenticated session context for account information.
+
+The new Settings page deliberately acts as a concise **index of supported controls**, not a duplicate configuration system. It presents account identity and a session sign-out action, summarizes effective notification and delivery state, lists safe provider statuses, and routes users to the existing dedicated pages that own each editable workflow.
+
+## Files Changed for Settings
+
+| File | Change |
 |---|---|
-| CRM tenant | ClientVerse HQ |
-| Test roles | Workspace administrator and invited team member |
-| Created company | Queen City Certification Services |
-| Created contact | Morgan Certification |
-| Created opportunity | Queen City Certification Rollout — $32,500 |
-| Generated Client 360 workspace | Queen City Certification Rollout — onboard |
-| Created commitment | Approve the certification rollout scope — due 2026-08-30 |
-| Created task | Schedule the certification rollout kickoff |
-| Created approval | Approve the certification rollout plan — approved |
-| Created outcome | Certification rollout readiness — 0 / 100 % readiness |
+| `frontend/src/pages/Settings.jsx` | Added authenticated settings index with safe API summaries, role-aware organization section, and routed actions. |
+| `frontend/src/App.js` | Added protected `/settings` route. |
+| `frontend/src/components/AppShell.jsx` | Added role-aware Settings sidebar entry and page-title metadata. |
+| `frontend/src/components/GlobalCommandDialog.jsx` | Added keyboard-discoverable Settings command. |
+| `docs/evidence/settings-desktop-1440x900.png` | Added administrator desktop evidence. |
+| `docs/evidence/settings-mobile-390x844.png` | Added administrator mobile evidence. |
+| `docs/evidence/settings-member.webp` | Added member-role evidence. |
+| `docs/evidence/settings-command-palette.webp` | Added keyboard command-palette evidence. |
 
-All records are fictional certification data. No customer data, production credentials, or provider tokens were used.
+## Settings Browser Verification
 
-## End-to-End Browser Evidence
-
-| Time sequence | Browser action | Result | Evidence |
-|---:|---|---|---|
-| 1 | Administrator sign-in | Authenticated Command Center displayed seeded and created tenant data. | `docs/evidence/dashboard-1440x900.png` |
-| 2 | Company creation | Company count increased and the relationship record opened. | `docs/evidence/company-detail.webp` |
-| 3 | Contact creation | Contact was linked to the created company and displayed in Directory. | `docs/evidence/contacts-list.webp`, `docs/evidence/contact-detail.webp` |
-| 4 | Opportunity creation and movement | Opportunity moved Lead → Proposal → Won. | `docs/evidence/pipeline-1440x900.png` |
-| 5 | Client 360 activation | Won opportunity generated an onboard workspace. | `docs/evidence/client-workspaces.webp` |
-| 6 | Commitment and task creation | Dated commitment and delivery task persisted. | `docs/evidence/client360-1280x800.png`, `docs/evidence/client360-timeline.webp` |
-| 7 | Approval lifecycle | Requested approval was completed by the administrator. | `docs/evidence/approval-completed.webp` |
-| 8 | Outcome and audit lifecycle | Outcome appeared in graph; events appeared in timeline and audit feed. | `docs/evidence/outcome-graph.webp`, `docs/evidence/client360-timeline.webp`, `docs/evidence/automation-audit.webp` |
-| 9 | Member invitation and role change | Invited member accepted the tenant invitation and reached a member dashboard. | `docs/evidence/team-admin.webp`, `docs/evidence/team-member-denied.webp` |
-| 10 | Persistence | Administrator logged out, logged in again, and observed the Client 360 workspace and outcome. | `docs/evidence/dashboard-1440x900.png` |
-
-## Runtime Repairs Discovered by Real Browser Testing
-
-| Defect | Reproduction | Repair | Retest |
-|---|---|---|---|
-| Onboarding checklist crashed when integration health returned an object. | Dashboard received `{ providers: [] }` instead of an array. | Normalize the input inside memoized checklist construction. | Dashboard loaded after rebuild; production build passed. |
-| Client Workspaces route errored during loading. | `WorkspaceSkeleton` referenced an undefined `Skeleton` component. | Import `Skeleton` from the UI component library. | Client Workspaces loaded with both seeded and generated workspaces. |
-| Fresh build routed API calls to the static origin when `REACT_APP_BACKEND_URL` was omitted. | Workspaces remained in loading/error state after a rebuild without the public backend URL. | Rebuild with the required environment variable; document the requirement for release automation. | Dashboard, pipeline, directory, workspaces, registries, MCP, audit, team, and notifications loaded over the real API. |
-
-## API/Network Evidence
-
-| Endpoint | Status | Non-sensitive result |
-|---|---:|---|
-| `GET /api/companies` | 200 | Queen City Certification Services present. |
-| `GET /api/contacts` | 200 | `morgan@certification-clientverse.com` present. |
-| `GET /api/opportunities` | 200 | Queen City Certification Rollout reported `closed_won`, `32500`. |
-| `GET /api/workspaces` | 200 | Generated Queen City workspace reported `onboard`. |
-| `GET /api/workspaces/{id}/timeline` | 200 | Seven workflow events returned. |
-| `GET /api/workspaces` with no credentials | 401 | `Not authenticated`. |
-| `GET /api/team/members` as invited member | 403 | `You do not have permission to perform this action`. |
-
-## Security Evidence
-
-| Control | Result | Evidence |
+| Check | Result | Evidence |
 |---|---|---|
-| Role-aware navigation | **PASS** — Team & Access link and page are admin-only. | `docs/evidence/team-admin.webp`, `docs/evidence/team-member-denied.webp` |
-| Server-side authorization | **PASS** — member request to Team API returned 403. | Recorded API proof above. |
-| Anonymous authorization | **PASS** — uncredentialed workspace request returned 401. | Recorded API proof above. |
-| Auditability | **PASS** — authorization denials, invitation acceptance, approval, task, commitment, outcome, and workspace events were logged. | `docs/evidence/automation-audit.webp` |
-| Tenant persistence | **PASS** — created records survived administrator logout/login. | `docs/evidence/dashboard-1440x900.png` |
+| Route availability | **PASS** — served `GET /settings` returned HTTP 200; browser route rendered under the authenticated shell. | Browser route run and production build server check |
+| Desktop administrator view | **PASS** — profile, notification, provider, and organization cards were visible at 1440 × 900. | `docs/evidence/settings-desktop-1440x900.png` |
+| Mobile administrator view | **PASS** — compact header, full-width refresh action, readable identity data, and sign-out control at 390 × 844. | `docs/evidence/settings-mobile-390x844.png` |
+| Member view | **PASS** — team/member identity shown; governance marked **Admin managed**; no team administration action exposed. | `docs/evidence/settings-member.webp` |
+| Notifications route | **PASS** — Settings button navigated to the existing Action Center preference screen. | Authenticated browser run |
+| Integrations route | **PASS** — member Settings button navigated to Registries and showed **Admin manages** provider state. | Authenticated browser run |
+| Sidebar route | **PASS** — Settings navigation returned from Registries without a broken link. | Authenticated browser run |
+| Keyboard focus | **PASS** — visible Tab focus on ClientVerse navigation; focused Settings refresh action invoked with Enter. | Browser keyboard run |
+| Command palette | **PASS** — Settings appeared after Ctrl/⌘ K search and Enter activated the route. | `docs/evidence/settings-command-palette.webp` |
+| Console | **PASS** — no uncaught console errors after administrator/member render and navigation tests. | Browser console review |
 
-## Responsive Evidence and Findings
+## Settings Authorization and Data Safety
 
-The local capture harness produced authenticated Dashboard, Pipeline, and Client 360 screenshots at **1440 × 900**, **1280 × 800**, **768 × 1024**, and **390 × 844**.
-
-| Viewport | Findings |
-|---:|---|
-| 1440 × 900 | Desktop sidebar, KPI cards, onboarding checklist, and five-stage Kanban were legible and aligned. |
-| 1280 × 800 | Client 360 preserved headline, health, evidence actions, workstream tabs, and commitment details. |
-| 768 × 1024 | Compact header activated. Wide Kanban and Client 360 workstream strips stayed intentionally horizontally scrollable. |
-| 390 × 844 | Dashboard cards stacked clearly; Client 360 preserved health, evidence controls, tab context, and readable touch targets. |
-
-Representative evidence: `docs/evidence/dashboard-1440x900.png`, `docs/evidence/pipeline-768x1024.png`, `docs/evidence/client360-1280x800.png`, `docs/evidence/dashboard-390x844.png`, and `docs/evidence/client360-390x844.png`.
-
-## Major-Surface Coverage
-
-| Surface | Status | Evidence or limitation |
+| API or control | Role | Result |
 |---|---|---|
-| Login, Dashboard, Pipeline, Directory, companies, contacts | **PASS** | Captured in real authenticated browser. |
-| Client Workspaces, Client Health, Commitments, Tasks, Approvals, Outcomes, Timeline | **PASS** | Captured in real authenticated browser. |
-| Notifications / Action Center | **PASS** | `docs/evidence/action-center.webp` |
-| Integrations | **PASS — disconnected UI only** | `docs/evidence/integrations.webp`; no provider credentials supplied. |
-| Team | **PASS** | Admin and member-denied screens captured. |
-| MCP Console | **PASS — UI only** | `docs/evidence/mcp-console.webp` |
-| Automation & Audit | **PASS** | `docs/evidence/automation-audit.webp` |
-| Command Palette / Quick Create | **PASS** | `docs/evidence/command-palette.webp`, `docs/evidence/quick-create.webp` |
-| Settings | **FAIL** | Dedicated `/settings` route and screen do not exist in the certified repository. |
+| `GET /api/notifications/preferences` | Member | 200; returned effective preference state and non-sensitive `email_configured` environment state. |
+| `GET /api/integrations/connections` | Member | 200; returned three safe provider status rows. |
+| `GET /api/team/members` | Member | 403; returned `You do not have permission to perform this action`. |
+| Team & Access link | Administrator | Visible and routed to existing server-protected team workflow. |
+| Team & Access link | Member | Not rendered; passive governance explanation shown instead. |
+| Provider credentials and secrets | All users | Not rendered by Settings; only connection status labels are displayed. |
 
-## Automated Validation
+The Settings page introduces no backend mutation endpoint and no client-only authorization rule. Existing server-side role checks remain authoritative for team, invitation, integration connection, sync, and governance operations.
 
-| Command | Result |
+## Full Validation Commands
+
+| Command | Exact result |
 |---|---|
-| `REACT_APP_BACKEND_URL=<certification backend> npm run build` in `frontend/` | **PASS** — production build compiled successfully. |
-| `PYTHONPATH=backend ... pytest -q -n 0` in `backend/` using the active certification environment | **PASS** — `100 passed, 5 skipped, 5 warnings` in 41.30 seconds. |
+| `cd frontend && REACT_APP_BACKEND_URL=<certification backend> npm run build` | **PASS** — compiled successfully; 323.12 kB JavaScript and 14.38 kB CSS after gzip. |
+| `cd backend && PYTHONPATH=backend REACT_APP_BACKEND_URL=<certification backend> ADMIN_EMAIL=<certification admin> ADMIN_PASSWORD=<certification password> DEMO_MEMBER_EMAIL=<certification member> DEMO_MEMBER_PASSWORD=<certification password> MONGO_URL=mongodb://127.0.0.1:27018 DB_NAME=clientverse_cert JWT_SECRET=<certification secret> pytest -q -n 0` | **PASS** — `100 passed, 5 skipped, 5 warnings in 44.50s`. |
+| `curl -sS -o /dev/null -w '%{http_code}' <frontend>/settings` | **PASS** — `200`. |
 
-The skipped tests are optional provider-dependent checks. The warnings are FastAPI lifecycle and multipart deprecations; they are maintained as follow-up work, not suppressed.
+The five skipped tests are optional provider-dependent checks. The five warnings concern FastAPI lifecycle and multipart deprecations; they remain recorded rather than hidden.
 
-## Release-Gate Conclusion
+## Existing Authenticated CRM Evidence
 
-> **NO-GO.** The real authenticated CRM and its core workflows are now evidenced, but production readiness is blocked by the missing Settings implementation and absent credential-backed Gmail, Calendar, and Stripe verification.
+The prior real browser certification still applies: it created and persisted fictional company, contact, opportunity, won workspace, commitment, task, approval, outcome, audit, invitation, member restriction, and logout/login persistence data. Existing evidence remains in `docs/evidence/`.
 
-The canonical release decision and closure criteria are maintained in [RELEASE_CERTIFICATION.md](./RELEASE_CERTIFICATION.md).
+| Surface | Status |
+|---|---|
+| Login, Command Center, Pipeline, Directory | **PASS** |
+| Client Workspaces, Client Health, Commitments, Tasks, Approvals, Outcomes, Timeline | **PASS** |
+| Notifications, Registries, Team, MCP, Automation & Audit | **PASS** |
+| Dashboard, Pipeline, Client 360 responsive captures at 1440×900, 1280×800, 768×1024, 390×844 | **PASS** |
+| Settings desktop, mobile, member, and keyboard command coverage | **PASS** |
+
+## Current Release Gate
+
+> **NO-GO.** The Settings route is now real, reachable, browser-verified, permission-safe, and covered by the production build and backend suite. The remaining release blocker is credential-backed Gmail, Google Calendar, and Stripe lifecycle validation.
+
+The canonical release decision and remaining closure requirements are maintained in [RELEASE_CERTIFICATION.md](./RELEASE_CERTIFICATION.md).

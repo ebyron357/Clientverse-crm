@@ -7,14 +7,14 @@ import QuickCreateDialog from "@/components/QuickCreateDialog";
 import {
   Activity, Bell, BriefcaseBusiness, Boxes, ChevronLeft, ChevronRight, CirclePlus,
   GitBranch, LayoutDashboard, LogOut, Menu, Orbit, PanelLeftClose, Search,
-  ShieldCheck, Terminal, Users, X,
+  Settings, ShieldCheck, Terminal, Users, X,
 } from "lucide-react";
 
 const NAV_GROUPS = [
   { label: "Command", items: [{ to: "/dashboard", label: "Command Center", icon: LayoutDashboard, id: "dashboard" }, { to: "/notifications", label: "Action Center", icon: Bell, id: "notifications" }] },
   { label: "Revenue", items: [{ to: "/pipeline", label: "Pipeline", icon: GitBranch, id: "pipeline" }, { to: "/directory", label: "Directory", icon: Users, id: "directory" }] },
   { label: "Client success", items: [{ to: "/workspaces", label: "Client Workspaces", icon: BriefcaseBusiness, id: "workspaces" }, { to: "/registries", label: "Registries", icon: Boxes, id: "registries" }] },
-  { label: "Platform", items: [{ to: "/mcp", label: "MCP Console", icon: Terminal, id: "mcp" }, { to: "/audit", label: "Automation & Audit", icon: Activity, id: "audit" }, { to: "/team", label: "Team & Access", icon: ShieldCheck, id: "team", adminOnly: true }] },
+  { label: "Platform", items: [{ to: "/mcp", label: "MCP Console", icon: Terminal, id: "mcp" }, { to: "/audit", label: "Automation & Audit", icon: Activity, id: "audit" }, { to: "/team", label: "Team & Access", icon: ShieldCheck, id: "team", adminOnly: true }, { to: "/settings", label: "Settings", icon: Settings, id: "settings" }] },
 ];
 
 const TITLES = {
@@ -27,6 +27,7 @@ const TITLES = {
   "/audit": ["Automation & Audit", "Evidence, automation, and system activity"],
   "/team": ["Team & Access", "Roles, invitations, and tenant access"],
   "/notifications": ["Action Center", "Notification preferences and operational awareness"],
+  "/settings": ["Settings", "Account, notification, provider, and access configuration"],
 };
 
 export default function AppShell() {
