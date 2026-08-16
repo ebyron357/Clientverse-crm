@@ -1,0 +1,31 @@
+{
+  "run_label": "PROOF-20260816211130",
+  "api_base": "https://8001-in8v1wws9289jt9pfzcyj-03350434.us4.manus.computer/api",
+  "health": {
+    "initial_http": 200,
+    "final_http": 200,
+    "service": "ClientVerse",
+    "status": "ok",
+    "database": "up"
+  },
+  "authentication": {
+    "initial_login_http": 200,
+    "post_refresh_login_http": 200
+  },
+  "workflow": {
+    "company_create_http": 200,
+    "contact_create_http": 200,
+    "opportunity_create_http": 200,
+    "close_won_http": 200,
+    "workspace_created_from_opportunity": true,
+    "commitment_create_http": 200
+  },
+  "persistence_after_refresh": {
+    "company": true,
+    "contact": true,
+    "opportunity": true,
+    "workspace": true,
+    "commitment": true
+  },
+  "secret_redaction": "This evidence intentionally omits account identities, passwords, session tokens, database credentials, OAuth values, and internal record identifiers."
+}
