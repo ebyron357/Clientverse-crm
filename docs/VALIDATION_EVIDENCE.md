@@ -1,10 +1,10 @@
 # ClientVerse CRM — Final Integrated Acceptance Evidence
 
-This is the canonical, complete validation record for the final CRM v1 release-candidate cycle. It consolidates the Settings closure, controlled lifecycle acceptance, integration evidence, malformed-input repair, and ESLint release-gate closure.
+This is the canonical, complete validation record for the final CRM v1 release-candidate cycle. It consolidates Settings closure, controlled lifecycle acceptance, integration evidence, malformed-input repair, ESLint release-gate closure, and the final clean CI result.
 
 ## Controlled Acceptance Result
 
-The final acceptance harness created controlled data under a unique run label and exercised real FastAPI endpoints against the MongoDB-backed certification tenant. It completed **42 passed, 0 failed**. It created a company, contact, opportunity, workspace, commitment, task, approval, outcome, member invitation, member account, and isolated outsider tenant. This record does not store or display access tokens, invitation tokens, passwords, or provider credentials.
+The final acceptance harness created controlled data under a unique run label and exercised real FastAPI endpoints against the MongoDB-backed certification tenant. It completed **42 passed, 0 failed**, covering a company, contact, opportunity, workspace, commitment, task, approval, outcome, member invitation, member account, and isolated outsider tenant. This record contains no access tokens, invitation tokens, passwords, or provider credentials.
 
 | Domain | Checks completed | Result |
 |---|---|---|
@@ -24,28 +24,28 @@ The final acceptance harness created controlled data under a unique run label an
 | Unauthenticated `GET /workspaces` | 401 | Protected route rejects anonymous access. |
 | Cross-tenant company and workspace reads | 404 | Isolated tenant cannot read controlled records. |
 | Invalid workspace read and task creation | 404 | Invalid references fail safely and create no work. |
-| Member approval decision, team list, and Google initiation | 403 | Governance and provider-management controls remain server-side admin-only. |
-| Repeated close-won stage patch | 200; one workspace | Idempotent workspace creation behavior verified. |
+| Member approval decision, team list, and Google initiation | 403 | Governance and provider management remain server-side admin-only. |
+| Repeated close-won stage patch | 200; one workspace | Idempotent workspace creation verified. |
 | Malformed contact email | 422 | Server-side `EmailStr` validation prevents corrupt contact input. |
 
 ## Integration Evidence and Truthful Blocked State
 
 | Provider | Initial status | Connection attempt | Lifecycle verdict |
 |---|---|---|---|
-| Gmail | `disconnected`; no sensitive fields in connection response | Google connection initiation returned 400 because OAuth credentials are not configured. | **BLOCKED** — no approved Google OAuth test client/account supplied. |
-| Google Calendar | `disconnected`; no sensitive fields in connection response | Shares Google OAuth connection flow; same 400 configuration failure. | **BLOCKED** — no approved Google OAuth test client/account supplied. |
-| Stripe | `disconnected`; no sensitive fields in connection response | Stripe connection initiation returned 400 because `STRIPE_API_KEY` is not configured. | **BLOCKED** — no approved Stripe test-mode key supplied. |
+| Gmail | `disconnected`; no sensitive fields in response | Google connection initiation returned 400 because OAuth credentials are not configured. | **BLOCKED** — no approved Google OAuth test client/account supplied. |
+| Google Calendar | `disconnected`; no sensitive fields in response | Shares Google OAuth flow; same safe 400 configuration failure. | **BLOCKED** — no approved Google OAuth test client/account supplied. |
+| Stripe | `disconnected`; no sensitive fields in response | Stripe connection initiation returned 400 because `STRIPE_API_KEY` is not configured. | **BLOCKED** — no approved Stripe test-mode key supplied. |
 
-The active backend contained none of the provider configuration required for full lifecycle testing. Google additionally requires callback configuration through `GOOGLE_REDIRECT_URI` or `PUBLIC_BACKEND_URL` and encrypted token storage through `INTEGRATION_ENC_KEY`. No fabricated connection, sync, disconnect, or reconnect result was recorded.
+The certification backend had none of the provider configuration required for full lifecycle testing. Google additionally requires callback configuration through `GOOGLE_REDIRECT_URI` or `PUBLIC_BACKEND_URL` and encrypted token storage through `INTEGRATION_ENC_KEY`. No fabricated connection, sync, disconnect, or reconnect result was recorded.
 
-## Lifecycle and Lint Repairs
+## Lifecycle, Lint, and CI Stabilization Repairs
 
 | Item | Evidence |
 |---|---|
 | Contact validation defect | The first acceptance run accepted `not-an-email` with HTTP 200. |
-| Contact validation repair | `ContactInput.email` now uses `Optional[EmailStr]` and a dedicated backend regression test. The final harness returned HTTP 422 and passed 42 checks. |
-| ESLint configuration repair | Added `frontend/eslint.config.mjs` and the `npm run lint` script. The configuration applies core recommended rules, React JSX variable tracking, React Hooks recommended rules, and JSX accessibility recommended rules to application source. |
-| ESLint source remediation | Fixed legitimate unused declarations/imports, semantic MCP catalog activation, and dialog autofocus accessibility findings; no application-source ignore or rule suppression was introduced. |
+| Contact validation repair | `ContactInput.email` now uses `Optional[EmailStr]` with a regression test. The final harness returned HTTP 422 and passed all 42 checks. |
+| ESLint closure | Added `frontend/eslint.config.mjs` and `npm run lint`; source is checked under a zero-warning policy. Legitimate unused-code and accessibility findings were remediated without broad source ignores or meaningful rule suppression. |
+| Timeline CI stabilization | The timeline pagination test previously assumed a live event stream could not change between requests. It now passes one `date_to` cutoff to the full, first-page, and second-page calls, asserting a stable historical snapshot while preserving application behavior. |
 
 ## Automated Validation
 
@@ -54,12 +54,12 @@ The active backend contained none of the provider configuration required for ful
 | `node /home/ubuntu/run_final_crm_acceptance.mjs` | **PASS** — `42 passed, 0 failed`. |
 | `cd frontend && npm run lint` | **PASS** — exit 0, **0 errors, 0 warnings**. |
 | `cd frontend && REACT_APP_BACKEND_URL=<certification backend> npm run build` | **PASS** — compiled successfully; 323.09 kB JavaScript and 14.38 kB CSS after gzip. |
-| `cd frontend && CI=true npm test -- --watchAll=false` | No test files found; the repository contains zero frontend test matches. |
-| `cd frontend && CI=true npm test -- --watchAll=false --passWithNoTests` | **PASS** — exit 0 with zero tests discovered. |
-| `cd backend && PYTHONPATH=backend ... pytest -q -n 0` | **PASS** — `101 passed, 5 skipped, 5 warnings in 44.49s`. |
+| Focused `test_timeline_filter_and_pagination` against certification API | **PASS** — 1 passed in 1.77s. |
+| `cd frontend && CI=true npm test -- --watchAll=false --passWithNoTests` | **PASS** — exit 0 with zero frontend test files discovered. |
+| [GitHub CI run 31966255707](https://github.com/ebyron357/Clientverse-crm/actions/runs/31966255707) | **PASS** — warnings-as-errors frontend build; backend suite `102 passed, 4 skipped, 5 warnings in 25.10s`. |
 | Browser console review | **PASS** — no uncaught console output during final administrator dashboard, Client 360, notifications, and Settings verification. |
 
-Backend coverage includes authentication, role-permission, tenant-isolation, integration normalizer, timeline, notification/digest, and commitment/SLA tests. The five skipped tests are optional provider-dependent checks; their unavailable external dependencies remain explicit.
+The four CI skips are optional provider-dependent checks with unavailable external dependencies. They remain explicit, and they do not count as provider-lifecycle certification.
 
 ## Visual Evidence
 
@@ -75,6 +75,6 @@ Backend coverage includes authentication, role-permission, tenant-isolation, int
 
 ## Final Release Gate
 
-> **NO-GO.** The core CRM lifecycle, Settings surface, and required ESLint gate passed. Credential-backed Gmail, Google Calendar, and Stripe lifecycle evidence remains mandatory before this release candidate can receive GO.
+> **NO-GO.** The core CRM lifecycle, Settings surface, ESLint gate, production build, and clean CI result passed. Credential-backed Gmail, Google Calendar, and Stripe lifecycle evidence remains mandatory before this release candidate can receive GO.
 
 The canonical release summary and required owner actions are maintained in [RELEASE_CERTIFICATION.md](./RELEASE_CERTIFICATION.md).
