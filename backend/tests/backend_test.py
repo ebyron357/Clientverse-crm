@@ -102,6 +102,10 @@ class TestDirectory:
         # list
         assert any(cid == c["id"] for c in admin.get(f"{API}/companies").json())
 
+    def test_contact_rejects_malformed_email(self, admin):
+        r = admin.post(f"{API}/contacts", json={"name": "Malformed Contact", "email": "not-an-email"})
+        assert r.status_code == 422
+
 
 # --- Workspaces & Health ---
 class TestWorkspaces:

@@ -510,7 +510,7 @@ async def create_company(inp: CompanyInput, user=Depends(get_current_user)):
 
 class ContactInput(BaseModel):
     name: str
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     role: Optional[str] = None
     company_id: Optional[str] = None
     influence: Optional[str] = "medium"

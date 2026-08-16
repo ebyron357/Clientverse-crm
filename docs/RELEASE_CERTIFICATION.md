@@ -1,4 +1,4 @@
-# ClientVerse CRM — Release Certification Record
+# ClientVerse CRM — Final Release-Candidate Certification
 
 **Certification date:** 2026-08-16  
 **Repository:** [ebyron357/Clientverse-crm](https://github.com/ebyron357/Clientverse-crm)  
@@ -6,97 +6,100 @@
 **Pull request:** [#9 — Premium Client Operations Command Center](https://github.com/ebyron357/Clientverse-crm/pull/9)  
 **PR state:** Draft. No merge or deployment was performed.
 
-## Executive Verdict
+## Release Verdict
 
-> **NO-GO — do not mark this branch Production Ready or merge PR #9.**
+> **NO-GO.** The controlled CRM lifecycle passed, but this release candidate must not be marked Production Ready or merged while provider lifecycle certification and the required lint gate remain incomplete.
 
-The prior repository-controlled **Settings surface** blocker is closed. A dedicated authenticated `/settings` route now presents the minimal CRM v1 settings index supported by existing APIs: account identity and session sign-out, notification state with a link to the full preference editor, safe provider status with a link to Registries, and team/governance access appropriate to the current role. The route was verified in a real FastAPI + MongoDB + built React environment as both administrator and team member at desktop and mobile breakpoints.
+The final integrated acceptance exercise completed **42 of 42** controlled API and persistence checks after one lifecycle-relevant repair: malformed contact email input is now rejected server-side with HTTP 422. A real authenticated browser then rendered the administrator Dashboard, Client 360 health, Outcome Graph, Timeline, Action Center, and Settings screens without uncaught console errors.
 
-The release remains **NO-GO** for one P0 reason: Gmail, Google Calendar, and Stripe have not received credential-backed connect, sync, disconnect, and reconnect verification. The integration UI correctly shows its unconfigured state, but no claim of live provider operation is made without least-privilege test credentials.
+The release cannot receive **GO** because Gmail, Google Calendar, and Stripe cannot be connected or lifecycle-tested without approved least-privilege credentials and provider configuration. In addition, the repository’s installed ESLint 9 command exits with code 2 because no `eslint.config.*` exists. The successful frontend production build is a static compilation gate, but it is not a substitute for the explicitly required lint gate.
 
 ## Certification Environment
 
 | Component | Verified configuration | Certification use |
 |---|---|---|
-| Database | Local MongoDB 8.0 on loopback, database `clientverse_cert` | Persistent tenant, CRM, invitation, audit, and preference records |
-| Backend | FastAPI `server:app` on port 8001 | Authentication, role checks, preferences, integration status, and CRM workflows |
-| Frontend | Production React build served on port 3001 | Real authenticated browser validation |
-| Test tenant | `ClientVerse HQ` | Administrator and invited member role checks |
-| Provider credentials | Not supplied | Safe **Not connected** states only |
+| Database | Local MongoDB 8.0 on loopback, `clientverse_cert` | Durable controlled test records, tenant separation, events, and preferences |
+| Backend | FastAPI `server:app` on port 8001 | Live authenticated CRM API and server-side role checks |
+| Frontend | Production React build served on port 3001 | Real browser validation, not a mock substitute |
+| Test identities | Workspace administrator, invited member, and isolated new-tenant user | Lifecycle, permissions, and cross-tenant checks |
+| Provider credentials | Not supplied through an approved test mechanism | Truthful disconnected-state and safe failure verification only |
 
-The environment is temporary certification infrastructure. It is not a deployment and does not imply production-hosting readiness.
+This environment is temporary certification infrastructure and is not a production deployment.
 
-## Settings Surface Closure
+## Lifecycle Repair Completed During Acceptance
 
-| Requirement | Implementation and verification |
-|---|---|
-| Dedicated route | **PASS** — `/settings` is protected by the existing authenticated application shell and the served route returned HTTP 200. |
-| Profile/account | **PASS** — authenticated name, email, and access level are displayed read-only from the current session. The page explicitly does not invent profile or password edits absent from the CRM API. |
-| Security/session | **PASS** — a keyboard-accessible **Sign out** action uses the existing authenticated logout flow. |
-| Notification preferences | **PASS** — effective in-app status and environment email-delivery status are shown; the existing Action Center preference editor is linked rather than duplicated. |
-| Integrations | **PASS** — Gmail, Google Calendar, and Stripe status are read from existing safe connection payloads; credentials, tokens, and internal IDs are not rendered. |
-| Organization/team | **PASS** — administrators receive a link to the existing Team & Access screen; members receive an explicit **Admin managed** state with no governance control. |
-| Environment-dependent state | **PASS** — email delivery and provider connection status remain visible but cannot be edited by regular members. |
-| Existing workflows | **PASS** — links to Notifications, Registries, Team & Access, and Audit route into existing purpose-built screens. |
+| Defect | Controlled reproduction | Repair | Retest |
+|---|---|---|---|
+| A malformed contact email was accepted and persisted. | `POST /api/contacts` with `email: "not-an-email"` returned 200 during the first acceptance run. | Changed `ContactInput.email` from unconstrained `str` to Pydantic `EmailStr`; added a regression test. | The final acceptance run received HTTP 422 and completed all 42 checks with no failures. |
 
-## Authorization and Security Evidence
+## Required Acceptance Journey
 
-| Check | Result |
-|---|---|
-| Administrator Settings view | **PASS** — showed Workspace admin role and the Team & Access navigation action. |
-| Member Settings view | **PASS** — showed Team member role, passive provider status, and **Admin managed** governance state; no team-management action was rendered. |
-| Member preference/status data | **PASS** — `GET /api/notifications/preferences` returned 200 and `GET /api/integrations/connections` returned 200 with three safe provider rows. |
-| Member governance request | **PASS** — `GET /api/team/members` returned 403 with `You do not have permission to perform this action`. |
-| Anonymous protected route | **PASS** — `GET /api/workspaces` returned 401 with `Not authenticated`. |
-| Sensitive data | **PASS** — Settings renders provider status only; it does not display raw environment variables, credentials, secrets, tokens, or internal identifiers. |
+| Step | Required result | Final result |
+|---:|---|---|
+| 1–2 | Administrator login and Dashboard | **PASS** — authenticated administrator login returned 200; dashboard included core portfolio keys and rendered in the browser. |
+| 3–4 | Company and contact | **PASS** — controlled company and linked valid contact were created and later persisted. |
+| 5–7 | Opportunity through closed-won | **PASS** — Lead → Qualified → Proposal → Negotiation → Closed Won. |
+| 8 | Resulting client workspace | **PASS** — exactly one workspace was created from the closed-won opportunity. A repeated closed-won action did not create a duplicate workspace. |
+| 9–10 | Dated commitment and task | **PASS** — both durable records were created in Client 360. |
+| 11–12 | Approval creation and processing | **PASS** — member approval decision was rejected; administrator decision completed the approval. |
+| 13–14 | Outcome and explainable client health | **PASS** — Outcome Graph rendered the controlled outcome; Client 360 rendered a score, band, and factors. |
+| 15–16 | Timeline and audit | **PASS** — seven workspace events, including commitment, task, approval, outcome, and workspace activation, rendered and audit events were returned. |
+| 17 | Notifications | **PASS** — notification endpoint returned 200 and the Action Center rendered the in-app operational feed. |
+| 18–20 | Invite, accept, and member login | **PASS** — a controlled member was invited, registered, accepted the invite, and reached an authenticated dashboard in the tenant. |
+| 21–22 | Member and administrator governance boundaries | **PASS** — member approval decision, team listing, and Google management each returned 403; administrator approval decision and team listing returned 200. |
+| 23 | Settings | **PASS** — `/settings` rendered account, session, notification, provider, and role-aware organization controls. |
+| 24 | Integration statuses | **PASS — truthful disconnected state** — Gmail, Google Calendar, and Stripe returned `disconnected` without sensitive fields. Live provider operation is not claimed. |
+| 25–27 | Logout/login and durable persistence | **PASS** — administrator re-login confirmed the controlled company, contact, workspace, commitment, task, approved approval, and outcome. |
 
-Admin-only operations remain protected by the existing server-side `require_role("admin")` checks. The Settings page does not introduce any new mutation or authorization bypass.
+## Negative and Security Verification
 
-## Browser and Accessibility Verification
-
-| Scenario | Result | Evidence |
+| Check | Expected result | Final result |
 |---|---|---|
-| Administrator desktop render | **PASS** — 1440 × 900 layout displayed all Settings cards, sidebar navigation, status badges, and governed links without observed clipping. | `docs/evidence/settings-desktop-1440x900.png` |
-| Administrator mobile render | **PASS** — 390 × 844 layout displayed compact navigation, full-width refresh control, readable profile information, and the session action without horizontal overflow. | `docs/evidence/settings-mobile-390x844.png` |
-| Member role render | **PASS** — member screen hides the Team & Access action and labels governance as admin managed. | `docs/evidence/settings-member.webp` |
-| Keyboard focus and action | **PASS** — Tab moved focus to a visible navigation control; the refresh action was focused and invoked with Enter. |
-| Command palette | **PASS** — Ctrl/⌘ K search found Settings, and Enter navigated to `/settings`. | `docs/evidence/settings-command-palette.webp` |
-| Existing navigation links | **PASS** — Settings navigation reached Action Center and Registries; the sidebar returned to Settings without a broken route. |
-| Browser console | **PASS** — no uncaught client errors were observed during administrator/member Settings rendering or keyboard checks. |
+| Unauthenticated protected request | 401 | **PASS** — `GET /api/workspaces` returned 401 `Not authenticated`. |
+| Cross-tenant company access | 404 | **PASS** — isolated tenant request returned 404. |
+| Cross-tenant workspace access | 404 | **PASS** — isolated tenant request returned 404. |
+| Invalid workspace lookup | 404 | **PASS** — invalid workspace ID returned 404. |
+| Invalid-workspace task creation | 404 | **PASS** — no task was created. |
+| Malformed contact input | 422 | **PASS after repair** — invalid email returned 422. |
+| Non-admin governance and integration management | 403 | **PASS** — approval decision, team listing, and Google connection initiation were rejected. |
+| Repeated close-won action | No duplicate workspace | **PASS** — one linked workspace remained. |
+| Safe integration response shape | No credentials/tokens | **PASS** — connection rows exposed no token, secret, encrypted payload, or OAuth field. |
 
-## Earlier Authenticated CRM Acceptance
+## Browser Evidence
 
-The preceding certification cycle also verified real company, contact, opportunity, won-workspace, commitment, task, approval, outcome, timeline, audit, invitation, member restriction, persistence, MCP, and responsive workflow evidence. That record remains valid and is retained in `docs/evidence/`.
-
-| Surface | Status | Representative evidence |
+| Surface | Result | Evidence |
 |---|---|---|
-| Command Center, Pipeline, Directory | **PASS** | `dashboard-1440x900.png`, `pipeline-1440x900.png`, `company-detail.webp` |
-| Client 360, commitments, approvals, outcomes, timeline | **PASS** | `client360-1280x800.png`, `approval-completed.webp`, `outcome-graph.webp`, `client360-timeline.webp` |
-| Action Center, integrations, Team, MCP, audit | **PASS** | `action-center.webp`, `integrations.webp`, `team-member-denied.webp`, `mcp-console.webp`, `automation-audit.webp` |
-| Settings | **PASS — closed in this cycle** | `settings-desktop-1440x900.png`, `settings-mobile-390x844.png`, `settings-member.webp` |
+| Administrator Dashboard | **PASS** | `docs/evidence/acceptance-dashboard-admin.webp` |
+| Client 360 health and commitment | **PASS** | `docs/evidence/acceptance-client360-health.webp` |
+| Outcome Graph | **PASS** | `docs/evidence/acceptance-outcome-graph.webp` |
+| Timeline | **PASS** | `docs/evidence/acceptance-timeline.webp` |
+| Action Center | **PASS** | `docs/evidence/acceptance-notifications.webp` |
+| Settings | **PASS** | `docs/evidence/acceptance-settings.webp` |
+| Provider baseline | **PASS — disconnected** | `docs/evidence/integration-provider-blocked.webp` |
+| Console | **PASS** — no uncaught browser-console errors during final dashboard, Client 360, notifications, and Settings validation. | Browser console review |
 
-## Automated Validation
+## Automated Gates
 
-| Validation | Result |
-|---|---|
-| Production frontend build | **PASS** — `REACT_APP_BACKEND_URL=<certification backend> npm run build` compiled successfully. Output: 323.12 kB JavaScript and 14.38 kB CSS after gzip. |
-| Backend suite | **PASS** — `PYTHONPATH=backend ... pytest -q -n 0` completed with `100 passed, 5 skipped, 5 warnings` in 44.50 seconds. |
-| Relevant authorization coverage | **PASS** — included in the full backend suite; browser member request to `GET /api/team/members` also returned 403. |
-| Built route availability | **PASS** — served `GET /settings` returned HTTP 200. |
-| Whitespace integrity | **PASS** — `git diff --check` reported no whitespace errors before the Settings commit. |
+| Gate | Exact result | Release implication |
+|---|---|---|
+| Controlled acceptance harness | **PASS** — `42 passed, 0 failed`. | Lifecycle, security, idempotency, and persistence evidence passed. |
+| Frontend production build | **PASS** — `npm run build` compiled successfully; 323.12 kB JavaScript and 14.38 kB CSS after gzip. | Static production bundle is buildable. |
+| Backend suite | **PASS** — `101 passed, 5 skipped, 5 warnings in 44.49s`. | Authentication, role, tenant, integration normalizer, timeline, notification/digest, and commitment/SLA tests executed. |
+| Whitespace integrity | **PASS** — `git diff --check` returned no whitespace errors before documentation update. | Source change set is structurally clean. |
+| ESLint static gate | **FAIL — configuration absent.** `npx eslint src --max-warnings=0` exited 2: ESLint 9 could not find `eslint.config.(js|mjs|cjs)`. | Required release automation gate is incomplete. |
 
-The five skipped tests are optional provider-dependent checks. Warnings are FastAPI lifecycle and multipart deprecations; they remain maintenance follow-up items and do not invalidate the Settings verification.
+The five backend skips are optional external-provider tests whose dependencies are unavailable. They were not reclassified as passes and do not conceal the provider-lifecycle blocker.
 
 ## Remaining Release Blockers
 
-| Priority | Blocker | Classification | Required closure evidence |
-|---|---|---|---|
-| **P0** | Gmail, Google Calendar, and Stripe lack credential-backed lifecycle testing. | External configuration and integration validation gap. | Use least-privilege provider test credentials to connect, sync, disconnect, reconnect, verify safe errors, and confirm resulting CRM records. |
-| **P1** | Formal full-product accessibility assessment remains incomplete. | Verification gap. | Complete keyboard, focus-order, dialog, table, chart, and screen-reader validation across all supported breakpoints. |
-| **P1** | Performance testing with production-scale tenant data remains incomplete. | Verification gap. | Measure dashboard, directory, pipeline, and Client 360 with realistic record volumes. |
-| **P2** | FastAPI lifecycle deprecations remain. | Maintenance issue. | Migrate startup/shutdown hooks to lifespan handlers. |
+| Priority | Blocker | Exact owner action required |
+|---|---|---|
+| **P0** | Gmail and Google Calendar credential-backed lifecycle not certified. | Supply an approved Google OAuth test client ID and client secret, a least-privilege Google test account, a registered HTTPS callback matching `GOOGLE_REDIRECT_URI` or `PUBLIC_BACKEND_URL`, and `INTEGRATION_ENC_KEY` for encrypted token storage. Then run connect, authorized read/sync, tenant attribution, disconnect/revocation, and reconnect verification. |
+| **P0** | Stripe credential-backed lifecycle not certified. | Supply a least-privilege Stripe test-mode secret key through an approved secret mechanism. Then verify account/config connection, supported CRM sync/status behavior, tenant attribution, disconnect, and reconnect. |
+| **P1** | Repository lint gate is not configured. | Add and enforce an ESLint 9 flat configuration or a compatible lint script, then run it with zero errors/warnings. |
+| **P1** | Full accessibility and production-scale performance assessments are incomplete. | Complete screen-reader, keyboard, dialog/table/chart assessment and realistic tenant-volume performance testing. |
+| **P2** | FastAPI lifecycle warnings remain. | Migrate deprecated startup/shutdown event hooks to lifespan handlers. |
 
 ## References
 
 [1]: https://github.com/ebyron357/Clientverse-crm/pull/9 — Draft pull request.
-[2]: https://github.com/ebyron357/Clientverse-crm/actions/runs/31926190330 — Prior successful CI run for the certification branch.
