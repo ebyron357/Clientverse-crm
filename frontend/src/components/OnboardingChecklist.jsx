@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+/* ClientVerse Systems Command Center: compact, calm activation guidance on neutral work surfaces. */
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Check, ChevronDown, ChevronUp, Circle, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,12 +10,15 @@ export default function OnboardingChecklist({ dashboard, integrations = [] }) {
   const navigate = useNavigate();
   const [dismissed, setDismissed] = useState(() => localStorage.getItem(STORAGE_KEY) === "true");
   const [expanded, setExpanded] = useState(true);
-  const items = useMemo(() => [
-    { label: "Review your command center", detail: "Understand the current revenue, delivery risk, and client-health signals.", complete: true, to: "/dashboard" },
-    { label: "Create your first opportunity", detail: "Track a qualified revenue conversation in the pipeline.", complete: Boolean(dashboard?.open_opportunities), to: "/pipeline" },
-    { label: "Open a Client 360 workspace", detail: "Bring health, commitments, approvals, and outcomes into one account view.", complete: Boolean(dashboard?.active_workspaces), to: "/workspaces" },
-    { label: "Connect a provider", detail: "Bring approved Gmail, Calendar, or Stripe context into the client record.", complete: integrations.some((item) => item.status === "active"), to: "/registries" },
-  ], [dashboard, integrations]);
+  const items = useMemo(() => {
+    const providerList = Array.isArray(integrations) ? integrations : (integrations?.providers || []);
+    return [
+      { label: "Review your command center", detail: "Understand the current revenue, delivery risk, and client-health signals.", complete: true, to: "/dashboard" },
+      { label: "Create your first opportunity", detail: "Track a qualified revenue conversation in the pipeline.", complete: Boolean(dashboard?.open_opportunities), to: "/pipeline" },
+      { label: "Open a Client 360 workspace", detail: "Bring health, commitments, approvals, and outcomes into one account view.", complete: Boolean(dashboard?.active_workspaces), to: "/workspaces" },
+      { label: "Connect a provider", detail: "Bring approved Gmail, Calendar, or Stripe context into the client record.", complete: providerList.some((item) => item.status === "active"), to: "/registries" },
+    ];
+  }, [dashboard, integrations]);
   const completed = items.filter((item) => item.complete).length;
   const dismiss = () => { localStorage.setItem(STORAGE_KEY, "true"); setDismissed(true); };
   if (dismissed || completed === items.length) return null;
