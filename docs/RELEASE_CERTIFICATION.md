@@ -62,6 +62,7 @@ The extension was validated against a disposable FastAPI instance and fresh Mong
 | Client-value API verification workflow | **PASS** — portal, documents, commercial, appointments, field, automation, review, capacity, playbook, isolation, and redaction assertions passed. |
 | New client-value regression tests | **PASS** — `2 passed` against the updated disposable API. |
 | Complete isolated backend suite | **PASS** — `103 passed, 5 skipped, 5 warnings in 33.09s`. |
+| GitHub CI for client-value commit | **PASS** — [run 31975567664](https://github.com/ebyron357/Clientverse-crm/actions/runs/31975567664) completed the frontend warnings-as-errors build and backend suite with `104 passed, 4 skipped, 5 warnings in 31.35s`. |
 | ESLint 9 | **PASS** — `cd frontend && npm run lint` exits 0 with **0 errors and 0 warnings**. |
 | Frontend production build | **PASS** — warnings-as-errors build completed at 330.94 kB JavaScript and 14.74 kB CSS after gzip. |
 | Browser console | **PASS** — no console output after authenticated client-value workflow inspection. |
@@ -104,4 +105,4 @@ Before Google OAuth can be certified, set either `GOOGLE_REDIRECT_URI` to the re
 ## References
 
 [1]: https://github.com/ebyron357/Clientverse-crm/pull/9 — Draft pull request.
-[2]: https://github.com/ebyron357/Clientverse-crm/actions/runs/31972959204 — Latest successful pre-extension certification CI run.
+[2]: https://github.com/ebyron357/Clientverse-crm/actions/runs/31975567664 — Latest successful client-value release CI run.

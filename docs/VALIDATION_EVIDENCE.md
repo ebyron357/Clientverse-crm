@@ -51,6 +51,7 @@ The prior controlled run `PROOF-20260816211130` created a company, linked contac
 | Client-value focused API script | **PASS** — all portal, commercial, appointment, field, automation, review, capacity, playbook, isolation, and redaction checks passed. |
 | Client-value backend tests | **PASS** — `2 passed`. |
 | Full isolated backend suite | **PASS** — `103 passed, 5 skipped, 5 warnings in 33.09s`. |
+| GitHub CI for client-value commit | **PASS** — frontend warnings-as-errors build and backend `104 passed, 4 skipped, 5 warnings in 31.35s` completed successfully in [run 31975567664](https://github.com/ebyron357/Clientverse-crm/actions/runs/31975567664). |
 | ESLint 9 | **PASS** — zero errors and zero warnings. |
 | Frontend production build | **PASS** — CI-style warnings-as-errors build completed; 330.94 kB JavaScript and 14.74 kB CSS after gzip. |
 | Client-value browser console | **PASS** — no console output. |
