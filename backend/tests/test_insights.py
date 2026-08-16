@@ -1,5 +1,6 @@
 import os
 import uuid
+from datetime import datetime, timezone
 
 import requests
 
@@ -55,11 +56,15 @@ def test_timeline_shape_and_normalization():
 def test_timeline_filter_and_pagination():
     h = _h(_tok(ADMIN))
     ws_id = _admin_workspace_id()
-    full = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=100", headers=h, timeout=20).json()
+    # Timeline entries can be added by independent background workflows while
+    # pagination requests are in flight. Use one cutoff to test a stable
+    # historical snapshot rather than assuming a live event stream is static.
+    cutoff = datetime.now(timezone.utc).isoformat()
+    full = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=100&date_to={cutoff}", headers=h, timeout=20).json()
     total = full["total"]
     assert total >= 1
-    p1 = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=3&offset=0", headers=h, timeout=20).json()
-    p2 = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=3&offset=3", headers=h, timeout=20).json()
+    p1 = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=3&offset=0&date_to={cutoff}", headers=h, timeout=20).json()
+    p2 = requests.get(f"{API}/workspaces/{ws_id}/timeline?limit=3&offset=3&date_to={cutoff}", headers=h, timeout=20).json()
     assert p1["total"] == total == p2["total"]
     ids1 = {i["id"] for i in p1["items"]}
     ids2 = {i["id"] for i in p2["items"]}
