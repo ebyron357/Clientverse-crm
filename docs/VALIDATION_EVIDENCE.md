@@ -18,6 +18,7 @@ The autonomous validation gates ran against a disposable FastAPI application and
 |---|---|---|
 | Integrated CRM acceptance harness | **PASS** — `42 passed, 0 failed` | Prior controlled lifecycle acceptance remains applicable; no product workflow redesign occurred. |
 | Full backend regression suite | **PASS** — `104 passed, 5 skipped, 1 warning in 34.20s` | Includes authentication, role permissions, tenant isolation, timeline, notification/digest, commitment/SLA, integrations, client-value, and the closeout isolation probe. |
+| Closeout implementation CI | **PASS** | [Run 32072884763](https://github.com/ebyron357/Clientverse-crm/actions/runs/32072884763) completed both the frontend warnings-as-errors build and backend API-test jobs successfully for commit `bf359e8820ac1dbf6dac533cf80aac2ef1e59ab1`. |
 | Explicit client-value tenant isolation | **PASS** — `1 passed in 1.85s` | Tenant B received HTTP 404 for Tenant A resource queries and HTTP 403/404 for mutation attempts across workspace, documents, estimates, invoices, appointments, field check-ins, portal links, and integration activity. |
 | ESLint release gate | **PASS** — exit 0, 0 errors, 0 warnings | `eslint "src/**/*.{js,jsx}" --max-warnings=0`. |
 | Frontend production build | **PASS** | `NODE_ENV=production craco build`; 331.14 kB JavaScript and 14.81 kB CSS gzip. |
