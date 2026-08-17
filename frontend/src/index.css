@@ -12,20 +12,20 @@
     --card-foreground: 216 43% 11%;
     --popover: 0 0% 100%;
     --popover-foreground: 216 43% 11%;
-    --primary: 193 76% 43%;
+    --primary: 192 84% 25%;
     --primary-foreground: 0 0% 100%;
     --secondary: 210 35% 96%;
     --secondary-foreground: 216 32% 18%;
     --muted: 210 35% 96%;
-    --muted-foreground: 215 16% 47%;
+    --muted-foreground: 215 25% 35%;
     --accent: 192 70% 95%;
     --accent-foreground: 193 76% 27%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
     --border: 214 25% 90%;
     --input: 214 25% 88%;
-    --ring: 193 76% 43%;
-    --chart-1: 193 76% 43%;
+    --ring: 192 84% 25%;
+    --chart-1: 192 84% 25%;
     --chart-2: 216 43% 17%;
     --chart-3: 159 66% 42%;
     --chart-4: 39 92% 50%;
@@ -79,7 +79,7 @@
   }
 
   .cv-eyebrow {
-    @apply text-[11px] font-bold uppercase tracking-[0.14em] text-[#1a9fbf];
+    @apply text-[11px] font-bold uppercase tracking-[0.14em] text-[#0a6177];
   }
 
   .cv-page-title {
@@ -114,13 +114,22 @@
   }
 
   .cv-action-primary {
-    @apply bg-[#1a9fbf] text-white shadow-sm transition-colors hover:bg-[#147f9a] focus-visible:ring-[#4ac4e0];
+    @apply bg-[#0a6177] text-white shadow-sm transition-colors hover:bg-[#07536b] focus-visible:ring-[#4ac4e0];
   }
 
   .cv-status-dot { @apply inline-block h-1.5 w-1.5 rounded-full; }
 }
 
 @layer utilities {
+  /* Release accessibility: retain the ClientVerse cyan family at AA-compliant contrast. */
+  .text-\[\#1a9fbf\] { color: #0a6177 !important; }
+  .bg-\[\#1a9fbf\] { background-color: #0a6177 !important; }
+  .hover\:bg-\[\#147f9a\]:hover { background-color: #07536b !important; }
+  .text-slate-400 { color: #64748b !important; }
+  .text-gray-400 { color: #475569 !important; }
+  .text-red-600 { color: #b91c1c !important; }
+  .text-emerald-600 { color: #047857 !important; }
+  .placeholder\:text-slate-400::placeholder { color: #64748b !important; }
   .cv-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
   .cv-scrollbar::-webkit-scrollbar-track { background: transparent; }
   .cv-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }

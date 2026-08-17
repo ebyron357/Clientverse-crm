@@ -1,0 +1,15 @@
+{
+  "tested_at_utc": "2026-08-16T22:19:00Z",
+  "repository": "ebyron357/Clientverse-crm",
+  "branch": "manus/premium-crm-completion",
+  "release_candidate_sha": "f78da2081c6db8b21ad8978cf3a7fcd93cdc15c2",
+  "pull_request": {"number": 9, "draft": true, "url": "https://github.com/ebyron357/Clientverse-crm/pull/9"},
+  "github_deployments": [],
+  "deployment_provider": "UNVERIFIED",
+  "deployment_project_name_or_id": "UNVERIFIED",
+  "deployment_id": "UNVERIFIED",
+  "deployment_timestamp": "UNVERIFIED",
+  "deployment_environment": "UNVERIFIED",
+  "hosting_platform_reported_sha": "UNVERIFIED",
+  "sha_comparison": "UNVERIFIED"
+}

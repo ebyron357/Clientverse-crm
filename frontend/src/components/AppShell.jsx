@@ -66,7 +66,7 @@ export default function AppShell() {
             const visibleItems = group.items.filter((item) => !item.adminOnly || user?.role === "admin");
             if (!visibleItems.length) return null;
             return <section key={group.label} aria-label={group.label}>
-              {!collapsed && <div className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{group.label}</div>}
+              {!collapsed && <div className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-300">{group.label}</div>}
               <div className="space-y-1">{visibleItems.map((item) => <SidebarLink key={item.to} item={item} collapsed={collapsed} />)}</div>
             </section>;
           })}
@@ -75,9 +75,9 @@ export default function AppShell() {
           <div className={`rounded-xl border border-white/10 bg-white/[0.045] p-2.5 ${collapsed ? "text-center" : ""}`}>
             <div className={`flex items-center ${collapsed ? "justify-center" : "gap-2.5"}`}>
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#1a9fbf] text-xs font-bold text-white">{user?.name?.split(" ").map((part) => part[0]).slice(0, 2).join("") || "CV"}</div>
-              {!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-xs font-semibold text-white">{user?.name}</div><div className="truncate text-[11px] text-slate-400">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}
+              {!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-xs font-semibold text-white">{user?.name}</div><div className="truncate text-[11px] text-slate-300">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}
             </div>
-            {!collapsed && <button onClick={doLogout} className="mt-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-slate-400 transition-colors hover:bg-white/10 hover:text-white"><LogOut className="h-3.5 w-3.5" />Sign out</button>}
+            {!collapsed && <button onClick={doLogout} className="mt-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-slate-300 transition-colors hover:bg-white/10 hover:text-white"><LogOut className="h-3.5 w-3.5" />Sign out</button>}
           </div>
         </div>
       </aside>

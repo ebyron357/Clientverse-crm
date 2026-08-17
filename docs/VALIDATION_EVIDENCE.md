@@ -1,74 +1,88 @@
 # ClientVerse CRM — Integrated Validation Evidence
 
-This is the canonical validation record for the ClientVerse CRM release candidate. It incorporates controlled lifecycle acceptance, lint and CI closure, provider blocked-state evidence, deployed proof-of-life evidence, and the client-value release. No passwords, session tokens, OAuth tokens, client secrets, encryption keys, database credentials, portal tokens, or authorization codes are included.
+This is the canonical validation record for the ClientVerse CRM release candidate. It supersedes fragmented closeout notes by consolidating lifecycle, security, accessibility, performance, browser, provider-readiness, and deployment evidence. It intentionally excludes passwords, session tokens, OAuth tokens, client secrets, encryption keys, database credentials, portal tokens, authorization codes, and internal record identifiers.
 
-## Client-Value Release Evidence
+## Validation Environment
 
-| Capability | Tested outcome | Integrity or safety proof |
+The autonomous validation gates ran against a disposable FastAPI application and local MongoDB database using the current release-candidate source. The temporary frontend build targeted that API. The sandbox health endpoint was also checked for proof of life, but no temporary runtime is labeled permanent production and no deployment occurred in this closeout cycle.
+
+| Environment | Purpose | Boundary |
 |---|---|---|
-| Client portal | An administrator created a portal link; public portal data and a client request were accepted. | Link lists redacted the token and a revoked token returned HTTP 404. |
-| Documents | A workspace document record was created in pending-approval state. | The record is tenant/workspace-scoped and external document URLs are optional metadata only. |
-| Estimate and invoice | An estimate changed to sent, created a local invoice, then safely returned the existing invoice on retry. | Invoice creation is idempotent and payment status reports `requires_stripe_configuration`. |
-| Appointments | One appointment was created and a colliding owner time range returned HTTP 409. | Reminder preparation returned `outbound: disabled` and created internal work instead of a provider send. |
-| Field check-in | An authenticated user saved a workspace check-in. | The check-in records the authenticated actor and tenant/workspace references. |
-| Safe automation | A configured template ran successfully. | The run result reported `outbound: disabled`; it created internal work only. |
-| Review request | A review request record was prepared. | The record reported `outbound: disabled`; nothing was sent or posted. |
-| Capacity and playbooks | Capacity grouped open/overdue tasks by owner; a vertical playbook created tasks. | Repeat playbook application returned `duplicate: true`. |
-| Scope and access | Unauthenticated Client Operations access and cross-tenant workspace document access were checked. | Results were HTTP 401 and HTTP 404 respectively. |
+| Isolated FastAPI and MongoDB | Regression, tenant-isolation, provider-ready state, and performance testing | Disposable verification environment; no production claim. |
+| Local production frontend build | Authenticated axe-core and browser validation | Connected only to the isolated API. |
+| Temporary sandbox endpoint | Reachability proof | HTTP 200 health confirmation only; not a permanent deployment target. |
 
-The sanitized result is stored at `docs/evidence/client-value-api.json`. Its content excludes account identities, portal tokens, passwords, provider credentials, and all durable record identifiers.
+## Automated Regression and Lifecycle Evidence
+
+| Gate | Exact result | Notes |
+|---|---|---|
+| Integrated CRM acceptance harness | **PASS** — `42 passed, 0 failed` | Prior controlled lifecycle acceptance remains applicable; no product workflow redesign occurred. |
+| Full backend regression suite | **PASS** — `104 passed, 5 skipped, 1 warning in 34.20s` | Includes authentication, role permissions, tenant isolation, timeline, notification/digest, commitment/SLA, integrations, client-value, and the closeout isolation probe. |
+| Explicit client-value tenant isolation | **PASS** — `1 passed in 1.85s` | Tenant B received HTTP 404 for Tenant A resource queries and HTTP 403/404 for mutation attempts across workspace, documents, estimates, invoices, appointments, field check-ins, portal links, and integration activity. |
+| ESLint release gate | **PASS** — exit 0, 0 errors, 0 warnings | `eslint "src/**/*.{js,jsx}" --max-warnings=0`. |
+| Frontend production build | **PASS** | `NODE_ENV=production craco build`; 331.14 kB JavaScript and 14.81 kB CSS gzip. |
+| FastAPI lifespan migration | **PASS** | Deprecated event decorators are absent; lifespan startup completed in the isolated API. |
+
+The five skipped backend tests require unavailable provider or schedule configuration. They were not used as a substitute for external provider certification. The sole remaining warning is a multipart import pending deprecation and is not an application lifecycle warning.
+
+## Accessibility Evidence
+
+An authenticated axe-core assessment using WCAG 2.2 AA rules exercised `/dashboard`, `/directory`, `/workspaces`, `/settings`, `/registries`, `/client-ops`, `/field`, and `/notifications`.
+
+| Measurement | Result |
+|---|---|
+| Routes assessed | 8 protected CRM routes |
+| Final violations | **0** |
+| Final serious or critical violations | **0** |
+| Corrective work | Shared contrast tokens, navigation contrast, named Select and Switch controls, decorative-status semantics, and invalid missing tab-panel references were corrected. |
+| Raw evidence | `docs/evidence/a11y-axe-release-pass.json` |
+
+The automated assessment does not replace an owner-led assistive-technology or device-lab study, but it closes the verified critical and serious automated violations for the covered release surfaces.
+
+## Performance Evidence
+
+Locust exercised authenticated login, dashboard, companies, contacts, workspace list/detail, portal-link administration, Client Operations summary, appointments, and Field Ops check-ins. The run used 10 concurrent users, a two-user-per-second ramp, and a 60-second duration against the isolated API.
+
+| Metric | Result |
+|---|---|
+| Total requests | 3,196 |
+| Failed requests | **0** |
+| Aggregate throughput | 54.11 requests/s |
+| Aggregate p95 response time | 24 ms |
+| Aggregate p99 response time | 42 ms |
+| Slowest measured route | Login averaged 622.68 ms; all ten login requests succeeded. |
+| Read-path result | Dashboard, client lists, workspace detail, portal-link administration, appointments, and field read paths completed without failures. |
+
+The complete statistics, including endpoint-level response times and zero recorded failures, are stored in `docs/evidence/performance-locust_stats.csv` and `docs/evidence/performance-locust_failures.csv`. This is an isolated release-readiness assessment, not a claim of tenant-volume or permanent-host capacity certification.
 
 ## Browser Evidence
 
-The temporary client-value frontend build was authenticated as a controlled workspace administrator against the updated disposable API. The following user-visible surfaces rendered without browser-console output.
+The browser smoke harness authenticated against the isolated API before the application loaded, then rendered five desktop routes and the mobile Field Ops route. It also pressed Tab through the initial keyboard sequence and collected uncaught console errors.
 
-| Surface | Verified detail | Screenshot |
+| Surface | Exact result |
+|---|---|
+| Desktop routes | **PASS** — `/dashboard`, `/settings`, `/client-ops`, `/field`, and `/notifications` each displayed a visible main region. |
+| Keyboard navigation | **PASS** — focus reached the named command-center button, then `Command Center`, `Action Center`, `Pipeline`, and `Directory` navigation links. |
+| Mobile | **PASS** — `/field` rendered at 375×812. |
+| Console | **PASS** — 0 uncaught console errors. |
+| Screenshots | `docs/evidence/browser-release-desktop.png` and `docs/evidence/browser-release-mobile-field.png`. |
+
+## Security and Provider-Readiness Evidence
+
+| Area | Current result | Scope boundary |
 |---|---|---|
-| Client Operations `/client-ops` | Workspace selector, portal controls, safe-by-default configuration notice, and client-value metrics rendered. | `docs/evidence/client-value-browser.md` |
-| Commercial & Documents | Document/approval coordination, estimate creation, local invoice control, scoped commercial history, and Stripe limitation rendered. | `docs/evidence/client-value-browser.md` |
-| Field Ops `/field` | Mobile-first check-in form, appointment context, internal reminder control, and persisted field activity rendered. | `docs/evidence/client-value-browser.md` |
-| Capacity & Playbooks | Owner workload, overdue counts, and four vertical playbook controls rendered. | `docs/evidence/client-value-browser.md` |
+| Protected endpoints | **PASS** | Existing integration and client-value tests reject unauthenticated protected requests. |
+| Tenant isolation | **PASS** | The closeout probe explicitly rejected cross-tenant reads and mutations across the listed client-value and integration-activity resources. |
+| Credential redaction | **PASS — code/test scope** | Portal token redaction and integration safe-response behavior were verified; no secret-bearing material appears in stored evidence. |
+| Gmail and Calendar code readiness | **READY FOR OWNER CONFIGURATION** | OAuth connect/callback/disconnect/sync and encrypted credential-storage paths are present and focused non-credential tests pass. Live OAuth and provider operations remain unperformed. |
+| Stripe code readiness | **READY FOR OWNER CONFIGURATION** | Configuration-gated connection/sync handling and truthful local `requires_stripe_configuration` outcome are present. Live Stripe actions remain unperformed. |
 
-This browser verification used temporary exposed verification ports only. It did not alter the deployed frontend/backend pair or publish any branch contents.
+## Runtime and Deployment Evidence
 
-## Existing Live Deployment Evidence
+Only environment-variable presence was inspected. In the temporary runtime, core database, JWT, frontend, and CORS variables were present; `PUBLIC_BACKEND_URL`, `INTEGRATION_ENC_KEY`, Google OAuth variables, `STRIPE_API_KEY`, and `WEBHOOK_CRON_SECRET` were absent. The external sandbox health endpoint returned HTTP 200 during this cycle, but no permanent hosting target or deployment manifest was found. That endpoint must not be cited as final production certification.
 
-| Evidence point | Exact result |
-|---|---|
-| Frontend availability | `https://3001-in8v1wws9289jt9pfzcyj-03350434.us4.manus.computer` returned HTTP 200 and rendered the authenticated CRM. |
-| Backend availability | `https://8001-in8v1wws9289jt9pfzcyj-03350434.us4.manus.computer/api` accepted authenticated CRM workflow requests. |
-| Health | `GET /api/health` returned HTTP 200 with `service: ClientVerse`, `status: ok`, and `database: up` before and after the workflow. |
-| Callback reachability | `GET /api/integrations/google/callback` returned HTTP 307 safe error redirect without OAuth inputs, confirming the deployed route resolves. |
-| Browser console | No console output during the authenticated Dashboard, Directory, and reloaded Client Workspaces checks. |
+## Owner Acceptance and Release State
 
-The prior controlled run `PROOF-20260816211130` created a company, linked contact, opportunity, closed-won workspace, and commitment. It then reauthenticated and reloaded the frontend. Persisted-record assertions all returned true. The supporting files remain `docs/evidence/proof-of-life-api.json` and `docs/evidence/proof-of-life-browser.md`.
+> **WAITING ON OWNER — AGENT WORK COMPLETE.** The candidate should remain a draft PR. Before merge, the owner must supply approved Google and Stripe test configuration through a secret mechanism, authorize permanent hosting, run the credential-backed provider lifecycles and permanent deployment smoke checks, confirm final CI, and approve PR #9.
 
-## Regression Evidence
-
-| Gate | Exact result |
-|---|---|
-| Controlled CRM acceptance | **PASS** — `42 passed, 0 failed`. |
-| Client-value focused API script | **PASS** — all portal, commercial, appointment, field, automation, review, capacity, playbook, isolation, and redaction checks passed. |
-| Client-value backend tests | **PASS** — `2 passed`. |
-| Full isolated backend suite | **PASS** — `103 passed, 5 skipped, 5 warnings in 33.09s`. |
-| GitHub CI for client-value commit | **PASS** — frontend warnings-as-errors build and backend `104 passed, 4 skipped, 5 warnings in 31.35s` completed successfully in [run 31975567664](https://github.com/ebyron357/Clientverse-crm/actions/runs/31975567664). |
-| ESLint 9 | **PASS** — zero errors and zero warnings. |
-| Frontend production build | **PASS** — CI-style warnings-as-errors build completed; 330.94 kB JavaScript and 14.74 kB CSS after gzip. |
-| Client-value browser console | **PASS** — no console output. |
-
-The backend warnings are the previously recorded multipart and FastAPI startup/shutdown deprecations. The skips are provider-dependent and do not represent Gmail, Google Calendar, or Stripe lifecycle certification.
-
-## Deployment Configuration Presence
-
-| Name | State |
-|---|---|
-| `MONGO_URL`, `DB_NAME`, `JWT_SECRET`, `FRONTEND_URL`, `CORS_ORIGINS` | **PRESENT** |
-| `PUBLIC_BACKEND_URL`, `INTEGRATION_ENC_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | **MISSING** |
-
-The exact reachable OAuth callback route is `https://8001-in8v1wws9289jt9pfzcyj-03350434.us4.manus.computer/api/integrations/google/callback`. It cannot be used for a complete credential-backed lifecycle until the required Google client, callback/base URL, encrypted-storage, and approved test-account configuration is present.
-
-## Final Release Gate
-
-> **NO-GO.** The client-value release is code- and workflow-verified, and the existing CRM remains reachable with proven persistence. Credential-backed Gmail, Google Calendar, and Stripe lifecycles remain unresolved P0 requirements. Full accessibility/performance assessment and FastAPI lifespan migration remain P1/P2 requirements.
-
-The canonical release summary, current evidence locations, provider setup instructions, and owner actions are maintained in [RELEASE_CERTIFICATION.md](./RELEASE_CERTIFICATION.md).
+The complete gate table, evidence inventory, deployment determination, and exact owner actions are maintained in [RELEASE_CERTIFICATION.md](./RELEASE_CERTIFICATION.md).
