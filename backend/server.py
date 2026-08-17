@@ -11,6 +11,7 @@ import hashlib
 import secrets
 import json as _json
 import base64
+from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -50,7 +51,26 @@ FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 _cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
 CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 
-app = FastAPI(title="ClientVerse API", version="v1")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await seed()
+    try:
+        await db.domain_events.create_index([("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])
+        await db.alerts.create_index([("tenant_id", 1), ("status", 1)])
+        await db.alerts.create_index([("tenant_id", 1), ("type", 1), ("source_ref", 1)])
+        await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
+        await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
+        await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        mclient.close()
+
+
+app = FastAPI(title="ClientVerse API", version="v1", lifespan=lifespan)
 api = APIRouter(prefix="/api")
 
 # ----------------------------- helpers -----------------------------
@@ -2706,23 +2726,6 @@ async def cron_daily_digest(request: Request):
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
-
-@app.on_event("startup")
-async def on_startup():
-    await seed()
-    try:
-        await db.domain_events.create_index([("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])
-        await db.alerts.create_index([("tenant_id", 1), ("status", 1)])
-        await db.alerts.create_index([("tenant_id", 1), ("type", 1), ("source_ref", 1)])
-        await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
-    except Exception:
-        pass
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    mclient.close()
 
 @api.get("/")
 async def root():
