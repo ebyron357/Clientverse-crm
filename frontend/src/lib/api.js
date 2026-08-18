@@ -1,6 +1,8 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// A blank base URL is deliberate for single-container production deployments:
+// the React app and FastAPI API share one HTTPS origin at /api.
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 export const API = `${BACKEND_URL}/api`;
 
 const TOKEN_KEY = "cv_access_token";

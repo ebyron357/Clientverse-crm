@@ -23,7 +23,9 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 from client_value import register_client_value_routes
@@ -50,6 +52,18 @@ JWT_ALG = "HS256"
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 _cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
 CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+
+
+class ClientVerseStaticFiles(StaticFiles):
+    """Serve the compiled SPA while preserving API routes and asset 404 responses."""
+
+    async def get_response(self, path, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404 and "." not in Path(path).name:
+                return await super().get_response("index.html", scope)
+            raise
 
 
 @asynccontextmanager
@@ -2752,3 +2766,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Production containers build the React application into this directory. Mounting
+# it last preserves explicit API routes while supporting direct SPA deep links.
+frontend_build_dir = Path(os.environ.get("FRONTEND_BUILD_DIR", ROOT_DIR.parent / "frontend" / "build"))
+if frontend_build_dir.is_dir():
+    app.mount("/", ClientVerseStaticFiles(directory=str(frontend_build_dir), html=True), name="frontend")

@@ -1,0 +1,31 @@
+# Local production-like verification only. Do not commit an .env file with real values.
+services:
+  crm:
+    build:
+      context: .
+    ports:
+      - "8000:8000"
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: clientverse
+      JWT_SECRET: ${JWT_SECRET:?set a strong 32+ character secret in your local environment}
+      FRONTEND_URL: http://localhost:8000
+      CORS_ORIGINS: http://localhost:8000
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?set a local administrator email}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set a local administrator password}
+      INTEGRATION_ENC_KEY: ${INTEGRATION_ENC_KEY:-}
+      WEBHOOK_CRON_SECRET: ${WEBHOOK_CRON_SECRET:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
+  mongo:
+    image: mongo:8.0
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+volumes:
+  mongo_data:

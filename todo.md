@@ -19,3 +19,37 @@
 - [ ] Provide an approved Stripe test secret, then complete Stripe lifecycle certification.
 - [ ] Select and authorize permanent production hosting, configure secrets outside source control, deploy the verified revision, and run permanent-runtime smoke tests.
 - [ ] Review final CI after the closeout commit, approve PR #9, and decide whether to remove draft status and merge.
+
+## System and Experience Assessment
+
+- [x] Inspect current CRM system capabilities, workflows, release evidence, and representative UI surfaces for improvement opportunities without modifying the release candidate.
+- [x] Prioritize system, UI, and UX improvements by user impact, delivery effort, risk, and dependency on owner-controlled infrastructure.
+- [x] Deliver a phased, evidence-based improvement roadmap and implementation recommendation.
+
+## Preview Link Recovery
+
+- [x] Diagnose why the previously supplied temporary preview URL is unavailable.
+- [x] Start the verified local frontend and backend pair with a browser-reachable configuration.
+- [x] Expose, verify, and deliver a replacement user-facing preview link.
+
+## External Preview Access Follow-Up
+
+- [ ] Reproduce and diagnose the user-reported failure to open the exposed temporary preview from an external context.
+- [ ] Provide the most reliable available user-access path or document the verified external access limitation.
+
+## Managed Preview Replacement
+
+- [x] Inspect the managed ClientVerse project preview and determine whether it is the viable user-facing access route.
+- [x] Verify managed preview rendering and deliver the working access route to the user.
+
+## Full-Stack Primary Product Completion
+
+- [ ] Reconfirm the full-stack release baseline, draft PR state, and non-negotiable tenant, credential, and release constraints.
+- [x] Select the existing FastAPI + MongoDB architecture on a managed Python-capable host, preserving the tenant-tested implementation rather than rebuilding it.
+- [x] Add portable container, start, health-check, and deployment configuration assets for the selected managed-host path; verified same-origin SPA routes, API health, and local authentication.
+- [ ] Obtain owner authorization for the selected hosting account, managed MongoDB, production secrets, DNS/domain binding, and OAuth callback registration.
+- [ ] Convert the approved system/UI/UX assessment into a finish-critical implementation backlog and deliver the highest-impact safe improvements.
+- [ ] Harden runtime configuration, observability, operational safeguards, backup/recovery, and release documentation.
+- [ ] Re-run full regression, accessibility, performance, tenant-security, browser, and production-readiness verification after implementation changes.
+- [ ] Complete Google, Gmail, Calendar, and Stripe lifecycle certification when owner-approved credentials and test authorization are available.
+- [ ] Deploy only the verified full-stack release to the approved permanent environment, then complete deployed production acceptance and owner handoff.
