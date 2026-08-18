@@ -28,6 +28,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
+from cryptography.fernet import Fernet
 from client_value import register_client_value_routes
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +53,24 @@ JWT_ALG = "HS256"
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 _cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
 CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
+IS_PRODUCTION = APP_ENV in {"production", "prod"}
+
+if IS_PRODUCTION:
+    if not FRONTEND_URL.startswith("https://"):
+        raise RuntimeError("FRONTEND_URL must use HTTPS in production")
+    if not CORS_ORIGINS or any(origin == "*" or not origin.startswith("https://") for origin in CORS_ORIGINS):
+        raise RuntimeError("CORS_ORIGINS must contain explicit HTTPS origins in production")
+    missing_production_secrets = [
+        name for name in ("WEBHOOK_CRON_SECRET", "INTEGRATION_ENC_KEY")
+        if not os.environ.get(name)
+    ]
+    if missing_production_secrets:
+        raise RuntimeError(f"Missing required production configuration: {', '.join(missing_production_secrets)}")
+    try:
+        Fernet(os.environ["INTEGRATION_ENC_KEY"].encode())
+    except Exception as exc:
+        raise RuntimeError("INTEGRATION_ENC_KEY must be a valid Fernet key in production") from exc
 
 
 def demo_seed_enabled() -> bool:
@@ -93,6 +112,18 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="ClientVerse API", version="v1", lifespan=lifespan)
 api = APIRouter(prefix="/api")
+
+
+@app.middleware("http")
+async def production_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 # ----------------------------- helpers -----------------------------
 
@@ -1733,7 +1764,6 @@ async def cron_commitment_risk(request: Request):
 import json as _json
 import httpx
 import stripe as _stripe
-from cryptography.fernet import Fernet
 
 PROVIDERS = ["gmail", "google_calendar", "stripe"]
 ADAPTER_VERSION = "1.0"

@@ -52,7 +52,9 @@
 - [x] Prevent fictional demo records from being created in production, while retaining explicit local and test seeding.
 - [x] Make external provider and webhook contracts state `REQUIRES_CONFIGURATION` until configuration and certification complete.
 - [x] Upgrade the Action Center into a tenant-scoped priority work queue with deduplicated alert actions and supporting lifecycle history.
-- [ ] Harden runtime configuration, observability, operational safeguards, backup/recovery, and release documentation.
+- [x] Harden runtime configuration, observability, operational safeguards, backup/recovery, and release documentation.
+- [x] Require production HTTPS origins, scheduler authentication, valid credential-encryption material, and no demo records at startup.
+- [x] Add baseline browser security headers and document production health checks, monitoring, backup, restore, and rollback controls.
 - [ ] Re-run full regression, accessibility, performance, tenant-security, browser, and production-readiness verification after implementation changes.
 - [ ] Complete Google, Gmail, Calendar, and Stripe lifecycle certification when owner-approved credentials and test authorization are available.
 - [ ] Deploy only the verified full-stack release to the approved permanent environment, then complete deployed production acceptance and owner handoff.

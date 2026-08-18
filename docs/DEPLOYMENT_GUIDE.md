@@ -46,6 +46,10 @@ This guide deploys the existing ClientVerse release candidate as one container: 
 
 The production database must have automated backups before customer data is accepted. Verify a restore into a separate recovery database, then confirm the restored application can pass `/api/health` and read a controlled tenant record. Retain the last verified container revision and database restore point before each schema or release change. Application rollback must never be used as a substitute for a database restoration plan.
 
+## Production Startup Safeguards
+
+The application refuses to start in `APP_ENV=production` unless `FRONTEND_URL` and every CORS origin use explicit HTTPS, and both `WEBHOOK_CRON_SECRET` and `INTEGRATION_ENC_KEY` are present. These checks prevent a production deployment from silently accepting wildcard browser origins, unauthenticated scheduler calls, or unencrypted provider credentials. The application also returns baseline response headers for content-type handling, referrer handling, framing, browser capability restrictions, and HTTPS transport security.
+
 ## Safety Gates
 
 The following remain mandatory: server-side tenant isolation, no production secrets in source control, provider credential redaction, authenticated webhook/scheduler triggers, draft PR review, final CI, deployed smoke tests, and provider certification with approved test credentials. The current release record remains the authoritative status document: [RELEASE_CERTIFICATION.md](./RELEASE_CERTIFICATION.md).

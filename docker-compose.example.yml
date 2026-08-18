@@ -16,7 +16,7 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:?set a local administrator email}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set a local administrator password}
       INTEGRATION_ENC_KEY: ${INTEGRATION_ENC_KEY:-}
-      WEBHOOK_CRON_SECRET: ${WEBHOOK_CRON_SECRET:-}
+      WEBHOOK_CRON_SECRET: ${WEBHOOK_CRON_SECRET:?set a separate strong scheduler secret in your local environment}
     depends_on:
       mongo:
         condition: service_healthy
