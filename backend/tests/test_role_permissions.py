@@ -66,7 +66,13 @@ def test_admin_can_perform_governance_actions():
     ws = requests.get(f"{API}/workspaces", headers=a, timeout=15).json()[0]["id"]
     hooks = requests.get(f"{API}/webhooks", headers=a, timeout=15).json()
     assert all("secret" not in h for h in hooks), "list must not leak secrets"
-    wid = hooks[0]["id"]
+    created = requests.post(f"{API}/webhooks", headers=a, json={
+        "name": f"Governance verification {uuid.uuid4().hex[:8]}",
+        "url": "https://example.invalid/clientverse-governance",
+        "events": ["task.created"],
+    }, timeout=15)
+    assert created.status_code == 200, created.text
+    wid = created.json()["id"]
 
     assert requests.get(f"{API}/team/members", headers=a, timeout=15).status_code == 200
     assert requests.patch(f"{API}/mcp/server/kill", headers=a, json={"enabled": True}, timeout=15).status_code == 200
