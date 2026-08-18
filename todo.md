@@ -48,7 +48,10 @@
 - [x] Select the existing FastAPI + MongoDB architecture on a managed Python-capable host, preserving the tenant-tested implementation rather than rebuilding it.
 - [x] Add portable container, start, health-check, and deployment configuration assets for the selected managed-host path; verified same-origin SPA routes, API health, and local authentication.
 - [ ] Obtain owner authorization for the selected hosting account, managed MongoDB, production secrets, DNS/domain binding, and OAuth callback registration.
-- [ ] Convert the approved system/UI/UX assessment into a finish-critical implementation backlog and deliver the highest-impact safe improvements.
+- [x] Convert the approved system/UI/UX assessment into a finish-critical implementation backlog and deliver the highest-impact safe improvements.
+- [x] Prevent fictional demo records from being created in production, while retaining explicit local and test seeding.
+- [x] Make external provider and webhook contracts state `REQUIRES_CONFIGURATION` until configuration and certification complete.
+- [x] Upgrade the Action Center into a tenant-scoped priority work queue with deduplicated alert actions and supporting lifecycle history.
 - [ ] Harden runtime configuration, observability, operational safeguards, backup/recovery, and release documentation.
 - [ ] Re-run full regression, accessibility, performance, tenant-security, browser, and production-readiness verification after implementation changes.
 - [ ] Complete Google, Gmail, Calendar, and Stripe lifecycle certification when owner-approved credentials and test authorization are available.

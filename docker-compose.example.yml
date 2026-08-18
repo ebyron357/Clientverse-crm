@@ -8,6 +8,8 @@ services:
     environment:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: clientverse
+      APP_ENV: production
+      SEED_DEMO_DATA: "false"
       JWT_SECRET: ${JWT_SECRET:?set a strong 32+ character secret in your local environment}
       FRONTEND_URL: http://localhost:8000
       CORS_ORIGINS: http://localhost:8000

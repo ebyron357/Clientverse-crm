@@ -14,6 +14,8 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FRONTEND_BUILD_DIR=/app/frontend/build \
+    APP_ENV=production \
+    SEED_DEMO_DATA=false \
     PORT=8000
 
 WORKDIR /app

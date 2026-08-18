@@ -54,6 +54,13 @@ _cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
 CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 
 
+def demo_seed_enabled() -> bool:
+    """Keep fictional fixtures out of production unless an operator explicitly opts in."""
+    environment = os.environ.get("APP_ENV", "development").strip().lower()
+    default = "true" if environment in {"development", "dev", "test", "testing"} else "false"
+    return os.environ.get("SEED_DEMO_DATA", default).strip().lower() in {"1", "true", "yes"}
+
+
 class ClientVerseStaticFiles(StaticFiles):
     """Serve the compiled SPA while preserving API routes and asset 404 responses."""
 
@@ -871,6 +878,8 @@ async def list_registry(kind: str, user=Depends(get_current_user)):
     coll = REGISTRIES.get(kind)
     if not coll:
         raise HTTPException(status_code=404, detail="Unknown registry")
+    if kind == "webhooks":
+        return await db.webhooks.find(scope(user), {"_id": 0, "secret": 0}).sort("created_at", -1).to_list(2000)
     return await gen_list(coll, user)
 
 # ----------------------------- Domain events / Audit -----------------------------
@@ -1011,8 +1020,11 @@ async def seed():
         await db.users.insert_one({"user_id": uid, "email": admin_email, "name": "TV Pro", "role": "admin",
                                    "tenant_id": tenant_id, "password_hash": hash_password(admin_pw),
                                    "picture": None, "created_at": now_iso(), "auth": "password"})
-        await seed_demo(tenant_id, admin_email)
-        logger.info("Seeded admin + demo data")
+        if demo_seed_enabled():
+            await seed_demo(tenant_id, admin_email)
+            logger.info("Seeded initial administrator and explicit demo data")
+        else:
+            logger.info("Seeded initial administrator without fictional demo data")
     else:
         if existing.get("password_hash") and not verify_password(admin_pw, existing["password_hash"]):
             await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pw)}})
@@ -1106,9 +1118,9 @@ async def seed_registries():
     if await db.integrations.find_one({"tenant_id": t}):
         return
     await db.integrations.insert_many([
-        {"id": new_id("intg"), "tenant_id": t, "name": "Gmail", "provider": "Google", "category": "communications", "status": "AVAILABLE", "auth_method": "OAuth", "scopes": ["mail.send", "mail.read"], "description": "Send and read client emails.", "created_at": now_iso()},
-        {"id": new_id("intg"), "tenant_id": t, "name": "Stripe", "provider": "Stripe", "category": "billing", "status": "BETA", "auth_method": "API key", "scopes": ["invoices.write"], "description": "Invoicing and payments.", "created_at": now_iso()},
-        {"id": new_id("intg"), "tenant_id": t, "name": "Google Calendar", "provider": "Google", "category": "scheduling", "status": "PLANNED", "auth_method": "OAuth", "scopes": ["calendar.events"], "description": "Schedule client meetings.", "created_at": now_iso()},
+        {"id": new_id("intg"), "tenant_id": t, "name": "Gmail", "provider": "Google", "category": "communications", "status": "REQUIRES_CONFIGURATION", "auth_method": "OAuth", "scopes": ["mail.send", "mail.read"], "description": "Requires approved Google OAuth configuration and lifecycle certification before email sync or delivery is enabled.", "created_at": now_iso()},
+        {"id": new_id("intg"), "tenant_id": t, "name": "Stripe", "provider": "Stripe", "category": "billing", "status": "REQUIRES_CONFIGURATION", "auth_method": "API key", "scopes": ["invoices.write"], "description": "Requires an approved Stripe key and lifecycle certification before any billing operation is enabled.", "created_at": now_iso()},
+        {"id": new_id("intg"), "tenant_id": t, "name": "Google Calendar", "provider": "Google", "category": "scheduling", "status": "REQUIRES_CONFIGURATION", "auth_method": "OAuth", "scopes": ["calendar.events"], "description": "Requires approved Google OAuth configuration and lifecycle certification before calendar sync is enabled.", "created_at": now_iso()},
     ])
     await db.mcp_servers.insert_many([
         {"id": new_id("mcp"), "tenant_id": t, "name": "ClientVerse Read Tools", "version": "1.0.0", "level": 1, "status": "AVAILABLE", "tools": ["search_contacts", "get_client_health", "list_open_commitments"], "description": "Read-only MCP tools.", "created_at": now_iso()},
@@ -1120,8 +1132,8 @@ async def seed_registries():
         {"id": new_id("plg"), "tenant_id": t, "name": "Slack Notifier", "version": "0.9.0", "publisher": "Community", "type": "communications provider", "status": "BETA", "permissions": ["events:consume"], "description": "Post workspace events to Slack.", "created_at": now_iso()},
     ])
     await db.webhooks.insert_many([
-        {"id": new_id("wh"), "tenant_id": t, "name": "Ops Alerts (external)", "url": "https://hooks.invalid.example/ops", "events": ["commitment.at_risk", "approval.requested"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_ops_" + secrets.token_hex(8), "description": "External endpoint — unreachable in demo, shows retry + dead-letter.", "created_at": now_iso()},
-        {"id": new_id("wh"), "tenant_id": t, "name": "Local Test Sink", "url": "http://localhost:8001/api/webhooks/sink", "events": ["commitment.at_risk", "commitment.breached", "approval.requested", "task.created", "mcp.tool_invoked", "webhook.test", "commitment.fulfilled", "deliverable.approved"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_sink_" + secrets.token_hex(8), "description": "Built-in sink returning 200 — shows successful signed delivery.", "created_at": now_iso()},
+        {"id": new_id("wh"), "tenant_id": t, "name": "Operations alert webhook", "url": None, "events": ["commitment.at_risk", "approval.requested"], "status": "REQUIRES_CONFIGURATION", "signed": True, "enabled": False, "secret": None, "description": "Requires a verified HTTPS endpoint and secret before event delivery is enabled.", "created_at": now_iso()},
+        {"id": new_id("wh"), "tenant_id": t, "name": "Client lifecycle webhook", "url": None, "events": ["commitment.breached", "approval.requested", "task.created", "commitment.fulfilled", "deliverable.approved"], "status": "REQUIRES_CONFIGURATION", "signed": True, "enabled": False, "secret": None, "description": "Requires a verified HTTPS endpoint and secret before event delivery is enabled.", "created_at": now_iso()},
     ])
 
 # ----------------------------- MCP: Governed Server (Level 1 read tools, live) -----------------------------
@@ -2514,6 +2526,7 @@ async def notify_alert(alert, transition):
     if prefs["channels"]["in_app"]:
         await db.notifications.insert_one({"id": new_id("ntf"), "tenant_id": tenant, "user_id": None,
             "workspace_id": alert.get("workspace_id"), "type": alert["type"], "severity": alert["severity"],
+            "category": cat, "alert_status": alert.get("status", "open"), "occurrence_count": alert.get("occurrence_count", 1),
             "source": alert.get("source"), "title": f"{title}: {alert.get('summary','')}", "body": alert.get("summary", ""),
             "deep_link": deep, "read": False, "alert_id": alert["id"], "transition": transition, "created_at": now_iso()})
     # webhook fan-out (signed/versioned/retryable via record_event)
@@ -2653,7 +2666,25 @@ async def list_notifications(user=Depends(get_current_user)):
     q = {"tenant_id": user["tenant_id"], "$or": [{"user_id": None}, {"user_id": user["user_id"]}]}
     rows = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
     unread = await db.notifications.count_documents({**q, "read": False})
-    return {"notifications": rows, "unread": unread}
+    active_alerts = await db.alerts.find(
+        {"tenant_id": user["tenant_id"], "status": {"$in": ["open", "acknowledged"]}}, {"_id": 0}
+    ).to_list(200)
+    workspace_ids = {a.get("workspace_id") for a in active_alerts if a.get("workspace_id")}
+    names = {}
+    if workspace_ids:
+        for ws in await db.workspaces.find({"tenant_id": user["tenant_id"], "id": {"$in": list(workspace_ids)}}, {"_id": 0, "id": 1, "name": 1}).to_list(200):
+            names[ws["id"]] = ws.get("name")
+    severity_rank = {"critical": 0, "warning": 1, "info": 2}
+    active_alerts.sort(key=lambda a: (severity_rank.get(a.get("severity"), 3), a.get("last_seen_at") or ""))
+    action_items = [{
+        "alert_id": a["id"], "workspace_id": a.get("workspace_id"), "workspace_name": names.get(a.get("workspace_id")),
+        "type": a.get("type"), "category": _category(a.get("type", "")), "severity": a.get("severity"),
+        "status": a.get("status"), "summary": a.get("summary"), "source": a.get("source"),
+        "occurrence_count": a.get("occurrence_count", 1), "first_seen_at": a.get("first_seen_at"),
+        "last_seen_at": a.get("last_seen_at"), "acknowledged_by": a.get("acknowledged_by"),
+        "deep_link": f"/workspaces/{a['workspace_id']}" if a.get("workspace_id") else "/dashboard",
+    } for a in active_alerts]
+    return {"notifications": rows, "unread": unread, "action_items": action_items}
 
 @api.post("/notifications/{nid}/read")
 async def mark_notification_read(nid: str, user=Depends(get_current_user)):

@@ -30,6 +30,8 @@ This guide deploys the existing ClientVerse release candidate as one container: 
 |---|---|
 | `MONGO_URL` | Managed production MongoDB connection string, stored as a host secret. |
 | `DB_NAME` | Dedicated production database name. |
+| `APP_ENV` | Set to `production`; production defaults prevent fictional demo records from being created. |
+| `SEED_DEMO_DATA` | Set to `false`; do not enable this in an environment that accepts customer data. |
 | `JWT_SECRET` | A strong secret of at least 32 characters. Do not reuse a development value. |
 | `FRONTEND_URL` | Exact public HTTPS application origin, for example `https://crm.example.com`. |
 | `CORS_ORIGINS` | The same exact public origin for the one-container deployment. |
