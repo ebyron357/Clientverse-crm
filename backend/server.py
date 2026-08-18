@@ -50,7 +50,11 @@ if len(JWT_SECRET) < 32 or JWT_SECRET.strip().lower() in _UNSAFE_JWT_DEFAULTS:
             "Set ALLOW_INSECURE_JWT=1 only for disposable local/dev environments."
         )
 JWT_ALG = "HS256"
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+FRONTEND_URL = (
+    os.environ.get('FRONTEND_URL')
+    or os.environ.get('RENDER_EXTERNAL_URL')
+    or 'http://localhost:3000'
+)
 _cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
 CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
@@ -1771,7 +1775,7 @@ CONN_STATUSES = ["disconnected", "connecting", "active", "degraded", "expired", 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 # Prefer an explicit redirect URI; otherwise derive from the public backend URL (not the frontend).
-_PUBLIC_BACKEND = (os.environ.get("PUBLIC_BACKEND_URL") or "").rstrip("/")
+_PUBLIC_BACKEND = (os.environ.get("PUBLIC_BACKEND_URL") or FRONTEND_URL).rstrip("/")
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or (
     f"{_PUBLIC_BACKEND}/api/integrations/google/callback" if _PUBLIC_BACKEND else None
 )

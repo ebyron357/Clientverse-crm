@@ -58,5 +58,13 @@
 - [x] Re-run full regression, accessibility, performance, tenant-security, browser, and production-readiness verification after implementation changes.
 - [x] Validate full backend regression (104 passed, 5 skipped), zero-warning frontend lint/build, authenticated browser smoke, and WCAG 2.2 AA axe assessment with zero violations.
 - [x] Complete a controlled 10-user, 60-second read-workflow performance assessment: 3,186 requests with 0 failures.
+- [ ] Compare managed Python hosting options against ClientVerse deployment, MongoDB, OAuth callback, background-work, secret-management, and operational requirements.
+- [ ] Select the most compatible managed host and prepare its provider-specific deployment configuration without publishing yet.
+- [x] Connect the owner-authorized Render account session for ClientVerse production provisioning.
+- [ ] Verify the connected Render browser session and create the production Web Service when authenticated.
+- [ ] Prepare a Render Blueprint and MongoDB Atlas configuration checklist so account-only steps are ready to execute without exposing secrets.
+- [ ] Provision or connect the authorized Render workspace, MongoDB Atlas project, and production service using the verified ClientVerse Docker image.
+- [ ] Configure managed production secrets, explicit HTTPS origins, health checks, scheduled work, domain routing, and provider callback prerequisites outside source control.
+- [ ] Deploy the approved full-stack revision and verify authenticated production health, tenant isolation, and core user workflows.
 - [ ] Complete Google, Gmail, Calendar, and Stripe lifecycle certification when owner-approved credentials and test authorization are available.
 - [ ] Deploy only the verified full-stack release to the approved permanent environment, then complete deployed production acceptance and owner handoff.
