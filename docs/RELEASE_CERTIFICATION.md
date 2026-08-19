@@ -4,7 +4,7 @@
 **Repository:** [ebyron357/Clientverse-crm](https://github.com/ebyron357/Clientverse-crm)
 **Branch:** `manus/premium-crm-completion`
 **Pull request:** [#9 — Premium Client Operations Command Center](https://github.com/ebyron357/Clientverse-crm/pull/9)
-**Most recently CI-verified source commit:** `eb5a7a21c42b40a849459fd546fd85053ff51891`
+**Most recently CI-verified source commit:** `72314053b8634b3f4664e564a901cddc956b9d60`
 **PR state:** Draft. It must remain a draft until production validation, deferred provider certification, and explicit owner approval are complete.
 
 ## Release Verdict
@@ -33,7 +33,7 @@ The candidate is a multi-tenant ClientVerse CRM with workspace-aware client oper
 | Focused integration and role regression after Render work | **PASS** | `pytest tests/test_integrations.py tests/test_role_permissions.py -v`: **26 passed, 1 skipped, 1 warning in 13.61s**. |
 | Frontend lint | **PASS** | `npm run lint` exited 0 with `--max-warnings=0`; no ESLint errors or warnings. |
 | Frontend production build | **PASS** | The production build passed, including the GitHub Actions warnings-as-errors build. |
-| CI for latest deployed-configuration baseline | **PASS** | [GitHub Actions run 32188163944](https://github.com/ebyron357/Clientverse-crm/actions/runs/32188163944) completed the frontend build and backend API-test jobs successfully for `eb5a7a21c42b40a849459fd546fd85053ff51891`. |
+| CI for latest deployed-configuration baseline | **PASS** | [GitHub Actions run 32207426078](https://github.com/ebyron357/Clientverse-crm/actions/runs/32207426078) completed the frontend build and backend API-test jobs successfully for `72314053b8634b3f4664e564a901cddc956b9d60`. |
 | Accessibility | **PASS** | Authenticated axe-core WCAG 2.2 AA assessment covered eight representative protected routes and reported **0 violations**. |
 | Browser verification | **PASS** | Authenticated desktop rendering passed for `/dashboard`, `/settings`, `/client-ops`, `/field`, and `/notifications`; mobile Field Ops rendered at 375×812; keyboard focus reached named command navigation controls; uncaught console errors: **0**. |
 | Performance | **PASS — isolated assessment** | Locust ran 10 concurrent users for 60 seconds against the isolated API: **3,196 requests**, **0 failures**, 54.11 requests/s, aggregate p95 24 ms, and p99 42 ms. |
