@@ -17,7 +17,7 @@
 
 - [ ] Provide approved Google OAuth configuration and least-privilege test-account authorization, then complete Gmail and Calendar lifecycle certification.
 - [ ] Provide an approved Stripe test secret, then complete Stripe lifecycle certification.
-- [ ] Select and authorize permanent production hosting, configure secrets outside source control, deploy the verified revision, and run permanent-runtime smoke tests.
+- [ ] Complete the approved Atlas M10 provisioning, configure production secrets outside source control, deploy the verified revision, and run permanent-runtime smoke tests.
 - [ ] Review final CI after the closeout commit, approve PR #9, and decide whether to remove draft status and merge.
 
 ## System and Experience Assessment
@@ -44,10 +44,10 @@
 
 ## Full-Stack Primary Product Completion
 
-- [ ] Reconfirm the full-stack release baseline, draft PR state, and non-negotiable tenant, credential, and release constraints.
+- [x] Reconfirm the full-stack release baseline, draft PR state, and non-negotiable tenant, credential, and release constraints.
 - [x] Select the existing FastAPI + MongoDB architecture on a managed Python-capable host, preserving the tenant-tested implementation rather than rebuilding it.
 - [x] Add portable container, start, health-check, and deployment configuration assets for the selected managed-host path; verified same-origin SPA routes, API health, and local authentication.
-- [ ] Obtain owner authorization for the selected hosting account, managed MongoDB, production secrets, DNS/domain binding, and OAuth callback registration.
+- [ ] Complete owner-only production secret entry, DNS/domain binding, and OAuth callback registration after the service is live.
 - [x] Convert the approved system/UI/UX assessment into a finish-critical implementation backlog and deliver the highest-impact safe improvements.
 - [x] Prevent fictional demo records from being created in production, while retaining explicit local and test seeding.
 - [x] Make external provider and webhook contracts state `REQUIRES_CONFIGURATION` until configuration and certification complete.
@@ -58,12 +58,12 @@
 - [x] Re-run full regression, accessibility, performance, tenant-security, browser, and production-readiness verification after implementation changes.
 - [x] Validate full backend regression (104 passed, 5 skipped), zero-warning frontend lint/build, authenticated browser smoke, and WCAG 2.2 AA axe assessment with zero violations.
 - [x] Complete a controlled 10-user, 60-second read-workflow performance assessment: 3,186 requests with 0 failures.
-- [ ] Compare managed Python hosting options against ClientVerse deployment, MongoDB, OAuth callback, background-work, secret-management, and operational requirements.
-- [ ] Select the most compatible managed host and prepare its provider-specific deployment configuration without publishing yet.
+- [x] Compare managed Python hosting options against ClientVerse deployment, MongoDB, OAuth callback, background-work, secret-management, and operational requirements.
+- [x] Select Render plus MongoDB Atlas and prepare the provider-specific deployment configuration without publishing yet.
 - [x] Connect the owner-authorized Render account session for ClientVerse production provisioning.
-- [ ] Verify the connected Render browser session and create the production Web Service when authenticated.
-- [ ] Prepare a Render Blueprint and MongoDB Atlas configuration checklist so account-only steps are ready to execute without exposing secrets.
-- [ ] Provision or connect the authorized Render workspace, MongoDB Atlas project, and production service using the verified ClientVerse Docker image.
+- [x] Reach and validate the separate ClientVerse Render Blueprint configuration from the owner-authorized dashboard session.
+- [x] Prepare a Render Blueprint and MongoDB Atlas configuration checklist so account-only steps are ready to execute without exposing secrets.
+- [ ] Finish the approved Atlas M10 cluster provisioning, least-privilege database user, and controlled network access; then create the separate Render production service using the verified ClientVerse Docker image.
 - [ ] Configure managed production secrets, explicit HTTPS origins, health checks, scheduled work, domain routing, and provider callback prerequisites outside source control.
 - [ ] Deploy the approved full-stack revision and verify authenticated production health, tenant isolation, and core user workflows.
 - [ ] Complete Google, Gmail, Calendar, and Stripe lifecycle certification when owner-approved credentials and test authorization are available.

@@ -23,18 +23,10 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: WEBHOOK_CRON_SECRET
-        sync: false
+        generateValue: true
       - key: INTEGRATION_ENC_KEY
-        sync: false
+        generateValue: true
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD
-        sync: false
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: GOOGLE_REDIRECT_URI
-        sync: false
-      - key: STRIPE_API_KEY
         sync: false

@@ -1,30 +1,32 @@
 # ClientVerse CRM — Integrated Validation Evidence
 
-This is the canonical validation record for the ClientVerse CRM release candidate. It supersedes fragmented closeout notes by consolidating lifecycle, security, accessibility, performance, browser, provider-readiness, and deployment evidence. It intentionally excludes passwords, session tokens, OAuth tokens, client secrets, encryption keys, database credentials, portal tokens, authorization codes, and internal record identifiers.
+This is the canonical validation record for the ClientVerse CRM release candidate. It consolidates lifecycle, security, accessibility, performance, browser, provider-readiness, and deployment-path evidence. It intentionally excludes passwords, session tokens, OAuth tokens, client secrets, encryption keys, database credentials, portal tokens, authorization codes, connection strings, and internal record identifiers.
 
-## Validation Environment
+## Validation Environment and Scope
 
-The autonomous validation gates ran against a disposable FastAPI application and local MongoDB database using the current release-candidate source. The temporary frontend build targeted that API. The sandbox health endpoint was also checked for proof of life, but no temporary runtime is labeled permanent production and no deployment occurred in this closeout cycle.
+Autonomous gates ran against a disposable FastAPI application and local MongoDB database built from the current release-candidate source. The temporary frontend build targeted that API. No sandbox, prototype preview, Atlas project, or Render Blueprint configuration is represented as proof of permanent production deployment.
 
 | Environment | Purpose | Boundary |
 |---|---|---|
-| Isolated FastAPI and MongoDB | Regression, tenant-isolation, provider-ready state, and performance testing | Disposable verification environment; no production claim. |
+| Isolated FastAPI and MongoDB | Regression, tenant-isolation, provider-ready state, production-startup guard, and performance testing | Disposable verification environment; no production claim. |
 | Local production frontend build | Authenticated axe-core and browser validation | Connected only to the isolated API. |
-| Temporary sandbox endpoint | Reachability proof | HTTP 200 health confirmation only; not a permanent deployment target. |
+| Render Blueprint configuration | Provider-specific deployment configuration review | No Render service has been created or deployed. |
+| Atlas project provisioning | Managed production data-store preparation | No application connection or production data exists yet. |
 
 ## Automated Regression and Lifecycle Evidence
 
 | Gate | Exact result | Notes |
 |---|---|---|
-| Integrated CRM acceptance harness | **PASS** — `42 passed, 0 failed` | Prior controlled lifecycle acceptance remains applicable; no product workflow redesign occurred. |
-| Full backend regression suite | **PASS** — `104 passed, 5 skipped, 1 warning in 34.20s` | Includes authentication, role permissions, tenant isolation, timeline, notification/digest, commitment/SLA, integrations, client-value, and the closeout isolation probe. |
-| Closeout implementation CI | **PASS** | [Run 32072884763](https://github.com/ebyron357/Clientverse-crm/actions/runs/32072884763) completed both the frontend warnings-as-errors build and backend API-test jobs successfully for commit `bf359e8820ac1dbf6dac533cf80aac2ef1e59ab1`. |
-| Explicit client-value tenant isolation | **PASS** — `1 passed in 1.85s` | Tenant B received HTTP 404 for Tenant A resource queries and HTTP 403/404 for mutation attempts across workspace, documents, estimates, invoices, appointments, field check-ins, portal links, and integration activity. |
-| ESLint release gate | **PASS** — exit 0, 0 errors, 0 warnings | `eslint "src/**/*.{js,jsx}" --max-warnings=0`. |
-| Frontend production build | **PASS** | `NODE_ENV=production craco build`; 331.14 kB JavaScript and 14.81 kB CSS gzip. |
+| Integrated CRM acceptance harness | **PASS — 42 passed, 0 failed** | Controlled lifecycle acceptance remains applicable; no product workflow redesign occurred. |
+| Full backend regression suite | **PASS — 104 passed, 5 skipped, 1 warning** | Includes authentication, role permissions, tenant isolation, timeline, notification/digest, commitment/SLA, integrations, client-value, and the closeout isolation probe. |
+| Focused integration and role regression | **PASS — 26 passed, 1 skipped, 1 warning in 13.61s** | Run after the Render URL fallback and deployment configuration work. The skip is provider-dependent and is not used as live-provider evidence. |
+| CI baseline | **PASS** | [Run 32188163944](https://github.com/ebyron357/Clientverse-crm/actions/runs/32188163944) completed frontend build and backend API tests for `eb5a7a21c42b40a849459fd546fd85053ff51891`. |
+| ESLint release gate | **PASS — exit 0, 0 errors, 0 warnings** | `eslint "src/**/*.{js,jsx}" --max-warnings=0`. |
+| Frontend production build | **PASS** | Warnings-as-errors production build passed. |
 | FastAPI lifespan migration | **PASS** | Deprecated event decorators are absent; lifespan startup completed in the isolated API. |
+| Production guard and Render URL fallback | **PASS** | `APP_ENV=production`, `SEED_DEMO_DATA=false`, `RENDER_EXTERNAL_URL`, valid secret guards, and Render-style standard-base64 256-bit Fernet material yielded successful startup and a healthy `/api/health` response. |
 
-The five skipped backend tests require unavailable provider or schedule configuration. They were not used as a substitute for external provider certification. The sole remaining warning is a multipart import pending deprecation and is not an application lifecycle warning.
+The provider-dependent skips are not treated as substitutes for credential-backed Gmail, Google Calendar, or Stripe certification. The multipart import pending-deprecation warning is recorded as an upstream dependency warning, not an application lifecycle failure.
 
 ## Accessibility Evidence
 
@@ -38,7 +40,7 @@ An authenticated axe-core assessment using WCAG 2.2 AA rules exercised `/dashboa
 | Corrective work | Shared contrast tokens, navigation contrast, named Select and Switch controls, decorative-status semantics, and invalid missing tab-panel references were corrected. |
 | Raw evidence | `docs/evidence/a11y-axe-release-pass.json` |
 
-The automated assessment does not replace an owner-led assistive-technology or device-lab study, but it closes the verified critical and serious automated violations for the covered release surfaces.
+This automated assessment does not replace an owner-led assistive-technology or device-lab study, but it closes the verified critical and serious automated violations for the covered release surfaces.
 
 ## Performance Evidence
 
@@ -54,9 +56,9 @@ Locust exercised authenticated login, dashboard, companies, contacts, workspace 
 | Slowest measured route | Login averaged 622.68 ms; all ten login requests succeeded. |
 | Read-path result | Dashboard, client lists, workspace detail, portal-link administration, appointments, and field read paths completed without failures. |
 
-The complete statistics, including endpoint-level response times and zero recorded failures, are stored in `docs/evidence/performance-locust_stats.csv` and `docs/evidence/performance-locust_failures.csv`. This is an isolated release-readiness assessment, not a claim of tenant-volume or permanent-host capacity certification.
+The complete statistics are stored in `docs/evidence/performance-locust_stats.csv` and `docs/evidence/performance-locust_failures.csv`. This is an isolated release-readiness assessment, not a claim of tenant-volume or permanent-host capacity certification.
 
-## Browser Evidence
+## Browser and Authorization Evidence
 
 The browser smoke harness authenticated against the isolated API before the application loaded, then rendered five desktop routes and the mobile Field Ops route. It also pressed Tab through the initial keyboard sequence and collected uncaught console errors.
 
@@ -66,24 +68,33 @@ The browser smoke harness authenticated against the isolated API before the appl
 | Keyboard navigation | **PASS** — focus reached the named command-center button, then `Command Center`, `Action Center`, `Pipeline`, and `Directory` navigation links. |
 | Mobile | **PASS** — `/field` rendered at 375×812. |
 | Console | **PASS** — 0 uncaught console errors. |
-| Screenshots | `docs/evidence/browser-release-desktop.png` and `docs/evidence/browser-release-mobile-field.png`. |
+| Tenant isolation | **PASS** — a dedicated probe rejected cross-tenant reads and mutations across the listed client-value and integration-activity resources. |
+| Unauthenticated access | **PASS** — protected integration and client-value tests reject unauthenticated requests. |
+| Credential redaction | **PASS — code/test scope** — portal-token redaction and integration safe-response behavior were verified. |
 
-## Security and Provider-Readiness Evidence
+## Production Deployment-Path Evidence
+
+The repository now contains a root `Dockerfile`, `render.yaml`, and `docs/RENDER_ATLAS_RUNBOOK.md`. The Blueprint defines a Docker web service in Render Virginia, health check `/api/health`, CI-gated deploys, production demo-data suppression, and Render-generated non-provider secrets. Render documents `RENDER_EXTERNAL_URL` for web services; the application uses it as its first-deploy same-origin fallback until a custom domain is intentionally configured.[1] [2]
+
+The local sandbox does not have a Docker engine, so a local `docker build` could not be executed. This is recorded as an environment limitation, not a simulated build pass. The Docker image must therefore be validated by the first actual Render build before permanent production is certified.
+
+Atlas provisioning is owner-console work. The owner created the ClientVerse Production project and approved the M10 AWS N. Virginia cluster. No connection string has been disclosed, stored, or tested; no claim is made that Render currently reaches Atlas. Atlas recommends co-locating an application and cluster where possible, and its UI supports restricted database-user access.[3] [4]
+
+## Provider-Readiness Evidence
 
 | Area | Current result | Scope boundary |
 |---|---|---|
-| Protected endpoints | **PASS** | Existing integration and client-value tests reject unauthenticated protected requests. |
-| Tenant isolation | **PASS** | The closeout probe explicitly rejected cross-tenant reads and mutations across the listed client-value and integration-activity resources. |
-| Credential redaction | **PASS — code/test scope** | Portal token redaction and integration safe-response behavior were verified; no secret-bearing material appears in stored evidence. |
 | Gmail and Calendar code readiness | **READY FOR OWNER CONFIGURATION** | OAuth connect/callback/disconnect/sync and encrypted credential-storage paths are present and focused non-credential tests pass. Live OAuth and provider operations remain unperformed. |
 | Stripe code readiness | **READY FOR OWNER CONFIGURATION** | Configuration-gated connection/sync handling and truthful local `requires_stripe_configuration` outcome are present. Live Stripe actions remain unperformed. |
+| Runtime secrets | **SAFE FIRST-DEPLOY PATH** | Render will generate JWT, scheduler, and encryption secrets. The owner must enter only `MONGO_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` for the core CRM deployment. |
 
-## Runtime and Deployment Evidence
+## Remaining Production Evidence Required
 
-Only environment-variable presence was inspected. In the temporary runtime, core database, JWT, frontend, and CORS variables were present; `PUBLIC_BACKEND_URL`, `INTEGRATION_ENC_KEY`, Google OAuth variables, `STRIPE_API_KEY`, and `WEBHOOK_CRON_SECRET` were absent. The external sandbox health endpoint returned HTTP 200 during this cycle, but no permanent hosting target or deployment manifest was found. That endpoint must not be cited as final production certification.
+The following evidence is still required before a **GO** verdict can be issued: the completed Atlas cluster and least-privilege network/user configuration; the actual Render Docker build log and service URL; production health; administrator authentication; controlled durable-record persistence; cross-tenant denial; empty operational tenant confirmation; browser smoke against the deployed URL; and the credential-backed Google and Stripe lifecycle records once approved provider access exists.
 
-## Owner Acceptance and Release State
+## References
 
-> **WAITING ON OWNER — AGENT WORK COMPLETE.** The candidate should remain a draft PR. Before merge, the owner must supply approved Google and Stripe test configuration through a secret mechanism, authorize permanent hosting, run the credential-backed provider lifecycles and permanent deployment smoke checks, confirm final CI, and approve PR #9.
-
-The complete gate table, evidence inventory, deployment determination, and exact owner actions are maintained in [RELEASE_CERTIFICATION.md](./RELEASE_CERTIFICATION.md).
+[1]: https://render.com/docs/blueprint-spec — Render Blueprint YAML reference.
+[2]: https://render.com/docs/environment-variables — Render default environment variables.
+[3]: https://www.mongodb.com/docs/atlas/tutorial/create-new-cluster/ — MongoDB Atlas cluster-creation guidance.
+[4]: https://www.mongodb.com/docs/atlas/security-add-mongodb-users/ — MongoDB Atlas database-user and privilege guidance.
