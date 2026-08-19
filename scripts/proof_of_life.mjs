@@ -1,15 +1,21 @@
 import fs from 'node:fs'
+import path from 'node:path'
 
-const apiBase = process.env.CLIENTVERSE_API_BASE || 'https://8001-in8v1wws9289jt9pfzcyj-03350434.us4.manus.computer/api'
-const serverPid = process.env.CLIENTVERSE_BACKEND_PID || '21413'
-const evidencePath = '/home/ubuntu/Clientverse-crm-production/docs/evidence/proof-of-life-api.json'
-
-function processEnv(name) {
-  const entries = fs.readFileSync(`/proc/${serverPid}/environ`, 'utf8').split('\0')
-  const prefix = `${name}=`
-  const entry = entries.find((item) => item.startsWith(prefix))
-  return entry ? entry.slice(prefix.length) : ''
+function required(name) {
+  const value = process.env[name]
+  if (!value) throw new Error(`${name} is required`)
+  return value
 }
+
+function apiUrl() {
+  const raw = required('CLIENTVERSE_API_BASE').replace(/\/$/, '')
+  return raw.endsWith('/api') ? raw : `${raw}/api`
+}
+
+const apiBase = apiUrl()
+const adminEmail = required('CLIENTVERSE_ADMIN_EMAIL')
+const adminPassword = required('CLIENTVERSE_ADMIN_PASSWORD')
+const evidencePath = process.env.CLIENTVERSE_EVIDENCE_PATH
 
 async function request(path, options = {}) {
   const response = await fetch(`${apiBase}${path}`, options)
@@ -17,11 +23,11 @@ async function request(path, options = {}) {
   return { status: response.status, body }
 }
 
-function json(token, payload) {
+function payload(token, body) {
   return {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   }
 }
 
@@ -30,36 +36,44 @@ function authorized(token) {
 }
 
 function mustBe(response, status, step) {
-  if (response.status !== status) throw new Error(`${step} returned HTTP ${response.status}`)
+  const allowed = Array.isArray(status) ? status : [status]
+  if (!allowed.includes(response.status)) throw new Error(`${step} returned HTTP ${response.status}`)
   return response.body
 }
 
-const adminEmail = processEnv('ADMIN_EMAIL')
-const adminPassword = processEnv('ADMIN_PASSWORD')
-if (!adminEmail || !adminPassword) throw new Error('Approved admin test identity is not available on the running backend')
+function sessionToken(body, step) {
+  const token = body.access_token || body.token
+  if (!token) throw new Error(`${step} returned no session token`)
+  return token
+}
 
-const runLabel = `PROOF-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`
+async function login(email, password, step) {
+  const response = await request('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+  return sessionToken(mustBe(response, 200, step), step)
+}
+
+const runLabel = `PRODUCTION-SMOKE-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`
 const health = await request('/health')
 mustBe(health, 200, 'health')
 
-const login = await request('/auth/login', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ email: adminEmail, password: adminPassword }),
-})
-const token = mustBe(login, 200, 'admin login').token
-if (!token) throw new Error('Admin login returned no session token')
+const unauthenticatedCompanies = await request('/companies')
+mustBe(unauthenticatedCompanies, 401, 'unauthenticated company access')
 
-const company = mustBe(await request('/companies', json(token, {
+const token = await login(adminEmail, adminPassword, 'administrator login')
+const company = mustBe(await request('/companies', payload(token, {
   name: `${runLabel} Company`, industry: 'Services', website: 'https://example.test', tier: 'standard',
 })), 200, 'company creation')
 
-const contact = mustBe(await request('/contacts', json(token, {
+const contact = mustBe(await request('/contacts', payload(token, {
   name: `${runLabel} Contact`, email: `${runLabel.toLowerCase()}@example.com`, role: 'Operations', company_id: company.id,
 })), 200, 'contact creation')
 
-const opportunity = mustBe(await request('/opportunities', json(token, {
-  name: `${runLabel} Opportunity`, company_id: company.id, value: 1250, stage: 'lead', owner: 'proof-of-life',
+const opportunity = mustBe(await request('/opportunities', payload(token, {
+  name: `${runLabel} Opportunity`, company_id: company.id, value: 1250, stage: 'lead', owner: 'production-smoke',
 })), 200, 'opportunity creation')
 
 const closedWon = await request(`/opportunities/${opportunity.id}/stage`, {
@@ -73,18 +87,23 @@ const workspaces = mustBe(await request('/workspaces', authorized(token)), 200, 
 const workspace = workspaces.find((item) => item.opportunity_id === opportunity.id)
 if (!workspace) throw new Error('Close-won opportunity did not create a client workspace')
 
-const commitment = mustBe(await request('/commitments', json(token, {
-  workspace_id: workspace.id, title: `${runLabel} Commitment`, owner: 'proof-of-life', due_date: '2027-01-31T17:00:00+00:00', status: 'open',
+const commitment = mustBe(await request('/commitments', payload(token, {
+  workspace_id: workspace.id, title: `${runLabel} Commitment`, owner: 'production-smoke', due_date: '2027-01-31T17:00:00+00:00', status: 'open',
 })), 200, 'commitment creation')
 
-const relogin = await request('/auth/login', {
+const isolatedEmail = `${runLabel.toLowerCase()}-isolation@example.com`
+const registration = await request('/auth/register', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ email: adminEmail, password: adminPassword }),
+  body: JSON.stringify({ email: isolatedEmail, password: 'SmokeTestPass123!', name: 'Production Smoke Isolation' }),
 })
-const refreshedToken = mustBe(relogin, 200, 'admin re-login').token
-if (!refreshedToken) throw new Error('Admin re-login returned no session token')
+const isolatedToken = sessionToken(mustBe(registration, [200, 201], 'isolated-user registration'), 'isolated-user registration')
+const isolatedWorkspace = await request(`/workspaces/${workspace.id}`, authorized(isolatedToken))
+if (![403, 404].includes(isolatedWorkspace.status)) {
+  throw new Error(`cross-tenant workspace access returned HTTP ${isolatedWorkspace.status}`)
+}
 
+const refreshedToken = await login(adminEmail, adminPassword, 'administrator re-login')
 const [companies, contacts, opportunities, workspaceDetail, finalHealth] = await Promise.all([
   request('/companies', authorized(refreshedToken)),
   request('/contacts', authorized(refreshedToken)),
@@ -103,7 +122,7 @@ const proof = {
   run_label: runLabel,
   api_base: apiBase,
   health: { initial_http: health.status, final_http: finalHealth.status, service: finalHealth.body.service, status: finalHealth.body.status, database: finalHealth.body.database },
-  authentication: { initial_login_http: login.status, post_refresh_login_http: relogin.status },
+  authentication: { administrator_login_http: 200, administrator_relogin_http: 200, unauthenticated_access_http: unauthenticatedCompanies.status },
   workflow: {
     company_create_http: 200,
     contact_create_http: 200,
@@ -119,9 +138,14 @@ const proof = {
     workspace: workspaceDetail.body.workspace?.id === workspace.id && workspaceDetail.body.workspace?.company_id === company.id,
     commitment: workspaceDetail.body.commitments?.some((item) => item.id === commitment.id && item.workspace_id === workspace.id),
   },
+  tenant_isolation: { cross_tenant_workspace_http: isolatedWorkspace.status },
+  cleanup_note: 'This run creates explicitly named PRODUCTION-SMOKE records in the administrator tenant. Review and remove them only after retaining the approved validation evidence.',
   secret_redaction: 'This evidence intentionally omits account identities, passwords, session tokens, database credentials, OAuth values, and internal record identifiers.',
 }
 
-fs.mkdirSync('/home/ubuntu/Clientverse-crm-production/docs/evidence', { recursive: true })
-fs.writeFileSync(evidencePath, `${JSON.stringify(proof, null, 2)}\n`)
-console.log(JSON.stringify({ run_label: proof.run_label, health: proof.health, workflow: proof.workflow, persistence_after_refresh: proof.persistence_after_refresh }, null, 2))
+if (evidencePath) {
+  fs.mkdirSync(path.dirname(evidencePath), { recursive: true })
+  fs.writeFileSync(evidencePath, `${JSON.stringify(proof, null, 2)}\n`)
+}
+
+console.log(JSON.stringify(proof, null, 2))

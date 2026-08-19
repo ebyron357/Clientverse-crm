@@ -31,7 +31,9 @@ Create scheduled work only after the web service is healthy. The existing commit
 
 ## 4. Post-Deploy Acceptance
 
-Verify `/api/health`, authenticate the production administrator, create and retrieve a controlled tenant-scoped record, confirm cross-tenant denial, and run the browser smoke sequence. Check that `SEED_DEMO_DATA=false` resulted in an empty operational tenant, except for the deliberately configured administrator account. Only then connect Google or Stripe credentials and perform their separate lifecycle certifications.
+After Render reports a healthy deploy, use the committed `scripts/proof_of_life.mjs` harness from a controlled administrative environment. Set `CLIENTVERSE_API_BASE` to the HTTPS application origin and supply `CLIENTVERSE_ADMIN_EMAIL` and `CLIENTVERSE_ADMIN_PASSWORD` only through that runtime's secret environment. Optionally set `CLIENTVERSE_EVIDENCE_PATH` to a protected local destination. Do not place any value on a command line, in a shell history, or in Git.
+
+The harness verifies health, administrator login and re-login, unauthenticated denial, company/contact/opportunity creation, close-won workspace creation, commitment creation, durable-record persistence, and a cross-tenant workspace denial. It intentionally creates clearly prefixed `PRODUCTION-SMOKE` records, which must be retained until evidence approval and then removed deliberately. Run the authenticated browser smoke sequence as a complementary check. Confirm that `SEED_DEMO_DATA=false` resulted in no fictional demo records beyond the deliberately configured administrator account. Only then connect Google or Stripe credentials and perform their separate lifecycle certifications.
 
 ## References
 

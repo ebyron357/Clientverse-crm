@@ -80,6 +80,8 @@ The local sandbox does not have a Docker engine, so a local `docker build` could
 
 Atlas provisioning is owner-console work. The owner created the ClientVerse Production project and approved the M10 AWS N. Virginia cluster. No connection string has been disclosed, stored, or tested; no claim is made that Render currently reaches Atlas. Atlas recommends co-locating an application and cluster where possible, and its UI supports restricted database-user access.[3] [4]
 
+The committed `scripts/proof_of_life.mjs` harness also executed successfully against a disposable isolated runtime. It validated health; administrator login and re-login; HTTP 401 for unauthenticated company access; a controlled company/contact/opportunity/commitment lifecycle; close-won workspace creation; persistence after re-login; and HTTP 404 cross-tenant workspace denial. Its output redacts all credentials, tokens, and internal record identifiers. The same harness is ready for the first Render URL and creates explicitly prefixed `PRODUCTION-SMOKE` records for review and deliberate cleanup.
+
 ## Provider-Readiness Evidence
 
 | Area | Current result | Scope boundary |

@@ -55,6 +55,7 @@
 - [x] Harden runtime configuration, observability, operational safeguards, backup/recovery, and release documentation.
 - [x] Require production HTTPS origins, scheduler authentication, valid credential-encryption material, and no demo records at startup.
 - [x] Add baseline browser security headers and document production health checks, monitoring, backup, restore, and rollback controls.
+- [x] Implement and run a reusable secret-safe post-deploy smoke harness covering health, authentication, core lifecycle, persistence, unauthenticated denial, and tenant isolation against an isolated runtime.
 - [x] Re-run full regression, accessibility, performance, tenant-security, browser, and production-readiness verification after implementation changes.
 - [x] Validate full backend regression (104 passed, 5 skipped), zero-warning frontend lint/build, authenticated browser smoke, and WCAG 2.2 AA axe assessment with zero violations.
 - [x] Complete a controlled 10-user, 60-second read-workflow performance assessment: 3,186 requests with 0 failures.
