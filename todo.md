@@ -34,8 +34,8 @@
 
 ## External Preview Access Follow-Up
 
-- [ ] Reproduce and diagnose the user-reported failure to open the exposed temporary preview from an external context.
-- [ ] Provide the most reliable available user-access path or document the verified external access limitation.
+- [x] Reproduce and diagnose the user-reported failure to open the exposed temporary preview from an external context.
+- [x] Restore and verify the working temporary user-access path; the managed prototype public domain remains a separate non-production issue.
 
 ## Managed Preview Replacement
 
