@@ -20,7 +20,7 @@ Autonomous gates ran against a disposable FastAPI application and local MongoDB 
 | Integrated CRM acceptance harness | **PASS — 42 passed, 0 failed** | Controlled lifecycle acceptance remains applicable; no product workflow redesign occurred. |
 | Full backend regression suite | **PASS — 104 passed, 5 skipped, 1 warning** | Includes authentication, role permissions, tenant isolation, timeline, notification/digest, commitment/SLA, integrations, client-value, and the closeout isolation probe. |
 | Focused integration and role regression | **PASS — 26 passed, 1 skipped, 1 warning in 13.61s** | Run after the Render URL fallback and deployment configuration work. The skip is provider-dependent and is not used as live-provider evidence. |
-| CI baseline | **PASS** | [Run 32207426078](https://github.com/ebyron357/Clientverse-crm/actions/runs/32207426078) completed frontend build and backend API tests for `72314053b8634b3f4664e564a901cddc956b9d60`. |
+| CI baseline | **PASS** | [Run 32207878461](https://github.com/ebyron357/Clientverse-crm/actions/runs/32207878461) completed frontend build and backend API tests for `2d68b3c5498115e9aae910bf257671bf391a1814`. |
 | ESLint release gate | **PASS — exit 0, 0 errors, 0 warnings** | `eslint "src/**/*.{js,jsx}" --max-warnings=0`. |
 | Frontend production build | **PASS** | Warnings-as-errors production build passed. |
 | FastAPI lifespan migration | **PASS** | Deprecated event decorators are absent; lifespan startup completed in the isolated API. |
