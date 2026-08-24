@@ -26,6 +26,7 @@ jobs:
       FRONTEND_URL: http://localhost:3000
       WEBHOOK_CRON_SECRET: ci-cron-secret
       INTEGRATION_ENC_KEY: ""
+      REACT_APP_BACKEND_URL: http://localhost:8001
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
