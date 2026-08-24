@@ -38,7 +38,8 @@ export default function Mcp() {
     setData(t.data.tools); setServer(t.data.server); setWorkspaces(w.data);
     loadHistory();
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleKill = async (enabled) => {
     try {

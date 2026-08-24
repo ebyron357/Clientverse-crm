@@ -32,7 +32,8 @@ export default function OutcomeGraph({ workspaceId }) {
     const { data } = await api.get(`/workspaces/${workspaceId}/outcome-graph`);
     setD(data);
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [workspaceId]);
+  useEffect(() => { load(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
 
   const create = async () => {
     if (!form.title) return;

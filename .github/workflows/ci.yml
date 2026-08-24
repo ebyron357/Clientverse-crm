@@ -1,0 +1,57 @@
+name: CI
+on:
+  push:
+    branches: [main, claude/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-unit:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+    env:
+      MONGO_URL: mongodb://localhost:27017
+      DB_NAME: clientverse_test
+      JWT_SECRET: ci-test-secret-that-is-at-least-32-chars-long
+      ALLOW_INSECURE_JWT: "1"
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: AdminPass123!
+      DEMO_MEMBER_EMAIL: demo.member@clientverse.io
+      DEMO_MEMBER_PASSWORD: Member2026!
+      CORS_ORIGINS: http://localhost:3000
+      FRONTEND_URL: http://localhost:3000
+      WEBHOOK_CRON_SECRET: ci-cron-secret
+      INTEGRATION_ENC_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install $(grep -v emergentintegrations backend/requirements.txt | tr '\n' ' ')
+      - name: Start backend server
+        run: |
+          cd backend && python server.py &
+          sleep 5
+      - name: Run backend tests
+        run: |
+          cd backend && pytest tests/ -x -v --timeout=60
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        working-directory: frontend
+        run: yarn install --no-lockfile
+      - name: Production build
+        working-directory: frontend
+        run: CI=true yarn build
