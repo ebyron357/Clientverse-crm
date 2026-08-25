@@ -1,93 +1,86 @@
-# ClientVerse CRM — Release-Candidate Certification
+# ClientVerse CRM — Final Closeout Certification
 
-**Certification date:** 2026-08-18
+**Certification timestamp:** 2026-08-25 EDT
 **Repository:** [ebyron357/Clientverse-crm](https://github.com/ebyron357/Clientverse-crm)
-**Branch:** `manus/premium-crm-completion`
-**Pull request:** [#9 — Premium Client Operations Command Center](https://github.com/ebyron357/Clientverse-crm/pull/9)
-**Most recently CI-verified source commit:** `2d68b3c5498115e9aae910bf257671bf391a1814`
-**PR state:** Draft. It must remain a draft until production validation, deferred provider certification, and explicit owner approval are complete.
+**Merged baseline:** `main` at `1bd32b3eb7e136f7c98e94611a7b3136bd03a643`
+**Current closeout candidate:** `7c0786303b511df3bbd80d14c004a2171e27e3e2` on `manus/final-provider-closeout`
+**Candidate pull request:** [#12 — Final provider closeout hardening](https://github.com/ebyron357/Clientverse-crm/pull/12)
+**Candidate CI:** [run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) — **PASS**
+**Historical product pull request:** [#9](https://github.com/ebyron357/Clientverse-crm/pull/9) — **MERGED** at `1bd32b3eb7e136f7c98e94611a7b3136bd03a643` on 2026-08-25T14:49:46Z
+**Provider closeout record:** [Issue #10](https://github.com/ebyron357/Clientverse-crm/issues/10) — **OPEN**
 
 ## Release Verdict
 
-> **WAITING ON OWNER — AUTONOMOUS RELEASE WORK COMPLETE.** The CRM source, container deployment path, Render Blueprint, Atlas runbook, isolated regression evidence, and initial Render/Atlas provisioning path are complete. A live production deployment cannot occur until the owner completes the account-held Atlas connection configuration, enters the initial administrator credentials in Render, and confirms creation of the billable Render web service. Gmail, Google Calendar, and Stripe remain intentionally uncertified without approved provider credentials and test authorization.
+> **NOT CLOSED.** The source candidate is CI-verified and materially hardens provider behavior, but the definition of CLOSED is not satisfied. No authenticated Render service or public production URL has been verified, no deployed SHA exists, and credential-backed Gmail, Google Calendar, and Stripe test-mode lifecycle evidence has not been obtained. The production smoke harness cannot run without a verified API URL and approved administrator account.
 
-## Scope and Safety Boundary
+## Final Gate Matrix
 
-The candidate is a multi-tenant ClientVerse CRM with workspace-aware client operations, approvals, client-value coordination, field operations, safe automations, reporting, integration status, and role-aware governance. Provider-dependent delivery and payment actions remain explicitly configuration-gated until their separate lifecycle certifications are complete.
-
-| Capability | Verified behavior | Safety and authorization boundary |
+| Release gate | Result | Exact evidence or blocker |
 |---|---|---|
-| Secure client portal | Admins can create, list, and revoke workspace-scoped client portal links; the public portal presents approved client-visible information and accepts a client request. | Tokens are returned only at creation, persisted as hashes, redacted from list responses, and revoked links return HTTP 404. |
-| Documents, approvals, estimates, and invoices | Tenant/workspace-scoped operational records support document approval state, local estimates, idempotent invoice creation, and controlled status changes. | Provider payment is not initiated. Local invoices expose `requires_stripe_configuration` until Stripe certification is complete. |
-| Field Ops and appointments | Mobile field check-ins, appointments, conflict prevention, and internal reminder preparation are available. | Appointment conflicts return HTTP 409. Reminder preparation creates internal work only and reports outbound delivery as disabled. |
-| Safe automation, referrals, reviews, capacity, and playbooks | Operational templates, task-based automation, human-review review requests, workload views, and vertical playbooks are available. | Automation and review flows do not send provider traffic without certified configuration; playbook application is tenant-scoped and idempotent. |
-| Production configuration | One Docker container serves the React SPA and FastAPI API from one HTTPS origin, with `/api/health` as the health endpoint. | Production startup rejects unsafe runtime configuration and production demo seeding is disabled. |
+| PR #9 merged baseline | **PASS** | PR #9 is merged at `1bd32b3eb7e136f7c98e94611a7b3136bd03a643`. |
+| Provider closeout hardening | **PASS** | Candidate `7c0786303b511df3bbd80d14c004a2171e27e3e2` adds deterministic Google/Stripe lifecycle hardening and tests. |
+| Provider-specific backend tests | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **15 passed**, 2 upstream multipart warnings. |
+| Full backend suite | **PASS** | GitHub Actions run 32874240684: **137 passed, 4 skipped, 2 warnings**. The skipped cases are not treated as provider certification. |
+| Frontend production build | **PASS** | GitHub Actions run 32874240684 frontend job passed with `CI=true`; local production build also passed. |
+| ESLint/static gate | **PASS** | `yarn lint` exited 0 with `--max-warnings=0`. |
+| GitHub CI on candidate SHA | **PASS** | Run 32874240684 completed successfully for `7c0786303b511df3bbd80d14c004a2171e27e3e2`. |
+| Google OAuth construction and redaction behavior | **PASS — code/test scope** | PKCE, read-only scopes, refresh-token preservation, forced refresh, re-auth state, disconnect behavior, tenant-scoped upserts, and sensitive-field redaction are covered by deterministic tests. |
+| Gmail credential-backed lifecycle | **BLOCKED** | Requires an authenticated Google Cloud project, OAuth client, approved redirect URI on the actual public backend URL, encrypted runtime token storage, and approved test-account consent. No credential-backed connection, sync, revoke, reconnect, or live token refresh was run. |
+| Google Calendar credential-backed lifecycle | **BLOCKED** | Shares the missing Google OAuth/public-runtime prerequisites. No credential-backed Calendar sync, reconnect, or live duplicate behavior was run. |
+| Stripe test-mode lifecycle | **BLOCKED** | Code supports test-mode PaymentIntent creation and signed, idempotent webhooks, but no authenticated Stripe dashboard, test key, webhook endpoint/secret, or real test-mode event delivery is configured. |
+| Provider failure/re-auth/retry behavior | **PASS — deterministic code/test scope** | Tests cover token refresh failure, rate-limit retry, forced refresh after 401, payment failure, invalid signature, and duplicate webhook handling. |
+| Accessibility P1 | **PASS — carried forward; static revalidation passed** | Prior authenticated axe WCAG 2.2 AA audit covered eight protected routes with 0 violations; current `yarn lint` passed. The branch does not change frontend source. Incomplete axe findings remain non-final review items, not violations. |
+| Performance P1 | **PASS — carried forward; build budget observed** | Prior isolated Locust run recorded 3,196 requests, 0 failures, p95 24 ms, and p99 42 ms. Current production bundle is 331.89 kB gzipped JavaScript and 14.84 kB gzipped CSS; no frontend source changed in this branch. |
+| Production deployment | **BLOCKED** | GitHub API returned no deployments, no production environment, and no deployment status for the repository. Render dashboard authentication is owner-only and was not available in the task browser. |
+| Production URL and deployed SHA | **BLOCKED** | No verified public frontend/backend URL or deployed SHA exists. No hostname has been guessed or recorded. |
+| `/api/health` against production | **BLOCKED** | No verified production URL exists. |
+| Production auth persistence and CRM smoke | **BLOCKED** | `CLIENTVERSE_API_BASE`, `CLIENTVERSE_ADMIN_EMAIL`, and `CLIENTVERSE_ADMIN_PASSWORD` are absent from the task environment; the reusable smoke harness has not been run against production. |
+| Production tenant isolation | **BLOCKED** | The isolated regression passed, but no deployed runtime exists for the required production probe. |
+| Secret exposure review | **PASS — repository and changed-file scope** | Diff checks found no real-length Stripe, Google, OAuth, webhook, or token material. Sensitive provider connection fields are explicitly excluded from public responses. |
+| Canonical closeout evidence | **PASS** | This document, `docs/VALIDATION_EVIDENCE.md`, `docs/PRODUCTION.md`, and provider records are the canonical closeout set. |
+| Issue #10 closeout | **BLOCKED** | Issue #10 remains open because its credential-backed provider acceptance criteria are not satisfied. |
 
-## Release Gate Status
+## Candidate Changes Certified by CI
 
-| Gate | Current status | Evidence or exact result |
-|---|---|---|
-| Release baseline and PR state | **PASS** | Draft PR #9 remains on `manus/premium-crm-completion`; no merge action was taken. |
-| FastAPI lifecycle migration | **PASS** | Deprecated `@app.on_event` decorators are absent. An `@asynccontextmanager` lifespan is passed to `FastAPI`, and production-mode startup completed successfully. |
-| Backend regression | **PASS** | `pytest tests/ -v`: **104 passed, 5 skipped, 1 warning**. The provider-dependent skips are not used as provider-certification evidence. |
-| Focused integration and role regression after Render work | **PASS** | `pytest tests/test_integrations.py tests/test_role_permissions.py -v`: **26 passed, 1 skipped, 1 warning in 13.61s**. |
-| Frontend lint | **PASS** | `npm run lint` exited 0 with `--max-warnings=0`; no ESLint errors or warnings. |
-| Frontend production build | **PASS** | The production build passed, including the GitHub Actions warnings-as-errors build. |
-| CI for latest deployed-configuration baseline | **PASS** | [GitHub Actions run 32207878461](https://github.com/ebyron357/Clientverse-crm/actions/runs/32207878461) completed the frontend build and backend API-test jobs successfully for `2d68b3c5498115e9aae910bf257671bf391a1814`. |
-| Accessibility | **PASS** | Authenticated axe-core WCAG 2.2 AA assessment covered eight representative protected routes and reported **0 violations**. |
-| Browser verification | **PASS** | Authenticated desktop rendering passed for `/dashboard`, `/settings`, `/client-ops`, `/field`, and `/notifications`; mobile Field Ops rendered at 375×812; keyboard focus reached named command navigation controls; uncaught console errors: **0**. |
-| Performance | **PASS — isolated assessment** | Locust ran 10 concurrent users for 60 seconds against the isolated API: **3,196 requests**, **0 failures**, 54.11 requests/s, aggregate p95 24 ms, and p99 42 ms. |
-| Tenant isolation | **PASS** | A dedicated Tenant B probe could not read Tenant A workspace, documents, estimates, invoices, appointments, field check-ins, or integration activity; cross-tenant mutations were rejected. |
-| Secret and token redaction | **PASS — code and regression scope** | Integration responses exclude protected credential material. No passwords, connection strings, access tokens, refresh tokens, OAuth state, authorization codes, encryption payloads, or secret values are present in this record. |
-| Render first-deploy fallback | **PASS — local production-mode verification** | With only `RENDER_EXTERNAL_URL` for the public origin, valid runtime guards, and a Render-style base64 256-bit encryption key, the isolated production-mode server completed startup and `/api/health` returned `{"service":"ClientVerse","version":"v1","status":"ok","database":"up"}`. |
-| Reusable post-deploy smoke harness | **PASS — isolated execution** | `scripts/proof_of_life.mjs` successfully verified health, administrator login/re-login, unauthenticated denial, company/contact/opportunity/commitment lifecycle, close-won workspace creation, durable persistence, and cross-tenant workspace denial. It is ready to run against the Render URL without source changes. |
-| Render Blueprint | **READY FOR OWNER INPUT** | `render.yaml` defines a Render Virginia Docker web service, `/api/health`, same-origin startup, generated runtime secrets, no production demo data, and CI-gated auto-deploy. The owner reached the ClientVerse Blueprint configuration in Render. |
-| MongoDB Atlas | **IN PROGRESS — OWNER-CONSOLE WORK** | The owner created the separate **ClientVerse Production** Atlas project and approved an M10 deployment in AWS N. Virginia. Cluster completion, least-privilege database access, and network access are still required. |
-| Gmail lifecycle | **WAITING ON OWNER** | Credential-backed OAuth connect, callback, authorized Gmail operation, revoke, reconnect, and duplicate-state verification require approved owner configuration and a least-privilege test-account authorization. |
-| Google Calendar lifecycle | **WAITING ON OWNER** | Credential-backed OAuth connect, callback, authorized Calendar operation, revoke, reconnect, and duplicate-state verification require approved owner configuration and a least-privilege test-account authorization. |
-| Stripe lifecycle | **WAITING ON OWNER** | Credential-backed Stripe operations require an owner-provided test secret through Render’s secret manager. |
-| Permanent production deployment | **READY FOR FINAL OWNER INPUT** | The configuration has not yet been submitted as a Render service, so no production URL, live database connection, or deployed-runtime acceptance claim is made. |
-| Final merge readiness | **WAITING ON OWNER** | Keep PR #9 as a draft until deployed acceptance passes, deferred provider certifications pass, final CI is green, and the owner approves merge. |
+The candidate preserves Google refresh tokens when Google reconnect responses omit a replacement, forces a token refresh following provider HTTP 401 responses, and converts confirmed refresh failures into an immediate expired/re-auth state. Gmail and Calendar sync accounting now reports the actual bounded result count, and public provider responses defensively exclude accidental raw credential fields.
 
-## Production Configuration and Deployment Path
+Stripe behavior now includes test-mode-only PaymentIntent creation for a tenant-owned local invoice, tenant metadata, an idempotency key, sanitized payment-failure recording, signed raw-body webhook verification, atomic duplicate-event suppression, and tenant-scoped invoice updates for payment success, failure, and cancellation. The implementation requires `STRIPE_WEBHOOK_SECRET`; it never accepts a live key for the certification endpoint. [1] [2] [3]
 
-The source-controlled `render.yaml` creates one Render Starter Docker web service in Virginia. It uses `checksPass` automatic deployment, suppresses demo records with `SEED_DEMO_DATA=false`, and serves the API and SPA from one origin. On an initial deployment, the application safely derives its public origin from Render’s documented `RENDER_EXTERNAL_URL`; custom-domain variables are set only after a custom domain is bound.[1] [2]
+## Production Architecture and Current Boundary
 
-Render generates `JWT_SECRET`, `WEBHOOK_CRON_SECRET`, and `INTEGRATION_ENC_KEY`. The application accepts the standard base64 256-bit format generated by Render for its Fernet encryption material, as verified locally without exposing any live value. The only initial secret-manager fields that require the owner to supply values are `MONGO_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD`. Google and Stripe variables are deliberately omitted until the owner approves their separate lifecycle certifications.
+The source-controlled architecture is a single Render Docker web service that serves the React SPA and FastAPI API from one origin. `GET /api/health` is the intended health route. The Render Blueprint now follows `main`; it is not proof that a Render service exists. The intended public backend URL must be verified after deployment before configuring Google OAuth redirects or Stripe webhooks.
 
-Atlas should finish the M10 deployment in AWS N. Virginia, create a database user limited to `readWrite` on the `clientverse` database, and restrict database access to the selected cluster where the Atlas UI supports it.[3] [4] The owner must enter the resulting connection string directly into Render as `MONGO_URL`; it must never be sent in chat or committed to Git.
+No actual production hostname, MongoDB connection, CORS configuration, environment-variable value, provider secret, administrator credential, or deployed commit is recorded here. This is intentional: none has been verified and no secret is stored in this repository.
 
 ## Exact Remaining Owner Actions
 
-| Order | Owner action | What is already complete | Completion evidence required |
-|---|---|---|---|
-| 1 | Wait for the approved Atlas M10 cluster to finish, then create the least-privilege `clientverse` database user and network access required by Render. | Atlas project, AWS N. Virginia selection, and M10 approval. | Atlas cluster ready; connection URI is available only in the owner console. |
-| 2 | In the existing Render Blueprint configuration, enter `MONGO_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` directly in Render. Refresh/retry the configuration after the current branch update so only these owner-managed fields remain. | Blueprint, generated runtime secrets, app environment, health check, and build configuration. | Render configuration recognizes `clientverse-crm-production` with the three owner-entered values masked. |
-| 3 | Confirm the billable Render Starter service creation when Render shows its current price. | The source and Blueprint are ready; no existing Labelos service is touched. | Render deployment logs and an HTTPS service URL. |
-| 4 | Provide the resulting Render HTTPS URL to the release workflow. | Post-deploy smoke sequence is prepared. | `/api/health`, authenticated administrator login, core CRM workflow, tenant isolation, and no-demo-data verification. |
-| 5 | Bind the approved custom domain only after initial production acceptance, then set `FRONTEND_URL`, `CORS_ORIGINS`, and `PUBLIC_BACKEND_URL` together. | First deployment works from `RENDER_EXTERNAL_URL`. | Re-run authenticated smoke checks on the custom domain. |
-| 6 | Provide approved Google OAuth credentials, redirect registration, and a least-privilege test account. | Truthful disconnected state and non-credential lifecycle guards are validated. | Gmail and Google Calendar lifecycle certification. |
-| 7 | Provide a Stripe test secret through Render and authorize a test-mode certification. | Truthful configuration-gated Stripe state is validated. | Stripe lifecycle certification. |
-| 8 | Review the final production evidence and approve PR #9 only after all P0 items pass. | Draft PR, branch, CI pipeline, and evidence structure are preserved. | Explicit owner merge decision. |
+| Order | Owner-only action | Result required before the next certification can pass |
+|---:|---|---|
+| 1 | Sign in to Render and authorize the GitHub repository connection. | A Render dashboard session that exposes the ClientVerse service inventory or service-creation workflow. |
+| 2 | Create or confirm the Render service and configure the core secrets directly in its secret manager: `MONGO_URL`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `INTEGRATION_ENC_KEY`. | A successful Render build, HTTPS service URL, and healthy database-backed `/api/health`. |
+| 3 | In MongoDB Atlas, complete the production database user and network configuration; store the connection URI directly as Render `MONGO_URL`. | Database connectivity from Render without exposing the URI in chat or Git. |
+| 4 | In Google Cloud, configure the approved project, Gmail and Calendar APIs, consent screen, OAuth web client, production callback URI, and approved least-privilege test user. Store `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` only in Render. | Credential-backed Gmail and Calendar connection, sync, refresh/re-auth, disconnect/reconnect, authorization, tenant-isolation, and redaction evidence. |
+| 5 | In Stripe, use sandbox/test mode to create a least-privilege test key and webhook endpoint for `<PUBLIC_BACKEND_URL>/api/integrations/stripe/webhook`; select `payment_intent.succeeded`, `payment_intent.payment_failed`, and `payment_intent.canceled`; store `STRIPE_API_KEY` and `STRIPE_WEBHOOK_SECRET` only in Render. | Test payment success/failure, signed webhook delivery, duplicate suppression, retry, disconnect, and redaction evidence. |
+| 6 | Supply the resulting verified production URL to the smoke workflow and authorize the use of the production administrator account through the host secret manager. | Sanitized production smoke evidence for health, login/re-login, core CRM lifecycle, persistence, tenant isolation, and provider checks. |
 
 ## Evidence Inventory
 
-| Evidence | Location |
+| Evidence | Canonical location |
 |---|---|
-| Final axe-core WCAG 2.2 AA route assessment | `docs/evidence/a11y-axe-release-pass.json` |
-| Reproducible axe audit harness | `frontend/scripts/axe-release-audit.mjs` |
-| Browser route, keyboard, mobile, and console evidence | `docs/evidence/browser-release-smoke.json` |
-| Browser screenshots | `docs/evidence/browser-release-desktop.png`, `docs/evidence/browser-release-mobile-field.png` |
-| Locust aggregate statistics and zero-failure record | `docs/evidence/performance-locust_stats.csv`, `docs/evidence/performance-locust_failures.csv` |
-| Reproducible Locust scenario | `backend/tests/locust_release_readiness.py` |
-| Explicit resource-by-resource tenant-isolation regression | `backend/tests/test_closeout_tenant_isolation.py` |
-| Render and Atlas owner procedure | `docs/RENDER_ATLAS_RUNBOOK.md` |
-| Provider blocked-state record | `docs/GOOGLE_PROVIDER_CERTIFICATION.md` |
+| Provider lifecycle tests | `backend/tests/test_provider_lifecycle_unit.py` |
+| Backend and frontend CI | [GitHub Actions run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) |
+| Prior axe WCAG audit | `docs/evidence/a11y-axe-release-pass.json` |
+| Prior browser smoke evidence | `docs/evidence/browser-release-smoke.json` |
+| Prior performance statistics | `docs/evidence/performance-locust_stats.csv` and `docs/evidence/performance-locust_failures.csv` |
+| Production smoke harness | `scripts/proof_of_life.mjs` |
+| Deployment and secret runbook | `docs/PRODUCTION.md` and `docs/RENDER_ATLAS_RUNBOOK.md` |
+| Google provider certification record | `docs/GOOGLE_PROVIDER_CERTIFICATION.md` |
+| Stripe provider certification record | `docs/STRIPE_PROVIDER_CERTIFICATION.md` |
 
 ## References
 
-[1]: https://render.com/docs/blueprint-spec — Render Blueprint YAML reference.
-[2]: https://render.com/docs/environment-variables — Render default environment variables, including `RENDER_EXTERNAL_URL`.
-[3]: https://www.mongodb.com/docs/atlas/tutorial/create-new-cluster/ — MongoDB Atlas cluster-creation guidance.
-[4]: https://www.mongodb.com/docs/atlas/security-add-mongodb-users/ — MongoDB Atlas database-user and privilege guidance.
-[5]: https://github.com/ebyron357/Clientverse-crm/pull/9 — ClientVerse draft pull request.
+[1]: https://docs.stripe.com/testing — Stripe sandbox/test payment guidance.
+[2]: https://docs.stripe.com/webhooks — Stripe webhook endpoint and event handling guidance.
+[3]: https://docs.stripe.com/webhooks/signature — Stripe raw-body signature verification guidance.
+[4]: https://render.com/docs/blueprint-spec — Render Blueprint specification.
+[5]: https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684 — Candidate CI run.

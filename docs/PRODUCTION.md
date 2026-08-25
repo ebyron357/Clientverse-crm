@@ -2,6 +2,12 @@
 
 This document separates configuration by audience and risk. Never commit real secret values.
 
+## Current Verification State — 2026-08-25
+
+> **Production deployment: BLOCKED.** No authenticated Render dashboard session, GitHub deployment record, public ClientVerse URL, deployed SHA, database-connectivity result, or production health response was available in this closeout session. Do not infer a production hostname from the Render service name or this runbook.
+
+The current closeout candidate is `7c0786303b511df3bbd80d14c004a2171e27e3e2` on `manus/final-provider-closeout`; its [GitHub CI run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) passed. Before production certification, deploy the approved merged SHA, record its public URL and deployed commit, verify `GET /api/health`, then run `scripts/proof_of_life.mjs` using only host-managed environment variables. Configure Google and Stripe only after the public backend URL is verified.
+
 ## Variable catalog
 
 | Variable | Required? | Side | Purpose | Where to configure | Secret? |
