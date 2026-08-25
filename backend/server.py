@@ -2250,17 +2250,37 @@ async def create_stripe_payment_intent(
                            workspace_id=invoice.get("workspace_id"), payload={"error": str(error_code)[:80]})
         raise HTTPException(status_code=402, detail="Stripe test payment failed")
     intent_id = intent.get("id")
-    payment_status = intent.get("status") or "requires_confirmation"
-    invoice_status = "paid" if payment_status == "succeeded" else invoice.get("status", "draft")
+    intent_status = intent.get("status") or "requires_confirmation"
+    payment_status = "paid" if intent_status == "succeeded" else intent_status
+    invoice_status = "paid" if payment_status == "paid" else invoice.get("status", "draft")
     await db.invoices.update_one(
         {"id": invoice_id, "tenant_id": user["tenant_id"]},
-        {"$set": {"stripe_payment_intent_id": intent_id, "payment_status": payment_status,
-                  "status": invoice_status, "payment_error": None, "updated_at": now_iso()}},
+        {
+            "$set": {
+                "stripe_payment_intent_id": intent_id,
+                "payment_status": payment_status,
+                "status": invoice_status,
+                "payment_error": None,
+                "updated_at": now_iso(),
+            }
+        },
     )
-    await record_event("invoice.payment_intent_created", "invoice", invoice_id, user["tenant_id"], user["email"],
-                       workspace_id=invoice.get("workspace_id"), payload={"status": payment_status})
-    return {"ok": True, "payment_intent_id": intent_id, "payment_status": payment_status,
-            "invoice_status": invoice_status}
+    await record_event(
+        "invoice.payment_intent_created",
+        "invoice",
+        invoice_id,
+        user["tenant_id"],
+        user["email"],
+        workspace_id=invoice.get("workspace_id"),
+        payload={"intent_status": intent_status, "payment_status": payment_status},
+    )
+    return {
+        "ok": True,
+        "payment_intent_id": intent_id,
+        "payment_status": payment_status,
+        "invoice_status": invoice_status,
+        "intent_status": intent_status,
+    }
 
 
 @api.post("/integrations/stripe/webhook")
