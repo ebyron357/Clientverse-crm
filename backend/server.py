@@ -11,6 +11,7 @@ import hashlib
 import secrets
 import json as _json
 import base64
+from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -22,9 +23,13 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
+from cryptography.fernet import Fernet
+from client_value import register_client_value_routes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clientverse")
@@ -45,12 +50,84 @@ if len(JWT_SECRET) < 32 or JWT_SECRET.strip().lower() in _UNSAFE_JWT_DEFAULTS:
             "Set ALLOW_INSECURE_JWT=1 only for disposable local/dev environments."
         )
 JWT_ALG = "HS256"
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+FRONTEND_URL = (
+    os.environ.get('FRONTEND_URL')
+    or os.environ.get('RENDER_EXTERNAL_URL')
+    or 'http://localhost:3000'
+)
 _cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
 CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
+IS_PRODUCTION = APP_ENV in {"production", "prod"}
 
-app = FastAPI(title="ClientVerse API", version="v1")
+if IS_PRODUCTION:
+    if not FRONTEND_URL.startswith("https://"):
+        raise RuntimeError("FRONTEND_URL must use HTTPS in production")
+    if not CORS_ORIGINS or any(origin == "*" or not origin.startswith("https://") for origin in CORS_ORIGINS):
+        raise RuntimeError("CORS_ORIGINS must contain explicit HTTPS origins in production")
+    missing_production_secrets = [
+        name for name in ("WEBHOOK_CRON_SECRET", "INTEGRATION_ENC_KEY")
+        if not os.environ.get(name)
+    ]
+    if missing_production_secrets:
+        raise RuntimeError(f"Missing required production configuration: {', '.join(missing_production_secrets)}")
+    try:
+        Fernet(os.environ["INTEGRATION_ENC_KEY"].encode())
+    except Exception as exc:
+        raise RuntimeError("INTEGRATION_ENC_KEY must be a valid Fernet key in production") from exc
+
+
+def demo_seed_enabled() -> bool:
+    """Keep fictional fixtures out of production unless an operator explicitly opts in."""
+    environment = os.environ.get("APP_ENV", "development").strip().lower()
+    default = "true" if environment in {"development", "dev", "test", "testing"} else "false"
+    return os.environ.get("SEED_DEMO_DATA", default).strip().lower() in {"1", "true", "yes"}
+
+
+class ClientVerseStaticFiles(StaticFiles):
+    """Serve the compiled SPA while preserving API routes and asset 404 responses."""
+
+    async def get_response(self, path, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404 and "." not in Path(path).name:
+                return await super().get_response("index.html", scope)
+            raise
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await seed()
+    try:
+        await db.domain_events.create_index([("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])
+        await db.alerts.create_index([("tenant_id", 1), ("status", 1)])
+        await db.alerts.create_index([("tenant_id", 1), ("type", 1), ("source_ref", 1)])
+        await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
+        await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
+        await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        mclient.close()
+
+
+app = FastAPI(title="ClientVerse API", version="v1", lifespan=lifespan)
 api = APIRouter(prefix="/api")
+
+
+@app.middleware("http")
+async def production_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 # ----------------------------- helpers -----------------------------
 
@@ -297,6 +374,13 @@ def require_permission(perm):
         return user
     return _dep
 
+async def assert_workspace(user, workspace_id: str):
+    """Reject client-supplied workspace ids that do not belong to the caller's tenant."""
+    ws = await db.workspaces.find_one({"id": workspace_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return ws
+
 # ----------------------------- Team: invitations & members -----------------------------
 
 INVITE_TTL_DAYS = 7
@@ -503,7 +587,7 @@ async def create_company(inp: CompanyInput, user=Depends(get_current_user)):
 
 class ContactInput(BaseModel):
     name: str
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     role: Optional[str] = None
     company_id: Optional[str] = None
     influence: Optional[str] = "medium"
@@ -644,6 +728,7 @@ class TaskInput(BaseModel):
 
 @api.post("/tasks")
 async def create_task(inp: TaskInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("task"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.tasks.insert_one(doc)
     await record_event("task.created", "task", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -670,6 +755,7 @@ class DeliverableInput(BaseModel):
 
 @api.post("/deliverables")
 async def create_deliverable(inp: DeliverableInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("dlv"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.deliverables.insert_one(doc)
     await record_event("deliverable.created", "deliverable", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -693,6 +779,7 @@ class RequestInput(BaseModel):
 
 @api.post("/client-requests")
 async def create_request(inp: RequestInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("req"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.client_requests.insert_one(doc)
     await record_event("client_request.created", "client_request", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -714,6 +801,7 @@ class ApprovalInput(BaseModel):
 
 @api.post("/approvals")
 async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("apr"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.approvals.insert_one(doc)
     await record_event("approval.requested", "approval", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -744,6 +832,7 @@ class CommitmentInput(BaseModel):
 
 @api.post("/commitments")
 async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("cmt"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.commitments.insert_one(doc)
     await record_event("commitment.created", "commitment", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -824,6 +913,8 @@ async def list_registry(kind: str, user=Depends(get_current_user)):
     coll = REGISTRIES.get(kind)
     if not coll:
         raise HTTPException(status_code=404, detail="Unknown registry")
+    if kind == "webhooks":
+        return await db.webhooks.find(scope(user), {"_id": 0, "secret": 0}).sort("created_at", -1).to_list(2000)
     return await gen_list(coll, user)
 
 # ----------------------------- Domain events / Audit -----------------------------
@@ -964,8 +1055,11 @@ async def seed():
         await db.users.insert_one({"user_id": uid, "email": admin_email, "name": "TV Pro", "role": "admin",
                                    "tenant_id": tenant_id, "password_hash": hash_password(admin_pw),
                                    "picture": None, "created_at": now_iso(), "auth": "password"})
-        await seed_demo(tenant_id, admin_email)
-        logger.info("Seeded admin + demo data")
+        if demo_seed_enabled():
+            await seed_demo(tenant_id, admin_email)
+            logger.info("Seeded initial administrator and explicit demo data")
+        else:
+            logger.info("Seeded initial administrator without fictional demo data")
     else:
         if existing.get("password_hash") and not verify_password(admin_pw, existing["password_hash"]):
             await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pw)}})
@@ -986,8 +1080,12 @@ async def seed_team():
         await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": t, "user_id": au["user_id"], "email": admin_email,
             "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
-    mem_email = os.environ.get("DEMO_MEMBER_EMAIL", "demo.member@clientverse.io").lower()
-    mem_pw = os.environ.get("DEMO_MEMBER_PASSWORD", "Member2026!")
+    mem_email = (os.environ.get("DEMO_MEMBER_EMAIL") or "").lower()
+    mem_pw = os.environ.get("DEMO_MEMBER_PASSWORD") or ""
+    if not mem_email or not mem_pw:
+        # No demo member is seeded unless the operator explicitly configures one.
+        # Never fall back to a well-known email/password in a deployed environment.
+        return
     existing_member = await db.users.find_one({"email": mem_email})
     if not existing_member:
         muid = new_id("user")
@@ -1055,9 +1153,9 @@ async def seed_registries():
     if await db.integrations.find_one({"tenant_id": t}):
         return
     await db.integrations.insert_many([
-        {"id": new_id("intg"), "tenant_id": t, "name": "Gmail", "provider": "Google", "category": "communications", "status": "AVAILABLE", "auth_method": "OAuth", "scopes": ["mail.send", "mail.read"], "description": "Send and read client emails.", "created_at": now_iso()},
-        {"id": new_id("intg"), "tenant_id": t, "name": "Stripe", "provider": "Stripe", "category": "billing", "status": "BETA", "auth_method": "API key", "scopes": ["invoices.write"], "description": "Invoicing and payments.", "created_at": now_iso()},
-        {"id": new_id("intg"), "tenant_id": t, "name": "Google Calendar", "provider": "Google", "category": "scheduling", "status": "PLANNED", "auth_method": "OAuth", "scopes": ["calendar.events"], "description": "Schedule client meetings.", "created_at": now_iso()},
+        {"id": new_id("intg"), "tenant_id": t, "name": "Gmail", "provider": "Google", "category": "communications", "status": "REQUIRES_CONFIGURATION", "auth_method": "OAuth", "scopes": ["mail.send", "mail.read"], "description": "Requires approved Google OAuth configuration and lifecycle certification before email sync or delivery is enabled.", "created_at": now_iso()},
+        {"id": new_id("intg"), "tenant_id": t, "name": "Stripe", "provider": "Stripe", "category": "billing", "status": "REQUIRES_CONFIGURATION", "auth_method": "API key", "scopes": ["invoices.write"], "description": "Requires an approved Stripe key and lifecycle certification before any billing operation is enabled.", "created_at": now_iso()},
+        {"id": new_id("intg"), "tenant_id": t, "name": "Google Calendar", "provider": "Google", "category": "scheduling", "status": "REQUIRES_CONFIGURATION", "auth_method": "OAuth", "scopes": ["calendar.events"], "description": "Requires approved Google OAuth configuration and lifecycle certification before calendar sync is enabled.", "created_at": now_iso()},
     ])
     await db.mcp_servers.insert_many([
         {"id": new_id("mcp"), "tenant_id": t, "name": "ClientVerse Read Tools", "version": "1.0.0", "level": 1, "status": "AVAILABLE", "tools": ["search_contacts", "get_client_health", "list_open_commitments"], "description": "Read-only MCP tools.", "created_at": now_iso()},
@@ -1069,8 +1167,8 @@ async def seed_registries():
         {"id": new_id("plg"), "tenant_id": t, "name": "Slack Notifier", "version": "0.9.0", "publisher": "Community", "type": "communications provider", "status": "BETA", "permissions": ["events:consume"], "description": "Post workspace events to Slack.", "created_at": now_iso()},
     ])
     await db.webhooks.insert_many([
-        {"id": new_id("wh"), "tenant_id": t, "name": "Ops Alerts (external)", "url": "https://hooks.invalid.example/ops", "events": ["commitment.at_risk", "approval.requested"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_ops_" + secrets.token_hex(8), "description": "External endpoint — unreachable in demo, shows retry + dead-letter.", "created_at": now_iso()},
-        {"id": new_id("wh"), "tenant_id": t, "name": "Local Test Sink", "url": "http://localhost:8001/api/webhooks/sink", "events": ["commitment.at_risk", "commitment.breached", "approval.requested", "task.created", "mcp.tool_invoked", "webhook.test", "commitment.fulfilled", "deliverable.approved"], "status": "AVAILABLE", "signed": True, "enabled": True, "secret": "whsec_sink_" + secrets.token_hex(8), "description": "Built-in sink returning 200 — shows successful signed delivery.", "created_at": now_iso()},
+        {"id": new_id("wh"), "tenant_id": t, "name": "Operations alert webhook", "url": None, "events": ["commitment.at_risk", "approval.requested"], "status": "REQUIRES_CONFIGURATION", "signed": True, "enabled": False, "secret": None, "description": "Requires a verified HTTPS endpoint and secret before event delivery is enabled.", "created_at": now_iso()},
+        {"id": new_id("wh"), "tenant_id": t, "name": "Client lifecycle webhook", "url": None, "events": ["commitment.breached", "approval.requested", "task.created", "commitment.fulfilled", "deliverable.approved"], "status": "REQUIRES_CONFIGURATION", "signed": True, "enabled": False, "secret": None, "description": "Requires a verified HTTPS endpoint and secret before event delivery is enabled.", "created_at": now_iso()},
     ])
 
 # ----------------------------- MCP: Governed Server (Level 1 read tools, live) -----------------------------
@@ -1626,6 +1724,7 @@ async def update_outcome(oid: str, inp: OutcomePatch, user=Depends(get_current_u
 
 @api.post("/outcomes")
 async def create_outcome(inp: OutcomeInput, user=Depends(get_current_user)):
+    await assert_workspace(user, inp.workspace_id)
     doc = {"id": new_id("out"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.outcomes.insert_one(dict(doc))
     await snapshot_outcome(doc)
@@ -1669,7 +1768,6 @@ async def cron_commitment_risk(request: Request):
 import json as _json
 import httpx
 import stripe as _stripe
-from cryptography.fernet import Fernet
 
 PROVIDERS = ["gmail", "google_calendar", "stripe"]
 ADAPTER_VERSION = "1.0"
@@ -1677,7 +1775,7 @@ CONN_STATUSES = ["disconnected", "connecting", "active", "degraded", "expired", 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 # Prefer an explicit redirect URI; otherwise derive from the public backend URL (not the frontend).
-_PUBLIC_BACKEND = (os.environ.get("PUBLIC_BACKEND_URL") or "").rstrip("/")
+_PUBLIC_BACKEND = (os.environ.get("PUBLIC_BACKEND_URL") or FRONTEND_URL).rstrip("/")
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or (
     f"{_PUBLIC_BACKEND}/api/integrations/google/callback" if _PUBLIC_BACKEND else None
 )
@@ -2462,6 +2560,7 @@ async def notify_alert(alert, transition):
     if prefs["channels"]["in_app"]:
         await db.notifications.insert_one({"id": new_id("ntf"), "tenant_id": tenant, "user_id": None,
             "workspace_id": alert.get("workspace_id"), "type": alert["type"], "severity": alert["severity"],
+            "category": cat, "alert_status": alert.get("status", "open"), "occurrence_count": alert.get("occurrence_count", 1),
             "source": alert.get("source"), "title": f"{title}: {alert.get('summary','')}", "body": alert.get("summary", ""),
             "deep_link": deep, "read": False, "alert_id": alert["id"], "transition": transition, "created_at": now_iso()})
     # webhook fan-out (signed/versioned/retryable via record_event)
@@ -2601,7 +2700,25 @@ async def list_notifications(user=Depends(get_current_user)):
     q = {"tenant_id": user["tenant_id"], "$or": [{"user_id": None}, {"user_id": user["user_id"]}]}
     rows = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
     unread = await db.notifications.count_documents({**q, "read": False})
-    return {"notifications": rows, "unread": unread}
+    active_alerts = await db.alerts.find(
+        {"tenant_id": user["tenant_id"], "status": {"$in": ["open", "acknowledged"]}}, {"_id": 0}
+    ).to_list(200)
+    workspace_ids = {a.get("workspace_id") for a in active_alerts if a.get("workspace_id")}
+    names = {}
+    if workspace_ids:
+        for ws in await db.workspaces.find({"tenant_id": user["tenant_id"], "id": {"$in": list(workspace_ids)}}, {"_id": 0, "id": 1, "name": 1}).to_list(200):
+            names[ws["id"]] = ws.get("name")
+    severity_rank = {"critical": 0, "warning": 1, "info": 2}
+    active_alerts.sort(key=lambda a: (severity_rank.get(a.get("severity"), 3), a.get("last_seen_at") or ""))
+    action_items = [{
+        "alert_id": a["id"], "workspace_id": a.get("workspace_id"), "workspace_name": names.get(a.get("workspace_id")),
+        "type": a.get("type"), "category": _category(a.get("type", "")), "severity": a.get("severity"),
+        "status": a.get("status"), "summary": a.get("summary"), "source": a.get("source"),
+        "occurrence_count": a.get("occurrence_count", 1), "first_seen_at": a.get("first_seen_at"),
+        "last_seen_at": a.get("last_seen_at"), "acknowledged_by": a.get("acknowledged_by"),
+        "deep_link": f"/workspaces/{a['workspace_id']}" if a.get("workspace_id") else "/dashboard",
+    } for a in active_alerts]
+    return {"notifications": rows, "unread": unread, "action_items": action_items}
 
 @api.post("/notifications/{nid}/read")
 async def mark_notification_read(nid: str, user=Depends(get_current_user)):
@@ -2684,22 +2801,10 @@ async def cron_daily_digest(request: Request):
     asyncio.create_task(_sweep())
     return {"accepted": True, "run_id": run_id}
 
-@app.on_event("startup")
-async def on_startup():
-    await seed()
-    try:
-        await db.domain_events.create_index([("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])
-        await db.alerts.create_index([("tenant_id", 1), ("status", 1)])
-        await db.alerts.create_index([("tenant_id", 1), ("type", 1), ("source_ref", 1)])
-        await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
-    except Exception:
-        pass
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    mclient.close()
+# Client portal, field operations, commercial coordination, and safe automation
+# are registered here so they inherit the existing tenant, event, and permission helpers.
+register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
 
 @api.get("/")
 async def root():
@@ -2726,6 +2831,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Production containers build the React application into this directory. Mounting
+# it last preserves explicit API routes while supporting direct SPA deep links.
+frontend_build_dir = Path(os.environ.get("FRONTEND_BUILD_DIR", ROOT_DIR.parent / "frontend" / "build"))
+if frontend_build_dir.is_dir():
+    app.mount("/", ClientVerseStaticFiles(directory=str(frontend_build_dir), html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn

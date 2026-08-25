@@ -1,0 +1,50 @@
+{
+  "tested_at_utc": "2026-08-16T22:20:22.802Z",
+  "api_base": "https://8001-in8v1wws9289jt9pfzcyj-03350434.us4.manus.computer/api",
+  "label": "CLIENTVERSE-PROOF-20260816222022",
+  "health_raw": {
+    "initial_http": 200,
+    "initial_body": {
+      "service": "ClientVerse",
+      "version": "v1",
+      "status": "ok",
+      "database": "up"
+    },
+    "final_http": 200,
+    "final_body": {
+      "service": "ClientVerse",
+      "version": "v1",
+      "status": "ok",
+      "database": "up"
+    }
+  },
+  "authentication": {
+    "login_http": 200,
+    "relogin_http": 200
+  },
+  "creation": {
+    "company_http": 200,
+    "company_label": "CLIENTVERSE-PROOF-20260816222022 Company",
+    "contact_http": 200,
+    "contact_label": "CLIENTVERSE-PROOF-20260816222022 Contact",
+    "opportunity_http": 200,
+    "opportunity_label": "CLIENTVERSE-PROOF-20260816222022 Opportunity",
+    "closed_won_http": 200,
+    "workspace_http": 200,
+    "workspace_label": "CLIENTVERSE-PROOF-20260816222022 Opportunity",
+    "commitment_http": 200,
+    "commitment_label": "CLIENTVERSE-PROOF-20260816222022 Commitment"
+  },
+  "post_reauthentication_retrieval": {
+    "companies_http": 200,
+    "contacts_http": 200,
+    "opportunities_http": 200,
+    "workspace_http": 200,
+    "company_present": true,
+    "contact_present": true,
+    "opportunity_present": true,
+    "workspace_present": true,
+    "commitment_present": true
+  },
+  "redaction": "No password, session token, cookie, authorization header, OAuth material, database credential, provider credential, or internal identifier is written to this artifact."
+}

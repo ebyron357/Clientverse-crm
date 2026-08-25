@@ -1,0 +1,59 @@
+{
+  "generated_at": "2026-08-18T19:59:26.659Z",
+  "target": "http://127.0.0.1:8015",
+  "desktop": {
+    "keyboard_focus": [
+      {
+        "tag": "BUTTON",
+        "label": "Go to ClientVerse command center"
+      },
+      {
+        "tag": "A",
+        "label": "Command Center"
+      },
+      {
+        "tag": "A",
+        "label": "Action Center"
+      },
+      {
+        "tag": "A",
+        "label": "Pipeline"
+      },
+      {
+        "tag": "A",
+        "label": "Directory"
+      }
+    ],
+    "routes": [
+      {
+        "route": "/dashboard",
+        "main_visible": true,
+        "title": "ClientVerse — Client Operations Platform"
+      },
+      {
+        "route": "/settings",
+        "main_visible": true,
+        "title": "ClientVerse — Client Operations Platform"
+      },
+      {
+        "route": "/client-ops",
+        "main_visible": true,
+        "title": "ClientVerse — Client Operations Platform"
+      },
+      {
+        "route": "/field",
+        "main_visible": true,
+        "title": "ClientVerse — Client Operations Platform"
+      },
+      {
+        "route": "/notifications",
+        "main_visible": true,
+        "title": "ClientVerse — Client Operations Platform"
+      }
+    ]
+  },
+  "mobile": {
+    "field_visible": true
+  },
+  "console_errors": []
+}

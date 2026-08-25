@@ -1,0 +1,11 @@
+.git
+.github
+.pytest_cache
+**/__pycache__
+**/*.pyc
+backend/.env
+frontend/node_modules
+frontend/build
+docs/evidence
+mongodb-cert
+terminal_full_output

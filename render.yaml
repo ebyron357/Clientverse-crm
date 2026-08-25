@@ -1,0 +1,32 @@
+services:
+  - type: web
+    runtime: docker
+    name: clientverse-crm-production
+    region: virginia
+    plan: starter
+    branch: manus/premium-crm-completion
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeployTrigger: checksPass
+    numInstances: 1
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SEED_DEMO_DATA
+        value: "false"
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: clientverse
+      - key: JWT_SECRET
+        generateValue: true
+      - key: WEBHOOK_CRON_SECRET
+        generateValue: true
+      - key: INTEGRATION_ENC_KEY
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false

@@ -33,7 +33,7 @@ export default function NotificationBell() {
       const { data } = await api.get("/notifications");
       setItems(data.notifications || []);
       setUnread(data.unread || 0);
-    } catch (_) { /* silent poll */ }
+    } catch { /* silent poll */ }
   }, []);
 
   useEffect(() => {

@@ -155,12 +155,12 @@ class TestMcpUndo:
         assert r.status_code in (403, 404), r.text
 
 
-# --- Webhook secrets exposed for verify dialog ---
+# --- Webhook secrets remain redacted from listings and are separately admin-revealed ---
 class TestWebhookSecret:
-    def test_webhook_list_exposes_secret(self, admin):
+    def test_webhook_list_redacts_secret(self, admin):
         r = admin.get(f"{API}/registry/webhooks")
         assert r.status_code == 200
         items = r.json()
         assert len(items) > 0
         wh = items[0]
-        assert "secret" in wh and wh["secret"], f"webhook must expose secret for verify dialog: {list(wh.keys())}"
+        assert "secret" not in wh, f"webhook registry must redact secrets: {list(wh.keys())}"

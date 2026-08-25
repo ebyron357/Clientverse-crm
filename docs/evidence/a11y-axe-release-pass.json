@@ -1,0 +1,121 @@
+{
+  "generated_at": "2026-08-17T21:33:38.397Z",
+  "target": "http://127.0.0.1:3004",
+  "standard": "WCAG 2.2 AA",
+  "routes": [
+    {
+      "route": "/dashboard",
+      "violation_count": 0,
+      "incomplete_count": 2,
+      "violations": [],
+      "incomplete": [
+        {
+          "id": "aria-valid-attr-value",
+          "impact": "critical",
+          "help": "ARIA attributes must conform to valid values"
+        },
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds"
+        }
+      ]
+    },
+    {
+      "route": "/directory",
+      "violation_count": 0,
+      "incomplete_count": 2,
+      "violations": [],
+      "incomplete": [
+        {
+          "id": "aria-valid-attr-value",
+          "impact": "critical",
+          "help": "ARIA attributes must conform to valid values"
+        },
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "help": "Elements must meet minimum color contrast ratio thresholds"
+        }
+      ]
+    },
+    {
+      "route": "/workspaces",
+      "violation_count": 0,
+      "incomplete_count": 1,
+      "violations": [],
+      "incomplete": [
+        {
+          "id": "aria-valid-attr-value",
+          "impact": "critical",
+          "help": "ARIA attributes must conform to valid values"
+        }
+      ]
+    },
+    {
+      "route": "/settings",
+      "violation_count": 0,
+      "incomplete_count": 1,
+      "violations": [],
+      "incomplete": [
+        {
+          "id": "aria-valid-attr-value",
+          "impact": "critical",
+          "help": "ARIA attributes must conform to valid values"
+        }
+      ]
+    },
+    {
+      "route": "/registries",
+      "violation_count": 0,
+      "incomplete_count": 1,
+      "violations": [],
+      "incomplete": [
+        {
+          "id": "aria-valid-attr-value",
+          "impact": "critical",
+          "help": "ARIA attributes must conform to valid values"
+        }
+      ]
+    },
+    {
+      "route": "/client-ops",
+      "violation_count": 0,
+      "incomplete_count": 1,
+      "violations": [],
+      "incomplete": [
+        {
+          "id": "aria-valid-attr-value",
+          "impact": "critical",
+          "help": "ARIA attributes must conform to valid values"
+        }
+      ]
+    },
+    {
+      "route": "/field",
+      "violation_count": 0,
+      "incomplete_count": 1,
+      "violations": [],
+      "incomplete": [
+        {
+          "id": "aria-valid-attr-value",
+          "impact": "critical",
+          "help": "ARIA attributes must conform to valid values"
+        }
+      ]
+    },
+    {
+      "route": "/notifications",
+      "violation_count": 0,
+      "incomplete_count": 1,
+      "violations": [],
+      "incomplete": [
+        {
+          "id": "aria-valid-attr-value",
+          "impact": "critical",
+          "help": "ARIA attributes must conform to valid values"
+        }
+      ]
+    }
+  ]
+}

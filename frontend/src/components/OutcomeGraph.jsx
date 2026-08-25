@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, HEALTH_BAND } from "@/lib/api";
 import { toast } from "sonner";
 import { Badge } from "@/components/AppShell";
@@ -28,12 +28,11 @@ export default function OutcomeGraph({ workspaceId }) {
   const [form, setForm] = useState({ title: "", target: "", target_value: "", unit: "" });
   const [edits, setEdits] = useState({});
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const { data } = await api.get(`/workspaces/${workspaceId}/outcome-graph`);
     setD(data);
-  };
-  useEffect(() => { load(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
+  useEffect(() => { load(); }, [load]);
 
   const create = async () => {
     if (!form.title) return;

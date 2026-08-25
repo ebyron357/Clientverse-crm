@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api, HEALTH_BAND, STATUS_COLOR } from "@/lib/api";
+import { api, formatErr, HEALTH_BAND, STATUS_COLOR } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
@@ -29,9 +29,9 @@ function dueInfo(due) {
 
 function Health({ health }) {
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm" data-testid="health-panel">
+    <div className="cv-card p-5 sm:p-6" data-testid="health-panel">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="font-display font-bold text-lg">Explainable Client Health</h3>
+        <div><div className="cv-eyebrow">Client health</div><h3 className="mt-1 font-display font-bold text-lg">Explainable Client Health</h3></div>
         <div className="flex items-center gap-2">
           <span className="font-display text-3xl font-bold">{health.score}</span>
           <Badge className={`capitalize ${HEALTH_BAND[health.band]}`}>{health.band.replace("_", " ")}</Badge>
@@ -75,21 +75,21 @@ function AIPanel({ workspaceId }) {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm" data-testid="ai-panel">
+    <div className="cv-card p-5 sm:p-6" data-testid="ai-panel">
       <div className="flex items-center gap-2 mb-1">
-        <Sparkles className="w-4 h-4 text-indigo-600" />
+        <Sparkles className="w-4 h-4 text-[#1a9fbf]" />
         <h3 className="font-display font-bold text-lg">Evidence-backed AI</h3>
       </div>
       <p className="text-xs text-gray-400 mb-4">Grounded only in workspace records. Fact vs inference is always distinguished.</p>
 
       <div className="flex gap-2 mb-3">
-        <Button variant={mode === "health_summary" ? "default" : "outline"} size="sm" onClick={() => setMode("health_summary")} data-testid="ai-mode-summary" className={mode === "health_summary" ? "bg-[#0A0A0A]" : ""}><FileText className="w-3.5 h-3.5 mr-1" />Health Summary</Button>
-        <Button variant={mode === "draft_message" ? "default" : "outline"} size="sm" onClick={() => setMode("draft_message")} data-testid="ai-mode-draft" className={mode === "draft_message" ? "bg-[#0A0A0A]" : ""}><Mail className="w-3.5 h-3.5 mr-1" />Draft Message</Button>
+        <Button variant={mode === "health_summary" ? "default" : "outline"} size="sm" onClick={() => setMode("health_summary")} data-testid="ai-mode-summary" className={mode === "health_summary" ? "cv-action-primary" : ""}><FileText className="w-3.5 h-3.5 mr-1" />Health Summary</Button>
+        <Button variant={mode === "draft_message" ? "default" : "outline"} size="sm" onClick={() => setMode("draft_message")} data-testid="ai-mode-draft" className={mode === "draft_message" ? "cv-action-primary" : ""}><Mail className="w-3.5 h-3.5 mr-1" />Draft Message</Button>
       </div>
       {mode === "draft_message" && (
         <Textarea placeholder="What should the message cover?" value={instruction} onChange={(e) => setInstruction(e.target.value)} className="mb-3" data-testid="ai-instruction-input" />
       )}
-      <Button onClick={run} disabled={busy} data-testid="ai-generate-button" className="bg-indigo-600 hover:bg-indigo-700 w-full">
+      <Button onClick={run} disabled={busy} data-testid="ai-generate-button" className="cv-action-primary w-full">
         {busy ? "Generating…" : "Generate with evidence"}
       </Button>
 
@@ -128,17 +128,17 @@ function AIPanel({ workspaceId }) {
 
 function ListSection({ title, items, columns, actions, onAdd, addLabel, testid }) {
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm" data-testid={testid}>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-display font-bold text-lg">{title}</h3>
+    <div className="cv-card overflow-hidden" data-testid={testid}>
+      <div className="cv-card-header">
+        <div><h3 className="cv-card-title">{title}</h3><p className="cv-card-description">Track ownership and progress without losing the account context.</p></div>
         {onAdd && <Button size="sm" variant="outline" onClick={onAdd} data-testid={`add-${testid}`}><Plus className="w-3.5 h-3.5 mr-1" />{addLabel}</Button>}
       </div>
-      {items.length === 0 ? <div className="text-sm text-gray-400 py-4">Nothing here yet.</div> : (
-        <div className="space-y-2">
+      {items.length === 0 ? <div className="px-5 py-10 text-center text-sm text-slate-500">Nothing here yet. Add the first {addLabel?.toLowerCase() || "record"} to make this account actionable.</div> : (
+        <div className="divide-y divide-slate-100">
           {items.map((it) => (
-            <div key={it.id} className="flex items-center justify-between border-b border-gray-50 pb-2" data-testid={`row-${it.id}`}>
+            <div key={it.id} className="cv-data-row flex items-center justify-between gap-3 px-5 py-3.5" data-testid={`row-${it.id}`}>
               <div className="min-w-0">
-                <div className="text-sm font-medium truncate">{it.title}</div>
+                <div className="text-sm font-semibold truncate text-[#132038]">{it.title}</div>
                 {columns(it)}
               </div>
               <div className="flex items-center gap-2 shrink-0">{actions(it)}</div>
@@ -150,13 +150,24 @@ function ListSection({ title, items, columns, actions, onAdd, addLabel, testid }
   );
 }
 
+function WorkItemDialog({ kind, title, onTitleChange, open, onOpenChange, busy, onSubmit }) {
+  const meta = {
+    task: { title: "New delivery task", description: "Capture the next accountable action for this client.", action: "Add task" },
+    deliverable: { title: "New deliverable", description: "Define an artifact or output the client is expecting.", action: "Add deliverable" },
+    request: { title: "New client request", description: "Log a request so it remains visible to the delivery team.", action: "Add request" },
+    approval: { title: "New approval", description: "Create a governance request for an accountable decision.", action: "Request approval" },
+  }[kind] || {};
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle className="font-display text-2xl">{meta.title}</DialogTitle><p className="text-sm leading-6 text-slate-500">{meta.description}</p></DialogHeader><div className="grid gap-1.5 py-3"><Label htmlFor="workspace-item-title">Title <span className="text-red-500">*</span></Label><Input id="workspace-item-title" value={title} onChange={(event) => onTitleChange(event.target.value)} placeholder="Describe the work clearly" /></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={busy} onClick={onSubmit} className="cv-action-primary">{busy ? "Saving…" : meta.action}</Button></DialogFooter></DialogContent></Dialog>;
+}
+
 export default function WorkspaceDetail() {
   const { id } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
   const [d, setD] = useState(null);
   const [undoWin, setUndoWin] = useState("60");
-  const [newTitle, setNewTitle] = useState({});
+  const [workItem, setWorkItem] = useState({ kind: null, title: "" });
+  const [workItemBusy, setWorkItemBusy] = useState(false);
   const [cmtDialog, setCmtDialog] = useState(false);
   const [cmtForm, setCmtForm] = useState({ title: "", owner: "", due_date: "" });
   const [slaBusy, setSlaBusy] = useState(false);
@@ -167,15 +178,19 @@ export default function WorkspaceDetail() {
   }, [id]);
   useEffect(() => { load(); }, [load]);
 
-  const quickAdd = (key) => {
-    const title = window.prompt(`New ${key}`);
-    if (!title) return null;
-    return title;
+  const submitWorkItem = async () => {
+    const { kind, title } = workItem;
+    if (!title.trim()) { toast.error("A clear title is required."); return; }
+    const endpoint = { task: "/tasks", deliverable: "/deliverables", request: "/client-requests", approval: "/approvals" }[kind];
+    setWorkItemBusy(true);
+    try {
+      await api.post(endpoint, { workspace_id: id, title: title.trim() });
+      toast.success(kind === "approval" ? "Approval requested" : `${kind.charAt(0).toUpperCase() + kind.slice(1)} added`);
+      setWorkItem({ kind: null, title: "" });
+      load();
+    } catch (error) { toast.error(`Could not add ${kind}`, { description: formatErr(error.response?.data?.detail) }); }
+    finally { setWorkItemBusy(false); }
   };
-
-  const addTask = async () => { const t = quickAdd("task"); if (t) { await api.post("/tasks", { workspace_id: id, title: t }); toast.success("Task added"); load(); } };
-  const addDeliverable = async () => { const t = quickAdd("deliverable"); if (t) { await api.post("/deliverables", { workspace_id: id, title: t }); toast.success("Added"); load(); } };
-  const addRequest = async () => { const t = quickAdd("request"); if (t) { await api.post("/client-requests", { workspace_id: id, title: t }); toast.success("Added"); load(); } };
   const submitCommitment = async () => {
     if (!cmtForm.title.trim()) { toast.error("Title is required"); return; }
     await api.post("/commitments", {
@@ -193,8 +208,6 @@ export default function WorkspaceDetail() {
     } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
     finally { setSlaBusy(false); }
   };
-  const addApproval = async () => { const t = quickAdd("approval"); if (t) { await api.post("/approvals", { workspace_id: id, title: t }); toast.success("Requested"); load(); } };
-
   const upd = async (url, body, msg) => { await api.patch(url, body); toast.success(msg); load(); };
 
   useEffect(() => { if (d?.workspace) setUndoWin(String(d.workspace.undo_window_minutes || 60)); }, [d]);
@@ -203,19 +216,19 @@ export default function WorkspaceDetail() {
     toast.success("Undo window updated");
   };
 
-  if (!d) return <div className="space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-xl" /></div>;
+  if (!d) return <div className="cv-page space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-2xl" /></div>;
 
   const { workspace, company, tasks, deliverables, requests, approvals, commitments, health } = d;
 
   return (
-    <div>
-      <button onClick={() => navigate("/workspaces")} className="flex items-center text-sm text-gray-500 hover:text-black mb-4" data-testid="back-button"><ArrowLeft className="w-4 h-4 mr-1" />Workspaces</button>
-      <div className="flex items-center justify-between mb-6">
+    <div className="cv-page">
+      <button onClick={() => navigate("/workspaces")} className="mb-4 flex items-center text-sm font-medium text-slate-500 hover:text-[#1a9fbf]" data-testid="back-button"><ArrowLeft className="w-4 h-4 mr-1" />All client workspaces</button>
+      <div className="cv-page-header mb-6">
         <div>
-          <h1 className="font-display text-3xl font-bold">{workspace.name}</h1>
-          <p className="text-sm text-gray-500 mt-1">{company?.name || "No company"} · <span className="capitalize">{workspace.stage}</span> stage</p>
+          <div className="cv-eyebrow">Client 360 workspace</div><h1 className="cv-page-title">{workspace.name}</h1>
+          <p className="cv-page-description">{company?.name || "No company linked"} · <span className="capitalize">{workspace.stage}</span> lifecycle stage</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {user?.role === "admin" && (
             <div className="flex items-center gap-1.5" data-testid="undo-window-config">
               <span className="text-xs text-gray-400">Undo window</span>
@@ -234,7 +247,7 @@ export default function WorkspaceDetail() {
       </div>
 
       <Tabs defaultValue="commitments">
-        <TabsList>
+        <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="commitments" data-testid="tab-commitments">Commitment Ledger</TabsTrigger>
           <TabsTrigger value="outcome" data-testid="tab-outcome">Outcome Graph</TabsTrigger>
           <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
@@ -283,7 +296,7 @@ export default function WorkspaceDetail() {
         </TabsContent>
 
         <TabsContent value="tasks" className="mt-6">
-          <ListSection title="Delivery Tasks" items={tasks} testid="tasks-section" onAdd={addTask} addLabel="Task"
+          <ListSection title="Delivery Tasks" items={tasks} testid="tasks-section" onAdd={() => setWorkItem({ kind: "task", title: "" })} addLabel="Task"
             columns={(it) => <div className="text-xs text-gray-400">{it.assignee || "unassigned"}</div>}
             actions={(it) => (
               <Select value={it.status} onValueChange={(v) => upd(`/tasks/${it.id}`, { status: v }, "Updated")}>
@@ -294,7 +307,7 @@ export default function WorkspaceDetail() {
         </TabsContent>
 
         <TabsContent value="deliverables" className="mt-6">
-          <ListSection title="Deliverables" items={deliverables} testid="deliverables-section" onAdd={addDeliverable} addLabel="Deliverable"
+          <ListSection title="Deliverables" items={deliverables} testid="deliverables-section" onAdd={() => setWorkItem({ kind: "deliverable", title: "" })} addLabel="Deliverable"
             columns={(it) => <div className="text-xs text-gray-400">{it.description || "—"}</div>}
             actions={(it) => (
               <Select value={it.status} onValueChange={(v) => upd(`/deliverables/${it.id}`, { status: v }, "Updated")}>
@@ -305,7 +318,7 @@ export default function WorkspaceDetail() {
         </TabsContent>
 
         <TabsContent value="requests" className="mt-6">
-          <ListSection title="Client Requests" items={requests} testid="requests-section" onAdd={addRequest} addLabel="Request"
+          <ListSection title="Client Requests" items={requests} testid="requests-section" onAdd={() => setWorkItem({ kind: "request", title: "" })} addLabel="Request"
             columns={(it) => <div className="text-xs text-gray-400 capitalize">Priority: {it.priority}</div>}
             actions={(it) => (
               <Select value={it.status} onValueChange={(v) => upd(`/client-requests/${it.id}`, { status: v }, "Updated")}>
@@ -316,7 +329,7 @@ export default function WorkspaceDetail() {
         </TabsContent>
 
         <TabsContent value="approvals" className="mt-6">
-          <ListSection title="Approvals (Governance)" items={approvals} testid="approvals-section" onAdd={addApproval} addLabel="Approval"
+          <ListSection title="Approvals (Governance)" items={approvals} testid="approvals-section" onAdd={() => setWorkItem({ kind: "approval", title: "" })} addLabel="Approval"
             columns={(it) => <div className="text-xs text-gray-400 capitalize">{it.kind.replace("_", " ")}{it.decided_by ? ` · by ${it.decided_by}` : ""}</div>}
             actions={(it) => it.status === "requested" ? (
               user?.role === "admin" ? (
@@ -328,6 +341,8 @@ export default function WorkspaceDetail() {
             ) : <Badge className={`capitalize ${STATUS_COLOR[it.status] || STATUS_COLOR.requested}`}>{it.status}</Badge>} />
         </TabsContent>
       </Tabs>
+
+      <WorkItemDialog kind={workItem.kind} title={workItem.title} onTitleChange={(title) => setWorkItem((current) => ({ ...current, title }))} open={Boolean(workItem.kind)} onOpenChange={(open) => !open && setWorkItem({ kind: null, title: "" })} busy={workItemBusy} onSubmit={submitWorkItem} />
 
       <Dialog open={cmtDialog} onOpenChange={setCmtDialog}>
         <DialogContent data-testid="commitment-dialog">

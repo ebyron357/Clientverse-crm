@@ -1,58 +1,94 @@
 name: CI
+
 on:
   push:
     branches: [main, claude/**]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  backend-unit:
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+      - name: Install dependencies
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+      - name: Build (warnings are errors)
+        working-directory: frontend
+        env:
+          CI: 'true'
+          REACT_APP_BACKEND_URL: http://localhost:8001
+        run: yarn build
+
+  backend:
+    name: Backend API tests
     runs-on: ubuntu-latest
     services:
       mongo:
         image: mongo:7
         ports:
           - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     env:
       MONGO_URL: mongodb://localhost:27017
-      DB_NAME: clientverse_test
-      JWT_SECRET: ci-test-secret-that-is-at-least-32-chars-long
-      ALLOW_INSECURE_JWT: "1"
-      ADMIN_EMAIL: admin@example.com
-      ADMIN_PASSWORD: AdminPass123!
-      DEMO_MEMBER_EMAIL: demo.member@clientverse.io
-      DEMO_MEMBER_PASSWORD: Member2026!
+      DB_NAME: clientverse_ci
       CORS_ORIGINS: http://localhost:3000
       FRONTEND_URL: http://localhost:3000
-      WEBHOOK_CRON_SECRET: ci-cron-secret
-      INTEGRATION_ENC_KEY: ""
+      PUBLIC_BACKEND_URL: http://localhost:8001
       REACT_APP_BACKEND_URL: http://localhost:8001
+      ADMIN_EMAIL: ci-admin@example.com
+      DEMO_MEMBER_EMAIL: ci-member@example.com
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Generate ephemeral CI secrets
         run: |
-          pip install $(grep -v emergentintegrations backend/requirements.txt | tr '\n' ' ')
-      - name: Start backend server
+          {
+            echo "JWT_SECRET=$(openssl rand -hex 32)"
+            echo "WEBHOOK_CRON_SECRET=$(openssl rand -hex 32)"
+            echo "ADMIN_PASSWORD=$(openssl rand -hex 12)Aa1!"
+            echo "DEMO_MEMBER_PASSWORD=$(openssl rand -hex 12)Aa1!"
+            echo "INTEGRATION_ENC_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          } >> "$GITHUB_ENV"
+      - name: Start API
+        working-directory: backend
         run: |
-          cd backend && python server.py &
-          sleep 5
-      - name: Run backend tests
-        run: |
-          cd backend && pytest tests/ -x -v --timeout=60
-
-  frontend-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Install dependencies
-        working-directory: frontend
-        run: yarn install --no-lockfile
-      - name: Production build
-        working-directory: frontend
-        run: CI=true yarn build
+          nohup python -m uvicorn server:app --host 127.0.0.1 --port 8001 > /tmp/backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8001/api/health > /dev/null; then
+              echo "backend up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "backend failed to start"; cat /tmp/backend.log; exit 1
+      - name: Run test suite
+        working-directory: backend
+        run: python -m pytest tests/ -q
+      - name: Backend logs
+        if: always()
+        run: tail -n 200 /tmp/backend.log || true

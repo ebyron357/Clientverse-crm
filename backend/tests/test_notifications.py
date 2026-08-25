@@ -55,6 +55,12 @@ def test_alerts_generate_in_app_notifications():
     for k in ("id", "title", "severity", "read", "created_at"):
         assert k in n
     assert n["severity"] in ("info", "warning", "critical")
+    assert n.get("category") in ("critical", "commitments", "billing", "integrations")
+    assert isinstance(d.get("action_items"), list)
+    if d["action_items"]:
+        item = d["action_items"][0]
+        for k in ("alert_id", "category", "severity", "status", "summary", "deep_link", "occurrence_count"):
+            assert k in item
 
 
 def test_mark_read_and_read_all():
