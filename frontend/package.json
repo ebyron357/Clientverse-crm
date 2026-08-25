@@ -62,7 +62,8 @@
   },
   "scripts": {
     "start": "craco start",
-    "build": "craco build",
+    "build": "NODE_ENV=production craco build",
+    "lint": "eslint \"src/**/*.{js,jsx}\" --max-warnings=0",
     "test": "craco test"
   },
   "browserslist": {
@@ -78,9 +79,9 @@
     ]
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@babel/plugin-proposal-private-property-in-object": "7.21.11",
     "@craco/craco": "7.1.0",
-    "@emergentbase/visual-edits": "https://assets.emergent.sh/npm/emergentbase-visual-edits-1.0.13.tgz",
     "@eslint/js": "9.23.0",
     "@types/lodash": "4.17.24",
     "autoprefixer": "10.4.20",
@@ -91,6 +92,7 @@
     "eslint-plugin-react": "7.37.4",
     "eslint-plugin-react-hooks": "5.2.0",
     "globals": "15.15.0",
+    "playwright": "^1.62.1",
     "postcss": "8.5.10",
     "tailwindcss": "3.4.17"
   },

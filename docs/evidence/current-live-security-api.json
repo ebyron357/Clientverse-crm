@@ -1,0 +1,28 @@
+{
+  "tested_at_utc": "2026-08-16T22:28:11.510Z",
+  "api_base": "https://8001-in8v1wws9289jt9pfzcyj-03350434.us4.manus.computer/api",
+  "controlled_workspace_label": "CLIENTVERSE-PROOF-20260816222022 Opportunity",
+  "unauthenticated_workspace": {
+    "http": 401,
+    "body": {
+      "detail": "Not authenticated"
+    }
+  },
+  "authenticated_workspace": {
+    "http": 200,
+    "workspace_label": "CLIENTVERSE-PROOF-20260816222022 Opportunity"
+  },
+  "cross_tenant_workspace": {
+    "http": 404,
+    "body": {
+      "detail": "Not found"
+    }
+  },
+  "member_admin_action": {
+    "http": 403,
+    "body": {
+      "detail": "You do not have permission to perform this action"
+    }
+  },
+  "redaction": "This artifact intentionally excludes emails, passwords, JWTs, cookies, authorization headers, invitation tokens, tenant IDs, workspace IDs, and all other internal identifiers."
+}

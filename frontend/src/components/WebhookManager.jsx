@@ -60,7 +60,7 @@ export default function WebhookManager() {
   useEffect(() => { load(); }, []);
 
   const toggle = async (wh, enabled) => { await api.patch(`/webhooks/${wh.id}`, { enabled }); toast.success(enabled ? "Endpoint enabled" : "Endpoint disabled"); load(); };
-  const rotate = async (wh) => { const { data } = await api.patch(`/webhooks/${wh.id}`, { rotate_secret: true }); toast.success("Secret rotated"); load(); };
+  const rotate = async (wh) => { await api.patch(`/webhooks/${wh.id}`, { rotate_secret: true }); toast.success("Secret rotated"); load(); };
   const test = async (wh) => { const { data } = await api.post(`/webhooks/${wh.id}/test`); toast[data.status === "delivered" ? "success" : "error"](`Test event → ${data.status}`); load(); };
   const replay = async (d) => { const { data } = await api.post(`/webhook-deliveries/${d.id}/replay`); toast[data.status === "delivered" ? "success" : "error"](`Replay → ${data.status}`); load(); };
   const openVerify = async (wh) => {

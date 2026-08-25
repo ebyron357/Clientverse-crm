@@ -1,0 +1,16 @@
+{
+  "short_name": "ClientVerse",
+  "name": "ClientVerse Client Operations",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any"
+    }
+  ],
+  "start_url": "/field",
+  "display": "standalone",
+  "theme_color": "#0f172a",
+  "background_color": "#f7fafc",
+  "description": "Mobile-first field operations, client work, and delivery coordination."
+}

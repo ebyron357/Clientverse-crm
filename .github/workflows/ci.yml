@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+      - name: Install dependencies
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+      - name: Build (warnings are errors)
+        working-directory: frontend
+        env:
+          CI: 'true'
+          REACT_APP_BACKEND_URL: http://localhost:8001
+        run: yarn build
+
+  backend:
+    name: Backend API tests
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MONGO_URL: mongodb://localhost:27017
+      DB_NAME: clientverse_ci
+      CORS_ORIGINS: http://localhost:3000
+      FRONTEND_URL: http://localhost:3000
+      PUBLIC_BACKEND_URL: http://localhost:8001
+      REACT_APP_BACKEND_URL: http://localhost:8001
+      ADMIN_EMAIL: ci-admin@example.com
+      DEMO_MEMBER_EMAIL: ci-member@example.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Generate ephemeral CI secrets
+        run: |
+          {
+            echo "JWT_SECRET=$(openssl rand -hex 32)"
+            echo "WEBHOOK_CRON_SECRET=$(openssl rand -hex 32)"
+            echo "ADMIN_PASSWORD=$(openssl rand -hex 12)Aa1!"
+            echo "DEMO_MEMBER_PASSWORD=$(openssl rand -hex 12)Aa1!"
+            echo "INTEGRATION_ENC_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          } >> "$GITHUB_ENV"
+      - name: Start API
+        working-directory: backend
+        run: |
+          nohup python -m uvicorn server:app --host 127.0.0.1 --port 8001 > /tmp/backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8001/api/health > /dev/null; then
+              echo "backend up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "backend failed to start"; cat /tmp/backend.log; exit 1
+      - name: Run test suite
+        working-directory: backend
+        run: python -m pytest tests/ -q
+      - name: Backend logs
+        if: always()
+        run: tail -n 200 /tmp/backend.log || true

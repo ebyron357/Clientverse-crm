@@ -66,7 +66,13 @@ def test_admin_can_perform_governance_actions():
     ws = requests.get(f"{API}/workspaces", headers=a, timeout=15).json()[0]["id"]
     hooks = requests.get(f"{API}/webhooks", headers=a, timeout=15).json()
     assert all("secret" not in h for h in hooks), "list must not leak secrets"
-    wid = hooks[0]["id"]
+    created = requests.post(f"{API}/webhooks", headers=a, json={
+        "name": f"Governance verification {uuid.uuid4().hex[:8]}",
+        "url": "https://example.invalid/clientverse-governance",
+        "events": ["task.created"],
+    }, timeout=15)
+    assert created.status_code == 200, created.text
+    wid = created.json()["id"]
 
     assert requests.get(f"{API}/team/members", headers=a, timeout=15).status_code == 200
     assert requests.patch(f"{API}/mcp/server/kill", headers=a, json={"enabled": True}, timeout=15).status_code == 200
@@ -182,6 +188,29 @@ def test_tenant_isolation_membership():
     other_uid = other_user["user_id"]
     r = requests.patch(f"{API}/team/members/{other_uid}/role", headers=a, json={"role": "admin"}, timeout=15)
     assert r.status_code == 404  # not visible/manipulable from tenant A
+
+
+def test_tenant_isolation_workspace_scoped_writes():
+    """Workspace-scoped creates must reject a workspace id owned by another tenant."""
+    a = _h(_admin())
+    ws_id = requests.get(f"{API}/workspaces", headers=a, timeout=15).json()[0]["id"]
+    _, other_token, _ = _register()
+    o = _h(other_token)
+    payloads = {
+        "/tasks": {"workspace_id": ws_id, "title": "cross tenant task"},
+        "/deliverables": {"workspace_id": ws_id, "title": "cross tenant deliverable"},
+        "/client-requests": {"workspace_id": ws_id, "title": "cross tenant request"},
+        "/approvals": {"workspace_id": ws_id, "title": "cross tenant approval"},
+        "/commitments": {"workspace_id": ws_id, "title": "cross tenant commitment"},
+        "/outcomes": {"workspace_id": ws_id, "title": "cross tenant outcome"},
+    }
+    for path, body in payloads.items():
+        r = requests.post(f"{API}{path}", headers=o, json=body, timeout=15)
+        assert r.status_code == 404, f"{path} leaked cross-tenant write: {r.status_code} {r.text}"
+    # the victim tenant's workspace is unchanged
+    ws = requests.get(f"{API}/workspaces/{ws_id}", headers=a, timeout=15).json()
+    for coll in ("tasks", "deliverables", "requests", "approvals", "commitments"):
+        assert all("cross tenant" not in (i.get("title") or "") for i in ws.get(coll, []))
 
 
 # --------------------------- last-admin safety ---------------------------

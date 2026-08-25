@@ -1,0 +1,6 @@
+{
+  "tested_at_utc": "2026-08-16T22:19:20Z",
+  "url": "https://8001-in8v1wws9289jt9pfzcyj-03350434.us4.manus.computer/api/health",
+  "http_status": 200,
+  "body": {"service":"ClientVerse","version":"v1","status":"ok","database":"up"}
+}

@@ -1,7 +1,6 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
-import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -9,175 +8,30 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Bell, Mail, Building2, User, Send, AlertTriangle } from "lucide-react";
+import { AlertTriangle, Bell, Building2, CheckCheck, CircleAlert, Clock3, Mail, RefreshCw, Send, ShieldAlert, User } from "lucide-react";
 
 const TIMEZONES = ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney"];
-const CATEGORIES = [
-  { key: "critical", label: "Critical / client health" },
-  { key: "commitments", label: "Commitment SLAs" },
-  { key: "billing", label: "Billing & invoices" },
-  { key: "integrations", label: "Integration health" },
-];
-
-function PrefEditor({ prefs, onChange, testidPrefix }) {
-  const set = (k, v) => onChange({ ...prefs, [k]: v });
-  const setChannel = (k, v) => onChange({ ...prefs, channels: { ...prefs.channels, [k]: v } });
-  return (
-    <div className="space-y-6">
-      <div>
-        <div className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-3">Channels</div>
-        <div className="space-y-3">
-          <Row icon={Bell} label="In-app notifications">
-            <Switch data-testid={`${testidPrefix}-channel-in_app`} checked={!!prefs.channels?.in_app} onCheckedChange={(v) => setChannel("in_app", v)} />
-          </Row>
-          <Row icon={Mail} label="Email notifications">
-            <Switch data-testid={`${testidPrefix}-channel-email`} checked={!!prefs.channels?.email} onCheckedChange={(v) => setChannel("email", v)} />
-          </Row>
-        </div>
-      </div>
-      <div>
-        <div className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-3">Alert categories</div>
-        <div className="space-y-3">
-          {CATEGORIES.map((c) => (
-            <Row key={c.key} label={c.label}>
-              <Switch data-testid={`${testidPrefix}-cat-${c.key}`} checked={prefs[c.key] !== false} onCheckedChange={(v) => set(c.key, v)} />
-            </Row>
-          ))}
-        </div>
-      </div>
-      <div>
-        <div className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-3">Daily digest & escalation</div>
-        <div className="space-y-4">
-          <Row label="Send daily digest">
-            <Switch data-testid={`${testidPrefix}-daily_digest`} checked={prefs.daily_digest !== false} onCheckedChange={(v) => set("daily_digest", v)} />
-          </Row>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs text-gray-500">Digest hour (local)</Label>
-              <Input type="time" data-testid={`${testidPrefix}-digest_time`} value={prefs.digest_time || "08:00"} onChange={(e) => set("digest_time", e.target.value)} className="mt-1" />
-            </div>
-            <div>
-              <Label className="text-xs text-gray-500">Timezone</Label>
-              <Select value={prefs.timezone || "UTC"} onValueChange={(v) => set("timezone", v)}>
-                <SelectTrigger data-testid={`${testidPrefix}-timezone`} className="mt-1"><SelectValue /></SelectTrigger>
-                <SelectContent>{TIMEZONES.map((tz) => <SelectItem key={tz} value={tz}>{tz}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs text-gray-500">Escalate after (minutes)</Label>
-              <Input type="number" min="5" data-testid={`${testidPrefix}-escalation_minutes`} value={prefs.escalation_minutes ?? 60} onChange={(e) => set("escalation_minutes", parseInt(e.target.value || "0", 10))} className="mt-1" />
-            </div>
-            <div>
-              <Label className="text-xs text-gray-500">Max escalation level</Label>
-              <Input type="number" min="1" data-testid={`${testidPrefix}-escalation_max_level`} value={prefs.escalation_max_level ?? 3} onChange={(e) => set("escalation_max_level", parseInt(e.target.value || "1", 10))} className="mt-1" />
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Row({ icon: Icon, label, children }) {
-  return (
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-2 text-sm text-gray-700">
-        {Icon && <Icon className="w-4 h-4 text-gray-400" />} {label}
-      </div>
-      {children}
-    </div>
-  );
-}
+const CATEGORIES = [{ key: "critical", label: "Critical / client health" }, { key: "commitments", label: "Commitment SLAs" }, { key: "billing", label: "Billing & invoices" }, { key: "integrations", label: "Integration health" }];
+const CATEGORY_META = { critical: { label: "Needs attention", icon: CircleAlert, cls: "bg-red-50 text-red-700 border-red-200" }, commitments: { label: "Commitment", icon: ShieldAlert, cls: "bg-amber-50 text-amber-700 border-amber-200" }, billing: { label: "Billing", icon: Clock3, cls: "bg-violet-50 text-violet-700 border-violet-200" }, integrations: { label: "Integration", icon: RefreshCw, cls: "bg-cyan-50 text-[#0a6177] border-cyan-200" }, system: { label: "System", icon: Bell, cls: "bg-slate-100 text-slate-600 border-slate-200" } };
 
 export default function Notifications() {
-  const { user } = useAuth();
-  const [data, setData] = useState(null);
-  const [mine, setMine] = useState(null);
-  const [tenant, setTenant] = useState(null);
-  const [savingMine, setSavingMine] = useState(false);
-  const [savingTenant, setSavingTenant] = useState(false);
-  const [digestBusy, setDigestBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const { data } = await api.get("/notifications/preferences");
-      setData(data);
-      setMine({ ...data.effective });
-      setTenant({ ...(data.tenant_default || {}) });
-    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
-  }, []);
+  const [data, setData] = useState(null); const [feed, setFeed] = useState([]); const [actionItems, setActionItems] = useState([]); const [unread, setUnread] = useState(0); const [mine, setMine] = useState(null); const [tenant, setTenant] = useState(null); const [savingMine, setSavingMine] = useState(false); const [savingTenant, setSavingTenant] = useState(false); const [digestBusy, setDigestBusy] = useState(false); const [feedFilter, setFeedFilter] = useState("all"); const [feedBusy, setFeedBusy] = useState(false); const [actionBusy, setActionBusy] = useState(null);
+  const load = useCallback(async () => { const [preferences, notifications] = await Promise.allSettled([api.get("/notifications/preferences"), api.get("/notifications")]); if (preferences.status === "fulfilled") { setData(preferences.value.data); setMine({ ...preferences.value.data.effective }); setTenant({ ...(preferences.value.data.tenant_default || {}) }); } else toast.error("Could not load notification preferences"); if (notifications.status === "fulfilled") { setFeed(notifications.value.data.notifications || []); setActionItems(notifications.value.data.action_items || []); setUnread(notifications.value.data.unread || 0); } }, []);
   useEffect(() => { load(); }, [load]);
-
-  const saveMine = async () => {
-    setSavingMine(true);
-    try { await api.put("/notifications/preferences/me", { prefs: mine }); toast.success("Your preferences saved"); load(); }
-    catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
-    finally { setSavingMine(false); }
-  };
-  const saveTenant = async () => {
-    setSavingTenant(true);
-    try { await api.put("/notifications/preferences/tenant", { prefs: tenant }); toast.success("Team defaults saved"); load(); }
-    catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
-    finally { setSavingTenant(false); }
-  };
-  const runDigest = async () => {
-    setDigestBusy(true);
-    try { const { data } = await api.post("/digest/run"); toast.success(`Digest ${data.status}${data.recipients ? ` · ${data.recipients} sent` : ""}`); }
-    catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
-    finally { setDigestBusy(false); }
-  };
-
-  if (!data || !mine) return <div className="max-w-3xl space-y-4"><Skeleton className="h-8 w-56" /><Skeleton className="h-64 w-full" /></div>;
+  const saveMine = async () => { setSavingMine(true); try { await api.put("/notifications/preferences/me", { prefs: mine }); toast.success("Your notification preferences were saved"); load(); } catch (error) { toast.error(formatErr(error.response?.data?.detail)); } finally { setSavingMine(false); } };
+  const saveTenant = async () => { setSavingTenant(true); try { await api.put("/notifications/preferences/tenant", { prefs: tenant }); toast.success("Team notification defaults were saved"); load(); } catch (error) { toast.error(formatErr(error.response?.data?.detail)); } finally { setSavingTenant(false); } };
+  const runDigest = async () => { setDigestBusy(true); try { const { data: result } = await api.post("/digest/run"); toast.success(`Digest ${result.status}${result.recipients ? ` · ${result.recipients} sent` : ""}`); } catch (error) { toast.error(formatErr(error.response?.data?.detail)); } finally { setDigestBusy(false); } };
+  const markRead = async (id) => { try { await api.post(`/notifications/${id}/read`); setFeed((current) => current.map((notification) => notification.id === id ? { ...notification, read: true } : notification)); setUnread((current) => Math.max(0, current - 1)); } catch { toast.error("Could not update this notification"); } };
+  const markAllRead = async () => { setFeedBusy(true); try { await api.post("/notifications/read-all"); setFeed((current) => current.map((notification) => ({ ...notification, read: true }))); setUnread(0); toast.success("All notifications marked as read"); } catch { toast.error("Could not mark all notifications as read"); } finally { setFeedBusy(false); } };
+  const updateAlert = async (alertId, action) => { setActionBusy(`${alertId}:${action}`); try { await api.post(`/alerts/${alertId}/${action}`); toast.success(action === "acknowledge" ? "Alert acknowledged" : "Alert resolved"); await load(); } catch (error) { toast.error(formatErr(error.response?.data?.detail) || "Could not update this alert"); } finally { setActionBusy(null); } };
+  const visibleFeed = useMemo(() => feed.filter((notification) => feedFilter === "all" || (notification.category || notification.kind || "system") === feedFilter), [feed, feedFilter]);
+  if (!data || !mine) return <div className="cv-page"><div className="mb-7 space-y-3"><Skeleton className="h-3 w-32" /><Skeleton className="h-9 w-52" /><Skeleton className="h-4 w-96 max-w-full" /></div><Skeleton className="h-64 rounded-2xl" /></div>;
   const isAdmin = data.is_admin;
-
-  return (
-    <div className="max-w-3xl" data-testid="notifications-page">
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="font-display font-extrabold text-4xl">Notifications</h1>
-          <p className="text-gray-500 text-sm mt-1">Control how and when ClientVerse alerts you about client health, SLAs and integrations.</p>
-        </div>
-        {isAdmin && (
-          <Button variant="outline" onClick={runDigest} disabled={digestBusy} data-testid="run-digest-button">
-            <Send className="w-4 h-4 mr-2" /> {digestBusy ? "Sending…" : "Send digest now"}
-          </Button>
-        )}
-      </div>
-
-      {!data.email_configured && (
-        <div className="mb-6 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" data-testid="email-not-configured-banner">
-          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-          Email delivery isn't configured yet — in-app notifications still work; email alerts will be skipped.
-        </div>
-      )}
-
-      <Tabs defaultValue="mine">
-        <TabsList data-testid="notifications-tabs">
-          <TabsTrigger value="mine" data-testid="tab-mine"><User className="w-4 h-4 mr-2" /> My preferences</TabsTrigger>
-          {isAdmin && <TabsTrigger value="tenant" data-testid="tab-tenant"><Building2 className="w-4 h-4 mr-2" /> Team defaults</TabsTrigger>}
-        </TabsList>
-        <TabsContent value="mine">
-          <div className="rounded-xl border border-gray-200 bg-white p-6 mt-4">
-            <PrefEditor prefs={mine} onChange={setMine} testidPrefix="mine" />
-            <div className="mt-6 flex justify-end">
-              <Button onClick={saveMine} disabled={savingMine} data-testid="save-mine-button">{savingMine ? "Saving…" : "Save my preferences"}</Button>
-            </div>
-          </div>
-        </TabsContent>
-        {isAdmin && (
-          <TabsContent value="tenant">
-            <div className="rounded-xl border border-gray-200 bg-white p-6 mt-4">
-              <p className="text-xs text-gray-400 mb-4">These defaults apply to everyone on your team unless they set their own preferences.</p>
-              <PrefEditor prefs={tenant} onChange={setTenant} testidPrefix="tenant" />
-              <div className="mt-6 flex justify-end">
-                <Button onClick={saveTenant} disabled={savingTenant} data-testid="save-tenant-button">{savingTenant ? "Saving…" : "Save team defaults"}</Button>
-              </div>
-            </div>
-          </TabsContent>
-        )}
-      </Tabs>
-    </div>
-  );
+  return <div className="cv-page" data-testid="notifications-page"><div className="cv-page-header"><div><div className="cv-eyebrow">Operational awareness</div><h1 className="cv-page-title">Action Center</h1><p className="cv-page-description">Resolve the client risks and delivery blockers that matter first, then review the supporting notification history.</p></div><div className="flex items-center gap-2">{isAdmin && <Button variant="outline" onClick={runDigest} disabled={digestBusy} data-testid="run-digest-button"><Send className="mr-1.5 h-4 w-4" />{digestBusy ? "Sending…" : "Send digest"}</Button>}<Button variant="outline" onClick={load}><RefreshCw className="mr-1.5 h-4 w-4" />Refresh</Button></div></div>{!data.email_configured && <div className="mb-5 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800" data-testid="email-not-configured-banner"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><span><strong>Email delivery is not configured.</strong> In-app notifications remain available; email alerts will be skipped until a delivery provider is configured.</span></div>}<Tabs defaultValue="inbox"><TabsList data-testid="notifications-tabs" className="w-full justify-start overflow-x-auto"><TabsTrigger value="inbox" data-testid="tab-inbox" className="gap-1.5"><Bell className="h-3.5 w-3.5" />Action inbox {actionItems.length > 0 && <span className="ml-1 rounded-full bg-[#1a9fbf] px-1.5 py-0.5 text-[10px] text-white">{actionItems.length}</span>}</TabsTrigger><TabsTrigger value="mine" data-testid="tab-mine" className="gap-1.5"><User className="h-3.5 w-3.5" />My preferences</TabsTrigger>{isAdmin && <TabsTrigger value="tenant" data-testid="tab-tenant" className="gap-1.5"><Building2 className="h-3.5 w-3.5" />Team defaults</TabsTrigger>}</TabsList><TabsContent value="inbox" className="mt-5"><section className="cv-card overflow-hidden"><div className="border-b border-slate-100 p-4"><h2 className="cv-card-title">Priority work queue</h2><p className="cv-card-description">Each client risk appears once with its latest state, ownership, and next safe action.</p></div>{actionItems.length ? <div className="divide-y divide-slate-100">{actionItems.map((item) => <ActionItemRow key={item.alert_id} item={item} busy={actionBusy?.startsWith(`${item.alert_id}:`)} onAcknowledge={() => updateAlert(item.alert_id, "acknowledge")} onResolve={() => updateAlert(item.alert_id, "resolve")} />)}</div> : <div className="cv-empty m-5"><CheckCheck className="h-9 w-9 text-[#4ac4e0]" /><h2 className="mt-4 font-display text-xl font-bold text-[#0a1628]">No open action items</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">Client risks, due commitments, billing issues, and integration failures will appear here only when follow-through is needed.</p></div>}</section><section className="cv-card mt-5 overflow-hidden"><div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="cv-card-title">Recent alert activity</h2><p className="cv-card-description">Supporting lifecycle history. Routine workspace activity stays in the client timeline.</p></div><div className="flex gap-2"><Select value={feedFilter} onValueChange={setFeedFilter}><SelectTrigger aria-label="Filter notification category" className="h-9 w-[150px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{CATEGORIES.map((category) => <SelectItem key={category.key} value={category.key}>{category.label}</SelectItem>)}</SelectContent></Select>{unread > 0 && <Button variant="outline" size="sm" disabled={feedBusy} onClick={markAllRead}><CheckCheck className="mr-1.5 h-3.5 w-3.5" />Mark all read</Button>}</div></div>{visibleFeed.length ? <div className="divide-y divide-slate-100">{visibleFeed.map((notification) => <NotificationRow key={notification.id} notification={notification} onRead={() => markRead(notification.id)} />)}</div> : <div className="cv-empty m-5"><Bell className="h-9 w-9 text-[#4ac4e0]" /><h2 className="mt-4 font-display text-xl font-bold text-[#0a1628]">Your recent activity is clear</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">New meaningful alert transitions will appear here when they occur.</p></div>}</section></TabsContent><TabsContent value="mine" className="mt-5"><section className="cv-card p-5 sm:p-6"><div className="mb-6"><h2 className="cv-card-title">Your delivery preferences</h2><p className="cv-card-description">Choose the channels and categories that should interrupt your work.</p></div><PrefEditor prefs={mine} onChange={setMine} testidPrefix="mine" /><div className="mt-6 flex justify-end"><Button onClick={saveMine} disabled={savingMine} data-testid="save-mine-button" className="cv-action-primary">{savingMine ? "Saving…" : "Save my preferences"}</Button></div></section></TabsContent>{isAdmin && <TabsContent value="tenant" className="mt-5"><section className="cv-card p-5 sm:p-6"><div className="mb-6"><h2 className="cv-card-title">Team notification defaults</h2><p className="cv-card-description">These defaults apply to team members unless they choose personal preferences.</p></div><PrefEditor prefs={tenant} onChange={setTenant} testidPrefix="tenant" /><div className="mt-6 flex justify-end"><Button onClick={saveTenant} disabled={savingTenant} data-testid="save-tenant-button" className="cv-action-primary">{savingTenant ? "Saving…" : "Save team defaults"}</Button></div></section></TabsContent>}</Tabs></div>;
 }
+
+function ActionItemRow({ item, busy, onAcknowledge, onResolve }) { const meta = CATEGORY_META[item.category] || CATEGORY_META.system; const Icon = meta.icon; const occurred = item.last_seen_at ? new Date(item.last_seen_at).toLocaleString() : "Recent"; return <article className="cv-data-row flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-start"><div className="flex min-w-0 flex-1 gap-3"><span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${meta.cls}`}><Icon className="h-4 w-4" /></span><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold text-[#132038]">{item.summary || "Client action required"}</h3><span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.06em] ${meta.cls}`}>{item.severity || "attention"}</span>{item.status === "acknowledged" && <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.06em] text-slate-600">Acknowledged</span>}</div><p className="mt-1 text-sm leading-6 text-slate-500">{item.workspace_name ? `${item.workspace_name} · ` : ""}{item.occurrence_count > 1 ? `Repeated ${item.occurrence_count} times · ` : ""}Last seen {occurred}</p>{item.acknowledged_by && <p className="mt-1 text-xs text-slate-400">Acknowledged by {item.acknowledged_by}</p>}</div></div><div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end"><a href={item.deep_link} className="text-sm font-semibold text-[#127b96] hover:text-[#0a6177]">Open client</a>{item.status === "open" && <Button size="sm" variant="outline" disabled={busy} onClick={onAcknowledge}>Acknowledge</Button>}<Button size="sm" disabled={busy} onClick={onResolve} className="cv-action-primary">{busy ? "Saving…" : "Resolve"}</Button></div></article>; }
+
+function NotificationRow({ notification, onRead }) { const key = notification.category || notification.kind || "system"; const meta = CATEGORY_META[key] || CATEGORY_META.system; const Icon = meta.icon; const title = notification.title || notification.subject || notification.event_type || "ClientVerse update"; const body = notification.body || notification.message || notification.detail || "A client operations event needs review."; const timestamp = notification.created_at ? new Date(notification.created_at).toLocaleString() : "Recent"; return <article className={`cv-data-row flex items-start gap-3 px-5 py-4 ${notification.read ? "" : "bg-cyan-50/[0.28]"}`}><span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${meta.cls}`}><Icon className="h-4 w-4" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold text-[#132038]">{title}</h3><span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.06em] ${meta.cls}`}>{meta.label}</span></div><p className="mt-1 text-sm leading-6 text-slate-500">{body}</p><p className="mt-2 text-xs text-slate-400">{timestamp}</p></div>{!notification.read && <Button size="sm" variant="outline" onClick={onRead} className="shrink-0">Mark read</Button>}</article>; }
+function PrefEditor({ prefs, onChange, testidPrefix }) { const set = (key, value) => onChange({ ...prefs, [key]: value }); const setChannel = (key, value) => onChange({ ...prefs, channels: { ...prefs.channels, [key]: value } }); return <div className="space-y-7"><section><div className="mb-3 text-[11px] font-bold uppercase tracking-[0.11em] text-slate-500">Channels</div><div className="divide-y divide-slate-100 rounded-xl border border-slate-200 px-4"> <Row icon={Bell} label="In-app notifications"><Switch aria-label="Enable in-app notifications" data-testid={`${testidPrefix}-channel-in_app`} checked={!!prefs.channels?.in_app} onCheckedChange={(value) => setChannel("in_app", value)} /></Row><Row icon={Mail} label="Email notifications"><Switch aria-label="Enable email notifications" data-testid={`${testidPrefix}-channel-email`} checked={!!prefs.channels?.email} onCheckedChange={(value) => setChannel("email", value)} /></Row></div></section><section><div className="mb-3 text-[11px] font-bold uppercase tracking-[0.11em] text-slate-500">Alert categories</div><div className="divide-y divide-slate-100 rounded-xl border border-slate-200 px-4">{CATEGORIES.map((category) => <Row key={category.key} label={category.label}><Switch aria-label={`Enable ${category.label} notifications`} data-testid={`${testidPrefix}-cat-${category.key}`} checked={prefs[category.key] !== false} onCheckedChange={(value) => set(category.key, value)} /></Row>)}</div></section><section><div className="mb-3 text-[11px] font-bold uppercase tracking-[0.11em] text-slate-500">Daily digest & escalation</div><div className="rounded-xl border border-slate-200 p-4"><Row label="Send daily digest"><Switch aria-label="Enable daily digest" data-testid={`${testidPrefix}-daily_digest`} checked={prefs.daily_digest !== false} onCheckedChange={(value) => set("daily_digest", value)} /></Row><div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="grid gap-1.5"><Label className="text-xs text-slate-500">Digest hour (local)</Label><Input type="time" data-testid={`${testidPrefix}-digest_time`} value={prefs.digest_time || "08:00"} onChange={(event) => set("digest_time", event.target.value)} /></div><div className="grid gap-1.5"><Label className="text-xs text-slate-500">Timezone</Label><Select value={prefs.timezone || "UTC"} onValueChange={(value) => set("timezone", value)}><SelectTrigger aria-label="Digest timezone"><SelectValue /></SelectTrigger><SelectContent>{TIMEZONES.map((timezone) => <SelectItem key={timezone} value={timezone}>{timezone}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label className="text-xs text-slate-500">Escalate after (minutes)</Label><Input type="number" min="5" data-testid={`${testidPrefix}-escalation_minutes`} value={prefs.escalation_minutes ?? 60} onChange={(event) => set("escalation_minutes", parseInt(event.target.value || "0", 10))} /></div><div className="grid gap-1.5"><Label className="text-xs text-slate-500">Maximum escalation level</Label><Input type="number" min="1" data-testid={`${testidPrefix}-escalation_max_level`} value={prefs.escalation_max_level ?? 3} onChange={(event) => set("escalation_max_level", parseInt(event.target.value || "1", 10))} /></div></div></div></section></div>; }
+function Row({ icon: Icon, label, children }) { return <div className="flex items-center justify-between gap-4 py-3"><div className="flex items-center gap-2 text-sm text-slate-700">{Icon && <Icon className="h-4 w-4 text-slate-400" />} {label}</div>{children}</div>; }

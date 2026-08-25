@@ -1,0 +1,36 @@
+INFO:     10.95.225.1:47722 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:47728 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:38908 - "HEAD /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     10.95.225.1:38922 - "HEAD / HTTP/1.1" 404 Not Found
+INFO:     10.95.225.1:38934 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:38952 - "GET / HTTP/1.1" 404 Not Found
+INFO:     10.95.225.1:32936 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:32942 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     10.95.225.1:32950 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:52764 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36196 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36206 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36210 - "POST /api/companies HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36212 - "POST /api/contacts HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36220 - "POST /api/opportunities HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36236 - "PATCH /api/opportunities/opp_<redacted>/stage HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36238 - "GET /api/workspaces HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36252 - "POST /api/commitments HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36260 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36268 - "GET /api/companies HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36302 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36280 - "GET /api/opportunities HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36294 - "GET /api/contacts HTTP/1.1" 200 OK
+INFO:     10.95.225.1:36310 - "GET /api/workspaces/ws_<redacted> HTTP/1.1" 200 OK
+INFO:     10.95.225.1:44572 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:47574 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     10.95.225.1:47584 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     10.95.225.1:57972 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     10.95.225.1:57976 - "GET /api/workspaces HTTP/1.1" 200 OK
+INFO:     10.95.225.1:57978 - "GET /api/workspaces/ws_<redacted> HTTP/1.1" 401 Unauthorized
+INFO:     10.95.225.1:57988 - "GET /api/workspaces/ws_<redacted> HTTP/1.1" 200 OK
+INFO:     10.95.225.1:57994 - "GET /api/workspaces/ws_<redacted> HTTP/1.1" 404 Not Found
+INFO:     10.95.225.1:58022 - "POST /api/team/invitations HTTP/1.1" 200 OK
+INFO:     10.95.225.1:58024 - "POST /api/team/invitations/accept HTTP/1.1" 200 OK
+INFO:     10.95.225.1:58038 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     10.95.225.1:58052 - "POST /api/team/invitations HTTP/1.1" 403 Forbidden

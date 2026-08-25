@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, CAP_STATUS } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
@@ -29,16 +29,16 @@ export default function Mcp() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
 
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
     const r = await api.get("/mcp/invocations?limit=50");
     setInvocations(r.data);
-  };
-  const load = async () => {
+  }, []);
+  const load = useCallback(async () => {
     const [t, w] = await Promise.all([api.get("/mcp/tools"), api.get("/workspaces")]);
     setData(t.data.tools); setServer(t.data.server); setWorkspaces(w.data);
     loadHistory();
-  };
-  useEffect(() => { load(); }, []);
+  }, [loadHistory]);
+  useEffect(() => { load(); }, [load]);
 
   const toggleKill = async (enabled) => {
     try {
@@ -114,7 +114,7 @@ export default function Mcp() {
           <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Tool Catalog</div>
           <div className="space-y-3">
             {data.map((tool) => (
-              <div key={tool.name} className={`bg-white border rounded-xl p-4 shadow-sm cursor-pointer transition-colors ${selected?.name === tool.name ? "border-black" : "border-gray-200 hover:border-gray-300"}`}
+              <button key={tool.name} type="button" className={`w-full bg-white border rounded-xl p-4 text-left shadow-sm transition-colors ${selected?.name === tool.name ? "border-black" : "border-gray-200 hover:border-gray-300"}`}
                 onClick={() => pick(tool)} data-testid={`mcp-tool-${tool.name}`}>
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-sm font-medium">{tool.name}</span>
@@ -126,7 +126,7 @@ export default function Mcp() {
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 border-dashed text-slate-500 flex items-center gap-1"><Clock className="w-2.5 h-2.5" />{tool.timeout_seconds}s</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 border-dashed text-slate-500 flex items-center gap-1"><Zap className="w-2.5 h-2.5" />{tool.rate_limit_per_min}/min</span>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>

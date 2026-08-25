@@ -23,8 +23,8 @@ This document separates configuration by audience and risk. Never commit real se
 | `EMERGENT_LLM_KEY` | Optional (AI) | Backend | Evidence-backed AI | Emergent profile | Yes — obtain |
 | `EMERGENT_EMAIL_KEY` | Optional (email) | Backend | Digest/email delivery | Emergent integrations | Yes — obtain |
 | `EMAIL_FROM_NAME` | Optional (email) | Backend | From display name | Hosting provider env | No |
-| `DEMO_MEMBER_EMAIL` | Testing only | Backend | Seeded member identity | Local `.env` only | Testing |
-| `DEMO_MEMBER_PASSWORD` | Testing only | Backend | Seeded member password | Local `.env` only | Testing |
+| `DEMO_MEMBER_EMAIL` | Testing only | Backend | Seeded member identity — **omit in production** | Local `.env` only | Testing |
+| `DEMO_MEMBER_PASSWORD` | Testing only | Backend | Seeded member password — **omit in production** | Local `.env` only | Testing |
 | `ALLOW_INSECURE_JWT` | Testing only | Backend | Bypass JWT strength check for disposable local envs | Local `.env` only — never production | N/A |
 | `REACT_APP_BACKEND_URL` | Required (core) | Frontend (build-time) | Backend base URL baked into the SPA | Frontend host / CI build env | No (public) |
 
@@ -36,9 +36,28 @@ This document separates configuration by audience and risk. Never commit real se
 - Set `CORS_ORIGINS` to the exact browser origin(s) of the deployed frontend.
 - Confirm `GET /api/health` returns `{"status":"ok","database":"up"}` after deploy.
 - Do not ship `ADMIN_PASSWORD` / demo member passwords as long-lived production credentials; rotate after first login.
+- Leave `DEMO_MEMBER_EMAIL` / `DEMO_MEMBER_PASSWORD` **unset** in production. The demo member is seeded only when both are provided, so an unconfigured deployment never gets a well-known member login.
 
 ## What must never be committed
 
 - `.env` files with real values
 - JWT secrets, cron secrets, Fernet keys, OAuth client secrets, Stripe keys, email/LLM keys
 - `node_modules/`, `frontend/build/`, Python caches, MongoDB dumps
+
+## Going public with this repository
+
+Before flipping visibility to public:
+
+1. Confirm no real `.env`, key file, or database dump is tracked or present in
+   git history (`git log --diff-filter=A --name-only`). Only `.env.example`
+   files should ever be committed.
+2. Rotate every credential that was used in a shared preview/demo environment —
+   `JWT_SECRET`, `ADMIN_PASSWORD`, `WEBHOOK_CRON_SECRET`, `INTEGRATION_ENC_KEY`,
+   OAuth client secrets, Stripe and Emergent keys.
+3. Unset `DEMO_MEMBER_EMAIL` / `DEMO_MEMBER_PASSWORD` and `ALLOW_INSECURE_JWT`
+   in every non-local environment.
+4. In repository settings, enable branch protection on `main`, private
+   vulnerability reporting, secret scanning, and Dependabot alerts.
+5. Verify CI is green (`.github/workflows/ci.yml`: frontend build + backend API
+   tests) and that `GET /api/health` reports `{"status":"ok","database":"up"}`
+   on the deployed environment.
