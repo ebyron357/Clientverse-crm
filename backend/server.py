@@ -1979,6 +1979,8 @@ async def sync_gmail(tenant_id, actor):
                 gm = await client.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}",
                                       params={"format": "metadata", "metadataHeaders": ["From", "To", "Cc", "Subject"]},
                                       headers=headers)
+            if gm.status_code == 401:
+                raise RuntimeError("token_refresh_failed:unauthorized")
             if gm.status_code == 429:
                 raise RuntimeError("rate_limited")
             if gm.status_code != 200:
@@ -2306,9 +2308,14 @@ async def stripe_webhook(request: Request):
     invoice_id = metadata.get("clientverse_invoice_id")
     event_doc = {"event_id": event_id, "event_type": event_type, "tenant_id": tenant_id,
                  "invoice_id": invoice_id, "object_id": obj.get("id"), "received_at": now_iso()}
-    event_write = await db.stripe_webhook_events.update_one(
-        {"event_id": event_id}, {"$setOnInsert": event_doc}, upsert=True
-    )
+    try:
+        event_write = await db.stripe_webhook_events.update_one(
+            {"event_id": event_id}, {"$setOnInsert": event_doc}, upsert=True
+        )
+    except Exception as exc:
+        if getattr(exc, "code", None) == 11000 or "duplicate key" in str(exc).lower():
+            return {"received": True, "duplicate": True, "event_type": event_type}
+        raise
     if event_write.upserted_id is None:
         return {"received": True, "duplicate": True, "event_type": event_type}
     handled = False
