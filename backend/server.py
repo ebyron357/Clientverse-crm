@@ -107,7 +107,11 @@ async def lifespan(_: FastAPI):
         await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
         await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
     except Exception:
-        pass
+        logger.exception("Failed to create a non-critical application index")
+    try:
+        await db.stripe_webhook_events.create_index("event_id", unique=True)
+    except Exception as exc:
+        raise RuntimeError("Stripe webhook event uniqueness index is unavailable") from exc
     try:
         yield
     finally:
@@ -1777,6 +1781,7 @@ ADAPTER_VERSION = "1.0"
 CONN_STATUSES = ["disconnected", "connecting", "active", "degraded", "expired", "revoked", "error"]
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
 # Prefer an explicit redirect URI; otherwise derive from the public backend URL (not the frontend).
 _PUBLIC_BACKEND = (os.environ.get("PUBLIC_BACKEND_URL") or FRONTEND_URL).rstrip("/")
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or (
@@ -1805,10 +1810,14 @@ def enc_secret(d: dict) -> str:
 def dec_secret(s: str) -> dict:
     return _json.loads(_fernet().decrypt(s.encode()).decode())
 
-SAFE_CONN_FIELDS = {"_id": 0, "enc": 0, "oauth_state": 0, "code_verifier": 0}
+SENSITIVE_CONN_FIELDS = {
+    "_id", "enc", "oauth_state", "code_verifier", "access_token", "refresh_token",
+    "client_secret", "api_key", "webhook_secret",
+}
+SAFE_CONN_FIELDS = {field: 0 for field in SENSITIVE_CONN_FIELDS}
 
 def _public_conn(c: dict) -> dict:
-    return {k: v for k, v in c.items() if k not in ("_id", "enc", "oauth_state", "code_verifier")}
+    return {k: v for k, v in c.items() if k not in SENSITIVE_CONN_FIELDS}
 
 async def ensure_connections(tenant_id: str):
     for p in PROVIDERS:
@@ -1897,16 +1906,17 @@ async def _google_creds(tenant_id):
         return None
     return dec_secret(doc["enc"]), doc
 
-async def _google_access_token(tenant_id):
+async def _google_access_token(tenant_id, force_refresh=False):
     creds, doc = (await _google_creds(tenant_id)) or (None, None)
     if not creds:
         return None
     exp = creds.get("expires_at", 0)
-    if datetime.now(timezone.utc).timestamp() < exp - 60:
+    if not force_refresh and datetime.now(timezone.utc).timestamp() < exp - 60:
         return creds["access_token"]
-    # refresh
     if not creds.get("refresh_token"):
-        return None
+        raise RuntimeError("token_refresh_failed:missing_refresh_token")
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise RuntimeError("token_refresh_failed:oauth_not_configured")
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.post("https://oauth2.googleapis.com/token", data={
             "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
@@ -1914,8 +1924,13 @@ async def _google_access_token(tenant_id):
     if r.status_code != 200:
         raise RuntimeError(f"token_refresh_failed:{r.status_code}")
     tok = r.json()
+    if not tok.get("access_token"):
+        raise RuntimeError("token_refresh_failed:missing_access_token")
     creds["access_token"] = tok["access_token"]
+    creds["refresh_token"] = tok.get("refresh_token") or creds.get("refresh_token")
     creds["expires_at"] = datetime.now(timezone.utc).timestamp() + tok.get("expires_in", 3600)
+    if tok.get("scope"):
+        creds["scopes"] = tok["scope"].split()
     await db.google_credentials.update_one({"tenant_id": tenant_id},
         {"$set": {"enc": enc_secret(creds), "updated_at": now_iso()}})
     return creds["access_token"]
@@ -1949,18 +1964,36 @@ async def sync_gmail(tenant_id, actor):
     async with httpx.AsyncClient(timeout=25) as client:
         lst = await client.get("https://gmail.googleapis.com/gmail/v1/users/me/messages",
                                params={"maxResults": 25}, headers=headers)
+        if lst.status_code == 401:
+            token = await _google_access_token(tenant_id, force_refresh=True)
+            headers = {"Authorization": f"Bearer {token}"}
+            lst = await client.get("https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                                   params={"maxResults": 25}, headers=headers)
+        if lst.status_code == 401:
+            raise RuntimeError("token_refresh_failed:unauthorized")
         if lst.status_code == 429:
             raise RuntimeError("rate_limited")
         lst.raise_for_status()
-        for m in (lst.json().get("messages") or [])[:25]:
+        messages = (lst.json().get("messages") or [])[:25]
+        for m in messages:
             gm = await client.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}",
                                   params={"format": "metadata", "metadataHeaders": ["From", "To", "Cc", "Subject"]},
                                   headers=headers)
+            if gm.status_code == 401:
+                token = await _google_access_token(tenant_id, force_refresh=True)
+                headers = {"Authorization": f"Bearer {token}"}
+                gm = await client.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}",
+                                      params={"format": "metadata", "metadataHeaders": ["From", "To", "Cc", "Subject"]},
+                                      headers=headers)
+            if gm.status_code == 401:
+                raise RuntimeError("token_refresh_failed:unauthorized")
+            if gm.status_code == 429:
+                raise RuntimeError("rate_limited")
             if gm.status_code != 200:
                 continue
             if await _upsert_comm(tenant_id, normalize_gmail_message(gm.json()), contacts, "gmail"):
                 matched += 1
-    return {"scanned": 25, "matched": matched}
+    return {"scanned": len(messages), "matched": matched}
 
 async def sync_calendar(tenant_id, actor):
     token = await _google_access_token(tenant_id)
@@ -1974,10 +2007,19 @@ async def sync_calendar(tenant_id, actor):
         r = await client.get("https://www.googleapis.com/calendar/v3/calendars/primary/events",
                              params={"timeMin": now, "maxResults": 25, "singleEvents": "true", "orderBy": "startTime"},
                              headers=headers)
+        if r.status_code == 401:
+            token = await _google_access_token(tenant_id, force_refresh=True)
+            headers = {"Authorization": f"Bearer {token}"}
+            r = await client.get("https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                                 params={"timeMin": now, "maxResults": 25, "singleEvents": "true", "orderBy": "startTime"},
+                                 headers=headers)
+        if r.status_code == 401:
+            raise RuntimeError("token_refresh_failed:unauthorized")
         if r.status_code == 429:
             raise RuntimeError("rate_limited")
         r.raise_for_status()
-        for ev in (r.json().get("items") or [])[:25]:
+        events = (r.json().get("items") or [])[:25]
+        for ev in events:
             rec = normalize_calendar_event(ev)
             emails = rec["attendees"] + ([rec["organizer"]] if rec["organizer"] else [])
             mm = [contacts[e] for e in emails if e in contacts]
@@ -1992,7 +2034,7 @@ async def sync_calendar(tenant_id, actor):
                 {"tenant_id": tenant_id, "external_id": rec["external_id"]},
                 {"$set": doc, "$setOnInsert": {"id": new_id("mtg")}}, upsert=True)
             matched += 1
-    return {"scanned": 25, "matched": matched}
+    return {"scanned": len(events), "matched": matched}
 
 async def sync_stripe(tenant_id, actor):
     key = os.environ.get("STRIPE_API_KEY")
@@ -2050,7 +2092,7 @@ async def run_sync(tenant_id, provider, actor):
             if "rate_limited" in last_err:
                 await asyncio.sleep(min(2 ** attempt, 5))
                 continue
-            if "not_connected" in last_err:
+            if "not_connected" in last_err or "token_refresh_failed" in last_err:
                 break
             await asyncio.sleep(min(0.5 * attempt, 2))
     log.update({"status": "failed", "error": last_err, "finished_at": now_iso()})
@@ -2123,10 +2165,16 @@ async def google_callback(state: str = Query(None), code: str = Query(None), err
         ui = await client.get("https://www.googleapis.com/oauth2/v2/userinfo",
                               headers={"Authorization": f"Bearer {tok['access_token']}"})
     email = ui.json().get("email") if ui.status_code == 200 else None
-    creds = {"access_token": tok["access_token"], "refresh_token": tok.get("refresh_token"),
+    ver_doc = await db.google_credentials.find_one({"tenant_id": tenant_id}, {"_id": 0})
+    previous_refresh = None
+    if ver_doc and ver_doc.get("enc"):
+        try:
+            previous_refresh = dec_secret(ver_doc["enc"]).get("refresh_token")
+        except Exception:
+            previous_refresh = None
+    creds = {"access_token": tok["access_token"], "refresh_token": tok.get("refresh_token") or previous_refresh,
              "expires_at": datetime.now(timezone.utc).timestamp() + tok.get("expires_in", 3600),
              "scopes": tok.get("scope", "").split()}
-    ver_doc = await db.google_credentials.find_one({"tenant_id": tenant_id}, {"_id": 0, "credential_version": 1})
     version = ((ver_doc or {}).get("credential_version") or 0) + 1
     await db.google_credentials.update_one({"tenant_id": tenant_id},
         {"$set": {"enc": enc_secret(creds), "account_email": email, "credential_version": version, "updated_at": now_iso()}}, upsert=True)
@@ -2144,17 +2192,251 @@ async def stripe_connect(user=Depends(require_role("admin"))):
     await ensure_connections(user["tenant_id"])
     _stripe.api_key = key
     try:
-        acct = _stripe.Account.retrieve()
+        acct = await asyncio.to_thread(_stripe.Account.retrieve)
         identity = acct.get("email") or acct.get("id")
     except Exception as e:
         await set_conn(user["tenant_id"], "stripe", status="error", last_error=str(e)[:200])
         raise HTTPException(status_code=400, detail="Could not verify Stripe account")
     version = 1
+    key_mode = "test" if key.startswith(("sk_test_", "rk_test_")) else "live" if key.startswith(("sk_live_", "rk_live_")) else "unknown"
     await set_conn(user["tenant_id"], "stripe", status="active", account_identity=identity,
-                   scopes=["read:customers", "read:invoices", "read:subscriptions"], connected_by=user["email"],
-                   connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version)
-    await record_event("integration.connected", "integration", "stripe", user["tenant_id"], user["email"], payload={"account": identity})
-    return {"ok": True, "account": identity}
+                   scopes=["read:customers", "read:invoices", "read:subscriptions", "write:payment_intents"], connected_by=user["email"],
+                   connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version,
+                   key_mode=key_mode)
+    await record_event("integration.connected", "integration", "stripe", user["tenant_id"], user["email"],
+                       payload={"account": identity, "key_mode": key_mode})
+    return {"ok": True, "account": identity, "key_mode": key_mode}
+
+
+class StripePaymentIntentInput(BaseModel):
+    payment_method_id: Optional[str] = None
+
+
+@api.post("/invoices/{invoice_id}/stripe-payment-intent")
+async def create_stripe_payment_intent(
+    invoice_id: str,
+    inp: StripePaymentIntentInput,
+    user=Depends(require_role("admin")),
+):
+    key = os.environ.get("STRIPE_API_KEY")
+    if not key:
+        raise HTTPException(status_code=400, detail="Stripe is not configured (STRIPE_API_KEY).")
+    if not key.startswith(("sk_test_", "rk_test_")):
+        raise HTTPException(status_code=400, detail="This certification endpoint requires a Stripe test-mode key.")
+    invoice = await db.invoices.find_one({"id": invoice_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    amount = int(round(float(invoice.get("total") or 0) * 100))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Invoice total must be greater than zero")
+    _stripe.api_key = key
+    params = {
+        "amount": amount,
+        "currency": (invoice.get("currency") or "usd").lower(),
+        "payment_method_types": ["card"],
+        "metadata": {
+            "clientverse_tenant_id": user["tenant_id"],
+            "clientverse_invoice_id": invoice_id,
+        },
+        "description": f"ClientVerse invoice {invoice_id}",
+    }
+    if inp.payment_method_id:
+        params.update({"payment_method": inp.payment_method_id, "confirm": True})
+    try:
+        intent = await asyncio.to_thread(
+            _stripe.PaymentIntent.create,
+            **params,
+            idempotency_key=f"clientverse:{user['tenant_id']}:{invoice_id}:payment-intent:v1",
+        )
+    except Exception as exc:
+        error_code = getattr(exc, "code", None) or getattr(exc, "decline_code", None) or "payment_failed"
+        await db.invoices.update_one(
+            {"id": invoice_id, "tenant_id": user["tenant_id"]},
+            {"$set": {"payment_status": "failed", "payment_error": str(error_code)[:80], "updated_at": now_iso()}},
+        )
+        await record_event("invoice.payment_failed", "invoice", invoice_id, user["tenant_id"], user["email"],
+                           workspace_id=invoice.get("workspace_id"), payload={"error": str(error_code)[:80]})
+        raise HTTPException(status_code=402, detail="Stripe test payment failed")
+    intent_id = intent.get("id")
+    intent_status = intent.get("status") or "requires_confirmation"
+    payment_status = "paid" if intent_status == "succeeded" else intent_status
+    invoice_status = "paid" if payment_status == "paid" else invoice.get("status", "draft")
+    await db.invoices.update_one(
+        {"id": invoice_id, "tenant_id": user["tenant_id"]},
+        {
+            "$set": {
+                "stripe_payment_intent_id": intent_id,
+                "payment_status": payment_status,
+                "status": invoice_status,
+                "payment_error": None,
+                "updated_at": now_iso(),
+            }
+        },
+    )
+    await record_event(
+        "invoice.payment_intent_created",
+        "invoice",
+        invoice_id,
+        user["tenant_id"],
+        user["email"],
+        workspace_id=invoice.get("workspace_id"),
+        payload={"intent_status": intent_status, "payment_status": payment_status},
+    )
+    return {
+        "ok": True,
+        "payment_intent_id": intent_id,
+        "payment_status": payment_status,
+        "invoice_status": invoice_status,
+        "intent_status": intent_status,
+    }
+
+
+@api.post("/integrations/stripe/webhook")
+async def stripe_webhook(request: Request):
+    secret = os.environ.get("STRIPE_WEBHOOK_SECRET") or STRIPE_WEBHOOK_SECRET
+    if not secret:
+        raise HTTPException(status_code=503, detail="Stripe webhook is not configured")
+    payload = await request.body()
+    signature = request.headers.get("Stripe-Signature")
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe signature")
+    try:
+        event = _stripe.Webhook.construct_event(payload, signature, secret)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid Stripe signature")
+    event_id = event.get("id")
+    event_type = event.get("type")
+    if not event_id or not event_type:
+        raise HTTPException(status_code=400, detail="Malformed Stripe event")
+    obj = ((event.get("data") or {}).get("object") or {})
+    metadata = obj.get("metadata") or {}
+    tenant_id = metadata.get("clientverse_tenant_id")
+    invoice_id = metadata.get("clientverse_invoice_id")
+    claim_token = new_id("stripe_event_claim")
+    claimed_at = now_iso()
+    lease_expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    event_doc = {"event_id": event_id, "event_type": event_type, "tenant_id": tenant_id,
+                 "invoice_id": invoice_id, "object_id": obj.get("id"), "received_at": claimed_at,
+                 "status": "processing", "claim_token": claim_token,
+                 "claimed_at": claimed_at, "lease_expires_at": lease_expires_at}
+    claim_filter = {
+        "event_id": event_id,
+        "$or": [
+            {"status": "failed"},
+            {"status": "processing", "lease_expires_at": {"$lte": claimed_at}},
+        ],
+    }
+    try:
+        claim = await db.stripe_webhook_events.update_one(
+            claim_filter,
+            {
+                "$set": event_doc,
+                "$inc": {"attempt_count": 1},
+                "$unset": {"failed_at": "", "last_error": "", "processed_at": ""},
+            },
+            upsert=True,
+        )
+    except Exception as exc:
+        if getattr(exc, "code", None) == 11000 or "duplicate key" in str(exc).lower():
+            existing_event = await db.stripe_webhook_events.find_one(
+                {"event_id": event_id}, {"_id": 0, "status": 1}
+            )
+            if existing_event and existing_event.get("status") in (None, "completed"):
+                return {"received": True, "duplicate": True, "event_type": event_type}
+            raise HTTPException(status_code=503, detail="Stripe event is already processing")
+        raise
+    if claim.upserted_id is None and claim.modified_count != 1:
+        existing_event = await db.stripe_webhook_events.find_one(
+            {"event_id": event_id}, {"_id": 0, "status": 1}
+        )
+        if existing_event and existing_event.get("status") in (None, "completed"):
+            return {"received": True, "duplicate": True, "event_type": event_type}
+        raise HTTPException(status_code=503, detail="Stripe event is already processing")
+    try:
+        handled = False
+        event_to_record = None
+        if tenant_id and invoice_id and event_type in {
+            "payment_intent.succeeded", "payment_intent.payment_failed", "payment_intent.canceled"
+        }:
+            invoice = await db.invoices.find_one(
+                {"id": invoice_id, "tenant_id": tenant_id},
+                {
+                    "_id": 0,
+                    "stripe_payment_intent_id": 1,
+                    "total": 1,
+                    "currency": 1,
+                    "status": 1,
+                    "payment_status": 1,
+                },
+            )
+            if invoice and not invoice.get("stripe_payment_intent_id"):
+                raise HTTPException(status_code=503, detail="Invoice payment intent is not yet bound")
+            intent_matches = bool(
+                invoice
+                and invoice.get("stripe_payment_intent_id") == obj.get("id")
+            )
+            status_by_type = {
+                "payment_intent.succeeded": "paid",
+                "payment_intent.payment_failed": "failed",
+                "payment_intent.canceled": "canceled",
+            }
+            payment_status = status_by_type[event_type]
+            amount_matches = True
+            currency_matches = True
+            if payment_status == "paid" and intent_matches:
+                expected_amount = int(round(float(invoice.get("total") or 0) * 100))
+                expected_currency = (invoice.get("currency") or "usd").lower()
+                amount_matches = obj.get("amount_received") == expected_amount
+                currency_matches = str(obj.get("currency") or "").lower() == expected_currency
+            update = {"payment_status": payment_status, "stripe_payment_intent_id": obj.get("id"),
+                      "updated_at": now_iso()}
+            if payment_status == "paid":
+                update["status"] = "paid"
+                update["payment_error"] = None
+            elif payment_status == "failed":
+                last_error = obj.get("last_payment_error") or {}
+                update["payment_error"] = str(last_error.get("code") or "payment_failed")[:80]
+            invoice_filter = {
+                "id": invoice_id,
+                "tenant_id": tenant_id,
+                "stripe_payment_intent_id": obj.get("id"),
+            }
+            if payment_status != "paid":
+                invoice_filter["payment_status"] = {"$ne": "paid"}
+                invoice_filter["status"] = {"$ne": "paid"}
+            if intent_matches and amount_matches and currency_matches:
+                result = await db.invoices.update_one(
+                    invoice_filter, {"$set": update}
+                )
+                handled = bool(result.matched_count)
+            if handled:
+                event_to_record = (
+                    f"invoice.{event_type.split('.')[-1]}",
+                    payment_status,
+                )
+        completion = await db.stripe_webhook_events.update_one(
+            {"event_id": event_id, "claim_token": claim_token},
+            {"$set": {"status": "completed", "processed_at": now_iso(), "handled": handled},
+             "$unset": {"failed_at": "", "last_error": "", "lease_expires_at": ""}},
+        )
+        if completion.modified_count != 1:
+            raise HTTPException(status_code=503, detail="Stripe event processing lease was lost")
+        if event_to_record:
+            try:
+                await record_event(event_to_record[0], "invoice", invoice_id, tenant_id,
+                                   "stripe", payload={"payment_status": event_to_record[1]}, source="stripe")
+            except Exception:
+                logger.exception("Stripe invoice state updated but its domain event could not be recorded")
+        return {"received": True, "duplicate": False, "handled": handled, "event_type": event_type}
+    except Exception as exc:
+        await db.stripe_webhook_events.update_one(
+            {"event_id": event_id, "claim_token": claim_token},
+            {"$set": {"status": "failed", "failed_at": now_iso(),
+                      "last_error": type(exc).__name__[:80]},
+             "$unset": {"lease_expires_at": ""}},
+        )
+        raise
+
 
 @api.post("/integrations/{provider}/disconnect")
 async def disconnect_provider(provider: str, user=Depends(require_role("admin"))):

@@ -2,6 +2,28 @@
 
 This is the canonical validation record for the ClientVerse CRM release candidate. It consolidates lifecycle, security, accessibility, performance, browser, provider-readiness, and deployment-path evidence. It intentionally excludes passwords, session tokens, OAuth tokens, client secrets, encryption keys, database credentials, portal tokens, authorization codes, connection strings, and internal record identifiers.
 
+## 2026-08-28 Post-Merge Closeout Addendum
+
+**Certified implementation:** `fb43beb21b21596c5ee7b5110315dfb5d700dc57` on `manus/final-provider-closeout`
+**Baseline on `main`:** `1bd32b3eb7e136f7c98e94611a7b3136bd03a643`
+**CI:** [run 33232865874](https://github.com/ebyron357/Clientverse-crm/actions/runs/33232865874) — backend and frontend jobs **PASS** for the certified implementation commit.
+
+> **Current verdict: NOT CLOSED.** This addendum supersedes any older implication that the next action is merely a merge approval. PR #9 is already merged, while Issue #10 remains open. The current candidate has passing code, build, lint, and CI evidence, but production deployment and credential-backed provider lifecycle evidence remain unavailable.
+
+| Current closeout gate | Result | Current evidence or exact blocker |
+|---|---|---|
+| Provider lifecycle hardening | **PASS** | Google reconnect/401 recovery, re-auth failure classification, response redaction, Stripe test PaymentIntent, signed webhook, retryable event leases, exact intent/value checks, and monotonic paid-state protection are implemented and covered by 22 deterministic tests. |
+| Provider-specific tests | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **22 passed**, 2 upstream multipart warnings. |
+| Full backend CI | **PASS** | CI run 33232865874 passed its backend job; the final local suite reports **127 passed, 4 skipped, 2 warnings**. The skipped cases do not satisfy live-provider certification. |
+| Frontend build and lint | **PASS** | Candidate CI frontend job passed; local `yarn lint` completed with zero warnings. |
+| Accessibility P1 | **PASS — carried forward** | No frontend source changed in the candidate. Prior authenticated axe assessment remains the latest route-level evidence; current static lint passed. |
+| Performance P1 | **PASS — carried forward** | No frontend source changed. Prior isolated Locust evidence remains applicable; current production bundle is 331.89 kB gzipped JavaScript and 14.84 kB gzipped CSS. |
+| Gmail credential-backed certification | **BLOCKED** | No authenticated Google Cloud configuration, deployed callback origin, or approved test-account OAuth consent was available. |
+| Google Calendar credential-backed certification | **BLOCKED** | Same missing Google OAuth and verified public-runtime prerequisites. |
+| Stripe test-mode certification | **BLOCKED** | No authenticated Stripe sandbox, configured test key, webhook signing secret, or real test-event delivery was available. |
+| Production deployment and smoke | **BLOCKED** | GitHub has no deployment records or production environment for this repository; authenticated Render access was unavailable. No production URL, deployed SHA, or production health response exists. |
+| Issue #10 closure | **BLOCKED** | Issue #10 remains open until all credential-backed provider and production acceptance gates pass. |
+
 ## Validation Environment and Scope
 
 Autonomous gates ran against a disposable FastAPI application and local MongoDB database built from the current release-candidate source. The temporary frontend build targeted that API. No sandbox, prototype preview, Atlas project, or Render Blueprint configuration is represented as proof of permanent production deployment.
@@ -86,8 +108,8 @@ The committed `scripts/proof_of_life.mjs` harness also executed successfully aga
 
 | Area | Current result | Scope boundary |
 |---|---|---|
-| Gmail and Calendar code readiness | **READY FOR OWNER CONFIGURATION** | OAuth connect/callback/disconnect/sync and encrypted credential-storage paths are present and focused non-credential tests pass. Live OAuth and provider operations remain unperformed. |
-| Stripe code readiness | **READY FOR OWNER CONFIGURATION** | Configuration-gated connection/sync handling and truthful local `requires_stripe_configuration` outcome are present. Live Stripe actions remain unperformed. |
+| Gmail and Calendar code readiness | **READY FOR OWNER CONFIGURATION** | OAuth connect/callback/disconnect/sync, refresh/re-auth classification, encrypted credential storage, and tenant-scoped deterministic tests are present. Live OAuth and provider operations remain unperformed. |
+| Stripe code readiness | **READY FOR OWNER CONFIGURATION** | Test-mode PaymentIntent creation, signed raw-body webhook verification, atomic duplicate suppression, tenant-scoped invoice updates, and deterministic failure-path tests are present. Live Stripe actions remain unperformed. |
 | Runtime secrets | **SAFE FIRST-DEPLOY PATH** | Render will generate JWT, scheduler, and encryption secrets. The owner must enter only `MONGO_URL`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` for the core CRM deployment. |
 
 ## Remaining Production Evidence Required

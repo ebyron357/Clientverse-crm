@@ -2,6 +2,12 @@
 
 This document separates configuration by audience and risk. Never commit real secret values.
 
+## Current Verification State — 2026-08-25
+
+> **Production deployment: BLOCKED.** No authenticated Render dashboard session, GitHub deployment record, public ClientVerse URL, deployed SHA, database-connectivity result, or production health response was available in this closeout session. Do not infer a production hostname from the Render service name or this runbook.
+
+The current closeout candidate is `7c0786303b511df3bbd80d14c004a2171e27e3e2` on `manus/final-provider-closeout`; its [GitHub CI run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) passed. Before production certification, deploy the approved merged SHA, record its public URL and deployed commit, verify `GET /api/health`, then run `scripts/proof_of_life.mjs` using only host-managed environment variables. Configure Google and Stripe only after the public backend URL is verified.
+
 ## Variable catalog
 
 | Variable | Required? | Side | Purpose | Where to configure | Secret? |
@@ -19,7 +25,8 @@ This document separates configuration by audience and risk. Never commit real se
 | `GOOGLE_CLIENT_ID` | Optional (integrations) | Backend | Google OAuth web client ID | Google Cloud Console | Semi |
 | `GOOGLE_CLIENT_SECRET` | Optional (integrations) | Backend | Google OAuth web client secret | Google Cloud Console | Yes — obtain |
 | `GOOGLE_REDIRECT_URI` | Optional (integrations) | Backend | Must equal `<PUBLIC_BACKEND_URL>/api/integrations/google/callback` | Google Cloud Console + env | No |
-| `STRIPE_API_KEY` | Optional (integrations) | Backend | Stripe read-only/test key | Stripe Dashboard | Yes — obtain |
+| `STRIPE_API_KEY` | Optional (integrations) | Backend | Stripe test-mode account reads and PaymentIntent creation; prefer least-privilege `rk_test_...` | Stripe Dashboard / secret manager | Yes — obtain |
+| `STRIPE_WEBHOOK_SECRET` | Optional (integrations) | Backend | Verifies the raw request body for `POST /api/integrations/stripe/webhook` | Stripe Workbench webhook endpoint / secret manager | Yes — obtain |
 | `EMERGENT_LLM_KEY` | Optional (AI) | Backend | Evidence-backed AI | Emergent profile | Yes — obtain |
 | `EMERGENT_EMAIL_KEY` | Optional (email) | Backend | Digest/email delivery | Emergent integrations | Yes — obtain |
 | `EMAIL_FROM_NAME` | Optional (email) | Backend | From display name | Hosting provider env | No |
@@ -34,14 +41,15 @@ This document separates configuration by audience and risk. Never commit real se
 - Frontend is a static CRA build (`yarn build` → `frontend/build`).
 - Filesystem is ephemeral on most PaaS hosts — use MongoDB/object storage, not local disk.
 - Set `CORS_ORIGINS` to the exact browser origin(s) of the deployed frontend.
-- Confirm `GET /api/health` returns `{"status":"ok","database":"up"}` after deploy.
+- Confirm `GET /api/health` returns a payload containing `"status":"ok"` and `"database":"up"` after deploy.
+- For Stripe certification, use only an `rk_test_...` or `sk_test_...` key and register `<PUBLIC_BACKEND_URL>/api/integrations/stripe/webhook` for `payment_intent.succeeded`, `payment_intent.payment_failed`, and `payment_intent.canceled`; store the resulting `whsec_...` value as `STRIPE_WEBHOOK_SECRET`.
 - Do not ship `ADMIN_PASSWORD` / demo member passwords as long-lived production credentials; rotate after first login.
 - Leave `DEMO_MEMBER_EMAIL` / `DEMO_MEMBER_PASSWORD` **unset** in production. The demo member is seeded only when both are provided, so an unconfigured deployment never gets a well-known member login.
 
 ## What must never be committed
 
 - `.env` files with real values
-- JWT secrets, cron secrets, Fernet keys, OAuth client secrets, Stripe keys, email/LLM keys
+- JWT secrets, cron secrets, Fernet keys, OAuth client secrets, Stripe API/webhook keys, email/LLM keys
 - `node_modules/`, `frontend/build/`, Python caches, MongoDB dumps
 
 ## Going public with this repository

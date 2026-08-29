@@ -6,6 +6,16 @@
 **Code baseline:** `24d81b5241587a550a1bf5a3dac3a92d4a0acbd7`
 **Scope:** Gmail and Google Calendar credential-backed lifecycle certification only. No CRM redesign, feature expansion, merge, or deployment was performed.
 
+## 2026-08-25 Post-Merge Addendum
+
+**Current candidate:** `7c0786303b511df3bbd80d14c004a2171e27e3e2` on `manus/final-provider-closeout`
+**Current CI:** [run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) — **PASS**
+**Current credential-backed result:** **BLOCKED**
+
+The candidate adds deterministic coverage for Google authorization URL construction, PKCE/read-only scope construction, token-refresh persistence, provider HTTP 401 forced-refresh behavior, Calendar tenant-scoped duplicate-event upserts, retry/re-auth classification, shared Google credential deletion only after both provider connections are inactive, and response redaction. The focused provider suite reports **15 passed**. These results are code-level evidence only and do not replace credential-backed Gmail or Calendar certification.
+
+No authenticated Google Cloud Console session, configured production callback origin, approved OAuth client, deployed runtime, least-privilege test account, or provider consent was available in this closeout session. No OAuth authorization was initiated and no credential, authorization code, access token, refresh token, client secret, or encryption key was read, emitted, stored, or committed.
+
 ## Final Task Verdict
 
 > **BLOCKED**
