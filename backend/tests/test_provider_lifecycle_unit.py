@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 from cryptography.fernet import Fernet
+from pymongo.errors import DuplicateKeyError
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -460,8 +461,9 @@ def test_stripe_payment_intent_success_is_test_only_tenant_scoped_and_idempotent
     assert first == second == {
         "ok": True,
         "payment_intent_id": "pi_test_1",
-        "payment_status": "succeeded",
+        "payment_status": "paid",
         "invoice_status": "paid",
+        "intent_status": "succeeded",
     }
     assert len(calls) == 2
     assert calls[0]["amount"] == 12550
@@ -549,11 +551,16 @@ def test_stripe_webhook_rejects_invalid_signature(monkeypatch):
 
 def test_stripe_webhook_is_idempotent_and_tenant_scoped(monkeypatch):
     class WebhookEvents(CaptureCollection):
+        def __init__(self):
+            super().__init__(find_one_results=[{"status": "completed"}])
+
         async def update_one(self, query, update, **kwargs):
             self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
             if len(self.updated) == 1:
                 return SimpleNamespace(matched_count=0, modified_count=0, upserted_id="inserted")
-            return SimpleNamespace(matched_count=1, modified_count=0, upserted_id=None)
+            if len(self.updated) == 3:
+                raise DuplicateKeyError("duplicate key")
+            return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
 
     webhook_events = WebhookEvents()
     invoices = CaptureCollection()
@@ -597,10 +604,161 @@ def test_stripe_webhook_is_idempotent_and_tenant_scoped(monkeypatch):
         "event_type": "payment_intent.succeeded",
     }
     assert len(invoices.updated) == 1
-    assert invoices.updated[0][0] == {"id": "inv_1", "tenant_id": "ten_a"}
+    assert invoices.updated[0][0]["id"] == "inv_1"
+    assert invoices.updated[0][0]["tenant_id"] == "ten_a"
+    assert {"stripe_payment_intent_id": "pi_test_1"} in invoices.updated[0][0]["$or"]
     assert invoices.updated[0][1]["$set"]["payment_status"] == "paid"
     assert recorded[0][0][0] == "invoice.succeeded"
-    assert webhook_events.updated[0][0] == {"event_id": "evt_test_1"}
+    assert webhook_events.updated[0][0]["event_id"] == "evt_test_1"
+    assert webhook_events.updated[1][1]["$set"]["status"] == "completed"
+
+
+def test_stripe_webhook_retries_after_processing_failure(monkeypatch):
+    class WebhookEvents(CaptureCollection):
+        async def update_one(self, query, update, **kwargs):
+            self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
+            if len(self.updated) == 1:
+                return SimpleNamespace(matched_count=0, modified_count=0, upserted_id="inserted")
+            return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+
+    class RetryInvoices(CaptureCollection):
+        async def update_one(self, query, update, **kwargs):
+            self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
+            if len(self.updated) == 1:
+                raise RuntimeError("temporary database failure")
+            return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+
+    webhook_events = WebhookEvents()
+    invoices = RetryInvoices()
+    monkeypatch.setattr(server, "db", SimpleNamespace(
+        stripe_webhook_events=webhook_events,
+        invoices=invoices,
+    ))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
+    event = {
+        "id": "evt_retry_1",
+        "type": "payment_intent.succeeded",
+        "data": {"object": {
+            "id": "pi_retry_1",
+            "metadata": {
+                "clientverse_tenant_id": "ten_a",
+                "clientverse_invoice_id": "inv_1",
+            },
+        }},
+    }
+    monkeypatch.setattr(server._stripe.Webhook, "construct_event", lambda *_args, **_kwargs: deepcopy(event))
+    monkeypatch.setattr(server, "record_event", lambda *_args, **_kwargs: asyncio.sleep(0))
+    request = FakeRequest(b"signed-payload", {"Stripe-Signature": "t=1,v1=valid"})
+
+    try:
+        run(server.stripe_webhook(request))
+        raise AssertionError("expected transient processing failure")
+    except RuntimeError as exc:
+        assert str(exc) == "temporary database failure"
+
+    retry = run(server.stripe_webhook(request))
+
+    assert retry == {
+        "received": True,
+        "duplicate": False,
+        "handled": True,
+        "event_type": "payment_intent.succeeded",
+    }
+    assert webhook_events.updated[1][1]["$set"]["status"] == "failed"
+    assert webhook_events.updated[2][0]["event_id"] == "evt_retry_1"
+    assert {"status": "failed"} in webhook_events.updated[2][0]["$or"]
+    assert webhook_events.updated[-1][1]["$set"]["status"] == "completed"
+
+
+def test_stripe_webhook_legacy_marker_remains_duplicate(monkeypatch):
+    class WebhookEvents(CaptureCollection):
+        async def update_one(self, query, update, **kwargs):
+            self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
+            raise DuplicateKeyError("duplicate key")
+
+    webhook_events = WebhookEvents(find_one_results=[{
+        "event_id": "evt_legacy_1",
+    }])
+    monkeypatch.setattr(server, "db", SimpleNamespace(stripe_webhook_events=webhook_events))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
+    event = {
+        "id": "evt_legacy_1",
+        "type": "payment_intent.succeeded",
+        "data": {"object": {"id": "pi_test_1", "metadata": {}}},
+    }
+    monkeypatch.setattr(server._stripe.Webhook, "construct_event", lambda *_args, **_kwargs: deepcopy(event))
+    request = FakeRequest(b"signed-payload", {"Stripe-Signature": "t=1,v1=valid"})
+
+    result = run(server.stripe_webhook(request))
+
+    assert result == {
+        "received": True,
+        "duplicate": True,
+        "event_type": "payment_intent.succeeded",
+    }
+
+
+def test_stripe_webhook_active_processing_is_retryable(monkeypatch):
+    class WebhookEvents(CaptureCollection):
+        async def update_one(self, query, update, **kwargs):
+            self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
+            raise DuplicateKeyError("duplicate key")
+
+    webhook_events = WebhookEvents(find_one_results=[{
+        "status": "processing",
+    }])
+    monkeypatch.setattr(server, "db", SimpleNamespace(stripe_webhook_events=webhook_events))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
+    event = {
+        "id": "evt_processing_1",
+        "type": "payment_intent.succeeded",
+        "data": {"object": {"id": "pi_test_1", "metadata": {}}},
+    }
+    monkeypatch.setattr(server._stripe.Webhook, "construct_event", lambda *_args, **_kwargs: deepcopy(event))
+    request = FakeRequest(b"signed-payload", {"Stripe-Signature": "t=1,v1=valid"})
+
+    try:
+        run(server.stripe_webhook(request))
+        raise AssertionError("expected retryable processing response")
+    except server.HTTPException as exc:
+        assert exc.status_code == 503
+        assert exc.detail == "Stripe event is already processing"
+
+
+def test_stripe_webhook_failure_cannot_downgrade_legacy_paid_invoice(monkeypatch):
+    class WebhookEvents(CaptureCollection):
+        async def update_one(self, query, update, **kwargs):
+            self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
+            if len(self.updated) == 1:
+                return SimpleNamespace(matched_count=0, modified_count=0, upserted_id="inserted")
+            return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+
+    webhook_events = WebhookEvents()
+    invoices = CaptureCollection()
+    monkeypatch.setattr(server, "db", SimpleNamespace(
+        stripe_webhook_events=webhook_events,
+        invoices=invoices,
+    ))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
+    event = {
+        "id": "evt_failed_late_1",
+        "type": "payment_intent.payment_failed",
+        "data": {"object": {
+            "id": "pi_test_1",
+            "metadata": {
+                "clientverse_tenant_id": "ten_a",
+                "clientverse_invoice_id": "inv_1",
+            },
+        }},
+    }
+    monkeypatch.setattr(server._stripe.Webhook, "construct_event", lambda *_args, **_kwargs: deepcopy(event))
+    monkeypatch.setattr(server, "record_event", lambda *_args, **_kwargs: asyncio.sleep(0))
+    request = FakeRequest(b"signed-payload", {"Stripe-Signature": "t=1,v1=valid"})
+
+    run(server.stripe_webhook(request))
+
+    assert invoices.updated[0][0]["payment_status"] == {"$ne": "paid"}
+    assert invoices.updated[0][0]["status"] == {"$ne": "paid"}
 
 
 def test_public_connection_redacts_all_credential_material():

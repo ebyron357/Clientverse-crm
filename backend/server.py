@@ -106,9 +106,12 @@ async def lifespan(_: FastAPI):
         await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
         await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
         await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.stripe_webhook_events.create_index("event_id", unique=True)
     except Exception:
-        pass
+        logger.exception("Failed to create a non-critical application index")
+    try:
+        await db.stripe_webhook_events.create_index("event_id", unique=True)
+    except Exception as exc:
+        raise RuntimeError("Stripe webhook event uniqueness index is unavailable") from exc
     try:
         yield
     finally:
@@ -2306,44 +2309,109 @@ async def stripe_webhook(request: Request):
     metadata = obj.get("metadata") or {}
     tenant_id = metadata.get("clientverse_tenant_id")
     invoice_id = metadata.get("clientverse_invoice_id")
+    claim_token = new_id("stripe_event_claim")
+    claimed_at = now_iso()
+    lease_expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     event_doc = {"event_id": event_id, "event_type": event_type, "tenant_id": tenant_id,
-                 "invoice_id": invoice_id, "object_id": obj.get("id"), "received_at": now_iso()}
+                 "invoice_id": invoice_id, "object_id": obj.get("id"), "received_at": claimed_at,
+                 "status": "processing", "claim_token": claim_token,
+                 "claimed_at": claimed_at, "lease_expires_at": lease_expires_at}
+    claim_filter = {
+        "event_id": event_id,
+        "$or": [
+            {"status": "failed"},
+            {"status": "processing", "lease_expires_at": {"$lte": claimed_at}},
+        ],
+    }
     try:
-        event_write = await db.stripe_webhook_events.update_one(
-            {"event_id": event_id}, {"$setOnInsert": event_doc}, upsert=True
+        claim = await db.stripe_webhook_events.update_one(
+            claim_filter,
+            {
+                "$set": event_doc,
+                "$inc": {"attempt_count": 1},
+                "$unset": {"failed_at": "", "last_error": "", "processed_at": ""},
+            },
+            upsert=True,
         )
     except Exception as exc:
         if getattr(exc, "code", None) == 11000 or "duplicate key" in str(exc).lower():
-            return {"received": True, "duplicate": True, "event_type": event_type}
+            existing_event = await db.stripe_webhook_events.find_one(
+                {"event_id": event_id}, {"_id": 0, "status": 1}
+            )
+            if existing_event and existing_event.get("status") in (None, "completed"):
+                return {"received": True, "duplicate": True, "event_type": event_type}
+            raise HTTPException(status_code=503, detail="Stripe event is already processing")
         raise
-    if event_write.upserted_id is None:
-        return {"received": True, "duplicate": True, "event_type": event_type}
-    handled = False
-    if tenant_id and invoice_id and event_type in {
-        "payment_intent.succeeded", "payment_intent.payment_failed", "payment_intent.canceled"
-    }:
-        status_by_type = {
-            "payment_intent.succeeded": "paid",
-            "payment_intent.payment_failed": "failed",
-            "payment_intent.canceled": "canceled",
-        }
-        payment_status = status_by_type[event_type]
-        update = {"payment_status": payment_status, "stripe_payment_intent_id": obj.get("id"),
-                  "updated_at": now_iso()}
-        if payment_status == "paid":
-            update["status"] = "paid"
-            update["payment_error"] = None
-        elif payment_status == "failed":
-            last_error = obj.get("last_payment_error") or {}
-            update["payment_error"] = str(last_error.get("code") or "payment_failed")[:80]
-        result = await db.invoices.update_one(
-            {"id": invoice_id, "tenant_id": tenant_id}, {"$set": update}
+    if claim.upserted_id is None and claim.modified_count != 1:
+        existing_event = await db.stripe_webhook_events.find_one(
+            {"event_id": event_id}, {"_id": 0, "status": 1}
         )
-        handled = bool(result.matched_count)
-        if handled:
-            await record_event(f"invoice.{event_type.split('.')[-1]}", "invoice", invoice_id, tenant_id,
-                               "stripe", payload={"payment_status": payment_status}, source="stripe")
-    return {"received": True, "duplicate": False, "handled": handled, "event_type": event_type}
+        if existing_event and existing_event.get("status") in (None, "completed"):
+            return {"received": True, "duplicate": True, "event_type": event_type}
+        raise HTTPException(status_code=503, detail="Stripe event is already processing")
+    try:
+        handled = False
+        event_to_record = None
+        if tenant_id and invoice_id and event_type in {
+            "payment_intent.succeeded", "payment_intent.payment_failed", "payment_intent.canceled"
+        }:
+            status_by_type = {
+                "payment_intent.succeeded": "paid",
+                "payment_intent.payment_failed": "failed",
+                "payment_intent.canceled": "canceled",
+            }
+            payment_status = status_by_type[event_type]
+            update = {"payment_status": payment_status, "stripe_payment_intent_id": obj.get("id"),
+                      "updated_at": now_iso()}
+            if payment_status == "paid":
+                update["status"] = "paid"
+                update["payment_error"] = None
+            elif payment_status == "failed":
+                last_error = obj.get("last_payment_error") or {}
+                update["payment_error"] = str(last_error.get("code") or "payment_failed")[:80]
+            invoice_filter = {
+                "id": invoice_id,
+                "tenant_id": tenant_id,
+                "$or": [
+                    {"stripe_payment_intent_id": obj.get("id")},
+                    {"stripe_payment_intent_id": {"$exists": False}},
+                    {"stripe_payment_intent_id": None},
+                ],
+            }
+            if payment_status != "paid":
+                invoice_filter["payment_status"] = {"$ne": "paid"}
+                invoice_filter["status"] = {"$ne": "paid"}
+            result = await db.invoices.update_one(
+                invoice_filter, {"$set": update}
+            )
+            handled = bool(result.matched_count)
+            if handled:
+                event_to_record = (
+                    f"invoice.{event_type.split('.')[-1]}",
+                    payment_status,
+                )
+        completion = await db.stripe_webhook_events.update_one(
+            {"event_id": event_id, "claim_token": claim_token},
+            {"$set": {"status": "completed", "processed_at": now_iso(), "handled": handled},
+             "$unset": {"failed_at": "", "last_error": "", "lease_expires_at": ""}},
+        )
+        if completion.modified_count != 1:
+            raise HTTPException(status_code=503, detail="Stripe event processing lease was lost")
+        if event_to_record:
+            try:
+                await record_event(event_to_record[0], "invoice", invoice_id, tenant_id,
+                                   "stripe", payload={"payment_status": event_to_record[1]}, source="stripe")
+            except Exception:
+                logger.exception("Stripe invoice state updated but its domain event could not be recorded")
+        return {"received": True, "duplicate": False, "handled": handled, "event_type": event_type}
+    except Exception as exc:
+        await db.stripe_webhook_events.update_one(
+            {"event_id": event_id, "claim_token": claim_token},
+            {"$set": {"status": "failed", "failed_at": now_iso(),
+                      "last_error": type(exc).__name__[:80]},
+             "$unset": {"lease_expires_at": ""}},
+        )
+        raise
 
 
 @api.post("/integrations/{provider}/disconnect")
