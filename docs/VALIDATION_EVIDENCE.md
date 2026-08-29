@@ -4,18 +4,17 @@ This is the canonical validation record for the ClientVerse CRM release candidat
 
 ## 2026-08-28 Post-Merge Closeout Addendum
 
-**Certified implementation:** `538d2eb14d4956cc0a10e56975eeb392dfe3888e` on `manus/final-provider-closeout`
-**Evidence-record PR head at capture:** `b02ffde96a747c718d282ff44d2030cc76a8815e`
+**Certified implementation:** `fb43beb21b21596c5ee7b5110315dfb5d700dc57` on `manus/final-provider-closeout`
 **Baseline on `main`:** `1bd32b3eb7e136f7c98e94611a7b3136bd03a643`
-**CI:** [run 33232056507](https://github.com/ebyron357/Clientverse-crm/actions/runs/33232056507) — backend and frontend jobs **PASS** for the evidence-record PR head containing the certified implementation.
+**CI:** [run 33232865874](https://github.com/ebyron357/Clientverse-crm/actions/runs/33232865874) — backend and frontend jobs **PASS** for the certified implementation commit.
 
 > **Current verdict: NOT CLOSED.** This addendum supersedes any older implication that the next action is merely a merge approval. PR #9 is already merged, while Issue #10 remains open. The current candidate has passing code, build, lint, and CI evidence, but production deployment and credential-backed provider lifecycle evidence remain unavailable.
 
 | Current closeout gate | Result | Current evidence or exact blocker |
 |---|---|---|
-| Provider lifecycle hardening | **PASS** | Google reconnect/401 recovery, re-auth failure classification, response redaction, Stripe test PaymentIntent, signed webhook, retryable event leases, identity checks, and monotonic paid-state protection are implemented and covered by 19 deterministic tests. |
-| Provider-specific tests | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **19 passed**, 2 upstream multipart warnings. |
-| Full backend CI | **PASS** | CI run 33232056507 passed its backend job; the final local suite reports **124 passed, 4 skipped, 2 warnings**. The skipped cases do not satisfy live-provider certification. |
+| Provider lifecycle hardening | **PASS** | Google reconnect/401 recovery, re-auth failure classification, response redaction, Stripe test PaymentIntent, signed webhook, retryable event leases, exact intent/value checks, and monotonic paid-state protection are implemented and covered by 22 deterministic tests. |
+| Provider-specific tests | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **22 passed**, 2 upstream multipart warnings. |
+| Full backend CI | **PASS** | CI run 33232865874 passed its backend job; the final local suite reports **127 passed, 4 skipped, 2 warnings**. The skipped cases do not satisfy live-provider certification. |
 | Frontend build and lint | **PASS** | Candidate CI frontend job passed; local `yarn lint` completed with zero warnings. |
 | Accessibility P1 | **PASS — carried forward** | No frontend source changed in the candidate. Prior authenticated axe assessment remains the latest route-level evidence; current static lint passed. |
 | Performance P1 | **PASS — carried forward** | No frontend source changed. Prior isolated Locust evidence remains applicable; current production bundle is 331.89 kB gzipped JavaScript and 14.84 kB gzipped CSS. |

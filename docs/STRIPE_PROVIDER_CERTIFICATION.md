@@ -1,9 +1,8 @@
 # ClientVerse CRM — Stripe Test-Mode Certification
 
 **Certification timestamp:** 2026-08-28 EDT
-**Certified implementation:** `538d2eb14d4956cc0a10e56975eeb392dfe3888e`
-**Evidence-record PR head at capture:** `b02ffde96a747c718d282ff44d2030cc76a8815e`
-**CI:** [run 33232056507](https://github.com/ebyron357/Clientverse-crm/actions/runs/33232056507) — backend and frontend jobs **PASS**
+**Certified implementation:** `fb43beb21b21596c5ee7b5110315dfb5d700dc57`
+**CI:** [run 33232865874](https://github.com/ebyron357/Clientverse-crm/actions/runs/33232865874) — backend and frontend jobs **PASS**
 **Credential-backed certification result:** **BLOCKED**
 
 > This record distinguishes implemented and deterministic behavior from Stripe sandbox evidence. It does not claim that any Stripe account, key, webhook endpoint, test event, payment, customer, invoice, card, or secret was accessed in this closeout.
@@ -34,7 +33,7 @@ The webhook endpoint is `POST /api/integrations/stripe/webhook`. It verifies Str
 | Real webhook delivery and retry | **BLOCKED** | No public production URL, endpoint registration, or webhook signing secret was configured. |
 | Disconnect and invalid configured credential | **BLOCKED** | No credential-backed Stripe connection exists to exercise safely. |
 
-The shared deterministic provider suite reports **19 passed, 2 upstream warnings**. The final local full backend suite reports **124 passed, 4 skipped, 2 upstream warnings**, and GitHub Actions run 33232056507 passed both backend and frontend jobs on evidence-record head `b02ffde96a747c718d282ff44d2030cc76a8815e`, whose runtime implementation is `538d2eb14d4956cc0a10e56975eeb392dfe3888e`. Neither result is substituted for a real Stripe sandbox lifecycle.
+The shared deterministic provider suite reports **22 passed, 2 upstream warnings**. The final local full backend suite reports **127 passed, 4 skipped, 2 upstream warnings**, and GitHub Actions run 33232865874 passed both backend and frontend jobs on implementation commit `fb43beb21b21596c5ee7b5110315dfb5d700dc57`. Neither result is substituted for a real Stripe sandbox lifecycle.
 
 ## Exact Owner Setup Required
 
