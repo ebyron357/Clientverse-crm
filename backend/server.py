@@ -2355,12 +2355,36 @@ async def stripe_webhook(request: Request):
         if tenant_id and invoice_id and event_type in {
             "payment_intent.succeeded", "payment_intent.payment_failed", "payment_intent.canceled"
         }:
+            invoice = await db.invoices.find_one(
+                {"id": invoice_id, "tenant_id": tenant_id},
+                {
+                    "_id": 0,
+                    "stripe_payment_intent_id": 1,
+                    "total": 1,
+                    "currency": 1,
+                    "status": 1,
+                    "payment_status": 1,
+                },
+            )
+            if invoice and not invoice.get("stripe_payment_intent_id"):
+                raise HTTPException(status_code=503, detail="Invoice payment intent is not yet bound")
+            intent_matches = bool(
+                invoice
+                and invoice.get("stripe_payment_intent_id") == obj.get("id")
+            )
             status_by_type = {
                 "payment_intent.succeeded": "paid",
                 "payment_intent.payment_failed": "failed",
                 "payment_intent.canceled": "canceled",
             }
             payment_status = status_by_type[event_type]
+            amount_matches = True
+            currency_matches = True
+            if payment_status == "paid" and intent_matches:
+                expected_amount = int(round(float(invoice.get("total") or 0) * 100))
+                expected_currency = (invoice.get("currency") or "usd").lower()
+                amount_matches = obj.get("amount_received") == expected_amount
+                currency_matches = str(obj.get("currency") or "").lower() == expected_currency
             update = {"payment_status": payment_status, "stripe_payment_intent_id": obj.get("id"),
                       "updated_at": now_iso()}
             if payment_status == "paid":
@@ -2372,19 +2396,16 @@ async def stripe_webhook(request: Request):
             invoice_filter = {
                 "id": invoice_id,
                 "tenant_id": tenant_id,
-                "$or": [
-                    {"stripe_payment_intent_id": obj.get("id")},
-                    {"stripe_payment_intent_id": {"$exists": False}},
-                    {"stripe_payment_intent_id": None},
-                ],
+                "stripe_payment_intent_id": obj.get("id"),
             }
             if payment_status != "paid":
                 invoice_filter["payment_status"] = {"$ne": "paid"}
                 invoice_filter["status"] = {"$ne": "paid"}
-            result = await db.invoices.update_one(
-                invoice_filter, {"$set": update}
-            )
-            handled = bool(result.matched_count)
+            if intent_matches and amount_matches and currency_matches:
+                result = await db.invoices.update_one(
+                    invoice_filter, {"$set": update}
+                )
+                handled = bool(result.matched_count)
             if handled:
                 event_to_record = (
                     f"invoice.{event_type.split('.')[-1]}",

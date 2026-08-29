@@ -563,7 +563,11 @@ def test_stripe_webhook_is_idempotent_and_tenant_scoped(monkeypatch):
             return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
 
     webhook_events = WebhookEvents()
-    invoices = CaptureCollection()
+    invoices = CaptureCollection(find_one_results=[{
+        "stripe_payment_intent_id": "pi_test_1",
+        "total": 125.5,
+        "currency": "USD",
+    }])
     monkeypatch.setattr(server, "db", SimpleNamespace(
         stripe_webhook_events=webhook_events,
         invoices=invoices,
@@ -574,6 +578,8 @@ def test_stripe_webhook_is_idempotent_and_tenant_scoped(monkeypatch):
         "type": "payment_intent.succeeded",
         "data": {"object": {
             "id": "pi_test_1",
+            "amount_received": 12550,
+            "currency": "usd",
             "metadata": {
                 "clientverse_tenant_id": "ten_a",
                 "clientverse_invoice_id": "inv_1",
@@ -606,7 +612,7 @@ def test_stripe_webhook_is_idempotent_and_tenant_scoped(monkeypatch):
     assert len(invoices.updated) == 1
     assert invoices.updated[0][0]["id"] == "inv_1"
     assert invoices.updated[0][0]["tenant_id"] == "ten_a"
-    assert {"stripe_payment_intent_id": "pi_test_1"} in invoices.updated[0][0]["$or"]
+    assert invoices.updated[0][0]["stripe_payment_intent_id"] == "pi_test_1"
     assert invoices.updated[0][1]["$set"]["payment_status"] == "paid"
     assert recorded[0][0][0] == "invoice.succeeded"
     assert webhook_events.updated[0][0]["event_id"] == "evt_test_1"
@@ -622,6 +628,20 @@ def test_stripe_webhook_retries_after_processing_failure(monkeypatch):
             return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
 
     class RetryInvoices(CaptureCollection):
+        def __init__(self):
+            super().__init__(find_one_results=[
+                {
+                    "stripe_payment_intent_id": "pi_retry_1",
+                    "total": 125.5,
+                    "currency": "usd",
+                },
+                {
+                    "stripe_payment_intent_id": "pi_retry_1",
+                    "total": 125.5,
+                    "currency": "usd",
+                },
+            ])
+
         async def update_one(self, query, update, **kwargs):
             self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
             if len(self.updated) == 1:
@@ -640,6 +660,8 @@ def test_stripe_webhook_retries_after_processing_failure(monkeypatch):
         "type": "payment_intent.succeeded",
         "data": {"object": {
             "id": "pi_retry_1",
+            "amount_received": 12550,
+            "currency": "usd",
             "metadata": {
                 "clientverse_tenant_id": "ten_a",
                 "clientverse_invoice_id": "inv_1",
@@ -734,7 +756,12 @@ def test_stripe_webhook_failure_cannot_downgrade_legacy_paid_invoice(monkeypatch
             return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
 
     webhook_events = WebhookEvents()
-    invoices = CaptureCollection()
+    invoices = CaptureCollection(find_one_results=[{
+        "stripe_payment_intent_id": "pi_test_1",
+        "status": "paid",
+        "total": 125.5,
+        "currency": "usd",
+    }])
     monkeypatch.setattr(server, "db", SimpleNamespace(
         stripe_webhook_events=webhook_events,
         invoices=invoices,
@@ -759,6 +786,114 @@ def test_stripe_webhook_failure_cannot_downgrade_legacy_paid_invoice(monkeypatch
 
     assert invoices.updated[0][0]["payment_status"] == {"$ne": "paid"}
     assert invoices.updated[0][0]["status"] == {"$ne": "paid"}
+
+
+def test_stripe_webhook_unbound_invoice_requests_retry(monkeypatch):
+    webhook_events = CaptureCollection()
+    invoices = CaptureCollection(find_one_results=[{
+        "stripe_payment_intent_id": None,
+        "total": 125.5,
+        "currency": "usd",
+    }])
+    monkeypatch.setattr(server, "db", SimpleNamespace(
+        stripe_webhook_events=webhook_events,
+        invoices=invoices,
+    ))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
+    event = {
+        "id": "evt_unbound_1",
+        "type": "payment_intent.succeeded",
+        "data": {"object": {
+            "id": "pi_unbound_1",
+            "amount_received": 12550,
+            "currency": "usd",
+            "metadata": {
+                "clientverse_tenant_id": "ten_a",
+                "clientverse_invoice_id": "inv_1",
+            },
+        }},
+    }
+    monkeypatch.setattr(server._stripe.Webhook, "construct_event", lambda *_args, **_kwargs: deepcopy(event))
+    request = FakeRequest(b"signed-payload", {"Stripe-Signature": "t=1,v1=valid"})
+
+    try:
+        run(server.stripe_webhook(request))
+        raise AssertionError("expected retry while invoice is unbound")
+    except server.HTTPException as exc:
+        assert exc.status_code == 503
+        assert exc.detail == "Invoice payment intent is not yet bound"
+
+    assert invoices.updated == []
+    assert webhook_events.updated[-1][1]["$set"]["status"] == "failed"
+
+
+def test_stripe_webhook_mismatched_intent_is_unhandled(monkeypatch):
+    webhook_events = CaptureCollection()
+    invoices = CaptureCollection(find_one_results=[{
+        "stripe_payment_intent_id": "pi_expected",
+        "total": 125.5,
+        "currency": "usd",
+    }])
+    monkeypatch.setattr(server, "db", SimpleNamespace(
+        stripe_webhook_events=webhook_events,
+        invoices=invoices,
+    ))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
+    event = {
+        "id": "evt_mismatch_1",
+        "type": "payment_intent.succeeded",
+        "data": {"object": {
+            "id": "pi_unrelated",
+            "amount_received": 12550,
+            "currency": "usd",
+            "metadata": {
+                "clientverse_tenant_id": "ten_a",
+                "clientverse_invoice_id": "inv_1",
+            },
+        }},
+    }
+    monkeypatch.setattr(server._stripe.Webhook, "construct_event", lambda *_args, **_kwargs: deepcopy(event))
+    request = FakeRequest(b"signed-payload", {"Stripe-Signature": "t=1,v1=valid"})
+
+    result = run(server.stripe_webhook(request))
+
+    assert result["handled"] is False
+    assert invoices.updated == []
+
+
+def test_stripe_webhook_succeeded_amount_and_currency_must_match(monkeypatch):
+    for amount_received, currency in ((12549, "usd"), (12550, "eur")):
+        webhook_events = CaptureCollection()
+        invoices = CaptureCollection(find_one_results=[{
+            "stripe_payment_intent_id": "pi_test_1",
+            "total": 125.5,
+            "currency": "usd",
+        }])
+        monkeypatch.setattr(server, "db", SimpleNamespace(
+            stripe_webhook_events=webhook_events,
+            invoices=invoices,
+        ))
+        monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
+        event = {
+            "id": f"evt_value_{amount_received}_{currency}",
+            "type": "payment_intent.succeeded",
+            "data": {"object": {
+                "id": "pi_test_1",
+                "amount_received": amount_received,
+                "currency": currency,
+                "metadata": {
+                    "clientverse_tenant_id": "ten_a",
+                    "clientverse_invoice_id": "inv_1",
+                },
+            }},
+        }
+        monkeypatch.setattr(server._stripe.Webhook, "construct_event", lambda *_args, **_kwargs: deepcopy(event))
+        request = FakeRequest(b"signed-payload", {"Stripe-Signature": "t=1,v1=valid"})
+
+        result = run(server.stripe_webhook(request))
+
+        assert result["handled"] is False
+        assert invoices.updated == []
 
 
 def test_public_connection_redacts_all_credential_material():
