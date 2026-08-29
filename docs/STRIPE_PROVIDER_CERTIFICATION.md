@@ -1,8 +1,8 @@
 # ClientVerse CRM — Stripe Test-Mode Certification
 
-**Certification timestamp:** 2026-08-25 EDT
-**Current candidate:** `7c0786303b511df3bbd80d14c004a2171e27e3e2`
-**CI:** [run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) — **PASS**
+**Certification timestamp:** 2026-08-28 EDT
+**Current candidate:** `538d2eb14d4956cc0a10e56975eeb392dfe3888e`
+**CI:** [run 33231588528](https://github.com/ebyron357/Clientverse-crm/actions/runs/33231588528) — **PASS**
 **Credential-backed certification result:** **BLOCKED**
 
 > This record distinguishes implemented and deterministic behavior from Stripe sandbox evidence. It does not claim that any Stripe account, key, webhook endpoint, test event, payment, customer, invoice, card, or secret was accessed in this closeout.
@@ -11,7 +11,7 @@
 
 The backend recognizes `STRIPE_API_KEY` and `STRIPE_WEBHOOK_SECRET`. The administrative connection check records the provider key mode without returning a key. The certification payment endpoint rejects live-mode credentials, requires a tenant-owned local invoice with a positive amount, creates a test-mode PaymentIntent with tenant and invoice metadata, uses a stable idempotency key, and stores only sanitized payment state.
 
-The webhook endpoint is `POST /api/integrations/stripe/webhook`. It verifies Stripe’s signature against the raw request body before any event handling, writes an idempotency marker through a unique `event_id` index, and only updates an invoice where both the tenant ID and invoice ID match Stripe metadata. Supported payment events are `payment_intent.succeeded`, `payment_intent.payment_failed`, and `payment_intent.canceled`. [1] [2]
+The webhook endpoint is `POST /api/integrations/stripe/webhook`. It verifies Stripe’s signature against the raw request body before any event handling, requires a unique `event_id` index, and atomically claims events through retryable processing leases. Failed or stale claims can be retried; completed and legacy terminal markers remain duplicates. Invoice updates require matching tenant, invoice, and PaymentIntent identity, and late failure/cancellation events cannot downgrade paid invoices. Supported payment events are `payment_intent.succeeded`, `payment_intent.payment_failed`, and `payment_intent.canceled`. [1] [2]
 
 ## Deterministic Evidence
 
@@ -23,6 +23,8 @@ The webhook endpoint is `POST /api/integrations/stripe/webhook`. It verifies Str
 | Signed webhook verification | **PASS — deterministic scope** | An invalid Stripe signature returns HTTP 400 before persistence. |
 | Webhook success handling | **PASS — deterministic scope** | A signed `payment_intent.succeeded` event updates only the matching tenant invoice. |
 | Duplicate webhook behavior | **PASS — deterministic scope** | A second event with the same event ID returns `duplicate: true` and does not repeat the invoice update. |
+| Webhook retry recovery | **PASS — deterministic scope** | Failed processing can be reclaimed; active processing returns a retryable response; completion requires the current claim token. |
+| Event ordering and identity | **PASS — deterministic scope** | Non-success events cannot downgrade paid invoices, and updates require the expected PaymentIntent identity. |
 | Tenant isolation | **PASS — deterministic scope** | Webhook invoice update query includes both `id` and `tenant_id`; payment metadata carries the tenant ID. |
 | Secret redaction | **PASS — code/test scope** | Public provider connection responses exclude API keys, webhook secrets, OAuth material, and raw token fields. |
 | Retry/failure behavior | **PASS — deterministic scope** | Sync retry and bounded error-state logic are covered by the shared provider lifecycle suite. |
@@ -31,7 +33,7 @@ The webhook endpoint is `POST /api/integrations/stripe/webhook`. It verifies Str
 | Real webhook delivery and retry | **BLOCKED** | No public production URL, endpoint registration, or webhook signing secret was configured. |
 | Disconnect and invalid configured credential | **BLOCKED** | No credential-backed Stripe connection exists to exercise safely. |
 
-The shared deterministic provider suite reports **15 passed**. The full GitHub Actions backend suite reports **137 passed, 4 skipped, 2 warnings** for this candidate. Neither count is substituted for a real Stripe sandbox lifecycle.
+The shared deterministic provider suite reports **19 passed, 1 upstream warning**. The final local full backend suite reports **124 passed, 4 skipped, 2 upstream warnings**, and GitHub Actions run 33231588528 passed both backend and frontend jobs for this exact candidate. Neither result is substituted for a real Stripe sandbox lifecycle.
 
 ## Exact Owner Setup Required
 

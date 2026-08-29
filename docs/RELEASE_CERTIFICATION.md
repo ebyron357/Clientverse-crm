@@ -1,11 +1,11 @@
 # ClientVerse CRM — Final Closeout Certification
 
-**Certification timestamp:** 2026-08-25 EDT
+**Certification timestamp:** 2026-08-28 EDT
 **Repository:** [ebyron357/Clientverse-crm](https://github.com/ebyron357/Clientverse-crm)
 **Merged baseline:** `main` at `1bd32b3eb7e136f7c98e94611a7b3136bd03a643`
-**Current closeout candidate:** `7c0786303b511df3bbd80d14c004a2171e27e3e2` on `manus/final-provider-closeout`
+**Current closeout candidate:** `538d2eb14d4956cc0a10e56975eeb392dfe3888e` on `manus/final-provider-closeout`
 **Candidate pull request:** [#12 — Final provider closeout hardening](https://github.com/ebyron357/Clientverse-crm/pull/12)
-**Candidate CI:** [run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) — **PASS**
+**Candidate CI:** [run 33231588528](https://github.com/ebyron357/Clientverse-crm/actions/runs/33231588528) — **PASS**
 **Historical product pull request:** [#9](https://github.com/ebyron357/Clientverse-crm/pull/9) — **MERGED** at `1bd32b3eb7e136f7c98e94611a7b3136bd03a643` on 2026-08-25T14:49:46Z
 **Provider closeout record:** [Issue #10](https://github.com/ebyron357/Clientverse-crm/issues/10) — **OPEN**
 
@@ -18,12 +18,12 @@
 | Release gate | Result | Exact evidence or blocker |
 |---|---|---|
 | PR #9 merged baseline | **PASS** | PR #9 is merged at `1bd32b3eb7e136f7c98e94611a7b3136bd03a643`. |
-| Provider closeout hardening | **PASS** | Candidate `7c0786303b511df3bbd80d14c004a2171e27e3e2` adds deterministic Google/Stripe lifecycle hardening and tests. |
-| Provider-specific backend tests | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **15 passed**, 2 upstream multipart warnings. |
-| Full backend suite | **PASS** | GitHub Actions run 32874240684: **137 passed, 4 skipped, 2 warnings**. The skipped cases are not treated as provider certification. |
-| Frontend production build | **PASS** | GitHub Actions run 32874240684 frontend job passed with `CI=true`; local production build also passed. |
+| Provider closeout hardening | **PASS** | Candidate `538d2eb14d4956cc0a10e56975eeb392dfe3888e` adds deterministic Google/Stripe lifecycle hardening and tests. |
+| Provider-specific backend tests | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **19 passed**, 1 upstream multipart warning. |
+| Full backend suite | **PASS** | Final local run: **124 passed, 4 skipped, 2 warnings**; GitHub Actions run 33231588528 backend job passed. The skipped cases are not treated as provider certification. |
+| Frontend production build | **PASS** | GitHub Actions run 33231588528 frontend job passed with `CI=true`; local production build also passed. |
 | ESLint/static gate | **PASS** | `yarn lint` exited 0 with `--max-warnings=0`. |
-| GitHub CI on candidate SHA | **PASS** | Run 32874240684 completed successfully for `7c0786303b511df3bbd80d14c004a2171e27e3e2`. |
+| GitHub CI on candidate SHA | **PASS** | Run 33231588528 completed successfully for `538d2eb14d4956cc0a10e56975eeb392dfe3888e`; approval and security checks also passed. |
 | Google OAuth construction and redaction behavior | **PASS — code/test scope** | PKCE, read-only scopes, refresh-token preservation, forced refresh, re-auth state, disconnect behavior, tenant-scoped upserts, and sensitive-field redaction are covered by deterministic tests. |
 | Gmail credential-backed lifecycle | **BLOCKED** | Requires an authenticated Google Cloud project, OAuth client, approved redirect URI on the actual public backend URL, encrypted runtime token storage, and approved test-account consent. No credential-backed connection, sync, revoke, reconnect, or live token refresh was run. |
 | Google Calendar credential-backed lifecycle | **BLOCKED** | Shares the missing Google OAuth/public-runtime prerequisites. No credential-backed Calendar sync, reconnect, or live duplicate behavior was run. |
@@ -44,7 +44,7 @@
 
 The candidate preserves Google refresh tokens when Google reconnect responses omit a replacement, forces a token refresh following provider HTTP 401 responses, and converts confirmed refresh failures into an immediate expired/re-auth state. Gmail and Calendar sync accounting now reports the actual bounded result count, and public provider responses defensively exclude accidental raw credential fields.
 
-Stripe behavior now includes test-mode-only PaymentIntent creation for a tenant-owned local invoice, tenant metadata, an idempotency key, sanitized payment-failure recording, signed raw-body webhook verification, atomic duplicate-event suppression, and tenant-scoped invoice updates for payment success, failure, and cancellation. The implementation requires `STRIPE_WEBHOOK_SECRET`; it never accepts a live key for the certification endpoint. [1] [2] [3]
+Stripe behavior now includes test-mode-only PaymentIntent creation for a tenant-owned local invoice, tenant metadata, an idempotency key, sanitized payment-failure recording, signed raw-body webhook verification, unique event IDs, retryable processing leases, PaymentIntent identity checks, and monotonic paid-state protection. The implementation requires `STRIPE_WEBHOOK_SECRET`; it never accepts a live key for the certification endpoint. [1] [2] [3]
 
 ## Production Architecture and Current Boundary
 
@@ -68,7 +68,7 @@ No actual production hostname, MongoDB connection, CORS configuration, environme
 | Evidence | Canonical location |
 |---|---|
 | Provider lifecycle tests | `backend/tests/test_provider_lifecycle_unit.py` |
-| Backend and frontend CI | [GitHub Actions run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) |
+| Backend and frontend CI | [GitHub Actions run 33231588528](https://github.com/ebyron357/Clientverse-crm/actions/runs/33231588528) |
 | Prior axe WCAG audit | `docs/evidence/a11y-axe-release-pass.json` |
 | Prior browser smoke evidence | `docs/evidence/browser-release-smoke.json` |
 | Prior performance statistics | `docs/evidence/performance-locust_stats.csv` and `docs/evidence/performance-locust_failures.csv` |
@@ -83,4 +83,4 @@ No actual production hostname, MongoDB connection, CORS configuration, environme
 [2]: https://docs.stripe.com/webhooks — Stripe webhook endpoint and event handling guidance.
 [3]: https://docs.stripe.com/webhooks/signature — Stripe raw-body signature verification guidance.
 [4]: https://render.com/docs/blueprint-spec — Render Blueprint specification.
-[5]: https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684 — Candidate CI run.
+[5]: https://github.com/ebyron357/Clientverse-crm/actions/runs/33231588528 — Candidate CI run.

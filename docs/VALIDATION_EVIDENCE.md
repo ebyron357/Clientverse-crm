@@ -2,19 +2,19 @@
 
 This is the canonical validation record for the ClientVerse CRM release candidate. It consolidates lifecycle, security, accessibility, performance, browser, provider-readiness, and deployment-path evidence. It intentionally excludes passwords, session tokens, OAuth tokens, client secrets, encryption keys, database credentials, portal tokens, authorization codes, connection strings, and internal record identifiers.
 
-## 2026-08-25 Post-Merge Closeout Addendum
+## 2026-08-28 Post-Merge Closeout Addendum
 
-**Current closeout candidate:** `7c0786303b511df3bbd80d14c004a2171e27e3e2` on `manus/final-provider-closeout`
+**Current closeout candidate:** `538d2eb14d4956cc0a10e56975eeb392dfe3888e` on `manus/final-provider-closeout`
 **Baseline on `main`:** `1bd32b3eb7e136f7c98e94611a7b3136bd03a643`
-**CI:** [run 32874240684](https://github.com/ebyron357/Clientverse-crm/actions/runs/32874240684) — **PASS** for the candidate SHA.
+**CI:** [run 33231588528](https://github.com/ebyron357/Clientverse-crm/actions/runs/33231588528) — **PASS** for the candidate SHA.
 
 > **Current verdict: NOT CLOSED.** This addendum supersedes any older implication that the next action is merely a merge approval. PR #9 is already merged, while Issue #10 remains open. The current candidate has passing code, build, lint, and CI evidence, but production deployment and credential-backed provider lifecycle evidence remain unavailable.
 
 | Current closeout gate | Result | Current evidence or exact blocker |
 |---|---|---|
-| Provider lifecycle hardening | **PASS** | Google reconnect/401 recovery, re-auth failure classification, response redaction, Stripe test PaymentIntent, signed webhook, and duplicate suppression are implemented and covered by 15 deterministic tests. |
-| Provider-specific tests | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **15 passed**, 2 upstream multipart warnings. |
-| Full backend CI | **PASS** | CI run 32874240684: **137 passed, 4 skipped, 2 warnings**. The skipped cases do not satisfy live-provider certification. |
+| Provider lifecycle hardening | **PASS** | Google reconnect/401 recovery, re-auth failure classification, response redaction, Stripe test PaymentIntent, signed webhook, retryable event leases, identity checks, and monotonic paid-state protection are implemented and covered by 19 deterministic tests. |
+| Provider-specific tests | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **19 passed**, 1 upstream multipart warning. |
+| Full backend CI | **PASS** | CI run 33231588528 passed; the final local suite reports **124 passed, 4 skipped, 2 warnings**. The skipped cases do not satisfy live-provider certification. |
 | Frontend build and lint | **PASS** | Candidate CI frontend job passed; local `yarn lint` completed with zero warnings. |
 | Accessibility P1 | **PASS — carried forward** | No frontend source changed in the candidate. Prior authenticated axe assessment remains the latest route-level evidence; current static lint passed. |
 | Performance P1 | **PASS — carried forward** | No frontend source changed. Prior isolated Locust evidence remains applicable; current production bundle is 331.89 kB gzipped JavaScript and 14.84 kB gzipped CSS. |
