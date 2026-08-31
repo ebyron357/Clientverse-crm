@@ -17,7 +17,7 @@ This record contains no credentials, tokens, connection strings, or secret value
 |---|---|---|
 | Current main identified | **PASS** | `747d4991871a33f09f2f20bae5328676634473af`; zero open PRs; latest merged PR is #12. |
 | GitHub CI on main HEAD | **PASS** | Actions run [33237809211](https://github.com/ebyron357/Clientverse-crm/actions/runs/33237809211) — CI pass on the PR #12 merge commit. |
-| Backend full suite (clean install) | **PASS** | **145 passed, 4 skipped, 2 warnings** in 29 s against a real MongoDB 7 container. Skips are documented external-secret cases (`STRIPE_API_KEY` live sync, `EMERGENT_LLM_KEY` AI, one API backdate limitation). |
+| Backend full suite (clean install) | **PASS** | Baseline run (pre-hardening deps): **145 passed, 4 skipped, 2 warnings** in 29 s against a real MongoDB 7 container. Post-hardening rerun (`fastapi==0.141.1`, `starlette==1.6.0`): **145 passed, 4 skipped, 0 warnings**. Skips are documented external-secret cases (`STRIPE_API_KEY` live sync, `EMERGENT_LLM_KEY` AI, one API backdate limitation). |
 | Provider lifecycle suite | **PASS** | `backend/tests/test_provider_lifecycle_unit.py`: **22 passed** (Google refresh/re-auth/redaction, Stripe PaymentIntent/webhook idempotency/tenant scoping). |
 | Tenant isolation | **PASS** | Suite includes `test_closeout_tenant_isolation.py`; live smoke cross-tenant workspace read returned HTTP 404. |
 | Authentication / authorization | **PASS** | Suite covers login, registration→new tenant, role enforcement (member 403 on admin ops); live smoke: unauthenticated `/api/companies` → 401, admin login + re-login → 200. |
