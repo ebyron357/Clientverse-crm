@@ -50,9 +50,12 @@ if len(JWT_SECRET) < 32 or JWT_SECRET.strip().lower() in _UNSAFE_JWT_DEFAULTS:
             "Set ALLOW_INSECURE_JWT=1 only for disposable local/dev environments."
         )
 JWT_ALG = "HS256"
+_RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+_RAILWAY_URL = f"https://{_RAILWAY_PUBLIC_DOMAIN}" if _RAILWAY_PUBLIC_DOMAIN else None
 FRONTEND_URL = (
     os.environ.get('FRONTEND_URL')
     or os.environ.get('RENDER_EXTERNAL_URL')
+    or _RAILWAY_URL
     or 'http://localhost:3000'
 )
 _cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
