@@ -1,5 +1,7 @@
 # ClientVerse CRM — Final Closeout Certification
 
+> **2026-08-31 addendum:** An autonomous closeout execution re-verified every autonomous gate on `main@747d499`, hardened backend dependencies (fastapi/starlette security advisories, removed unused `python-jose`), redacted one committed preview webhook-secret value, executed the production Docker artifact in production mode with full `/api/health` + CRM smoke evidence, and reconciled Issue #10 criterion-by-criterion. The canonical living record is now [docs/closeout/OPENHANDS_PRODUCTION_CERTIFICATION.md](./closeout/OPENHANDS_PRODUCTION_CERTIFICATION.md). The 2026-08-28 content below remains accurate as the pre-execution baseline; all owner-only blockers (Render, Google, Stripe) are unchanged and re-confirmed.
+
 **Certification timestamp:** 2026-08-28 EDT
 **Repository:** [ebyron357/Clientverse-crm](https://github.com/ebyron357/Clientverse-crm)
 **Merged baseline:** `main` at `1bd32b3eb7e136f7c98e94611a7b3136bd03a643`
