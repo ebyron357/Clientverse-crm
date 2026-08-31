@@ -10,7 +10,7 @@
     "admin_verify_dialog_opens": true,
     "webhook_secret_value_present": true,
     "secret_starts_with_whsec_": true,
-    "secret_observed_example": "whsec_c99655edeeff6a5b79effc3d80ca4926",
+    "secret_observed_example": "whsec_[REDACTED — disposable preview-environment webhook secret value removed during 2026-08-31 closeout security review; rotate any matching live secret]",
     "openVerify_ReferenceError_gone": true,
     "admin_rotate_works_no_pageerror": true,
     "member_no_verify_rotate_newendpoint": true
