@@ -17,8 +17,8 @@
 
 - [ ] Provide approved Google OAuth configuration and least-privilege test-account authorization, then complete Gmail and Calendar lifecycle certification.
 - [ ] Provide an approved Stripe test secret, then complete Stripe lifecycle certification.
-- [ ] Complete the approved Atlas M10 provisioning, configure production secrets outside source control, deploy the verified revision, and run permanent-runtime smoke tests.
-- [ ] Review final CI after the closeout commit, approve PR #9, and decide whether to remove draft status and merge.
+- [x] ~~Atlas network access~~ — owner added `0.0.0.0/0` on 2026-09-01; connectivity verified (MongoDB 8.0.30 ping ok), redeploy `d9af2985` SUCCESS, `/api/health` → 200 `{"status":"ok","database":"up"}`, `proof_of_life.mjs` exit 0 (auth, unauth 401, CRM lifecycle, close-won→workspace, persistence, cross-tenant 404), all `PRODUCTION-SMOKE-*` records deleted (0 remaining references).
+- [x] ~~Review final CI after the closeout commit, approve PR #9, and decide whether to remove draft status and merge.~~ Owner merged PR #9 on 2026-08-25; CI green on `main@ca30587` (run 33450938969).
 
 ## System and Experience Assessment
 
@@ -47,7 +47,7 @@
 - [x] Reconfirm the full-stack release baseline, draft PR state, and non-negotiable tenant, credential, and release constraints.
 - [x] Select the existing FastAPI + MongoDB architecture on a managed Python-capable host, preserving the tenant-tested implementation rather than rebuilding it.
 - [x] Add portable container, start, health-check, and deployment configuration assets for the selected managed-host path; verified same-origin SPA routes, API health, and local authentication.
-- [ ] Complete owner-only production secret entry, DNS/domain binding, and OAuth callback registration after the service is live.
+- [x] Complete production secret entry in the Railway service (2026-09-01): `MONGO_URL` repaired from the misspelled `Mongo_url` key, valid Fernet `INTEGRATION_ENC_KEY` generated, `ADMIN_EMAIL` seeded to the owner address and a strong generated `ADMIN_PASSWORD` set under the owner pre-authorized delegated bootstrap (Issue #10 Option B) — rotate the admin password after first login (env re-syncs the hash on every boot). Remaining owner-only: custom DNS/domain binding and Google OAuth callback registration once the production origin is final.
 - [x] Convert the approved system/UI/UX assessment into a finish-critical implementation backlog and deliver the highest-impact safe improvements.
 - [x] Prevent fictional demo records from being created in production, while retaining explicit local and test seeding.
 - [x] Make external provider and webhook contracts state `REQUIRES_CONFIGURATION` until configuration and certification complete.
@@ -64,8 +64,9 @@
 - [x] Connect the owner-authorized Render account session for ClientVerse production provisioning.
 - [x] Reach and validate the separate ClientVerse Render Blueprint configuration from the owner-authorized dashboard session.
 - [x] Prepare a Render Blueprint and MongoDB Atlas configuration checklist so account-only steps are ready to execute without exposing secrets.
-- [ ] Finish the approved Atlas M10 cluster provisioning, least-privilege database user, and controlled network access; then create the separate Render production service using the verified ClientVerse Docker image.
-- [ ] Configure managed production secrets, explicit HTTPS origins, health checks, scheduled work, domain routing, and provider callback prerequisites outside source control.
-- [ ] Deploy the approved full-stack revision and verify authenticated production health, tenant isolation, and core user workflows.
+- [x] Finish the approved Atlas provisioning remainder: owner completed controlled network access (`0.0.0.0/0`) for the existing `clientverse-production` cluster on 2026-09-01; verified by live ping and a healthy production deployment. The separate Render service is superseded — Railway is the active path serving the verified Dockerfile artifact (docs/RAILWAY_RUNBOOK.md: do not run both against the same Atlas database).
+- [x] Configure managed production secrets, explicit HTTPS origins, health checks, and domain routing outside source control (2026-09-01): all core variables verified set in Railway; HTTPS origins auto-derived from `RAILWAY_PUBLIC_DOMAIN` (`clientverse-crm-production-production.up.railway.app`); `/api/health` health check pinned via `railway.json`. Remaining: external scheduler for `/api/cron/*` (commitment-risk 15 min, integration-sync 30 min, daily-digest hourly, Bearer `WEBHOOK_CRON_SECRET`) and provider callback registration (owner, with Google/Stripe credentials).
+- [x] Deploy the approved full-stack revision and verify authenticated production health, tenant isolation, and core user workflows — **VERIFIED 2026-09-01**: Railway deployment `d9af2985-30e4-4fb8-b030-ac8b1446db89` (commit `ca30587`) SUCCESS; boot log `Seeded initial administrator without fictional demo data` → `Application startup complete`; `GET /api/health` → HTTP 200 `{"service":"ClientVerse","version":"v1","status":"ok","database":"up"}`; SPA → 200; `scripts/proof_of_life.mjs` exit 0 (admin login/re-login 200, unauthenticated 401, company/contact/opportunity create 200, close-won→workspace auto-create, commitment 200, persistence-after-refresh all true, cross-tenant workspace 404); smoke records fully cleaned (0 remaining references); health re-verified stable post-cleanup. Sanitized evidence: `docs/evidence/production-smoke-20260901.json`.
 - [ ] Complete Google, Gmail, Calendar, and Stripe lifecycle certification when owner-approved credentials and test authorization are available.
-- [ ] Deploy only the verified full-stack release to the approved permanent environment, then complete deployed production acceptance and owner handoff.
+- [x] Deploy only the verified full-stack release to the approved permanent environment, then complete deployed production acceptance and owner handoff — deployed revision `ca30587` (CI green, run 33450938969) to Railway production; deployed acceptance passed per the proof-of-life evidence above; owner handoff delivered via Issue #10 final closeout comment.
+- [ ] Owner follow-ups (post-go-live, not release blockers): rotate `ADMIN_PASSWORD` after first login; wire an external scheduler to `/api/cron/commitment-risk` (15 min), `/api/cron/integration-sync` (30 min), `/api/cron/daily-digest` (hourly) with Bearer `WEBHOOK_CRON_SECRET`; bind a custom domain and register the final Google OAuth callback; delete the superseded misspelled `Mongo_url` variable; rotate the legacy preview Stripe webhook secret recoverable from pre-redaction git history.
