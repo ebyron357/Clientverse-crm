@@ -1,0 +1,36 @@
+{
+  "run_label": "PRODUCTION-SMOKE-20260901224658",
+  "api_base": "https://clientverse-crm-production-production.up.railway.app/api",
+  "health": {
+    "initial_http": 200,
+    "final_http": 200,
+    "service": "ClientVerse",
+    "status": "ok",
+    "database": "up"
+  },
+  "authentication": {
+    "administrator_login_http": 200,
+    "administrator_relogin_http": 200,
+    "unauthenticated_access_http": 401
+  },
+  "workflow": {
+    "company_create_http": 200,
+    "contact_create_http": 200,
+    "opportunity_create_http": 200,
+    "close_won_http": 200,
+    "workspace_created_from_opportunity": true,
+    "commitment_create_http": 200
+  },
+  "persistence_after_refresh": {
+    "company": true,
+    "contact": true,
+    "opportunity": true,
+    "workspace": true,
+    "commitment": true
+  },
+  "tenant_isolation": {
+    "cross_tenant_workspace_http": 404
+  },
+  "cleanup_note": "This run creates explicitly named PRODUCTION-SMOKE records in the administrator tenant. Review and remove them only after retaining the approved validation evidence.",
+  "secret_redaction": "This evidence intentionally omits account identities, passwords, session tokens, database credentials, OAuth values, and internal record identifiers."
+}
