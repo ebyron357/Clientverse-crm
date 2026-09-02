@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, money, HEALTH_BAND } from "@/lib/api";
+import { money, HEALTH_BAND } from "@/lib/api";
+import { commandCenterService } from "@/lib/services";
 import { Badge } from "@/components/AppShell";
 import OnboardingChecklist from "@/components/OnboardingChecklist";
+import CommandCenterInsights from "@/components/CommandCenterInsights";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -43,11 +45,11 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     setError("");
     const [dashboard, alerts, integrations] = await Promise.allSettled([
-      api.get("/dashboard"), api.get("/alerts"), api.get("/integrations/health"),
+      commandCenterService.getPortfolio(), commandCenterService.getAlerts(), commandCenterService.getIntegrationHealth(),
     ]);
     if (dashboard.status !== "fulfilled") { setError("We could not load your command center. Check your connection and try again."); return; }
-    setData(dashboard.value.data);
-    setSystem({ alerts: alerts.status === "fulfilled" ? alerts.value.data : [], integrations: integrations.status === "fulfilled" ? integrations.value.data : [] });
+    setData(dashboard.value);
+    setSystem({ alerts: alerts.status === "fulfilled" ? alerts.value : [], integrations: integrations.status === "fulfilled" ? integrations.value : [] });
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -56,12 +58,12 @@ export default function Dashboard() {
   const priorityItems = useMemo(() => {
     if (!data) return [];
     const items = [];
-    if (data.at_risk_commitments) items.push({ icon: AlertTriangle, title: `${data.at_risk_commitments} commitment${data.at_risk_commitments === 1 ? "" : "s"} needs attention`, body: "Review delivery risk before the next client touchpoint.", to: "/workspaces", tone: "amber" });
+    if (data.at_risk_commitments) items.push({ icon: AlertTriangle, title: `Review ${data.at_risk_commitments} at-risk commitment${data.at_risk_commitments === 1 ? "" : "s"}`, body: "Open Client 360 and confirm an owner, due date, or recovery step before the next touchpoint.", why: "Commitment status is at risk or breached", confidence: "High", to: "/workspaces", tone: "amber" });
     const pendingAlerts = Array.isArray(system.alerts) ? system.alerts.filter((alert) => alert.status !== "resolved").length : 0;
-    if (pendingAlerts) items.push({ icon: CircleAlert, title: `${pendingAlerts} unresolved risk signal${pendingAlerts === 1 ? "" : "s"}`, body: "Review account alerts and assign ownership.", to: "/workspaces", tone: "red" });
+    if (pendingAlerts) items.push({ icon: CircleAlert, title: `Resolve ${pendingAlerts} open risk signal${pendingAlerts === 1 ? "" : "s"}`, body: "Review the underlying account evidence, acknowledge the signal, and assign follow-through.", why: "Open operational alerts require a human decision", confidence: "High", to: "/workspaces", tone: "red" });
     const degraded = Array.isArray(system.integrations) ? system.integrations.filter((integration) => ["degraded", "expired", "error"].includes(integration.status)).length : 0;
-    if (degraded) items.push({ icon: CircleAlert, title: `${degraded} integration health issue${degraded === 1 ? "" : "s"}`, body: "Reconnect or investigate a provider connection.", to: "/registries", tone: "red" });
-    if (!items.length) items.push({ icon: CheckCircle2, title: "No immediate risks detected", body: "Your portfolio has no outstanding attention signals right now.", to: "/workspaces", tone: "emerald" });
+    if (degraded) items.push({ icon: CircleAlert, title: `Restore ${degraded} provider connection${degraded === 1 ? "" : "s"}`, body: "Open Registries to reconnect or investigate before relationship context becomes stale.", why: "Provider health is degraded, expired, or in error", confidence: "High", to: "/registries", tone: "red" });
+    if (!items.length) items.push({ icon: CheckCircle2, title: "Review healthy client momentum", body: "No immediate risk is detected. Use Client 360 to confirm the next value milestone.", why: "No open risk signals are present", confidence: "High", to: "/workspaces", tone: "emerald" });
     return items.slice(0, 3);
   }, [data, system]);
 
@@ -82,10 +84,11 @@ export default function Dashboard() {
     </section>
 
     <OnboardingChecklist dashboard={data} integrations={system.integrations} />
+    <div className="mt-5"><CommandCenterInsights /></div>
 
     <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12">
       <div className="cv-card xl:col-span-7"><div className="cv-card-header"><div><h2 className="cv-card-title">Revenue movement</h2><p className="cv-card-description">A stage-by-stage view of qualified client demand.</p></div><button onClick={() => navigate("/pipeline")} className="text-xs font-semibold text-[#1a9fbf] hover:text-[#147f9a]">Open pipeline</button></div><div className="p-5"><div role="img" aria-label="Opportunity count by pipeline stage" className="h-[250px]">{funnelData.length ? <ResponsiveContainer width="100%" height="100%"><BarChart data={funnelData} layout="vertical" margin={{ left: 4, right: 12, top: 4, bottom: 4 }}><XAxis type="number" hide /><YAxis dataKey="name" type="category" width={82} tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} /><Tooltip cursor={{ fill: "#f8fafc" }} contentStyle={{ borderRadius: 12, borderColor: "#e2e8f0", boxShadow: "0 8px 24px rgba(10,22,40,.08)" }} /><Bar dataKey="count" radius={[0, 8, 8, 0]}>{funnelData.map((entry) => <Cell key={entry.key} fill={entry.key === "closed_won" ? "#16a34a" : entry.key === "proposal" || entry.key === "negotiation" ? "#1a9fbf" : "#0a1628"} />)}</Bar></BarChart></ResponsiveContainer> : <div className="cv-empty min-h-[250px]"><GitBranch className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">Your pipeline starts here</p><p className="mt-1 text-xs text-slate-500">Create the first opportunity to begin tracking revenue movement.</p><Button size="sm" className="mt-4 cv-action-primary" onClick={() => navigate("/pipeline")}>Create opportunity</Button></div>}</div></div></div>
-      <div className="cv-card xl:col-span-5"><div className="cv-card-header"><div><h2 className="cv-card-title">Priority actions</h2><p className="cv-card-description">Signals worth resolving before they become client problems.</p></div><span className="cv-status-dot bg-[#4ac4e0]" aria-hidden="true" /></div><div className="divide-y divide-slate-100">{priorityItems.map((item, index) => { const Icon = item.icon; const tones = { amber: "bg-amber-50 text-amber-600", red: "bg-red-50 text-red-600", emerald: "bg-emerald-50 text-emerald-600" }; return <button key={index} onClick={() => navigate(item.to)} className="cv-data-row flex w-full items-start gap-3 px-5 py-4 text-left"><span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${tones[item.tone]}`}><Icon className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-[#132038]">{item.title}</span><span className="mt-0.5 block text-xs leading-5 text-slate-500">{item.body}</span></span><ArrowRight className="mt-1 h-4 w-4 shrink-0 text-slate-300" /></button>; })}</div></div>
+      <div className="cv-card xl:col-span-5"><div className="cv-card-header"><div><h2 className="cv-card-title">Next best actions</h2><p className="cv-card-description">Deterministic recommendations with evidence and confidence.</p></div><span className="cv-status-dot bg-[#4ac4e0]" aria-hidden="true" /></div><div className="divide-y divide-slate-100">{priorityItems.map((item, index) => { const Icon = item.icon; const tones = { amber: "bg-amber-50 text-amber-600", red: "bg-red-50 text-red-600", emerald: "bg-emerald-50 text-emerald-600" }; return <button key={index} onClick={() => navigate(item.to)} className="cv-data-row flex w-full items-start gap-3 px-5 py-4 text-left"><span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${tones[item.tone]}`}><Icon className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-[#132038]">{item.title}</span><span className="mt-0.5 block text-xs leading-5 text-slate-500">{item.body}</span><span className="mt-2 flex flex-wrap items-center gap-1.5"><span className="rounded border border-dashed border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">Why: {item.why}</span><span className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800">{item.confidence} confidence</span></span></span><ArrowRight className="mt-1 h-4 w-4 shrink-0 text-slate-300" /></button>; })}</div></div>
     </section>
 
     <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12">

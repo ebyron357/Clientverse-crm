@@ -22,6 +22,8 @@ import Settings from "@/pages/Settings";
 import ClientOps from "@/pages/ClientOps";
 import FieldOps from "@/pages/FieldOps";
 import ClientPortal from "@/pages/ClientPortal";
+import ModuleStatus from "@/pages/ModuleStatus";
+import { CLIENTVERSE_MODULES, MODULE_STATES } from "@/platform/modules";
 
 function AuthCallback() {
   const navigate = useNavigate();
@@ -63,7 +65,10 @@ function AppRouter() {
       <Route element={<Protected><AppShell /></Protected>}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/pipeline" element={<Pipeline />} />
+        <Route path="/deals" element={<Pipeline />} />
         <Route path="/directory" element={<Directory />} />
+        <Route path="/contacts" element={<Directory initialTab="contacts" />} />
+        <Route path="/companies" element={<Directory initialTab="companies" />} />
         <Route path="/workspaces" element={<Workspaces />} />
         <Route path="/workspaces/:id" element={<WorkspaceDetail />} />
         <Route path="/registries" element={<Registries />} />
@@ -74,6 +79,7 @@ function AppRouter() {
         <Route path="/audit" element={<Audit />} />
         <Route path="/client-ops" element={<ClientOps />} />
         <Route path="/field" element={<FieldOps />} />
+        {CLIENTVERSE_MODULES.filter((module) => module.state !== MODULE_STATES.AVAILABLE).map((module) => <Route key={module.id} path={module.route} element={<ModuleStatus moduleId={module.id} />} />)}
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

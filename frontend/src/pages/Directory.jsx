@@ -14,9 +14,9 @@ import { Building2, BriefcaseBusiness, CircleAlert, GitBranch, Globe2, Mail, Plu
 const SENTIMENT = { positive: "bg-emerald-50 text-emerald-700 border-emerald-200", neutral: "bg-slate-100 text-slate-600 border-slate-200", negative: "bg-red-50 text-red-700 border-red-200" };
 const TIER = { enterprise: "bg-violet-50 text-violet-700 border-violet-200", growth: "bg-cyan-50 text-[#0a6177] border-cyan-200", standard: "bg-slate-100 text-slate-600 border-slate-200" };
 
-export default function Directory() {
+export default function Directory({ initialTab = "companies" }) {
   const [companies, setCompanies] = useState([]); const [contacts, setContacts] = useState([]); const [opportunities, setOpportunities] = useState([]); const [workspaces, setWorkspaces] = useState([]);
-  const [activeTab, setActiveTab] = useState("companies"); const [query, setQuery] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState(initialTab); const [query, setQuery] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [companyDialog, setCompanyDialog] = useState(false); const [contactDialog, setContactDialog] = useState(false); const [selected, setSelected] = useState(null); const [saving, setSaving] = useState(false);
   const [companyForm, setCompanyForm] = useState({ name: "", industry: "", website: "", tier: "standard" }); const [contactForm, setContactForm] = useState({ name: "", email: "", role: "", company_id: "", influence: "medium", sentiment: "neutral" });
   const load = useCallback(async () => { setLoading(true); setError(""); try { const [companyResponse, contactResponse, opportunityResponse, workspaceResponse] = await Promise.all([api.get("/companies"), api.get("/contacts"), api.get("/opportunities"), api.get("/workspaces")]); setCompanies(companyResponse.data); setContacts(contactResponse.data); setOpportunities(opportunityResponse.data); setWorkspaces(workspaceResponse.data); } catch { setError("We could not load the directory. The relationship data has not changed — please try again."); } finally { setLoading(false); } }, []);

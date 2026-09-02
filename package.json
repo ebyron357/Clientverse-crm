@@ -1,0 +1,13 @@
+{
+  "name": "clientverse-crm",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "yarn@1.22.22",
+  "scripts": {
+    "dev": "yarn --cwd frontend start",
+    "build": "yarn --cwd frontend build",
+    "lint": "yarn --cwd frontend lint",
+    "test:frontend": "yarn --cwd frontend test --watchAll=false",
+    "test:backend": "cd backend && python -m pytest tests/ -q"
+  }
+}
