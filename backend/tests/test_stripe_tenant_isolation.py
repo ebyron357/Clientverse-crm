@@ -40,7 +40,19 @@ import server  # noqa: E402
 
 
 def run(coro):
-    return asyncio.run(coro)
+    # Motor's AsyncIOMotorClient binds to whatever event loop is running when it first
+    # performs an operation; reusing plain asyncio.run() (a fresh loop every call) across
+    # many calls in one process breaks it with "Event loop is closed" against a real
+    # MongoDB (this only worked against a mongomock substitute, which has no such
+    # binding). Bind a fresh client to a fresh loop on every call instead.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        server.mclient = server.AsyncIOMotorClient(os.environ["MONGO_URL"])
+        server.db = server.mclient[os.environ["DB_NAME"]]
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def _tenant_id():

@@ -25,7 +25,19 @@ import server  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 
+def _reset_motor_client():
+    # Each `with TestClient(...)` block runs the ASGI lifespan on its own anyio-managed
+    # event loop. Motor's AsyncIOMotorClient binds to whatever loop is running the first
+    # time it performs an operation, so reusing the same client object across two
+    # separate TestClient blocks (each with their own loop) breaks it with "Event loop is
+    # closed" against a real MongoDB (a mongomock substitute has no such binding, which is
+    # why this only surfaced against real CI). Give each block its own fresh client.
+    server.mclient = server.AsyncIOMotorClient(os.environ["MONGO_URL"])
+    server.db = server.mclient[os.environ["DB_NAME"]]
+
+
 def test_response_includes_a_content_security_policy_header():
+    _reset_motor_client()
     with TestClient(server.app) as client:
         r = client.get("/api/health")
     assert r.status_code == 200
@@ -35,6 +47,7 @@ def test_response_includes_a_content_security_policy_header():
 
 
 def test_existing_security_headers_are_unchanged_by_the_csp_addition():
+    _reset_motor_client()
     with TestClient(server.app) as client:
         r = client.get("/api/health")
     assert r.headers.get("x-content-type-options") == "nosniff"
