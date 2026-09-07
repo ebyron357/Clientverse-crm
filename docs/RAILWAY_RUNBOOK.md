@@ -81,11 +81,72 @@ Startup failure map (all are configuration, not code):
 - Stripe webhook endpoint (test mode):
   `https://<service>.up.railway.app/api/integrations/stripe/webhook`
 
-## 6. Security reminders
+**Two-pilot-company deployments**: `STRIPE_API_KEY` is a single, shared Stripe account
+for the whole deployment. If two tenants both need Stripe and must not share one
+underlying account, each tenant's admin should instead call
+`POST /api/integrations/stripe/connect` with `{"api_key": "<their own restricted key>"}`
+in the request body — this stores an encrypted, tenant-scoped credential (mirroring how
+Google credentials are already isolated per tenant) that takes priority over the shared
+`STRIPE_API_KEY` for that tenant's syncs and payment intents. Calling connect with no
+body keeps the previous shared-key behavior.
 
-- Rotate the legacy preview Stripe webhook secret redacted during the 2026-08-31
-  closeout (value persists in pre-redaction git history; see
-  `docs/closeout/OPENHANDS_PRODUCTION_CERTIFICATION.md`).
-- Never commit variable values; Railway Variables are the only store.
+## 6. External scheduler (required — the app never calls these on its own)
+
+The three `/api/cron/*` endpoints exist, are authenticated, and are safe to call
+concurrently/repeatedly (idempotent per `X-Webhook-Id`), but **nothing in this codebase
+calls them automatically**. Without an external trigger wired to the production URL,
+commitments never auto-flag at-risk/breached, integrations never auto-sync, and digests
+never send — this is a configuration step, not a code deficiency.
+
+Wire an external scheduler (Railway Cron, n8n, or any HTTP-capable scheduler) to call, on
+the **production** domain:
+
+| Job | Path | Cadence |
+|---|---|---|
+| Commitment risk | `POST /api/cron/commitment-risk` | every 15 minutes |
+| Integration sync | `POST /api/cron/integration-sync` | every 30 minutes |
+| Daily digest | `POST /api/cron/daily-digest` | hourly (the job itself checks each tenant's configured local digest hour) |
+
+Every call must carry:
+
+```
+Authorization: Bearer <WEBHOOK_CRON_SECRET>
+```
+
+A missing or wrong secret returns `401`. Optionally send a stable `X-Webhook-Id` header
+per scheduled firing so a retried/duplicate delivery is recognized and skipped instead of
+re-running the job.
+
+n8n specifically: a Schedule Trigger node on the desired cadence, feeding an HTTP Request
+node calling the URL above with the `Authorization` header set directly on the node (not
+via n8n's built-in Bearer-Auth credential type, which has a known issue not always
+sending the header) — no ClientVerse code changes are needed for this.
+
+## 7. Security reminders
+
+- **Rotate the compromised Stripe webhook secret.** A real `whsec_…` value was committed
+  in plaintext in `test_reports/iteration_10.json` (introduced in commit `3682fd3`,
+  redacted at the tracked tip in commit `3ec3517`) and remains fully recoverable from the
+  repository's full git history by anyone who clones it — redacting the tracked tip does
+  **not** remove it from history. This is an **owner-only** action: sign in to the Stripe
+  dashboard, roll the webhook endpoint's signing secret, and set the new value as
+  `STRIPE_WEBHOOK_SECRET` in Railway. No code change can close this — only rotating the
+  live secret does.
+- **`ADMIN_PASSWORD` rotation is not durable if done only in the app.** `seed()` re-syncs
+  the admin account's password hash from the `ADMIN_PASSWORD` environment variable on
+  every boot (see `backend/server.py`). If you only change the password through the
+  product UI/API, the next redeploy or restart silently reverts it back to whatever
+  `ADMIN_PASSWORD` is still set to in Railway. **Always update the Railway variable in the
+  same action** as any admin password rotation (which will trigger a redeploy).
+- **Google OAuth setup is owner-only.** Creating/verifying the OAuth consent screen and
+  Web OAuth client in Google Cloud Console, registering the callback URL above, and
+  setting `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` in Railway all require the owner's
+  Google Cloud account access — an agent cannot do this.
+- **Stripe test credentials and webhook registration are owner-only.** Obtaining a
+  `sk_test_…`/`rk_test_…` key and registering the webhook endpoint above in the Stripe
+  dashboard require the owner's Stripe account access.
+- **Never commit variable values or real secrets anywhere** — not in `.env` files, test
+  fixtures, code comments, commit messages, or chat/issue transcripts. Railway Variables
+  (or a tenant's own encrypted credential, for Stripe) are the only store.
 - `docs/PRODUCTION.md` and `render.yaml` describe the alternate Render path; Railway is
   the active deployment path — do not run both against the same Atlas database.
