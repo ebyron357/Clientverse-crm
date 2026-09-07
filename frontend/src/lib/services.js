@@ -22,5 +22,4 @@ export const relationshipService = {
 
 export const client360Service = {
   getWorkspace: (workspaceId) => get(`/workspaces/${workspaceId}`),
-  updateWorkspace: async (workspaceId, input) => (await api.patch(`/workspaces/${workspaceId}`, input)).data,
 };
