@@ -45,6 +45,15 @@ def run(coro):
         loop.close()
 
 
+async def _db(fn):
+    """Wrap a direct `server.db...` expression so the `server.db` attribute is looked up
+    when this coroutine actually executes (inside run()'s fresh loop/client), not when the
+    call to run() is being constructed -- `run(server.db.x.find_one(...))` evaluates
+    `server.db` *before* run() replaces it with a fresh client, silently capturing
+    whatever the previous run() call's now-closed client/loop was."""
+    return await fn()
+
+
 class FakeRequest:
     def __init__(self, headers=None):
         self.headers = headers or {}
@@ -68,7 +77,7 @@ def test_concurrent_identical_webhook_ids_claim_the_run_exactly_once():
     results = run(scenario())
     assert sorted(results) == [False, True], "exactly one concurrent claim should win"
 
-    count = run(server.db.cron_runs.count_documents({"run_id": run_id}))
+    count = run(_db(lambda: server.db.cron_runs.count_documents({"run_id": run_id})))
     assert count == 1
 
 

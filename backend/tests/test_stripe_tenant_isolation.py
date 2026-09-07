@@ -55,6 +55,15 @@ def run(coro):
         loop.close()
 
 
+async def _db(fn):
+    """Wrap a direct `server.db...` expression so the `server.db` attribute is looked up
+    when this coroutine actually executes (inside run()'s fresh loop/client), not when the
+    call to run() is being constructed -- `run(server.db.x.find_one(...))` evaluates
+    `server.db` *before* run() replaces it with a fresh client, silently capturing
+    whatever the previous run() call's now-closed client/loop was."""
+    return await fn()
+
+
 def _tenant_id():
     return f"ten_stripeiso_{uuid.uuid4().hex[:10]}"
 
@@ -112,8 +121,8 @@ def test_stripe_sync_tenant_a_and_b_objects_are_mutually_invisible(monkeypatch):
     _patch_stripe_lists(monkeypatch, customers=shared_customers, invoices=shared_invoices)
     run(server.sync_stripe(tenant_b, "test"))
 
-    a_rows = run(server.db.crm_billing.find({"tenant_id": tenant_a}, {"_id": 0}).to_list(100))
-    b_rows = run(server.db.crm_billing.find({"tenant_id": tenant_b}, {"_id": 0}).to_list(100))
+    a_rows = run(_db(lambda: server.db.crm_billing.find({"tenant_id": tenant_a}, {"_id": 0}).to_list(100)))
+    b_rows = run(_db(lambda: server.db.crm_billing.find({"tenant_id": tenant_b}, {"_id": 0}).to_list(100)))
 
     a_emails = {r.get("email") for r in a_rows}
     b_emails = {r.get("email") for r in b_rows}
@@ -130,10 +139,10 @@ def test_stripe_payment_intent_direct_id_access_denied_cross_tenant(monkeypatch)
     tenant_a = _tenant_id()
     tenant_b = _tenant_id()
     invoice_id = f"inv_{uuid.uuid4().hex[:10]}"
-    run(server.db.invoices.insert_one({
+    run(_db(lambda: server.db.invoices.insert_one({
         "id": invoice_id, "tenant_id": tenant_a, "workspace_id": "ws_x", "total": 10.0,
         "currency": "usd", "status": "issued",
-    }))
+    })))
     monkeypatch.setenv("STRIPE_API_KEY", "rk_test_x")
 
     async def _attempt():
@@ -155,11 +164,11 @@ def test_stripe_webhook_cannot_attach_event_to_a_different_tenants_invoice(monke
     tenant_a = _tenant_id()
     tenant_b = _tenant_id()
     invoice_b_id = f"inv_{uuid.uuid4().hex[:10]}"
-    run(server.db.invoices.insert_one({
+    run(_db(lambda: server.db.invoices.insert_one({
         "id": invoice_b_id, "tenant_id": tenant_b, "workspace_id": "ws_b", "total": 40.0,
         "currency": "usd", "status": "issued", "payment_status": "unpaid",
         "stripe_payment_intent_id": None,
-    }))
+    })))
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
 
     event = {
@@ -182,7 +191,7 @@ def test_stripe_webhook_cannot_attach_event_to_a_different_tenants_invoice(monke
     result = run(server.stripe_webhook(FakeRequest()))
     assert result["handled"] is False
 
-    invoice_b = run(server.db.invoices.find_one({"id": invoice_b_id}, {"_id": 0}))
+    invoice_b = run(_db(lambda: server.db.invoices.find_one({"id": invoice_b_id}, {"_id": 0})))
     assert invoice_b["payment_status"] == "unpaid"
     assert invoice_b["stripe_payment_intent_id"] is None
 
@@ -202,14 +211,14 @@ def test_stripe_sync_skips_unmatched_records_entirely(monkeypatch):
 
     summary = run(server.sync_stripe(tenant_a, "test"))
 
-    rows = run(server.db.crm_billing.find({"tenant_id": tenant_a}, {"_id": 0}).to_list(100))
+    rows = run(_db(lambda: server.db.crm_billing.find({"tenant_id": tenant_a}, {"_id": 0}).to_list(100)))
     emails = {r.get("email") for r in rows}
     assert "alice@acme-a.example" in emails
     assert "mallory@unrelated.example" not in emails
 
-    all_billing_for_mallory = run(
-        server.db.crm_billing.find({"email": "mallory@unrelated.example"}, {"_id": 0}).to_list(100)
-    )
+    all_billing_for_mallory = run(_db(
+        lambda: server.db.crm_billing.find({"email": "mallory@unrelated.example"}, {"_id": 0}).to_list(100)
+    ))
     assert all_billing_for_mallory == [], "unmatched Stripe customer must not be stored under any tenant"
     assert summary["matched"] == 1
     assert summary.get("skipped_unmatched", 0) == 1
@@ -222,11 +231,11 @@ def test_sync_stripe_prefers_tenant_scoped_credential_over_shared_env_key(monkey
     run(_seed_contact(tenant_a, "alice@acme-a.example"))
     monkeypatch.setenv("STRIPE_API_KEY", "sk_test_shared_should_not_be_used")
 
-    run(server.db.stripe_credentials.insert_one({
+    run(_db(lambda: server.db.stripe_credentials.insert_one({
         "tenant_id": tenant_a,
         "enc": server.enc_secret({"api_key": "sk_test_tenant_a_own_key"}),
         "credential_version": 1,
-    }))
+    })))
 
     seen_keys = []
 
@@ -255,12 +264,12 @@ def test_stripe_connect_with_api_key_stores_tenant_scoped_credential_not_shared(
     ))
     assert result["ok"] is True
 
-    stored = run(server.db.stripe_credentials.find_one({"tenant_id": tenant_a}, {"_id": 0}))
+    stored = run(_db(lambda: server.db.stripe_credentials.find_one({"tenant_id": tenant_a}, {"_id": 0})))
     assert stored is not None
     decrypted = server.dec_secret(stored["enc"])
     assert decrypted["api_key"] == "sk_test_tenant_a_own_key"
 
     # disconnecting must remove the tenant-scoped credential too
     run(server.disconnect_provider("stripe", user={"tenant_id": tenant_a, "email": "admin@acme-a.example"}))
-    stored_after = run(server.db.stripe_credentials.find_one({"tenant_id": tenant_a}, {"_id": 0}))
+    stored_after = run(_db(lambda: server.db.stripe_credentials.find_one({"tenant_id": tenant_a}, {"_id": 0})))
     assert stored_after is None

@@ -44,6 +44,15 @@ def run(coro):
         loop.close()
 
 
+async def _db(fn):
+    """Wrap a direct `server.db...` expression so the `server.db` attribute is looked up
+    when this coroutine actually executes (inside run()'s fresh loop/client), not when the
+    call to run() is being constructed -- `run(server.db.x.find_one(...))` evaluates
+    `server.db` *before* run() replaces it with a fresh client, silently capturing
+    whatever the previous run() call's now-closed client/loop was."""
+    return await fn()
+
+
 class FakeResponse:
     """Minimal stand-in for the FastAPI Response the login endpoint writes a cookie to."""
 
@@ -114,12 +123,12 @@ def test_lockout_expiry_allows_a_valid_login_and_resets_failure_state(monkeypatc
     # Simulate the lockout window having already expired.
     from datetime import datetime, timedelta, timezone
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
-    run(server.db.login_lockouts.update_one({"email": email.lower()}, {"$set": {"locked_until": past}}))
+    run(_db(lambda: server.db.login_lockouts.update_one({"email": email.lower()}, {"$set": {"locked_until": past}})))
 
     result = run(_login(email, "CorrectHorseBattery1!"))
     assert result["user"]["email"] == email.lower()
 
-    record = run(server.db.login_lockouts.find_one({"email": email.lower()}, {"_id": 0}))
+    record = run(_db(lambda: server.db.login_lockouts.find_one({"email": email.lower()}, {"_id": 0})))
     assert record["failed_count"] == 0
     assert not record.get("locked_until")
 
@@ -155,7 +164,7 @@ def test_lockout_tracks_by_email_regardless_of_which_tenant_it_belongs_to():
             run(_login(email, "guess"))
         except server.HTTPException:
             pass
-    record = run(server.db.login_lockouts.find_one({"email": email.lower()}, {"_id": 0}))
+    record = run(_db(lambda: server.db.login_lockouts.find_one({"email": email.lower()}, {"_id": 0})))
     assert record is not None
     assert record["failed_count"] >= server.LOGIN_LOCKOUT_THRESHOLD
     assert record.get("locked_until")
@@ -175,5 +184,5 @@ def test_successful_login_resets_previously_recorded_failures_below_threshold():
     result = run(_login(email, "CorrectHorseBattery1!"))
     assert result["user"]["email"] == email.lower()
 
-    record = run(server.db.login_lockouts.find_one({"email": email.lower()}, {"_id": 0}))
+    record = run(_db(lambda: server.db.login_lockouts.find_one({"email": email.lower()}, {"_id": 0})))
     assert record["failed_count"] == 0
