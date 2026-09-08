@@ -12,7 +12,7 @@ export const MODULE_STATES = {
 };
 
 export const CLIENTVERSE_MODULES = [
-  { id: "command-center", group: "Command", label: "Command Center", description: "Portfolio priorities and next best actions", route: "/dashboard", icon: LayoutDashboard, state: MODULE_STATES.AVAILABLE, contract: "GET /api/dashboard", actions: ["view", "navigate"] },
+  { id: "command-center", group: "Command", label: "Command Center", description: "Portfolio metrics, alerts, and priority follow-ups", route: "/dashboard", icon: LayoutDashboard, state: MODULE_STATES.AVAILABLE, contract: "GET /api/dashboard", actions: ["view", "navigate"] },
   { id: "action-center", group: "Command", label: "Action Center", description: "Alerts, approvals, and owned follow-through", route: "/notifications", icon: Bell, state: MODULE_STATES.AVAILABLE, contract: "GET /api/alerts", actions: ["view", "acknowledge", "resolve"] },
   { id: "contacts", group: "CRM", label: "Contacts", description: "People and relationship context", route: "/contacts", icon: Users, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/contacts", actions: ["view", "create"] },
   { id: "companies", group: "CRM", label: "Companies", description: "Account and commercial context", route: "/companies", icon: BriefcaseBusiness, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/companies", actions: ["view", "create"] },

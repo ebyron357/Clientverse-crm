@@ -109,6 +109,9 @@ async def lifespan(_: FastAPI):
         await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
         await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
         await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
+        await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
+        await db.login_lockouts.create_index("email", unique=True)
+        await db.cron_runs.create_index("run_id", unique=True)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
     try:
@@ -125,6 +128,21 @@ app = FastAPI(title="ClientVerse API", version="v1", lifespan=lifespan)
 api = APIRouter(prefix="/api")
 
 
+CONTENT_SECURITY_POLICY = "; ".join([
+    "default-src 'self'",
+    # The compiled SPA ships one small inline bootstrap script (public/index.html); CRA's
+    # own build output is otherwise all same-origin bundles.
+    "script-src 'self' 'unsafe-inline'",
+    # Google Fonts stylesheet + the SPA's own inline styles.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    "frame-ancestors 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+])
+
 @app.middleware("http")
 async def production_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -132,6 +150,7 @@ async def production_security_headers(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
     if request.url.scheme == "https":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
@@ -154,7 +173,10 @@ def verify_password(pw: str, hashed: str) -> bool:
         return False
 
 def create_access_token(user_id: str, email: str) -> str:
-    payload = {"sub": user_id, "email": email, "type": "access",
+    # jti keeps two tokens issued in the same second from being byte-identical (JWT
+    # exp/iat only have second granularity) -- without it, revoking one login's token
+    # would also revoke a different login's token that happened to match exactly.
+    payload = {"sub": user_id, "email": email, "type": "access", "jti": secrets.token_hex(16),
                "exp": datetime.now(timezone.utc) + timedelta(days=7)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
@@ -197,14 +219,48 @@ async def record_event(event_type: str, resource_type: str, resource_id: str,
 
 # ----------------------------- auth -----------------------------
 
-async def get_current_user(request: Request) -> dict:
+def _extract_token(request: Request) -> Optional[str]:
     token = request.cookies.get("access_token")
     if not token:
         h = request.headers.get("Authorization", "")
         if h.startswith("Bearer "):
             token = h[7:]
+    return token
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+async def _revoke_token(token: str):
+    """Server-side revocation for stateless JWTs: record a hash (never the raw token) of
+    the revoked token, checked on every subsequent request. A TTL index on `expires_at`
+    (see lifespan()) lets entries age out once the token would have expired anyway."""
+    expires_at = None
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG], options={"verify_exp": False})
+        if payload.get("exp"):
+            expires_at = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    except jwt.InvalidTokenError:
+        pass
+    if expires_at is None:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.revoked_tokens.update_one(
+        {"token_hash": _token_hash(token)},
+        {"$set": {"token_hash": _token_hash(token), "revoked_at": now_iso(), "expires_at": expires_at}},
+        upsert=True,
+    )
+
+async def _is_token_revoked(token: str) -> bool:
+    try:
+        return await db.revoked_tokens.find_one({"token_hash": _token_hash(token)}) is not None
+    except AttributeError:
+        return False
+
+async def get_current_user(request: Request) -> dict:
+    token = _extract_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    if await _is_token_revoked(token):
+        raise HTTPException(status_code=401, detail="Session has been revoked")
     # JWT path
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
@@ -241,6 +297,48 @@ class LoginInput(BaseModel):
     email: EmailStr
     password: str
 
+# ----------------------------- login brute-force protection -----------------------------
+# Tracked by the submitted email alone (not by user_id/tenant), so a nonexistent account
+# is throttled identically to a real one -- this is what keeps the generic 401 from ever
+# disclosing whether an account exists, and keeps the protection independent of tenant.
+
+LOGIN_LOCKOUT_THRESHOLD = int(os.environ.get("LOGIN_LOCKOUT_THRESHOLD", "5"))
+LOGIN_LOCKOUT_MINUTES = int(os.environ.get("LOGIN_LOCKOUT_MINUTES", "15"))
+_INVALID_CREDENTIALS_DETAIL = "Invalid email or password"
+
+def _parse_dt(value) -> Optional[datetime]:
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+async def _login_is_locked(email: str) -> bool:
+    rec = await db.login_lockouts.find_one({"email": email})
+    locked_until = _parse_dt(rec.get("locked_until")) if rec else None
+    return bool(locked_until and datetime.now(timezone.utc) < locked_until)
+
+async def _record_login_failure(email: str):
+    now = datetime.now(timezone.utc)
+    await db.login_lockouts.update_one(
+        {"email": email},
+        {"$inc": {"failed_count": 1}, "$set": {"last_failure_at": now.isoformat()},
+         "$setOnInsert": {"email": email}},
+        upsert=True,
+    )
+    rec = await db.login_lockouts.find_one({"email": email})
+    if rec and rec.get("failed_count", 0) >= LOGIN_LOCKOUT_THRESHOLD:
+        locked_until = now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+        await db.login_lockouts.update_one({"email": email}, {"$set": {"locked_until": locked_until.isoformat()}})
+
+async def _reset_login_failures(email: str):
+    await db.login_lockouts.update_one(
+        {"email": email},
+        {"$set": {"failed_count": 0, "locked_until": None}, "$setOnInsert": {"email": email}},
+        upsert=True,
+    )
+
 @api.post("/auth/register")
 async def register(inp: RegisterInput, response: Response):
     email = inp.email.lower()
@@ -268,9 +366,16 @@ async def register(inp: RegisterInput, response: Response):
 @api.post("/auth/login")
 async def login(inp: LoginInput, response: Response):
     email = inp.email.lower()
+    if await _login_is_locked(email):
+        # Reject before even checking the password: a correct password must not bypass
+        # an active lockout, and the response must be indistinguishable from a plain
+        # wrong-password/no-such-account rejection.
+        raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     user = await db.users.find_one({"email": email})
     if not user or not user.get("password_hash") or not verify_password(inp.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        await _record_login_failure(email)
+        raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
+    await _reset_login_failures(email)
     token = create_access_token(user["user_id"], email)
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
@@ -324,7 +429,16 @@ async def me(user: dict = Depends(get_current_user)):
     return user
 
 @api.post("/auth/logout")
-async def logout(response: Response):
+async def logout(request: Request, response: Response):
+    token = _extract_token(request)
+    if token:
+        await _revoke_token(token)
+        # Google session tokens are server-tracked records; delete outright rather than
+        # only blocklisting, which also frees the collection from unbounded growth.
+        try:
+            await db.user_sessions.delete_one({"session_token": token})
+        except AttributeError:
+            pass
     response.delete_cookie("access_token", path="/")
     return {"ok": True}
 
@@ -1757,6 +1871,20 @@ async def outcome_graph(ws_id: str, user=Depends(get_current_user)):
     history = await db.health_snapshots.find(scoped, {"_id": 0}).sort("at", 1).to_list(200)
     return {"workspace": ws, "goals": goals, "commitments": commitments, "health": health, "health_history": history}
 
+async def _claim_cron_run(job: str, run_id: str) -> bool:
+    """Atomically claim a cron run_id so a job never double-executes under concurrent
+    duplicate delivery. A plain find_one()-then-insert_one() has a TOCTOU window where two
+    concurrent requests can both pass the check before either insert lands; relying on the
+    unique index on cron_runs.run_id (see lifespan()) and catching the duplicate-key error
+    closes that window, mirroring the same pattern already used for stripe_webhook_events."""
+    try:
+        await db.cron_runs.insert_one({"run_id": run_id, "job": job, "at": now_iso()})
+        return True
+    except Exception as exc:
+        if getattr(exc, "code", None) == 11000 or "duplicate key" in str(exc).lower():
+            return False
+        raise
+
 @api.post("/cron/commitment-risk")
 async def cron_commitment_risk(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
@@ -1766,9 +1894,8 @@ async def cron_commitment_risk(request: Request):
     if not secret or not token or not hmac.compare_digest(token, secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
     run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if await db.cron_runs.find_one({"run_id": run_id}):
+    if not await _claim_cron_run("commitment-risk", run_id):
         return {"accepted": True, "duplicate": True}
-    await db.cron_runs.insert_one({"run_id": run_id, "job": "commitment-risk", "at": now_iso()})
     asyncio.create_task(evaluate_commitment_risk(tenant_id=None, actor="cron"))
     return {"accepted": True, "run_id": run_id}
 
@@ -1909,6 +2036,32 @@ async def _google_creds(tenant_id):
         return None
     return dec_secret(doc["enc"]), doc
 
+# ---- Stripe credential helpers ----
+# Mirrors the Google pattern: a tenant that connects its own Stripe secret key gets an
+# encrypted, tenant-scoped credential so its sync never runs against another tenant's
+# (or the shared/default) Stripe account. Falls back to the single global STRIPE_API_KEY
+# env var when no tenant-scoped credential has been configured, preserving existing
+# single-tenant/dev/CI behavior.
+
+async def _stripe_credentials(tenant_id):
+    try:
+        doc = await db.stripe_credentials.find_one({"tenant_id": tenant_id}, {"_id": 0})
+    except AttributeError:
+        # Some unit tests replace `db` with a bare stand-in exposing only the
+        # collections that specific test needs; treat that as "no tenant credential".
+        return None
+    if not doc or not doc.get("enc"):
+        return None
+    return dec_secret(doc["enc"]), doc
+
+async def _stripe_api_key(tenant_id):
+    creds = await _stripe_credentials(tenant_id)
+    if creds:
+        key = creds[0].get("api_key")
+        if key:
+            return key
+    return os.environ.get("STRIPE_API_KEY")
+
 async def _google_access_token(tenant_id, force_refresh=False):
     creds, doc = (await _google_creds(tenant_id)) or (None, None)
     if not creds:
@@ -2040,32 +2193,64 @@ async def sync_calendar(tenant_id, actor):
     return {"scanned": len(events), "matched": matched}
 
 async def sync_stripe(tenant_id, actor):
-    key = os.environ.get("STRIPE_API_KEY")
+    key = await _stripe_api_key(tenant_id)
     if not key:
         raise RuntimeError("not_connected")
     _stripe.api_key = key
     contacts = await _contacts_by_email(tenant_id)
-    companies = {c["id"]: c for c in await db.companies.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(5000)}
-    count = 0
-    def match(email):
+
+    def match_by_email(email):
         c = contacts.get((email or "").lower())
         return (c["id"] if c else None, c.get("company_id") if c else None)
-    for norm, items in [
-        (normalize_stripe_customer, _stripe.Customer.list(limit=50).data),
-        (normalize_stripe_invoice, _stripe.Invoice.list(limit=50).data),
-        (normalize_stripe_subscription, _stripe.Subscription.list(limit=50).data),
-    ]:
-        for it in items:
-            rec = norm(it)
-            contact_id, company_id = match(rec.get("email"))
-            ws_id = await _workspace_for_company(tenant_id, company_id)
-            doc = {"tenant_id": tenant_id, "provider": "stripe", **rec, "contact_id": contact_id,
-                   "company_id": company_id, "workspace_id": ws_id, "source": "external", "synced_at": now_iso()}
-            await db.crm_billing.update_one(
-                {"tenant_id": tenant_id, "type": rec["type"], "external_id": rec["external_id"]},
-                {"$set": doc, "$setOnInsert": {"id": new_id("bill")}}, upsert=True)
-            count += 1
-    return {"scanned": count, "matched": count}
+
+    async def store(rec, contact_id, company_id):
+        ws_id = await _workspace_for_company(tenant_id, company_id)
+        doc = {"tenant_id": tenant_id, "provider": "stripe", **rec, "contact_id": contact_id,
+               "company_id": company_id, "workspace_id": ws_id, "source": "external", "synced_at": now_iso()}
+        await db.crm_billing.update_one(
+            {"tenant_id": tenant_id, "type": rec["type"], "external_id": rec["external_id"]},
+            {"$set": doc, "$setOnInsert": {"id": new_id("bill")}}, upsert=True)
+
+    matched = 0
+    skipped = 0
+    # Stripe subscriptions carry no email of their own; resolve them via the customer
+    # they belong to, matched in the same pass as customers below.
+    customer_contact = {}
+
+    for it in _stripe.Customer.list(limit=50).data:
+        rec = normalize_stripe_customer(it)
+        contact_id, company_id = match_by_email(rec.get("email"))
+        customer_contact[it.get("id")] = (contact_id, company_id)
+        if not contact_id:
+            skipped += 1
+            continue
+        await store(rec, contact_id, company_id)
+        matched += 1
+
+    for it in _stripe.Invoice.list(limit=50).data:
+        rec = normalize_stripe_invoice(it)
+        contact_id, company_id = match_by_email(rec.get("email"))
+        if not contact_id:
+            contact_id, company_id = customer_contact.get(it.get("customer"), (None, None))
+        if not contact_id:
+            skipped += 1
+            continue
+        await store(rec, contact_id, company_id)
+        matched += 1
+
+    for it in _stripe.Subscription.list(limit=50).data:
+        rec = normalize_stripe_subscription(it)
+        contact_id, company_id = customer_contact.get(it.get("customer"), (None, None))
+        if not contact_id:
+            skipped += 1
+            continue
+        await store(rec, contact_id, company_id)
+        matched += 1
+
+    # Mirrors the Gmail/Calendar adapters, which already skip records that don't match
+    # a CRM contact rather than importing them unconditionally — this is what prevents
+    # another tenant's (or an unrelated third party's) Stripe records from landing here.
+    return {"scanned": matched + skipped, "matched": matched, "skipped_unmatched": skipped}
 
 SYNC_FUNCS = {"gmail": sync_gmail, "google_calendar": sync_calendar, "stripe": sync_stripe}
 
@@ -2187,9 +2372,17 @@ async def google_callback(state: str = Query(None), code: str = Query(None), err
         await record_event("integration.connected", "integration", p, tenant_id, actor, payload={"provider": p, "account": email})
     return RedirectResponse(url=f"{dest}&oauth=connected")
 
+class StripeConnectInput(BaseModel):
+    # Optional: a tenant's own Stripe secret/restricted key. When provided, this tenant's
+    # syncs and payment intents run against that key instead of the shared STRIPE_API_KEY
+    # env var, so two tenants never share one Stripe account by default.
+    api_key: Optional[str] = None
+
+
 @api.post("/integrations/stripe/connect")
-async def stripe_connect(user=Depends(require_role("admin"))):
-    key = os.environ.get("STRIPE_API_KEY")
+async def stripe_connect(inp: Optional[StripeConnectInput] = None, user=Depends(require_role("admin"))):
+    tenant_key = (inp.api_key.strip() if inp and inp.api_key else None) or None
+    key = tenant_key or os.environ.get("STRIPE_API_KEY")
     if not key:
         raise HTTPException(status_code=400, detail="Stripe is not configured (STRIPE_API_KEY).")
     await ensure_connections(user["tenant_id"])
@@ -2200,12 +2393,21 @@ async def stripe_connect(user=Depends(require_role("admin"))):
     except Exception as e:
         await set_conn(user["tenant_id"], "stripe", status="error", last_error=str(e)[:200])
         raise HTTPException(status_code=400, detail="Could not verify Stripe account")
-    version = 1
     key_mode = "test" if key.startswith(("sk_test_", "rk_test_")) else "live" if key.startswith(("sk_live_", "rk_live_")) else "unknown"
+    version = 1
+    if tenant_key:
+        prev = await db.stripe_credentials.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0})
+        version = ((prev or {}).get("credential_version") or 0) + 1
+        await db.stripe_credentials.update_one(
+            {"tenant_id": user["tenant_id"]},
+            {"$set": {"enc": enc_secret({"api_key": tenant_key}), "account_identity": identity,
+                      "credential_version": version, "updated_at": now_iso()}},
+            upsert=True,
+        )
     await set_conn(user["tenant_id"], "stripe", status="active", account_identity=identity,
                    scopes=["read:customers", "read:invoices", "read:subscriptions", "write:payment_intents"], connected_by=user["email"],
                    connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version,
-                   key_mode=key_mode)
+                   key_mode=key_mode, credential_scope=("tenant" if tenant_key else "shared"))
     await record_event("integration.connected", "integration", "stripe", user["tenant_id"], user["email"],
                        payload={"account": identity, "key_mode": key_mode})
     return {"ok": True, "account": identity, "key_mode": key_mode}
@@ -2221,7 +2423,7 @@ async def create_stripe_payment_intent(
     inp: StripePaymentIntentInput,
     user=Depends(require_role("admin")),
 ):
-    key = os.environ.get("STRIPE_API_KEY")
+    key = await _stripe_api_key(user["tenant_id"])
     if not key:
         raise HTTPException(status_code=400, detail="Stripe is not configured (STRIPE_API_KEY).")
     if not key.startswith(("sk_test_", "rk_test_")):
@@ -2456,6 +2658,11 @@ async def disconnect_provider(provider: str, user=Depends(require_role("admin"))
                 pass
         if not await db.integration_connections.find_one({"tenant_id": user["tenant_id"], "provider": ("google_calendar" if provider == "gmail" else "gmail"), "status": "active"}):
             await db.google_credentials.delete_one({"tenant_id": user["tenant_id"]})
+    if provider == "stripe":
+        try:
+            await db.stripe_credentials.delete_one({"tenant_id": user["tenant_id"]})
+        except AttributeError:
+            pass
     await set_conn(user["tenant_id"], provider, status="disconnected", account_identity=None, scopes=[],
                    revoked_at=now_iso())
     await record_event("integration.disconnected", "integration", provider, user["tenant_id"], user["email"], payload={"provider": provider})
@@ -2491,9 +2698,8 @@ async def cron_integration_sync(request: Request):
     if not secret or not token or not hmac.compare_digest(token, secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
     run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if await db.cron_runs.find_one({"run_id": run_id}):
+    if not await _claim_cron_run("integration-sync", run_id):
         return {"accepted": True, "duplicate": True}
-    await db.cron_runs.insert_one({"run_id": run_id, "job": "integration-sync", "at": now_iso()})
 
     async def _sweep():
         actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
@@ -3067,9 +3273,8 @@ async def cron_daily_digest(request: Request):
     if not secret or not token or not hmac.compare_digest(token, secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
     run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if await db.cron_runs.find_one({"run_id": run_id}):
+    if not await _claim_cron_run("daily-digest", run_id):
         return {"accepted": True, "duplicate": True}
-    await db.cron_runs.insert_one({"run_id": run_id, "job": "daily-digest", "at": now_iso()})
 
     async def _sweep():
         for t in await db.tenants.find({}, {"_id": 0, "tenant_id": 1}).to_list(500):
