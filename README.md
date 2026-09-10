@@ -59,7 +59,7 @@ cp frontend/.env.example frontend/.env
 ## 3. Database requirements
 
 - MongoDB reachable at `MONGO_URL`. Collections are created on demand.
-- On first startup the backend **seeds** an admin user (`ADMIN_EMAIL`/`ADMIN_PASSWORD`), a demo tenant ("ClientVerse HQ") with sample companies, contacts, opportunities, a client workspace, commitments, deliverables, approvals, outcomes with target snapshots, and governed registries (integrations / MCP servers / plugins / webhooks). Seeding is idempotent (skipped if the admin already exists).
+- On first startup the backend **seeds** an admin user (`ADMIN_EMAIL`/`ADMIN_PASSWORD`) and the governed registries (integrations / MCP servers / plugins / webhooks). Sample CRM records are created only when `SEED_DEMO_DATA=true`; production defaults this setting to false and must not enable it. Seeding is idempotent, and the configured admin password is re-synchronized on boot when it changes.
 
 ## 4. Backend startup
 
@@ -82,7 +82,6 @@ sudo supervisorctl restart frontend      # serves on :3000
 ```bash
 # Backend API/integration test suite (hits the running backend)
 cd backend && python -m pytest tests/ -q
-# Latest result: 101 passed, 4 skipped
 # Skips are external-service dependent only: Stripe live sync (STRIPE_API_KEY),
 # two AI generation tests (EMERGENT_LLM_KEY), and one MCP undo-window case that
 # cannot be backdated through the public API.
@@ -216,4 +215,4 @@ in the repository settings.
 
 ---
 
-_Validate a release candidate with `cd backend && python -m pytest tests/ -q` against a running API and `cd frontend && CI=true yarn build`._
+_Validate a release candidate with `cd backend && python -m pytest tests/ -q` against a running MongoDB-backed API, `cd frontend && yarn lint --max-warnings=0`, and `cd frontend && CI=true yarn build`._
