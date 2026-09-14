@@ -4,21 +4,24 @@ import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
-import { Mail, Calendar, CreditCard, RefreshCw, Plug, Unplug, AlertTriangle, CheckCircle2, Clock } from "lucide-react";
+import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
+import { Mail, Calendar, CreditCard, RefreshCw, Plug, Unplug, AlertTriangle, CheckCircle2, Clock, ShieldAlert } from "lucide-react";
 
 const META = {
   gmail: { label: "Gmail", icon: Mail, desc: "Read-only message + thread metadata, matched to CRM contacts.", kind: "google" },
   google_calendar: { label: "Google Calendar", icon: Calendar, desc: "Upcoming client meetings with attendee matching.", kind: "google" },
   stripe: { label: "Stripe", icon: CreditCard, desc: "Read-only customers, invoices & subscriptions.", kind: "stripe" },
 };
+
+/** Honest operator-facing labels — does not imply live Google/Stripe certification. */
 const STATUS = {
-  disconnected: { c: "bg-slate-50 text-slate-500 border-slate-200", t: "Not connected" },
-  connecting: { c: "bg-blue-50 text-blue-600 border-blue-200", t: "Connecting…" },
-  active: { c: "bg-emerald-50 text-emerald-700 border-emerald-200", t: "Connected" },
-  degraded: { c: "bg-amber-50 text-amber-700 border-amber-200", t: "Degraded" },
-  expired: { c: "bg-orange-50 text-orange-700 border-orange-200", t: "Token expired" },
-  revoked: { c: "bg-red-50 text-red-700 border-red-200", t: "Authorization revoked" },
-  error: { c: "bg-red-50 text-red-700 border-red-200", t: "Error" },
+  disconnected: { c: "bg-slate-50 text-slate-500 border-slate-200", t: "Not connected", tone: "idle" },
+  connecting: { c: "bg-blue-50 text-blue-600 border-blue-200", t: "Connecting…", tone: "pending" },
+  active: { c: "bg-emerald-50 text-emerald-700 border-emerald-200", t: "Connected", tone: "ok" },
+  degraded: { c: "bg-amber-50 text-amber-700 border-amber-200", t: "Degraded", tone: "warn" },
+  expired: { c: "bg-orange-50 text-orange-700 border-orange-200", t: "Needs auth", tone: "auth" },
+  revoked: { c: "bg-red-50 text-red-700 border-red-200", t: "Needs auth", tone: "auth" },
+  error: { c: "bg-red-50 text-red-700 border-red-200", t: "Error", tone: "error" },
 };
 
 function stale(conn) {
@@ -30,11 +33,20 @@ export default function IntegrationsPanel() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [conns, setConns] = useState(null);
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
 
   const load = useCallback(async () => {
-    try { const { data } = await api.get("/integrations/connections"); setConns(data); }
-    catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+    setLoadError("");
+    try {
+      const { data } = await api.get("/integrations/connections");
+      setConns(data);
+    } catch (e) {
+      const message = formatErr(e.response?.data?.detail) || "Could not load provider connections.";
+      setLoadError(message);
+      setConns(null);
+      toast.error(message);
+    }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -77,21 +89,29 @@ export default function IntegrationsPanel() {
     finally { setBusy(""); }
   };
 
-  if (!conns) return <div className="text-sm text-gray-400 py-6" data-testid="integrations-loading">Loading connections…</div>;
+  if (loadError) {
+    return <SurfaceError title="Integration center unavailable" description={loadError} onRetry={load} testid="integrations-error" />;
+  }
+  if (!conns) return <SurfaceLoading rows={3} testid="integrations-loading" />;
 
   return (
     <div className="space-y-4" data-testid="integrations-panel">
+      <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-5 text-slate-600" data-testid="integrations-honesty-banner">
+        <strong className="font-semibold text-[#132038]">Status honesty:</strong> cards below reflect tenant connection state from the CRM API. They do not claim live Google or Stripe provider certification.
+      </div>
       {conns.map((c) => {
         const m = META[c.provider]; const st = STATUS[c.status] || STATUS.disconnected;
         const needsReconnect = ["expired", "revoked", "error"].includes(c.status);
+        const needsAuth = st.tone === "auth";
         return (
           <div key={c.provider} className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm" data-testid={`integration-${c.provider}`}>
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-start gap-3">
                 <div className="w-9 h-9 rounded-lg bg-gray-50 border border-gray-200 flex items-center justify-center"><m.icon className="w-4 h-4 text-gray-700" /></div>
                 <div>
-                  <div className="font-display font-bold text-base flex items-center gap-2">{m.label}
+                  <div className="font-display font-bold text-base flex items-center gap-2 flex-wrap">{m.label}
                     <Badge className={st.c} data-testid={`integration-status-${c.provider}`}>{st.t}</Badge>
+                    {needsAuth && <Badge className="bg-orange-50 text-orange-700 border-orange-200 text-[10px]"><ShieldAlert className="w-3 h-3 mr-1" />Re-authorize</Badge>}
                     {stale(c) && c.status === "active" && <Badge className="bg-yellow-50 text-yellow-700 border-yellow-200"><Clock className="w-3 h-3 mr-1" />Stale</Badge>}
                   </div>
                   <div className="text-xs text-gray-500 mt-0.5">{m.desc}</div>
@@ -108,7 +128,7 @@ export default function IntegrationsPanel() {
                       <Button size="sm" className="h-8 bg-[#0A0A0A]" disabled={busy === c.provider} onClick={() => connect(c.provider)} data-testid={`connect-${c.provider}`}><Plug className="w-3.5 h-3.5 mr-1" />Connect</Button>
                     ) : (
                       <>
-                        {needsReconnect && <Button size="sm" className="h-8 bg-orange-600 hover:bg-orange-700" disabled={busy === c.provider} onClick={() => connect(c.provider)} data-testid={`reconnect-${c.provider}`}>Reconnect</Button>}
+                        {needsReconnect && <Button size="sm" className="h-8 bg-orange-600 hover:bg-orange-700" disabled={busy === c.provider} onClick={() => connect(c.provider)} data-testid={`reconnect-${c.provider}`}>{needsAuth ? "Re-authorize" : "Reconnect"}</Button>}
                         <Button size="sm" variant="outline" className="h-8" disabled={busy === c.provider} onClick={() => sync(c.provider)} data-testid={`sync-${c.provider}`}><RefreshCw className={`w-3.5 h-3.5 mr-1 ${busy === c.provider ? "animate-spin" : ""}`} />Sync</Button>
                         <Button size="sm" variant="outline" className="h-8" disabled={busy === c.provider} onClick={() => disconnect(c.provider)} data-testid={`disconnect-${c.provider}`}><Unplug className="w-3.5 h-3.5 mr-1" />Disconnect</Button>
                       </>
@@ -125,7 +145,12 @@ export default function IntegrationsPanel() {
         );
       })}
       {!conns.some((c) => c.status === "active") && (
-        <div className="text-xs text-gray-400 flex items-center gap-1.5"><Plug className="w-3.5 h-3.5" />Connect a provider to surface live client email, meetings and billing inside workspaces.</div>
+        <SurfaceEmpty
+          icon={Plug}
+          title="No providers connected"
+          description="Connect Gmail, Calendar, or Stripe from this panel to surface matched client email, meetings, and billing inside workspaces. Connection state is API-backed; live provider certification remains a separate owner-controlled gate."
+          testid="integrations-none-connected"
+        />
       )}
     </div>
   );

@@ -8,8 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Terminal, ShieldAlert, Zap, Clock, CheckCircle2, XCircle, RotateCw, Undo2 } from "lucide-react";
+import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
+import { Terminal, ShieldAlert, Zap, Clock, CheckCircle2, XCircle, RotateCw, Undo2, Activity } from "lucide-react";
 
 const LEVEL_COLOR = {
   1: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -28,15 +28,26 @@ export default function Mcp() {
   const [args, setArgs] = useState({});
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
+  const [loadError, setLoadError] = useState("");
 
   const loadHistory = useCallback(async () => {
-    const r = await api.get("/mcp/invocations?limit=50");
-    setInvocations(r.data);
+    try {
+      const r = await api.get("/mcp/invocations?limit=50");
+      setInvocations(r.data || []);
+    } catch {
+      setInvocations([]);
+    }
   }, []);
   const load = useCallback(async () => {
-    const [t, w] = await Promise.all([api.get("/mcp/tools"), api.get("/workspaces")]);
-    setData(t.data.tools); setServer(t.data.server); setWorkspaces(w.data);
-    loadHistory();
+    setLoadError("");
+    try {
+      const [t, w] = await Promise.all([api.get("/mcp/tools"), api.get("/workspaces")]);
+      setData(t.data.tools); setServer(t.data.server); setWorkspaces(w.data);
+      await loadHistory();
+    } catch (e) {
+      setLoadError(e.response?.data?.detail || "Could not load MCP console.");
+      setData(null);
+    }
   }, [loadHistory]);
   useEffect(() => { load(); }, [load]);
 
@@ -81,7 +92,14 @@ export default function Mcp() {
     } catch (e) { toast.error(e.response?.data?.detail || "Undo failed"); }
   };
 
-  if (!data) return <div className="space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-xl" /></div>;
+  if (loadError) {
+    return <div className="cv-page"><SurfaceError title="MCP console unavailable" description={typeof loadError === "string" ? loadError : "Could not load MCP console."} onRetry={load} testid="mcp-error" /></div>;
+  }
+  if (!data || !server) return <div className="cv-page space-y-4"><SurfaceLoading rows={3} testid="mcp-loading" /></div>;
+
+  const serverLive = !server.kill_switch && server.status === "available";
+  const recentFailures = invocations.filter((inv) => inv.status && inv.status !== "success" && inv.status !== "pending_approval").length;
+  const recentSuccess = invocations.filter((inv) => inv.status === "success").length;
 
   return (
     <div>
@@ -90,21 +108,42 @@ export default function Mcp() {
         <p className="text-sm text-gray-500 mt-1">Governed MCP server — Level 1 read tools execute live through the ClientVerse policy wrapper.</p>
       </div>
 
-      {/* Kill switch */}
-      <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm mb-6 flex items-center justify-between" data-testid="mcp-server-card">
-        <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${server.kill_switch ? "bg-red-50" : "bg-emerald-50"}`}>
-            <ShieldAlert className={`w-5 h-5 ${server.kill_switch ? "text-red-600" : "text-emerald-600"}`} />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" data-testid="mcp-status-cards">
+        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-server-card">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${server.kill_switch ? "bg-red-50" : "bg-emerald-50"}`}>
+                <ShieldAlert className={`w-5 h-5 ${server.kill_switch ? "text-red-600" : "text-emerald-600"}`} />
+              </div>
+              <div className="min-w-0">
+                <div className="font-display font-bold truncate">{server.name} <span className="text-xs text-gray-400 font-normal">v{server.version}</span></div>
+                <div className="text-xs text-gray-500 mt-0.5">Level 1 · {server.allowlist?.length || 0} tools allowlisted</div>
+              </div>
+            </div>
+            <Badge className={CAP_STATUS[server.status] || CAP_STATUS.PLANNED} data-testid="mcp-server-status">{server.status}</Badge>
           </div>
-          <div>
-            <div className="font-display font-bold">{server.name} <span className="text-xs text-gray-400 font-normal">v{server.version}</span></div>
-            <div className="text-xs text-gray-500">Level 1 · {server.allowlist?.length} tools allowlisted · <Badge className={CAP_STATUS[server.status]}>{server.status}</Badge></div>
+          <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-3">
+            <div>
+              <div className="text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold">Runtime</div>
+              <div className="text-sm font-medium mt-0.5" data-testid="mcp-runtime-label">{server.kill_switch ? "Disabled by kill switch" : serverLive ? "Live (governed)" : "Not live"}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch checked={server.kill_switch} onCheckedChange={toggleKill} data-testid="mcp-kill-switch" />
+              <span className="text-xs text-gray-400">Kill switch</span>
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-500">{server.kill_switch ? "Disabled" : "Live"}</span>
-          <Switch checked={server.kill_switch} onCheckedChange={toggleKill} data-testid="mcp-kill-switch" />
-          <span className="text-xs text-gray-400">Kill switch</span>
+        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-activity-card">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold"><Activity className="w-3.5 h-3.5" />Recent activity</div>
+          <div className="mt-3 flex items-end gap-4">
+            <div><div className="font-display text-2xl font-bold text-emerald-700">{recentSuccess}</div><div className="text-xs text-gray-500">Succeeded</div></div>
+            <div><div className="font-display text-2xl font-bold text-red-600">{recentFailures}</div><div className="text-xs text-gray-500">Failed / rejected</div></div>
+            <div><div className="font-display text-2xl font-bold text-[#0a1628]">{invocations.length}</div><div className="text-xs text-gray-500">In history</div></div>
+          </div>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-policy-card">
+          <div className="text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold">Observability</div>
+          <p className="text-sm text-gray-600 mt-2 leading-5">Invocations are policy-wrapped. History below is operator evidence — not a claim that external agents are running outside this console.</p>
         </div>
       </div>
 
@@ -113,6 +152,7 @@ export default function Mcp() {
         <div>
           <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Tool Catalog</div>
           <div className="space-y-3">
+            {data.length === 0 && <SurfaceEmpty icon={Terminal} title="No tools allowlisted" description="The MCP server returned an empty catalog. Check server configuration or kill-switch policy." testid="mcp-tools-empty" />}
             {data.map((tool) => (
               <button key={tool.name} type="button" className={`w-full bg-white border rounded-xl p-4 text-left shadow-sm transition-colors ${selected?.name === tool.name ? "border-black" : "border-gray-200 hover:border-gray-300"}`}
                 onClick={() => pick(tool)} data-testid={`mcp-tool-${tool.name}`}>
@@ -217,7 +257,7 @@ export default function Mcp() {
                   </td>
                 </tr>
               ))}
-              {invocations.length === 0 && <tr><td colSpan={5} className="px-5 py-8 text-center text-gray-400">No invocations yet.</td></tr>}
+              {invocations.length === 0 && <tr><td colSpan={5} className="px-5 py-6"><SurfaceEmpty icon={Terminal} title="No MCP invocations yet" description="Successful and failed tool runs appear here after an invoke. Empty history means nothing has been executed in this tenant." testid="mcp-history-empty" /></td></tr>}
             </tbody>
           </table>
         </div>
