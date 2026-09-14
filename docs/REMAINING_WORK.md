@@ -1,10 +1,10 @@
 # Remaining Work
 
-Status reconciled against `main@2a4fe6b` on 2026-09-10.
+Status reconciled against `main@5c18061` plus integrated closeout work through PR-equivalent heads #21/#22/#24/#25/#23 on 2026-09-14.
 
 ## Engineering status
 
-No incomplete repository task remains that can be truthfully closed without access to an owner-controlled provider or production account. The application, Railway deployment configuration, tenant-isolation controls, CI workflow, and credential-free provider contract tests are implemented. `todo.md` remains the canonical historical task ledger.
+No incomplete repository task remains that can be truthfully closed without access to an owner-controlled provider or production account. The application, Railway deployment configuration, tenant-isolation controls, CI workflow, deploy SHA health parity, Command Center UX improvements, pipeline/workspace UX refinements, and credential-free provider contract tests are implemented. `todo.md` remains the canonical historical task ledger.
 
 Do not mark the external-provider lifecycle as certified based only on mocks, contract tests, or environment-variable presence. Certification requires a real test account and sanitized evidence from the live lifecycle.
 

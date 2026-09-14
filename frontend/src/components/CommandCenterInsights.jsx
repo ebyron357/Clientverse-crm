@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
@@ -95,7 +95,7 @@ export default function CommandCenterInsights() {
   }
   if (!alerts) return <SurfaceLoading rows={2} testid="cc-insights-loading" />;
   const open = alerts.alerts || [];
-  const groups = useMemo(() => groupAlerts(open), [open]);
+  const groups = groupAlerts(open);
 
   return (
     <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-12" data-testid="command-center-insights">

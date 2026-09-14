@@ -161,7 +161,7 @@ function WorkItemDialog({ kind, title, onTitleChange, open, onOpenChange, busy, 
 }
 
 
-function buildNextBestActions({ health, commitments, tasks, approvals, workspaceId }) {
+function buildNextBestActions({ health, commitments, tasks, approvals }) {
   const actions = [];
   const openCommitments = (commitments || []).filter((c) => ["open", "at_risk", "breached"].includes(c.status));
   const breached = openCommitments.filter((c) => c.status === "breached" || c.status === "at_risk");
