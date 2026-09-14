@@ -31,7 +31,17 @@ export default function ModuleStatus({ moduleId: moduleIdProp }) {
           <ContractRow icon={CheckCircle2} label="Stable module ID" value={module.id} />
           <ContractRow icon={CheckCircle2} label="Route namespace" value={module.route} />
           <ContractRow icon={LockKeyhole} label="Required backend contract" value={module.contract} />
-          <div className="rounded-xl border border-dashed border-border bg-secondary/50 p-4 text-sm leading-6 text-muted-foreground">No sample records or simulated writes are shown. This surface becomes operational when its versioned backend contract is implemented and the module state changes to available.</div>
+          <div className="rounded-xl border border-dashed border-border bg-secondary/50 p-4 text-sm leading-6 text-muted-foreground" data-testid="module-contract-honesty">No sample records or simulated writes are shown. This surface becomes operational when its versioned backend contract is implemented and the module state changes to available.</div>
+          {module.group === "Communications" && (
+            <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 p-4 text-sm leading-6 text-[#0a6177]" data-testid="module-comms-honesty">
+              Unified inbox and channel threads are reserved here for architecture honesty. Matched email already surfaces on Client 360 activity when Gmail is connected; a full mocked inbox module is intentionally not fabricated until the Conversation service contract lands.
+            </div>
+          )}
+          {module.group === "Intelligence" && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm leading-6 text-slate-600" data-testid="module-intel-honesty">
+              Research and relationship insights keep this route namespace stable. Command Center insights remain the live operating view until recommendation services are available.
+            </div>
+          )}
         </div>
       </div>
       <aside className="cv-card p-5">

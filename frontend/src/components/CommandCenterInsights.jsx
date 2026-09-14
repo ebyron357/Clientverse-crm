@@ -5,10 +5,12 @@ import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
 import { Bell, Activity, Check, X, RefreshCw, Plug } from "lucide-react";
 
 const SEV = { info: "bg-slate-50 text-slate-600 border-slate-200", warning: "bg-amber-50 text-amber-700 border-amber-200", critical: "bg-red-50 text-red-700 border-red-200" };
 const CONN = { active: "bg-emerald-50 text-emerald-700 border-emerald-200", degraded: "bg-amber-50 text-amber-700 border-amber-200", expired: "bg-orange-50 text-orange-700 border-orange-200", revoked: "bg-red-50 text-red-700 border-red-200", error: "bg-red-50 text-red-700 border-red-200", disconnected: "bg-slate-50 text-slate-500 border-slate-200", connecting: "bg-blue-50 text-blue-600 border-blue-200" };
+const CONN_LABEL = { active: "Connected", degraded: "Degraded", expired: "Needs auth", revoked: "Needs auth", error: "Error", disconnected: "Not connected", connecting: "Connecting…" };
 
 export default function CommandCenterInsights() {
   const { user } = useAuth();
@@ -17,13 +19,27 @@ export default function CommandCenterInsights() {
   const [alerts, setAlerts] = useState(null);
   const [health, setHealth] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   const load = useCallback(async () => {
+    setLoadError("");
     try {
       const a = await api.get("/alerts", { params: { status: "open" } });
       setAlerts(a.data);
-      if (isAdmin) { const h = await api.get("/integrations/health"); setHealth(h.data.providers); }
-    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+      if (isAdmin) {
+        try {
+          const h = await api.get("/integrations/health");
+          setHealth(h.data.providers);
+        } catch {
+          setHealth([]);
+        }
+      }
+    } catch (e) {
+      const message = formatErr(e.response?.data?.detail) || "Could not load command-center insights.";
+      setLoadError(message);
+      setAlerts(null);
+      toast.error(message);
+    }
   }, [isAdmin]);
   useEffect(() => { load(); }, [load]);
 
@@ -38,7 +54,10 @@ export default function CommandCenterInsights() {
     catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
   };
 
-  if (!alerts) return null;
+  if (loadError) {
+    return <SurfaceError title="Insights unavailable" description={loadError} onRetry={load} testid="cc-insights-error" />;
+  }
+  if (!alerts) return <SurfaceLoading rows={2} testid="cc-insights-loading" />;
   const open = alerts.alerts || [];
 
   return (
@@ -52,7 +71,7 @@ export default function CommandCenterInsights() {
           <Button size="sm" variant="outline" className="h-8" onClick={evaluate} disabled={busy} data-testid="evaluate-alerts"><RefreshCw className={`w-3.5 h-3.5 mr-1 ${busy ? "animate-spin" : ""}`} />Scan now</Button>
         </div>
         {open.length === 0 ? (
-          <div className="text-sm text-gray-400 py-6 text-center" data-testid="cc-alerts-empty">No open alerts. All clear.</div>
+          <SurfaceEmpty icon={Bell} title="No open alerts" description="Operational alerts appear here when integrations, commitments, or health checks need follow-through." testid="cc-alerts-empty" />
         ) : (
           <div className="space-y-2 max-h-72 overflow-auto">
             {open.slice(0, 10).map((a) => (
@@ -76,7 +95,7 @@ export default function CommandCenterInsights() {
 
       <div className="lg:col-span-5 bg-white border border-gray-200 rounded-xl p-6 shadow-sm" data-testid="cc-connection-health">
         <h3 className="font-display font-bold text-lg flex items-center gap-2 mb-1"><Activity className="w-4 h-4" />Connection Health</h3>
-        <p className="text-xs text-gray-400 mb-4">Provider sync status across your tenant</p>
+        <p className="text-xs text-gray-400 mb-4">API-backed connection status (connected / needs auth / error). Does not claim live Google or Stripe certification.</p>
         {!isAdmin ? (
           <div className="text-sm text-gray-400 py-6 text-center" data-testid="cc-health-admin-only">Connection health is visible to admins.</div>
         ) : !health ? (
@@ -93,7 +112,7 @@ export default function CommandCenterInsights() {
                   {p.reconnect_required && <Badge className="bg-orange-50 text-orange-700 border-orange-200 text-[10px]">Reconnect</Badge>}
                   {p.stale && <Badge className="bg-yellow-50 text-yellow-700 border-yellow-200 text-[10px]">Stale</Badge>}
                   <span className="text-[11px] text-gray-400">{p.sync_age_hours != null ? `${p.sync_age_hours}h ago` : "never"}</span>
-                  <Badge className={CONN[p.status]}>{p.status}</Badge>
+                  <Badge className={CONN[p.status] || CONN.disconnected} data-testid={`cc-provider-status-${p.provider}`}>{CONN_LABEL[p.status] || p.status}</Badge>
                 </div>
               </div>
             ))}
