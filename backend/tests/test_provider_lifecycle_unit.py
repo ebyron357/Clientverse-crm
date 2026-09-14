@@ -479,7 +479,11 @@ def test_stripe_payment_intent_success_is_test_only_tenant_scoped_and_idempotent
 
 
 def test_stripe_payment_intent_rejects_live_key(monkeypatch):
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_live_x")
+    # Avoid Mongo: resolve the key without a tenant credential lookup.
+    async def fake_stripe_api_key(_tenant_id):
+        return "sk_live_x"
+
+    monkeypatch.setattr(server, "_stripe_api_key", fake_stripe_api_key)
 
     try:
         run(server.create_stripe_payment_intent(
