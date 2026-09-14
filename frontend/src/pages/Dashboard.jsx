@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   AlertTriangle, ArrowRight, BriefcaseBusiness, CheckCircle2, CircleAlert,
-  CircleDollarSign, ClipboardCheck, RefreshCw, Sparkles, TrendingUp,
+  CircleDollarSign, ClipboardCheck, GitBranch, RefreshCw, Sparkles, TrendingUp,
 } from "lucide-react";
 
 const STAGE_LABELS = { lead: "Lead", qualified: "Qualified", proposal: "Proposal", negotiation: "Negotiation", closed_won: "Won", closed_lost: "Lost" };
@@ -58,14 +58,26 @@ export default function Dashboard() {
   const priorityItems = useMemo(() => {
     if (!data) return [];
     const items = [];
-    if (data.at_risk_commitments) items.push({ icon: AlertTriangle, title: `Review ${data.at_risk_commitments} at-risk commitment${data.at_risk_commitments === 1 ? "" : "s"}`, body: "Open Client 360 and confirm an owner, due date, or recovery step before the next touchpoint.", source: "Commitment status is at risk or breached", to: "/workspaces", tone: "amber" });
-    const pendingAlerts = Array.isArray(system.alerts) ? system.alerts.filter((alert) => alert.status !== "resolved").length : 0;
-    if (pendingAlerts) items.push({ icon: CircleAlert, title: `Resolve ${pendingAlerts} open risk signal${pendingAlerts === 1 ? "" : "s"}`, body: "Review the underlying account evidence, acknowledge the signal, and assign follow-through.", source: "Open operational alerts require a human decision", to: "/workspaces", tone: "red" });
+    const alertList = Array.isArray(system.alerts) ? system.alerts : (system.alerts?.alerts || []);
+    const openAlerts = alertList.filter((alert) => alert.status !== "resolved" && alert.status !== "acknowledged");
+    const workspaceAlerts = openAlerts.filter((alert) => alert.workspace_id);
+    if (data.at_risk_commitments) items.push({ rank: 1, icon: AlertTriangle, title: `Review ${data.at_risk_commitments} at-risk commitment${data.at_risk_commitments === 1 ? "" : "s"}`, body: "Confirm an owner, due date, or recovery step before the next touchpoint.", source: "Commitment status is at risk or breached", to: "/workspaces", tone: "amber" });
+    if (workspaceAlerts.length) {
+      const first = workspaceAlerts[0];
+      items.push({ rank: 2, icon: CircleAlert, title: first.summary || `Triage ${workspaceAlerts.length} workspace risk signal${workspaceAlerts.length === 1 ? "" : "s"}`, body: "Open the linked Client 360 and resolve the underlying evidence.", source: first.type || "Open operational alert", to: first.workspace_id ? `/workspaces/${first.workspace_id}` : "/notifications", tone: "red" });
+    } else if (openAlerts.length) {
+      items.push({ rank: 2, icon: CircleAlert, title: `Resolve ${openAlerts.length} open risk signal${openAlerts.length === 1 ? "" : "s"}`, body: "Acknowledge the signal and assign follow-through in Action Center.", source: "Open operational alerts require a human decision", to: "/notifications", tone: "red" });
+    }
     const integrationList = Array.isArray(system.integrations) ? system.integrations : (system.integrations?.providers || []);
-    const degraded = integrationList.filter((integration) => ["degraded", "expired", "error"].includes(integration.status)).length;
-    if (degraded) items.push({ icon: CircleAlert, title: `Restore ${degraded} provider connection${degraded === 1 ? "" : "s"}`, body: "Open Registries to reconnect or investigate before relationship context becomes stale.", source: "Provider health is degraded, expired, or in error", to: "/registries", tone: "red" });
-    if (!items.length) items.push({ icon: CheckCircle2, title: "Review healthy client momentum", body: "No immediate risk is detected. Use Client 360 to confirm the next value milestone.", source: "No open risk signals are present", to: "/workspaces", tone: "emerald" });
-    return items.slice(0, 3);
+    const degraded = integrationList.filter((integration) => ["degraded", "expired", "error"].includes(integration.status));
+    if (degraded.length) items.push({ rank: 3, icon: CircleAlert, title: `Restore ${degraded.length} provider connection${degraded.length === 1 ? "" : "s"}`, body: "Reconnect or investigate before relationship context becomes stale.", source: "Provider health is degraded, expired, or in error", to: "/registries", tone: "red" });
+    if ((data.open_opportunities || 0) > 0) items.push({ rank: 4, icon: TrendingUp, title: `Advance ${data.open_opportunities} open opportunit${data.open_opportunities === 1 ? "y" : "ies"}`, body: "Move staged deals forward or close stale opportunities.", source: "Open pipeline opportunities", to: "/pipeline", tone: "cyan" });
+    const atRiskHealth = (data.portfolio || []).filter((row) => row.health?.band && row.health.band !== "healthy").slice(0, 1);
+    if (atRiskHealth.length) {
+      const row = atRiskHealth[0];
+      items.push({ rank: 5, icon: BriefcaseBusiness, title: `Stabilize ${row.name}`, body: `Health band is ${row.health.band.replace("_", " ")} — review factors and commitments.`, source: "Explainable client health", to: `/workspaces/${row.id}`, tone: "amber" });
+    }
+    return items.slice(0, 5);
   }, [data, system]);
 
   if (error) return <div className="cv-page"><div className="cv-empty"><CircleAlert className="h-9 w-9 text-red-500" /><h1 className="mt-4 font-display text-xl font-bold text-[#0a1628]">Command Center unavailable</h1><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{error}</p><Button onClick={load} className="mt-5 cv-action-primary"><RefreshCw className="mr-2 h-4 w-4" />Try again</Button></div></div>;
@@ -85,20 +97,59 @@ export default function Dashboard() {
     </section>
 
     <OnboardingChecklist dashboard={data} integrations={system.integrations} />
+
+    <section className="mt-5" aria-label="Priority next actions" data-testid="dashboard-priority-panel">
+      <div className="cv-card">
+        <div className="cv-card-header">
+          <div>
+            <h2 className="cv-card-title">Next actions</h2>
+            <p className="cv-card-description">Ranked follow-ups with deep links — above raw alerts so you decide what matters first.</p>
+          </div>
+          <span className="cv-status-dot bg-[#4ac4e0]" aria-hidden="true" />
+        </div>
+        {priorityItems.length ? (
+          <div className="divide-y divide-slate-100">
+            {priorityItems.map((item, index) => {
+              const Icon = item.icon;
+              const tones = { amber: "bg-amber-50 text-amber-600", red: "bg-red-50 text-red-600", emerald: "bg-emerald-50 text-emerald-600", cyan: "bg-cyan-50 text-[#1a9fbf]" };
+              return (
+                <button key={index} onClick={() => navigate(item.to)} className="cv-data-row flex w-full items-start gap-3 px-5 py-4 text-left" data-testid={`priority-action-${index}`}>
+                  <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-xs font-bold text-slate-500">{index + 1}</span>
+                  <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${tones[item.tone] || tones.cyan}`}><Icon className="h-4 w-4" /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-[#132038]">{item.title}</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-slate-500">{item.body}</span>
+                    <span className="mt-2 inline-flex rounded border border-dashed border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">Source: {item.source}</span>
+                  </span>
+                  <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-slate-300" />
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="cv-empty m-5 py-10" data-testid="priority-empty">
+            <CheckCircle2 className="h-8 w-8 text-emerald-500" />
+            <p className="mt-3 text-sm font-semibold text-slate-700">All clear for now</p>
+            <p className="mt-1 max-w-md text-xs leading-5 text-slate-500">No urgent commitment, alert, or integration risks. Use Client 360 when you are ready for the next value milestone.</p>
+            <Button size="sm" variant="outline" className="mt-4" onClick={() => navigate("/workspaces")}>Browse workspaces</Button>
+          </div>
+        )}
+      </div>
+    </section>
+
     <div className="mt-5"><CommandCenterInsights /></div>
 
     <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12">
       <div className="cv-card xl:col-span-7"><div className="cv-card-header"><div><h2 className="cv-card-title">Revenue movement</h2><p className="cv-card-description">A stage-by-stage view of qualified client demand.</p></div><button onClick={() => navigate("/pipeline")} className="text-xs font-semibold text-[#1a9fbf] hover:text-[#147f9a]">Open pipeline</button></div><div className="p-5"><div role="img" aria-label="Opportunity count by pipeline stage" className="h-[250px]">{funnelData.length ? <ResponsiveContainer width="100%" height="100%"><BarChart data={funnelData} layout="vertical" margin={{ left: 4, right: 12, top: 4, bottom: 4 }}><XAxis type="number" hide /><YAxis dataKey="name" type="category" width={82} tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} /><Tooltip cursor={{ fill: "#f8fafc" }} contentStyle={{ borderRadius: 12, borderColor: "#e2e8f0", boxShadow: "0 8px 24px rgba(10,22,40,.08)" }} /><Bar dataKey="count" radius={[0, 8, 8, 0]}>{funnelData.map((entry) => <Cell key={entry.key} fill={entry.key === "closed_won" ? "#16a34a" : entry.key === "proposal" || entry.key === "negotiation" ? "#1a9fbf" : "#0a1628"} />)}</Bar></BarChart></ResponsiveContainer> : <div className="cv-empty min-h-[250px]"><GitBranch className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">Your pipeline starts here</p><p className="mt-1 text-xs text-slate-500">Create the first opportunity to begin tracking revenue movement.</p><Button size="sm" className="mt-4 cv-action-primary" onClick={() => navigate("/pipeline")}>Create opportunity</Button></div>}</div></div></div>
-      <div className="cv-card xl:col-span-5"><div className="cv-card-header"><div><h2 className="cv-card-title">Priority follow-ups</h2><p className="cv-card-description">A summary of open commitment risk, alerts, and integration issues from your current data — not an automated recommendation engine.</p></div><span className="cv-status-dot bg-[#4ac4e0]" aria-hidden="true" /></div><div className="divide-y divide-slate-100">{priorityItems.map((item, index) => { const Icon = item.icon; const tones = { amber: "bg-amber-50 text-amber-600", red: "bg-red-50 text-red-600", emerald: "bg-emerald-50 text-emerald-600" }; return <button key={index} onClick={() => navigate(item.to)} className="cv-data-row flex w-full items-start gap-3 px-5 py-4 text-left"><span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${tones[item.tone]}`}><Icon className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-[#132038]">{item.title}</span><span className="mt-0.5 block text-xs leading-5 text-slate-500">{item.body}</span><span className="mt-2 flex flex-wrap items-center gap-1.5"><span className="rounded border border-dashed border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">Source: {item.source}</span></span></span><ArrowRight className="mt-1 h-4 w-4 shrink-0 text-slate-300" /></button>; })}</div></div>
+      <div className="cv-card xl:col-span-5"><div className="cv-card-header"><div><h2 className="cv-card-title">Outcome momentum</h2><p className="cv-card-description">Portfolio goals that show whether client value is being delivered.</p></div><Sparkles className="h-4 w-4 text-[#1a9fbf]" /></div>{data.goal_rollup?.total_goals > 0 ? <div className="p-5"><div className="mb-5 flex items-end justify-between"><div><div className="font-display text-3xl font-extrabold text-[#0a1628]">{data.goal_rollup.avg_progress}%</div><div className="mt-1 text-xs text-slate-500">average outcome progress</div></div><div className="flex gap-1.5"><Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">{data.goal_rollup.on_track} on track</Badge><Badge className="bg-amber-50 text-amber-700 border-amber-200">{data.goal_rollup.at_risk} at risk</Badge></div></div><div className="space-y-3">{data.goal_rollup.workspaces?.flatMap((workspace) => workspace.goals.map((goal) => ({ ...goal, workspaceName: workspace.name, workspaceId: workspace.id }))).slice(0, 4).map((goal) => <button key={goal.id} onClick={() => navigate(`/workspaces/${goal.workspaceId}`)} className="group block w-full text-left"><div className="flex items-center justify-between gap-3 text-xs"><span className="truncate font-semibold text-slate-700 group-hover:text-[#1a9fbf]">{goal.title}</span><span className="shrink-0 font-bold text-[#0a1628]">{goal.pct ?? "—"}{goal.pct !== null ? "%" : ""}</span></div><div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full ${goal.pct >= 100 ? "bg-emerald-500" : goal.pct >= 50 ? "bg-[#1a9fbf]" : "bg-amber-500"}`} style={{ width: `${Math.max(0, Math.min(goal.pct || 0, 100))}%` }} /></div><span className="mt-1 block truncate text-[11px] text-slate-400">{goal.workspaceName}</span></button>)}</div></div> : <div className="cv-empty m-5"><ClipboardCheck className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No outcome targets yet</p><p className="mt-1 text-xs text-slate-500">Define client outcomes in a workspace to connect delivery activity to value.</p></div>}</div>
     </section>
 
     <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12">
-      <div className="cv-card xl:col-span-7"><div className="cv-card-header"><div><h2 className="cv-card-title">Client health portfolio</h2><p className="cv-card-description">Explainable account health across active workspaces.</p></div><button onClick={() => navigate("/workspaces")} className="text-xs font-semibold text-[#1a9fbf] hover:text-[#147f9a]">View all clients</button></div>{data.portfolio?.length ? <div className="divide-y divide-slate-100">{data.portfolio.map((portfolio) => <button key={portfolio.id} onClick={() => navigate(`/workspaces/${portfolio.id}`)} className="cv-data-row flex w-full items-center gap-4 px-5 py-4 text-left"><span className={`flex h-9 w-9 items-center justify-center rounded-xl text-sm font-bold ${portfolio.health.band === "healthy" ? "bg-emerald-50 text-emerald-600" : portfolio.health.band === "at_risk" ? "bg-amber-50 text-amber-600" : "bg-red-50 text-red-600"}`}>{portfolio.health.score}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#132038]">{portfolio.name}</span><span className="mt-0.5 block text-xs capitalize text-slate-500">{portfolio.stage} workspace</span></span><span className="hidden items-center gap-2 sm:flex"><HealthBar score={portfolio.health.score} band={portfolio.health.band} /><Badge className={HEALTH_BAND[portfolio.health.band]}>{portfolio.health.band.replace("_", " ")}</Badge></span><ArrowRight className="h-4 w-4 text-slate-300" /></button>)}</div> : <div className="cv-empty m-5"><BriefcaseBusiness className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No client workspaces yet</p><p className="mt-1 text-xs text-slate-500">Close an opportunity or create a workspace to begin tracking client health.</p></div>}</div>
-      <div className="cv-card xl:col-span-5"><div className="cv-card-header"><div><h2 className="cv-card-title">Outcome momentum</h2><p className="cv-card-description">Portfolio goals that show whether client value is being delivered.</p></div><Sparkles className="h-4 w-4 text-[#1a9fbf]" /></div>{data.goal_rollup?.total_goals > 0 ? <div className="p-5"><div className="mb-5 flex items-end justify-between"><div><div className="font-display text-3xl font-extrabold text-[#0a1628]">{data.goal_rollup.avg_progress}%</div><div className="mt-1 text-xs text-slate-500">average outcome progress</div></div><div className="flex gap-1.5"><Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">{data.goal_rollup.on_track} on track</Badge><Badge className="bg-amber-50 text-amber-700 border-amber-200">{data.goal_rollup.at_risk} at risk</Badge></div></div><div className="space-y-3">{data.goal_rollup.workspaces?.flatMap((workspace) => workspace.goals.map((goal) => ({ ...goal, workspaceName: workspace.name, workspaceId: workspace.id }))).slice(0, 4).map((goal) => <button key={goal.id} onClick={() => navigate(`/workspaces/${goal.workspaceId}`)} className="group block w-full text-left"><div className="flex items-center justify-between gap-3 text-xs"><span className="truncate font-semibold text-slate-700 group-hover:text-[#1a9fbf]">{goal.title}</span><span className="shrink-0 font-bold text-[#0a1628]">{goal.pct ?? "—"}{goal.pct !== null ? "%" : ""}</span></div><div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full ${goal.pct >= 100 ? "bg-emerald-500" : goal.pct >= 50 ? "bg-[#1a9fbf]" : "bg-amber-500"}`} style={{ width: `${Math.max(0, Math.min(goal.pct || 0, 100))}%` }} /></div><span className="mt-1 block truncate text-[11px] text-slate-400">{goal.workspaceName}</span></button>)}</div></div> : <div className="cv-empty m-5"><ClipboardCheck className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No outcome targets yet</p><p className="mt-1 text-xs text-slate-500">Define client outcomes in a workspace to connect delivery activity to value.</p></div>}</div>
+      <div className="cv-card xl:col-span-12"><div className="cv-card-header"><div><h2 className="cv-card-title">Client health portfolio</h2><p className="cv-card-description">Explainable account health across active workspaces.</p></div><button onClick={() => navigate("/workspaces")} className="text-xs font-semibold text-[#1a9fbf] hover:text-[#147f9a]">View all clients</button></div>{data.portfolio?.length ? <div className="divide-y divide-slate-100">{data.portfolio.map((portfolio) => <button key={portfolio.id} onClick={() => navigate(`/workspaces/${portfolio.id}`)} className="cv-data-row flex w-full items-center gap-4 px-5 py-4 text-left"><span className={`flex h-9 w-9 items-center justify-center rounded-xl text-sm font-bold ${portfolio.health.band === "healthy" ? "bg-emerald-50 text-emerald-600" : portfolio.health.band === "at_risk" ? "bg-amber-50 text-amber-600" : "bg-red-50 text-red-600"}`}>{portfolio.health.score}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#132038]">{portfolio.name}</span><span className="mt-0.5 block text-xs capitalize text-slate-500">{portfolio.stage} workspace</span></span><span className="hidden items-center gap-2 sm:flex"><HealthBar score={portfolio.health.score} band={portfolio.health.band} /><Badge className={HEALTH_BAND[portfolio.health.band]}>{portfolio.health.band.replace("_", " ")}</Badge></span><ArrowRight className="h-4 w-4 text-slate-300" /></button>)}</div> : <div className="cv-empty m-5"><BriefcaseBusiness className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No client workspaces yet</p><p className="mt-1 text-xs text-slate-500">Close an opportunity or create a workspace to begin tracking client health.</p></div>}</div>
     </section>
   </div>;
 }
 
 function DashboardSkeleton() {
-  return <div className="cv-page"><div className="mb-8 space-y-3"><Skeleton className="h-3 w-32" /><Skeleton className="h-9 w-56" /><Skeleton className="h-4 w-96 max-w-full" /></div><div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-44 rounded-2xl" />)}</div><div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12"><Skeleton className="h-80 rounded-2xl xl:col-span-7" /><Skeleton className="h-80 rounded-2xl xl:col-span-5" /></div></div>;
+  return <div className="cv-page" data-testid="dashboard-skeleton"><div className="mb-8 space-y-3"><Skeleton className="h-3 w-32" /><Skeleton className="h-9 w-56" /><Skeleton className="h-4 w-96 max-w-full" /></div><div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-44 rounded-2xl" />)}</div><Skeleton className="mt-5 h-56 rounded-2xl" /><div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12"><Skeleton className="h-80 rounded-2xl xl:col-span-7" /><Skeleton className="h-80 rounded-2xl xl:col-span-5" /></div></div>;
 }
