@@ -479,7 +479,11 @@ def test_stripe_payment_intent_success_is_test_only_tenant_scoped_and_idempotent
 
 
 def test_stripe_payment_intent_rejects_live_key(monkeypatch):
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_live_x")
+    # Avoid Mongo: resolve the key without a tenant credential lookup.
+    async def fake_stripe_api_key(_tenant_id):
+        return "sk_live_x"
+
+    monkeypatch.setattr(server, "_stripe_api_key", fake_stripe_api_key)
 
     try:
         run(server.create_stripe_payment_intent(
@@ -917,3 +921,209 @@ def test_public_connection_redacts_all_credential_material():
     assert {"enc", "access_token", "refresh_token", "client_secret", "api_key", "webhook_secret"}.issubset(
         server.SAFE_CONN_FIELDS
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #10 harness strengtheners — additional CI-safe failure / re-auth paths
+# These do not exercise live Gmail, Calendar, or Stripe credentials.
+# ---------------------------------------------------------------------------
+
+
+def test_google_connect_requires_oauth_client_configuration(monkeypatch):
+    monkeypatch.setattr(server, "GOOGLE_CLIENT_ID", "")
+    monkeypatch.setattr(server, "GOOGLE_CLIENT_SECRET", "")
+    monkeypatch.setattr(server, "ensure_connections", lambda _tenant_id: asyncio.sleep(0))
+
+    try:
+        run(server.google_connect(user={"tenant_id": "ten_a", "email": "admin@example.com"}))
+        raise AssertionError("expected missing Google OAuth configuration")
+    except server.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "Google OAuth is not configured" in exc.detail
+
+
+def test_google_refresh_revoked_refresh_token_marks_reauth_required(monkeypatch):
+    credential_store = CaptureCollection()
+    monkeypatch.setattr(server, "db", SimpleNamespace(google_credentials=credential_store))
+    monkeypatch.setattr(server, "GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setattr(server, "GOOGLE_CLIENT_SECRET", "client-secret")
+
+    async def fake_google_creds(tenant_id):
+        assert tenant_id == "ten_a"
+        return ({
+            "access_token": "expired-access",
+            "refresh_token": "revoked-refresh",
+            "expires_at": 0,
+            "scopes": ["scope-a"],
+        }, {"credential_version": 1})
+
+    monkeypatch.setattr(server, "_google_creds", fake_google_creds)
+    client = FakeAsyncClient(post_responses=[FakeResponse(401, {"error": "invalid_grant"})])
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
+
+    try:
+        run(server._google_access_token("ten_a", force_refresh=True))
+        raise AssertionError("expected revoked refresh token failure")
+    except RuntimeError as exc:
+        assert str(exc) == "token_refresh_failed:401"
+    assert credential_store.updated == []
+
+
+def test_gmail_revoked_credentials_remain_unauthorized_after_refresh(monkeypatch):
+    token_calls = []
+
+    async def fake_access_token(_tenant_id, force_refresh=False):
+        token_calls.append(force_refresh)
+        return "still-revoked"
+
+    async def fake_contacts(_tenant_id):
+        return {"alice@example.com": {"id": "ct_1", "company_id": "co_1"}}
+
+    client = FakeAsyncClient(get_responses=[FakeResponse(401), FakeResponse(401)])
+    monkeypatch.setattr(server, "_google_access_token", fake_access_token)
+    monkeypatch.setattr(server, "_contacts_by_email", fake_contacts)
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
+
+    try:
+        run(server.sync_gmail("ten_a", "admin@example.com"))
+        raise AssertionError("expected persistent unauthorized failure")
+    except RuntimeError as exc:
+        assert str(exc) == "token_refresh_failed:unauthorized"
+    assert token_calls == [False, True]
+    assert len(client.get_calls) == 2
+
+
+def test_calendar_401_forces_refresh_then_syncs_with_new_token(monkeypatch):
+    token_calls = []
+
+    async def fake_access_token(_tenant_id, force_refresh=False):
+        token_calls.append(force_refresh)
+        return "new-calendar-access" if force_refresh else "old-calendar-access"
+
+    async def fake_contacts(_tenant_id):
+        return {"client@example.com": {"id": "ct_1", "company_id": "co_1"}}
+
+    async def fake_workspace(_tenant_id, _company_id):
+        return "ws_1"
+
+    meetings = CaptureCollection()
+    monkeypatch.setattr(server, "db", SimpleNamespace(crm_meetings=meetings))
+    monkeypatch.setattr(server, "_google_access_token", fake_access_token)
+    monkeypatch.setattr(server, "_contacts_by_email", fake_contacts)
+    monkeypatch.setattr(server, "_workspace_for_company", fake_workspace)
+    event = {
+        "id": "event_refresh_1",
+        "summary": "Renewal check-in",
+        "start": {"dateTime": "2026-09-14T15:00:00Z"},
+        "end": {"dateTime": "2026-09-14T15:30:00Z"},
+        "attendees": [{"email": "client@example.com"}],
+        "status": "confirmed",
+    }
+    client = FakeAsyncClient(get_responses=[
+        FakeResponse(401),
+        FakeResponse(200, {"items": [event]}),
+    ])
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
+
+    result = run(server.sync_calendar("ten_a", "admin@example.com"))
+
+    assert result == {"scanned": 1, "matched": 1}
+    assert token_calls == [False, True]
+    assert client.get_calls[0][1]["headers"]["Authorization"] == "Bearer old-calendar-access"
+    assert client.get_calls[1][1]["headers"]["Authorization"] == "Bearer new-calendar-access"
+    assert meetings.updated[0][0] == {"tenant_id": "ten_a", "external_id": "event_refresh_1"}
+
+
+def test_calendar_skips_events_without_tenant_contact_match(monkeypatch):
+    async def fake_access_token(_tenant_id, force_refresh=False):
+        return "calendar-access"
+
+    async def fake_contacts(_tenant_id):
+        return {"known@example.com": {"id": "ct_1", "company_id": "co_1"}}
+
+    meetings = CaptureCollection()
+    monkeypatch.setattr(server, "db", SimpleNamespace(crm_meetings=meetings))
+    monkeypatch.setattr(server, "_google_access_token", fake_access_token)
+    monkeypatch.setattr(server, "_contacts_by_email", fake_contacts)
+    client = FakeAsyncClient(get_responses=[FakeResponse(200, {"items": [{
+        "id": "event_unmatched",
+        "summary": "Internal only",
+        "start": {"dateTime": "2026-09-14T16:00:00Z"},
+        "end": {"dateTime": "2026-09-14T16:30:00Z"},
+        "attendees": [{"email": "stranger@elsewhere.example"}],
+        "status": "confirmed",
+    }]})])
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
+
+    result = run(server.sync_calendar("ten_a", "admin@example.com"))
+
+    assert result == {"scanned": 1, "matched": 0}
+    assert meetings.updated == []
+
+
+def test_run_sync_rejects_revoked_and_disconnected_connections(monkeypatch):
+    for status in ("revoked", "disconnected"):
+        connections = CaptureCollection(find_one_results=[{"status": status}])
+        monkeypatch.setattr(server, "db", SimpleNamespace(integration_connections=connections))
+
+        try:
+            run(server.run_sync("ten_a", "gmail", "admin@example.com"))
+            raise AssertionError(f"expected {status} connection to be rejected")
+        except server.HTTPException as exc:
+            assert exc.status_code == 400
+            assert exc.detail == "Provider is not connected"
+
+
+def test_gmail_not_connected_without_credentials(monkeypatch):
+    async def fake_access_token(_tenant_id, force_refresh=False):
+        return None
+
+    monkeypatch.setattr(server, "_google_access_token", fake_access_token)
+
+    try:
+        run(server.sync_gmail("ten_a", "admin@example.com"))
+        raise AssertionError("expected not_connected failure")
+    except RuntimeError as exc:
+        assert str(exc) == "not_connected"
+
+
+def test_stripe_webhook_refuses_when_secret_missing(monkeypatch):
+    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "")
+    request = FakeRequest(b"{}", {"Stripe-Signature": "t=1,v1=unused"})
+
+    try:
+        run(server.stripe_webhook(request))
+        raise AssertionError("expected missing webhook secret refusal")
+    except server.HTTPException as exc:
+        assert exc.status_code == 503
+        assert exc.detail == "Stripe webhook is not configured"
+
+
+def test_stripe_webhook_rejects_missing_signature(monkeypatch):
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_fake")
+    request = FakeRequest(b"{}", {})
+
+    try:
+        run(server.stripe_webhook(request))
+        raise AssertionError("expected missing signature rejection")
+    except server.HTTPException as exc:
+        assert exc.status_code == 400
+        assert exc.detail == "Missing Stripe signature"
+
+
+def test_stripe_payment_intent_preserves_tenant_filter_on_missing_invoice(monkeypatch):
+    invoices = CaptureCollection(find_one_results=[None])
+    monkeypatch.setattr(server, "db", SimpleNamespace(invoices=invoices))
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_x")
+
+    try:
+        run(server.create_stripe_payment_intent(
+            "inv_missing",
+            server.StripePaymentIntentInput(payment_method_id="pm_card_visa"),
+            user={"tenant_id": "ten_a", "email": "admin@example.com"},
+        ))
+        raise AssertionError("expected missing invoice denial")
+    except server.HTTPException as exc:
+        assert exc.status_code == 404
+        assert exc.detail == "Invoice not found"
