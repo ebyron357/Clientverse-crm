@@ -3299,6 +3299,15 @@ async def cron_daily_digest(request: Request):
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
 
+def resolve_git_sha() -> Optional[str]:
+    """Non-secret deploy identity for /api/health. Never invent; null if unset."""
+    for key in ("GIT_SHA", "RAILWAY_GIT_COMMIT_SHA", "RAILWAY_GIT_COMMIT", "VERCEL_GIT_COMMIT_SHA"):
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            return val
+    return None
+
+
 @api.get("/")
 async def root():
     return {"service": "ClientVerse", "version": "v1", "status": "ok"}
@@ -3307,14 +3316,20 @@ async def root():
 async def health():
     """Liveness/readiness probe for hosting platforms. Does not expose secrets."""
     from fastapi.responses import JSONResponse
+    payload = {
+        "service": "ClientVerse",
+        "version": "v1",
+        "status": "ok",
+        "database": "up",
+        "git_sha": resolve_git_sha(),
+    }
     try:
         await db.command("ping")
-        return {"service": "ClientVerse", "version": "v1", "status": "ok", "database": "up"}
+        return payload
     except Exception:
-        return JSONResponse(
-            status_code=503,
-            content={"service": "ClientVerse", "version": "v1", "status": "degraded", "database": "down"},
-        )
+        payload["status"] = "degraded"
+        payload["database"] = "down"
+        return JSONResponse(status_code=503, content=payload)
 
 app.include_router(api)
 app.add_middleware(
