@@ -40,7 +40,11 @@ export const CLIENTVERSE_MODULES = [
   { id: "knowledge", group: "Platform", label: "Knowledge", description: "Reusable relationship and operating knowledge", route: "/platform/knowledge", icon: BookOpenCheck, state: MODULE_STATES.CONTRACT_PENDING, contract: "Knowledge item service", actions: [] },
 ];
 
-export const MODULE_GROUPS = [...new Set(CLIENTVERSE_MODULES.map((module) => module.group))];
+export const PINNED_GROUPS = ["Command", "CRM", "Client Success"];
+export const MODULE_GROUPS = [
+  ...PINNED_GROUPS,
+  ...[...new Set(CLIENTVERSE_MODULES.map((module) => module.group))].filter((group) => !PINNED_GROUPS.includes(group)),
+];
 export const getModule = (id) => CLIENTVERSE_MODULES.find((module) => module.id === id);
 export const getModuleByRoute = (pathname) => CLIENTVERSE_MODULES.find((module) => pathname === module.route || pathname.startsWith(`${module.route}/`));
 export const isModuleActionable = (module) => module?.state === MODULE_STATES.AVAILABLE;
