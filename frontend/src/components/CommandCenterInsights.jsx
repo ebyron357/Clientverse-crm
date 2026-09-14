@@ -79,7 +79,7 @@ export default function CommandCenterInsights() {
     catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
   };
 
-  const open = alerts?.alerts || [];
+  const open = useMemo(() => alerts?.alerts || [], [alerts]);
   const groups = useMemo(() => groupAlerts(open), [open]);
 
   if (error) {
