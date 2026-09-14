@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, formatErr } from "@/lib/api";
 import { Badge } from "@/components/AppShell";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Mail, Calendar, CreditCard, ExternalLink, AlertTriangle } from "lucide-react";
+import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
+import { Mail, Calendar, CreditCard, ExternalLink, AlertTriangle, Plug, MessageSquare } from "lucide-react";
 
 const PROVIDER_LABEL = { gmail: "Gmail", google_calendar: "Calendar", stripe: "Stripe" };
 
@@ -14,15 +14,23 @@ export default function WorkspaceActivity({ workspaceId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    (async () => {
-      try { const res = await api.get(`/integrations/workspaces/${workspaceId}/activity`); setData(res.data); }
-      catch (e) { setError(formatErr(e.response?.data?.detail)); }
-    })();
+  const load = useCallback(async () => {
+    setError("");
+    setData(null);
+    try {
+      const res = await api.get(`/integrations/workspaces/${workspaceId}/activity`);
+      setData(res.data);
+    } catch (e) {
+      setError(formatErr(e.response?.data?.detail) || "Could not load workspace activity.");
+    }
   }, [workspaceId]);
 
-  if (error) return <div className="text-sm text-red-600" data-testid="activity-error">{error}</div>;
-  if (!data) return <div className="space-y-3"><Skeleton className="h-24 rounded-xl" /><Skeleton className="h-24 rounded-xl" /></div>;
+  useEffect(() => { load(); }, [load]);
+
+  if (error) {
+    return <SurfaceError title="Client activity unavailable" description={error} onRetry={load} testid="activity-error" />;
+  }
+  if (!data) return <SurfaceLoading rows={2} testid="activity-loading" />;
 
   const anyActive = (data.connections || []).some((c) => c.status === "active");
   const failing = (data.connections || []).filter((c) => ["degraded", "expired", "revoked", "error"].includes(c.status));
@@ -30,10 +38,12 @@ export default function WorkspaceActivity({ workspaceId }) {
 
   if (!anyActive) {
     return (
-      <div className="bg-white border border-dashed border-gray-300 rounded-xl p-8 text-center" data-testid="activity-empty">
-        <p className="text-sm font-medium text-gray-700">No integrations connected</p>
-        <p className="text-xs text-gray-400 mt-1">Connect Gmail, Calendar or Stripe from Registries → Integrations to surface live client activity here.</p>
-      </div>
+      <SurfaceEmpty
+        icon={Plug}
+        title="No integrations connected"
+        description="Connect Gmail, Calendar, or Stripe from Registries → Integrations to surface matched client communications here. Empty state is intentional until a provider is connected."
+        testid="activity-empty"
+      />
     );
   }
 
@@ -41,14 +51,15 @@ export default function WorkspaceActivity({ workspaceId }) {
     <div className="space-y-6" data-testid="workspace-activity">
       {failing.length > 0 && (
         <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-2" data-testid="activity-sync-warning">
-          <AlertTriangle className="w-3.5 h-3.5" />Some connections need attention: {failing.map((f) => `${PROVIDER_LABEL[f.provider]} (${f.status})`).join(", ")}
+          <AlertTriangle className="w-3.5 h-3.5" />Some connections need attention: {failing.map((f) => `${PROVIDER_LABEL[f.provider]} (${f.status === "expired" || f.status === "revoked" ? "needs auth" : f.status})`).join(", ")}
         </div>
       )}
 
-      {/* Meetings */}
       <section data-testid="activity-meetings">
         <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 flex items-center gap-2 mb-3"><Calendar className="w-4 h-4" />Upcoming meetings</h3>
-        {meetings.length === 0 ? <p className="text-xs text-gray-400">No upcoming client meetings synced.</p> : (
+        {meetings.length === 0 ? (
+          <p className="text-xs text-gray-500 rounded-lg border border-dashed border-gray-200 bg-slate-50/60 px-3 py-4" data-testid="activity-meetings-empty">No upcoming client meetings synced for this workspace.</p>
+        ) : (
           <div className="space-y-2">
             {meetings.map((m) => (
               <div key={m.id} className="bg-white border border-gray-200 rounded-lg p-3 flex items-center justify-between" data-testid={`meeting-${m.id}`}>
@@ -63,10 +74,11 @@ export default function WorkspaceActivity({ workspaceId }) {
         )}
       </section>
 
-      {/* Billing */}
       <section data-testid="activity-billing">
         <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 flex items-center gap-2 mb-3"><CreditCard className="w-4 h-4" />Billing & subscriptions</h3>
-        {billing.length === 0 ? <p className="text-xs text-gray-400">No Stripe records matched to this client.</p> : (
+        {billing.length === 0 ? (
+          <p className="text-xs text-gray-500 rounded-lg border border-dashed border-gray-200 bg-slate-50/60 px-3 py-4" data-testid="activity-billing-empty">No Stripe records matched to this client yet.</p>
+        ) : (
           <div className="space-y-2">
             {billing.map((b) => (
               <div key={b.id} className="bg-white border border-gray-200 rounded-lg p-3 flex items-center justify-between" data-testid={`billing-${b.id}`}>
@@ -84,16 +96,22 @@ export default function WorkspaceActivity({ workspaceId }) {
         )}
       </section>
 
-      {/* Email */}
       <section data-testid="activity-email">
-        <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 flex items-center gap-2 mb-3"><Mail className="w-4 h-4" />Recent email</h3>
-        {communications.length === 0 ? <p className="text-xs text-gray-400">No client email matched yet.</p> : (
-          <div className="space-y-2">
+        <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 flex items-center gap-2 mb-3"><Mail className="w-4 h-4" />Recent email threads</h3>
+        {communications.length === 0 ? (
+          <p className="text-xs text-gray-500 rounded-lg border border-dashed border-gray-200 bg-slate-50/60 px-3 py-4" data-testid="activity-email-empty">No matched client email yet. Threads appear after a successful Gmail sync against CRM contacts.</p>
+        ) : (
+          <div className="space-y-2" data-testid="activity-email-threads">
             {communications.map((c) => (
               <div key={c.id} className="bg-white border border-gray-200 rounded-lg p-3" data-testid={`comm-${c.id}`}>
-                <div className="text-sm font-medium flex items-center gap-2">{c.subject} <ExternalTag /></div>
-                <div className="text-xs text-gray-400">{c.from_email} · {c.ts ? new Date(c.ts).toLocaleString() : "—"}</div>
-                {c.snippet && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{c.snippet}</div>}
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-cyan-50 text-[#0a6177]"><MessageSquare className="h-3.5 w-3.5" /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium flex items-center gap-2 flex-wrap">{c.subject || "(No subject)"} <ExternalTag /></div>
+                    <div className="text-xs text-gray-400 mt-0.5">{c.from_email || "Unknown sender"} · {c.ts ? new Date(c.ts).toLocaleString() : "—"}{c.thread_id ? ` · thread ${String(c.thread_id).slice(0, 8)}` : ""}</div>
+                    {c.snippet && <div className="text-xs text-gray-500 mt-1.5 line-clamp-2 leading-5">{c.snippet}</div>}
+                  </div>
+                </div>
               </div>
             ))}
           </div>
