@@ -31,12 +31,8 @@ export default function Mcp() {
   const [loadError, setLoadError] = useState("");
 
   const loadHistory = useCallback(async () => {
-    try {
-      const r = await api.get("/mcp/invocations?limit=50");
-      setInvocations(r.data || []);
-    } catch {
-      setInvocations([]);
-    }
+    const r = await api.get("/mcp/invocations?limit=50");
+    setInvocations(r.data || []);
   }, []);
   const load = useCallback(async () => {
     setLoadError("");

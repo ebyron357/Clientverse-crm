@@ -144,7 +144,7 @@ export default function IntegrationsPanel() {
           </div>
         );
       })}
-      {!conns.some((c) => c.status === "active") && (
+      {conns.length > 0 && conns.every((c) => c.status === "disconnected") && (
         <SurfaceEmpty
           icon={Plug}
           title="No providers connected"
