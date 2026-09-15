@@ -1,5 +1,11 @@
 # ClientVerse.io — Product Requirements & Architecture
 
+> **SUPERSEDED — historical implementation log.**
+> The canonical source of truth for ClientVerse CRM scope, capability status, and implementation order is
+> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](../docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.0, 2026-09-15).
+> Feature claims here are not capability status. See section 4 of the canonical document.
+
+
 ## Implemented (2026-06 — this phase) — Alert Notifications & Digests — status AVAILABLE
 - Notification engine (server.py): on meaningful alert transitions (created/critical/acknowledged/resolved/escalated) fans out to in-app (`notifications`) + email, deduped by (alert_id, transition[, escalation_level]) via `notification_deliveries`. Also emits signed/versioned/retryable webhook events (alert.* + mapped domain events like commitment.breached, integration.degraded, billing.invoice_overdue).
 - Email adapter via Emergent managed Resend proxy (`EMERGENT_EMAIL_KEY` + `EMAIL_FROM_NAME`, base URL constant). Retry/backoff on 429/5xx, graceful "not_configured" when key absent (in-app still works). No secrets exposed in API/logs.

@@ -1,5 +1,11 @@
 # ClientVerse CRM — System, UI, and UX Improvement Assessment
 
+> **SUPERSEDED — historical assessment.**
+> The canonical source of truth for ClientVerse CRM scope, capability status, and implementation order is
+> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.0, 2026-09-15).
+> Its P0/P1/P2 portfolio is reconciled into sections 4 and 9 of the canonical document.
+
+
 **Assessment date:** 2026-08-18  
 **Scope:** Product-improvement assessment only. This document does not change the certified release candidate, provider status, deployment state, or PR #9’s draft status.
 

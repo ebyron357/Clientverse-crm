@@ -1,5 +1,11 @@
 # CLIENTVERSE CRM — PREMIUM PRODUCT COMPLETION & MARKET-LEADING UX EXECUTION
 
+> **SUPERSEDED — historical execution directive.**
+> The canonical source of truth for ClientVerse CRM scope, capability status, and implementation order is
+> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.0, 2026-09-15).
+> Its product/UX standard is merged into sections 1.3 and 4.B of the canonical document; its 42 phases are no longer a separate scope authority.
+
+
 ## REPOSITORY
 
 GitHub repository:
