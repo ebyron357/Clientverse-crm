@@ -30,6 +30,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 from cryptography.fernet import Fernet
 from client_value import register_client_value_routes
+from operations_routes import register_operations_routes
+import next_best_action as nba_service
+import second_chance as second_chance_service
+import security_gate as security_gate_service
+from work_queue import WorkQueue, run_worker_tick
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clientverse")
@@ -112,6 +117,10 @@ async def lifespan(_: FastAPI):
         await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
         await db.login_lockouts.create_index("email", unique=True)
         await db.cron_runs.create_index("run_id", unique=True)
+        await WorkQueue(db).ensure_indexes()
+        await nba_service.ensure_indexes(db)
+        await second_chance_service.ensure_indexes(db)
+        await security_gate_service.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
     try:
@@ -1514,6 +1523,18 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
     if inp.tool not in server.get("allowlist", []):
         await fail(403, "Tool not in tenant allowlist", tool["level"])
 
+    # Dual security gate. A tool sourced outside this repository may only execute when
+    # its exact source and version carry a current APPROVED / APPROVED_LIMITED decision
+    # from both gates. Built-in ClientVerse tools ship with the application and are not
+    # external ingestion, so they are exempt by construction rather than by exception.
+    if tool.get("external"):
+        try:
+            await security_gate_service.assert_executable(
+                db, tenant_id=tenant, source_url=tool.get("source_url", ""),
+                version=tool.get("version", ""), digest=tool.get("digest"))
+        except security_gate_service.SecurityGateError as exc:
+            await fail(403, f"Security gate: {exc}", tool["level"])
+
     # required arg validation
     for field, spec in tool["input_schema"].items():
         if spec.get("required") and not inp.args.get(field):
@@ -1897,6 +1918,81 @@ async def cron_commitment_risk(request: Request):
     if not await _claim_cron_run("commitment-risk", run_id):
         return {"accepted": True, "duplicate": True}
     asyncio.create_task(evaluate_commitment_risk(tenant_id=None, actor="cron"))
+    return {"accepted": True, "run_id": run_id}
+
+
+async def _release_cron_run(job: str, run_id: str) -> None:
+    """Release a claimed delivery so a retry is not suppressed.
+
+    The claim is taken before the background task runs. If that task dies, the delivery
+    id stays claimed and a redelivery is treated as a duplicate, silently losing the
+    work. Releasing on failure keeps the idempotency guard (a concurrent duplicate is
+    still suppressed) without turning a crash into lost work.
+    """
+    try:
+        await db.cron_runs.delete_one({"run_id": run_id, "job": job})
+    except Exception:
+        logger.exception("Failed to release a cron run claim")
+
+
+async def _run_cron_job(job: str, run_id: str, coro_factory):
+    try:
+        return await coro_factory()
+    except Exception:
+        logger.exception("Scheduled job '%s' failed", job)
+        await _release_cron_run(job, run_id)
+        raise
+
+
+def _authorize_cron(request: Request) -> None:
+    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    if not secret or not token or not hmac.compare_digest(token, secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@api.post("/cron/work-queue")
+async def cron_work_queue(request: Request):
+    """Durable work-queue worker tick.
+
+    Recovers leases abandoned by crashed workers, then claims and processes due items.
+    Idempotent per delivery id, like every other cron endpoint.
+    """
+    _authorize_cron(request)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if not await _claim_cron_run("work-queue", run_id):
+        return {"accepted": True, "duplicate": True}
+    # Each tick gets a distinct worker identity so lease-ownership checks can tell a
+    # stale tick apart from the one that replaced it.
+    asyncio.create_task(_run_cron_job(
+        "work-queue", run_id,
+        lambda: run_worker_tick(work_queue, WORK_QUEUE_HANDLERS,
+                                worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE)))
+    return {"accepted": True, "run_id": run_id}
+
+
+@api.post("/cron/second-chance")
+async def cron_second_chance(request: Request):
+    """Second Chance detection sweep across every tenant."""
+    _authorize_cron(request)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if not await _claim_cron_run("second-chance", run_id):
+        return {"accepted": True, "duplicate": True}
+    asyncio.create_task(_run_cron_job(
+        "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron")))
+    return {"accepted": True, "run_id": run_id}
+
+
+@api.post("/cron/next-best-actions")
+async def cron_next_best_actions(request: Request):
+    """Recompute Next Best Action recommendations for every tenant."""
+    _authorize_cron(request)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if not await _claim_cron_run("next-best-actions", run_id):
+        return {"accepted": True, "duplicate": True}
+    asyncio.create_task(_run_cron_job(
+        "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron")))
     return {"accepted": True, "run_id": run_id}
 
 # ============================================================================
@@ -3298,6 +3394,48 @@ async def cron_daily_digest(request: Request):
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
+work_queue = register_operations_routes(api, db, record_event, get_current_user, require_role)
+
+# The durable queue carries two kinds of work.
+#   * SYSTEM_QUEUE — machine-executable jobs the worker tick claims, runs, retries and
+#     dead-letters.
+#   * second_chance — operator work items. These are deliberately NOT auto-claimed:
+#     a recovery candidate is closed by a person acknowledging and resolving it, not
+#     by a background worker silently completing it.
+SYSTEM_QUEUE = "system"
+JOB_GENERATE_NEXT_BEST_ACTIONS = "next_best_action.generate"
+
+
+async def _handle_generate_next_best_actions(item: dict) -> dict:
+    tenant_id = (item.get("payload") or {}).get("tenant_id") or item.get("tenant_id")
+    return await nba_service.generate(db, tenant_id, actor="work-queue")
+
+
+WORK_QUEUE_HANDLERS = {
+    JOB_GENERATE_NEXT_BEST_ACTIONS: _handle_generate_next_best_actions,
+}
+
+
+async def run_second_chance_sweep(actor: str = "cron") -> dict:
+    """Detect recovery candidates, then queue a durable recommendation refresh per tenant."""
+    summary = await second_chance_service.run_detection_all_tenants(db, work_queue, actor=actor)
+    for tenant_summary in summary.get("summaries", []):
+        tenant_id = tenant_summary.get("tenant_id")
+        if not tenant_id or tenant_summary.get("error"):
+            continue
+        try:
+            await work_queue.enqueue(
+                tenant_id=tenant_id,
+                queue=SYSTEM_QUEUE,
+                item_type=JOB_GENERATE_NEXT_BEST_ACTIONS,
+                payload={"tenant_id": tenant_id},
+                dedupe_key=f"{JOB_GENERATE_NEXT_BEST_ACTIONS}:{tenant_id}",
+                priority=40,
+                actor=actor,
+            )
+        except Exception:
+            logger.exception("Failed to queue a recommendation refresh for a tenant")
+    return summary
 
 def resolve_git_sha() -> Optional[str]:
     """Non-secret deploy identity for /api/health. Never invent; null if unset."""

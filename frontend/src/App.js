@@ -14,6 +14,7 @@ import Workspaces from "@/pages/Workspaces";
 import WorkspaceDetail from "@/pages/WorkspaceDetail";
 import Registries from "@/pages/Registries";
 import Mcp from "@/pages/Mcp";
+import Operations from "@/pages/Operations";
 import Audit from "@/pages/Audit";
 import Team from "@/pages/Team";
 import Notifications from "@/pages/Notifications";
@@ -73,6 +74,7 @@ function AppRouter() {
         <Route path="/workspaces/:id" element={<WorkspaceDetail />} />
         <Route path="/registries" element={<Registries />} />
         <Route path="/mcp" element={<Mcp />} />
+        <Route path="/operations" element={<Operations />} />
         <Route path="/team" element={<Team />} />
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/settings" element={<Settings />} />

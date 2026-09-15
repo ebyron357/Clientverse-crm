@@ -1,0 +1,150 @@
+{
+  "captured_at": "2026-09-15T22:19:23.388687+00:00",
+  "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w after the PR #26 review-remediation pass and the CI failure fix",
+  "supersedes": "The first revision of this file recorded a PASS while two of its seed requests had been rejected with HTTP 422, so its detection assertions matched pre-existing data rather than records the run created. The harness now asserts every seed, works in disposable tenants that start empty, and scopes each assertion to that run's records.",
+  "environment": {
+    "kind": "local verification environment",
+    "mongodb": "7.0.34",
+    "note": "Railway production is not reachable from this session: the egress policy rejects clientverse-crm-production-production.up.railway.app and backboard.railway.com with HTTP 403 at CONNECT. This is artifact evidence for the code under test, NOT production-runtime evidence."
+  },
+  "backend_suite": "300 passed, 4 skipped, 4 warnings on a freshly created database. The 4 skips are the documented external-secret cases only; no test skips for missing data.",
+  "frontend_lint": "yarn lint --max-warnings=0 \u2014 exit 0",
+  "frontend_build": "CI=true yarn build \u2014 exit 0",
+  "operations_smoke": {
+    "generated_at": "2026-09-15T22:18:27.335Z",
+    "steps": {
+      "admin_login_http": 200,
+      "primary_tenant_register_http": 200,
+      "isolation_tenant_register_http": 200,
+      "tenant_starts_empty": true,
+      "seed_company_http": 200,
+      "seed_opportunity_http": 200,
+      "seed_workspace_http": 200,
+      "seed_commitment_http": 200,
+      "detection_http": 200,
+      "detection_summary": {
+        "tenant_id": "ten_10aca6f67c01",
+        "stalled_leads_detected": 0,
+        "missed_followups_detected": 1,
+        "work_items_created": 1,
+        "work_items_deduplicated": 0,
+        "thresholds": {
+          "stalled_lead_days": 14,
+          "missed_followup_grace_hours": 24
+        }
+      },
+      "detection_repeat_created": 0,
+      "detection_repeat_deduplicated": 1,
+      "work_queue_http": 200,
+      "work_queue_open_items": 1,
+      "candidate_type": "second_chance.missed_followup",
+      "stalled_lead_lane_exercised_here": false,
+      "stalled_lead_lane_covered_by": "backend/tests/test_second_chance.py",
+      "work_queue_stats": {
+        "queued": 1,
+        "claimed": 0,
+        "processing": 0,
+        "completed": 0,
+        "retry_scheduled": 0,
+        "failed": 0,
+        "dead_letter": 0,
+        "open": 1,
+        "total": 1,
+        "needs_operator": 0
+      },
+      "nba_generate_http": 200,
+      "nba_generate_summary": {
+        "tenant_id": "ten_10aca6f67c01",
+        "created": 2,
+        "refreshed": 0,
+        "retired": 0,
+        "evaluated": 2,
+        "failed_rules": []
+      },
+      "nba_open_count": 2,
+      "nba_priority_ordering_is_ascending": true,
+      "nba_feedback_http": 200,
+      "security_gate_status": {
+        "gates": [
+          "gate_a_supply_chain_intake",
+          "gate_b_capability_execution_review"
+        ],
+        "scanners": [
+          {
+            "scanner": "nvidia_skillspector",
+            "configured": false,
+            "status": "not_configured",
+            "config_env": "SECURITY_GATE_NVIDIA_SKILLSPECTOR_URL"
+          },
+          {
+            "scanner": "cisco_skill_scanner",
+            "configured": false,
+            "status": "not_configured",
+            "config_env": "SECURITY_GATE_CISCO_SKILL_SCANNER_URL"
+          },
+          {
+            "scanner": "cisco_mcp_scanner",
+            "configured": false,
+            "status": "not_configured",
+            "config_env": "SECURITY_GATE_CISCO_MCP_SCANNER_URL"
+          }
+        ],
+        "operational": false,
+        "note": "Both gates are enforced. Approval additionally requires completed results from every required scanner; unconfigured scanners block approval rather than being treated as a pass."
+      },
+      "security_gate_register_http": 200,
+      "security_gate_premature_approval_http": 400,
+      "security_gate_digest_change_http": 400,
+      "cross_tenant_work_item_http": 404,
+      "cross_tenant_recommendation_patch_http": 404,
+      "cross_tenant_component_http": 404,
+      "cron_unauthenticated_http": 401,
+      "cron_second_chance_http": 200,
+      "cron_work_queue_http": 200,
+      "cron_duplicate_suppressed": true,
+      "system_job_queued": true,
+      "worker_ticks_used": 1,
+      "tracked_system_job_state": "completed"
+    },
+    "failures": [],
+    "cleanup_note": "Every record this run created lives in disposable tenants registered for the run, so nothing is written into an operator's tenant. The API exposes no delete endpoints, so those tenants and their records remain until an operator removes them; they are inert and isolated by the same tenancy boundary this run asserts.",
+    "secret_redaction": "This evidence intentionally omits account identities, passwords, session tokens, database credentials, provider values, and internal record identifiers.",
+    "result": "PASS"
+  },
+  "proof_of_life": {
+    "run_label": "PRODUCTION-SMOKE-20260915221901",
+    "api_base": "http://localhost:8001/api",
+    "health": {
+      "initial_http": 200,
+      "final_http": 200,
+      "service": "ClientVerse",
+      "status": "ok",
+      "database": "up"
+    },
+    "authentication": {
+      "administrator_login_http": 200,
+      "administrator_relogin_http": 200,
+      "unauthenticated_access_http": 401
+    },
+    "workflow": {
+      "company_create_http": 200,
+      "contact_create_http": 200,
+      "opportunity_create_http": 200,
+      "close_won_http": 200,
+      "workspace_created_from_opportunity": true,
+      "commitment_create_http": 200
+    },
+    "persistence_after_refresh": {
+      "company": true,
+      "contact": true,
+      "opportunity": true,
+      "workspace": true,
+      "commitment": true
+    },
+    "tenant_isolation": {
+      "cross_tenant_workspace_http": 404
+    },
+    "cleanup_note": "This run creates explicitly named PRODUCTION-SMOKE records in the administrator tenant. Review and remove them only after retaining the approved validation evidence.",
+    "secret_redaction": "This evidence intentionally omits account identities, passwords, session tokens, database credentials, OAuth values, and internal record identifiers."
+  }
+}

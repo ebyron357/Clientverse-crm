@@ -15,7 +15,8 @@ import { Label } from "@/components/ui/label";
 import OutcomeGraph from "@/components/OutcomeGraph";
 import WorkspaceActivity from "@/components/WorkspaceActivity";
 import WorkspaceTimeline from "@/components/WorkspaceTimeline";
-import { ArrowLeft, Plus, Sparkles, FileText, Mail, ShieldAlert, AlertTriangle, CheckCircle2, ClipboardCheck, ArrowRight } from "lucide-react";
+import NextBestActions from "@/components/NextBestActions";
+import { ArrowLeft, Plus, Sparkles, FileText, Mail, ShieldAlert } from "lucide-react";
 
 function dueInfo(due) {
   if (!due) return null;
@@ -161,89 +162,6 @@ function WorkItemDialog({ kind, title, onTitleChange, open, onOpenChange, busy, 
 }
 
 
-function buildNextBestActions({ health, commitments, tasks, approvals, workspaceId }) {
-  const actions = [];
-  const openCommitments = (commitments || []).filter((c) => ["open", "at_risk", "breached"].includes(c.status));
-  const breached = openCommitments.filter((c) => c.status === "breached" || c.status === "at_risk");
-  for (const c of breached.slice(0, 2)) {
-    actions.push({
-      id: `cmt-${c.id}`,
-      title: c.status === "breached" ? `Resolve breached: ${c.title}` : `Stabilize at-risk: ${c.title}`,
-      reason: c.owner ? `Owner ${c.owner}` : "Needs an owner and recovery step",
-      tone: c.status === "breached" ? "red" : "amber",
-      href: null,
-      focus: "commitments",
-    });
-  }
-  const pendingApprovals = (approvals || []).filter((a) => a.status === "requested");
-  for (const a of pendingApprovals.slice(0, 1)) {
-    actions.push({
-      id: `apr-${a.id}`,
-      title: `Decide approval: ${a.title}`,
-      reason: "Governance gate is blocking client-visible progress",
-      tone: "amber",
-      focus: "approvals",
-    });
-  }
-  const openTasks = (tasks || []).filter((t) => t.status !== "done");
-  if (openTasks.length && actions.length < 4) {
-    const t = openTasks[0];
-    actions.push({
-      id: `task-${t.id}`,
-      title: `Advance task: ${t.title}`,
-      reason: t.assignee || "Unassigned delivery work",
-      tone: "cyan",
-      focus: "tasks",
-    });
-  }
-  if (health?.band && health.band !== "healthy" && actions.length < 5) {
-    actions.push({
-      id: "health",
-      title: `Review ${health.band.replace("_", " ")} health factors`,
-      reason: `Score ${health.score} — explainable factors above`,
-      tone: "amber",
-      focus: null,
-    });
-  }
-  return actions.slice(0, 5);
-}
-
-function NextBestActionsStrip({ actions, onFocusTab }) {
-  if (!actions.length) {
-    return (
-      <div className="sticky top-[72px] z-10 mb-6 rounded-xl border border-emerald-200 bg-emerald-50/95 px-4 py-3 backdrop-blur" data-testid="nba-strip-empty">
-        <div className="flex items-center gap-2 text-sm font-semibold text-emerald-800"><CheckCircle2 className="h-4 w-4" />No urgent next actions — keep delivery momentum.</div>
-      </div>
-    );
-  }
-  const tones = { red: "border-red-200 bg-red-50 text-red-800", amber: "border-amber-200 bg-amber-50 text-amber-900", cyan: "border-cyan-200 bg-cyan-50 text-cyan-900" };
-  return (
-    <div className="sticky top-[72px] z-10 mb-6 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur" data-testid="nba-strip">
-      <div className="mb-2 flex items-center gap-2 px-1 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500"><ClipboardCheck className="h-3.5 w-3.5" />Next best actions</div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {actions.map((action) => (
-          <button
-            key={action.id}
-            type="button"
-            onClick={() => action.focus && onFocusTab?.(action.focus)}
-            className={`min-w-[220px] flex-1 rounded-lg border px-3 py-2 text-left ${tones[action.tone] || tones.cyan}`}
-            data-testid={`nba-action-${action.id}`}
-          >
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-70" />
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold">{action.title}</div>
-                <div className="mt-0.5 truncate text-[11px] opacity-80">{action.reason}</div>
-              </div>
-              {action.focus && <ArrowRight className="ml-auto h-3.5 w-3.5 shrink-0 opacity-60" />}
-            </div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export default function WorkspaceDetail() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -304,7 +222,6 @@ export default function WorkspaceDetail() {
   if (!d) return <div className="cv-page space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-2xl" /></div>;
 
   const { workspace, company, tasks, deliverables, requests, approvals, commitments, health } = d;
-  const nextActions = buildNextBestActions({ health, commitments, tasks, approvals, workspaceId: id });
 
   return (
     <div className="cv-page">
@@ -327,7 +244,7 @@ export default function WorkspaceDetail() {
         </div>
       </div>
 
-      <NextBestActionsStrip actions={nextActions} onFocusTab={setActiveTab} />
+      <NextBestActions workspaceId={id} limit={5} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         <div className="lg:col-span-2"><Health health={health} /></div>

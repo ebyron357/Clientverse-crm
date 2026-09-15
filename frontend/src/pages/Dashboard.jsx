@@ -5,6 +5,7 @@ import { commandCenterService } from "@/lib/services";
 import { Badge } from "@/components/AppShell";
 import OnboardingChecklist from "@/components/OnboardingChecklist";
 import CommandCenterInsights from "@/components/CommandCenterInsights";
+import NextBestActions from "@/components/NextBestActions";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -135,6 +136,18 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+    </section>
+
+    <section className="mt-5 cv-card" data-testid="command-center-nba">
+      <div className="cv-card-header">
+        <div>
+          <h2 className="cv-card-title">Next best actions</h2>
+          <p className="cv-card-description">A ranked, explainable queue across every client — each item shows the records it came from.</p>
+        </div>
+        <button onClick={() => navigate("/operations")} className="text-xs font-semibold text-[#1a9fbf] hover:text-[#147f9a]">Open operations</button>
+      </div>
+      <div className="p-5"><NextBestActions limit={8} compact title="Ranked across all clients"
+        onNavigate={(item) => navigate(`/workspaces/${item.workspace_id}`)} /></div>
     </section>
 
     <div className="mt-5"><CommandCenterInsights /></div>
