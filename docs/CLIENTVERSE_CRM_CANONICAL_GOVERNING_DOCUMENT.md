@@ -246,21 +246,39 @@ These are already declared in `frontend/src/platform/modules.js` as `contract_pe
 
 **Adoption rule:** these are capability donors, adapters, and references. Extract approved architecture, workflows, patterns, controls, and tests. Do not replace ClientVerse with any of them, and do not vendor an entire repository. Every adoption must name what is adapted, what is rejected, and the licence obligation it creates.
 
-| # | Source | Donates to | Extract | Explicitly reject |
-|---|---|---|---|---|
-| 1 | `trycompai/crm` | E-04, E-05, E-06 | Durable work-queue model, job lease/retry/dead-letter semantics, scheduled autonomous follow-up patterns, agentic task contracts | Its CRM data model, schema, and UI |
-| 2 | `chatwoot/chatwoot` | E-09, E-10, M-01, M-02, M-03, M-09 | Conversation/inbox/contact-channel model, assignment and human-handoff state machine, agent-bot boundary, canned-response and SLA patterns | Running Chatwoot as a service; its Rails stack; its identity model |
-| 3 | `ShawnPana/phone-harness` | E-08, M-04 | Controlled phone/mobile agent execution harness, action allowlisting, session boundaries, failure containment | Uncontrolled device automation; anything bypassing E-12 or M-07 |
-| 4 | `NVIDIA/SkillSpector` | E-12 (Gate 1) | Agent-skill scanning of external skills before trust | Treating a single scanner as sufficient; auto-allow on pass |
-| 5 | `cisco-ai-defense/skill-scanner` | E-12 (Gate 2A) | Independent agent-skill scanning | Collapsing Gate 2A and Gate 1 into one scan |
-| 6 | `cisco-ai-defense/mcp-scanner` | E-12 (Gate 2B) | MCP server/tool scanning, tool-poisoning and description-injection detection | Applying MCP scanning to non-MCP skills and calling the gate satisfied |
-| 7 | `smicallef/spiderfoot` | E-13 | OSINT enrichment modules, source attribution, per-module opt-in, rate/consent controls | Unbounded scanning; enrichment without lawful basis; storing raw OSINT against a contact without provenance |
-| 8 | `every-app/open-seo` | E-14 | SEO/growth intelligence signal extraction and reporting patterns | Publishing or mutating a client's site from the CRM |
-| 9 | `browser-use/video-use` | E-15 | Agent video capability and generation/return-path patterns | Unattended publication of generated media |
-| 10 | `twentyhq/twenty` | E-17, C-03…C-05 refinements | CRM product patterns and UX: record-page composition, view/filter model, keyboard-first navigation, data-table ergonomics | Code copy, schema adoption, any runtime dependency |
-| 11 | `n8n-io/n8n` | E-18, M-06 | Automation/orchestration patterns; execution-edge workflow transport (the workforce repo already proves the Slack→workforce→Slack path) | n8n as the system of record; orchestration logic that bypasses CRM approvals or tenancy |
-| 12 | `facebook/docusaurus` | Documentation architecture | Versioned documentation IA, ordered doc sets, audience separation | Migrating this governing document out of the repository |
-| 13 | **DodoNote / meeting-intelligence source** | E-16, M-05 | Meeting capture, transcription, summary, action-item extraction, CRM write-back | — |
+Each source carries an explicit disposition. **ADOPT** = take the component itself.
+**ADAPT** = re-implement its approach inside ClientVerse. **EXTRACT** = lift specific
+patterns only. **WATCH** = no action now, revisit when a dependency clears. **REJECT** =
+do not use. No source may be executed or depended upon until it has passed §6, whatever
+its disposition here.
+
+| # | Source | Disposition | Donates to | Extract | Explicitly reject |
+|---|---|---|---|---|---|
+| 1 | `trycompai/crm` | ADAPT | E-04, E-05, E-06 | Durable work-queue model, job lease/retry/dead-letter semantics, scheduled autonomous follow-up patterns, agentic task contracts | Its CRM data model, schema, and UI |
+| 2 | `chatwoot/chatwoot` | ADAPT | E-09, E-10, M-01, M-02, M-03, M-09 | Conversation/inbox/contact-channel model, assignment and human-handoff state machine, agent-bot boundary, canned-response and SLA patterns | Running Chatwoot as a service; its Rails stack; its identity model |
+| 3 | `ShawnPana/phone-harness` | WATCH | E-08, M-04 | Controlled phone/mobile agent execution harness, action allowlisting, session boundaries, failure containment | Uncontrolled device automation; anything bypassing E-12 or M-07 |
+| 4 | `NVIDIA/SkillSpector` | ADOPT | E-12 (Gate 1) | Agent-skill scanning of external skills before trust | Treating a single scanner as sufficient; auto-allow on pass |
+| 5 | `cisco-ai-defense/skill-scanner` | ADOPT | E-12 (Gate 2A) | Independent agent-skill scanning | Collapsing Gate 2A and Gate 1 into one scan |
+| 6 | `cisco-ai-defense/mcp-scanner` | ADOPT | E-12 (Gate 2B) | MCP server/tool scanning, tool-poisoning and description-injection detection | Applying MCP scanning to non-MCP skills and calling the gate satisfied |
+| 7 | `smicallef/spiderfoot` | WATCH | E-13 | OSINT enrichment modules, source attribution, per-module opt-in, rate/consent controls | Unbounded scanning; enrichment without lawful basis; storing raw OSINT against a contact without provenance |
+| 8 | `every-app/open-seo` | EXTRACT | E-14 | SEO/growth intelligence signal extraction and reporting patterns | Publishing or mutating a client's site from the CRM |
+| 9 | `browser-use/video-use` | EXTRACT | E-15 | Agent video capability and generation/return-path patterns | Unattended publication of generated media |
+| 10 | `twentyhq/twenty` | EXTRACT | E-17, C-03…C-05 refinements | CRM product patterns and UX: record-page composition, view/filter model, keyboard-first navigation, data-table ergonomics | Code copy, schema adoption, any runtime dependency |
+| 11 | `n8n-io/n8n` | ADOPT | E-18, M-06 | Automation/orchestration patterns; execution-edge workflow transport (the workforce repo already proves the Slack→workforce→Slack path) | n8n as the system of record; orchestration logic that bypasses CRM approvals or tenancy |
+| 12 | `facebook/docusaurus` | EXTRACT | Documentation architecture | Versioned documentation IA, ordered doc sets, audience separation | Migrating this governing document out of the repository |
+| 13 | **DodoNote / meeting-intelligence source** | BLOCKED | E-16, M-05 | Meeting capture, transcription, summary, action-item extraction, CRM write-back | — |
+
+
+**Disposition rationale.** ADAPT for #1 and #2: both are whole products with their own
+data models, so ClientVerse takes the approach (durable job semantics; the conversation
+and handoff state machine) and not the system. ADOPT for #4–#6: the scanners are used as
+scanners, exactly what §6 requires, and are the only sources intended to be run rather
+than read — which is why they are also the ones gated behind owner blockers O-13 and O-14.
+ADOPT for #11: n8n is an execution edge behind a CRM-side contract, never the system of
+record. WATCH for #3 and #7: both are blocked on an owner decision (telephony and consent
+policy, O-06; OSINT lawful basis, O-07) and no work should start until those clear.
+EXTRACT for #8–#10 and #12: patterns only, no dependency, no code copy. BLOCKED for #13:
+the source is unresolved (§7.1, O-10) so no disposition can honestly be assigned yet.
 
 **Source #13 is unresolved. `SOURCE URL UNRESOLVED — OWNER CONFIRMATION REQUIRED`** — see §7.1.
 
