@@ -119,6 +119,7 @@ async def lifespan(_: FastAPI):
         await db.cron_runs.create_index("run_id", unique=True)
         await WorkQueue(db).ensure_indexes()
         await nba_service.ensure_indexes(db)
+        await second_chance_service.ensure_indexes(db)
         await security_gate_service.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
@@ -1530,7 +1531,7 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
         try:
             await security_gate_service.assert_executable(
                 db, tenant_id=tenant, source_url=tool.get("source_url", ""),
-                version=tool.get("version", ""))
+                version=tool.get("version", ""), digest=tool.get("digest"))
         except security_gate_service.SecurityGateError as exc:
             await fail(403, f"Security gate: {exc}", tool["level"])
 
@@ -1920,6 +1921,29 @@ async def cron_commitment_risk(request: Request):
     return {"accepted": True, "run_id": run_id}
 
 
+async def _release_cron_run(job: str, run_id: str) -> None:
+    """Release a claimed delivery so a retry is not suppressed.
+
+    The claim is taken before the background task runs. If that task dies, the delivery
+    id stays claimed and a redelivery is treated as a duplicate, silently losing the
+    work. Releasing on failure keeps the idempotency guard (a concurrent duplicate is
+    still suppressed) without turning a crash into lost work.
+    """
+    try:
+        await db.cron_runs.delete_one({"run_id": run_id, "job": job})
+    except Exception:
+        logger.exception("Failed to release a cron run claim")
+
+
+async def _run_cron_job(job: str, run_id: str, coro_factory):
+    try:
+        return await coro_factory()
+    except Exception:
+        logger.exception("Scheduled job '%s' failed", job)
+        await _release_cron_run(job, run_id)
+        raise
+
+
 def _authorize_cron(request: Request) -> None:
     secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
     auth = request.headers.get("Authorization", "")
@@ -1939,8 +1963,12 @@ async def cron_work_queue(request: Request):
     run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
     if not await _claim_cron_run("work-queue", run_id):
         return {"accepted": True, "duplicate": True}
-    asyncio.create_task(run_worker_tick(work_queue, WORK_QUEUE_HANDLERS, worker_id="cron",
-                                        queue_name=SYSTEM_QUEUE))
+    # Each tick gets a distinct worker identity so lease-ownership checks can tell a
+    # stale tick apart from the one that replaced it.
+    asyncio.create_task(_run_cron_job(
+        "work-queue", run_id,
+        lambda: run_worker_tick(work_queue, WORK_QUEUE_HANDLERS,
+                                worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE)))
     return {"accepted": True, "run_id": run_id}
 
 
@@ -1951,7 +1979,8 @@ async def cron_second_chance(request: Request):
     run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
     if not await _claim_cron_run("second-chance", run_id):
         return {"accepted": True, "duplicate": True}
-    asyncio.create_task(run_second_chance_sweep(actor="cron"))
+    asyncio.create_task(_run_cron_job(
+        "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron")))
     return {"accepted": True, "run_id": run_id}
 
 
@@ -1962,7 +1991,8 @@ async def cron_next_best_actions(request: Request):
     run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
     if not await _claim_cron_run("next-best-actions", run_id):
         return {"accepted": True, "duplicate": True}
-    asyncio.create_task(nba_service.generate_all_tenants(db, actor="cron"))
+    asyncio.create_task(_run_cron_job(
+        "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron")))
     return {"accepted": True, "run_id": run_id}
 
 # ============================================================================

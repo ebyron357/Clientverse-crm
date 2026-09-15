@@ -19,7 +19,7 @@ name: Scheduled jobs
 on:
   schedule:
     - cron: '*/15 * * * *'   # commitment risk
-    - cron: '*/10 * * * *'   # durable work-queue worker
+    - cron: '*/5 * * * *'    # durable work-queue worker
     - cron: '0,30 * * * *'   # integration sync + next best actions
     - cron: '5 * * * *'      # daily digest + Second Chance detection
   workflow_dispatch:
@@ -53,7 +53,7 @@ jobs:
           fi
           case "$SCHEDULE" in
             '*/15 * * * *')  paths='commitment-risk' ;;
-            '*/10 * * * *')  paths='work-queue' ;;
+            '*/5 * * * *')   paths='work-queue' ;;
             '0,30 * * * *')  paths='integration-sync,next-best-actions' ;;
             '5 * * * *')     paths='daily-digest,second-chance' ;;
             *)               paths='commitment-risk,work-queue,integration-sync,next-best-actions,daily-digest,second-chance' ;;

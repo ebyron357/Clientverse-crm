@@ -57,11 +57,16 @@ function WorkQueuePanel({ isAdmin }) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [queue, summary] = await Promise.all([
+      // "open" excludes failed and dead-lettered items, so requesting only open work
+      // showed a dead-letter count an operator could never act on. Fetch the failure
+      // states too, since replay is offered for exactly those.
+      const [queue, failed, dead, summary] = await Promise.all([
         api.get("/work-queue", { params: { status: "open", limit: 100 } }),
+        api.get("/work-queue", { params: { status: "failed", limit: 50 } }),
+        api.get("/work-queue", { params: { status: "dead_letter", limit: 50 } }),
         api.get("/work-queue/stats"),
       ]);
-      setItems(queue.data || []);
+      setItems([...(dead.data || []), ...(failed.data || []), ...(queue.data || [])]);
       setStats(summary.data || null);
     } catch (e) {
       setItems([]);

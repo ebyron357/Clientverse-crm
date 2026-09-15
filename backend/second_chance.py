@@ -60,14 +60,32 @@ def _days_since(value, reference: datetime) -> Optional[int]:
     return max(0, (reference - parsed).days)
 
 
-async def _latest_activity_at(db, tenant_id: str, resource_id: str) -> Optional[datetime]:
-    """Most recent domain event referencing this record, if any."""
-    event = await db.domain_events.find_one(
-        {"tenant_id": tenant_id, "resource_id": resource_id},
-        {"_id": 0, "timestamp": 1},
-        sort=[("timestamp", -1)],
-    )
-    return _parse((event or {}).get("timestamp"))
+async def _latest_activity_by_resource(db, tenant_id: str,
+                                       resource_ids: list[str]) -> dict[str, datetime]:
+    """Most recent event timestamp per record, in one aggregation.
+
+    Querying per opportunity turned a sweep into an N+1 scan, and the existing
+    `domain_events` index is (tenant, workspace, timestamp) — not keyed by resource — so
+    every one of those queries was unindexed. One grouped pass over the tenant's events
+    for the ids we care about replaces all of them.
+    """
+    if not resource_ids:
+        return {}
+    pipeline = [
+        {"$match": {"tenant_id": tenant_id, "resource_id": {"$in": resource_ids}}},
+        {"$group": {"_id": "$resource_id", "latest": {"$max": "$timestamp"}}},
+    ]
+    latest: dict[str, datetime] = {}
+    async for row in db.domain_events.aggregate(pipeline):
+        parsed = _parse(row.get("latest"))
+        if parsed:
+            latest[row["_id"]] = parsed
+    return latest
+
+
+async def ensure_indexes(db) -> None:
+    """Index the lookup the detector actually performs."""
+    await db.domain_events.create_index([("tenant_id", 1), ("resource_id", 1), ("timestamp", -1)])
 
 
 async def detect_stalled_leads(db, queue, tenant_id: str, *, actor: str = "second-chance",
@@ -83,6 +101,8 @@ async def detect_stalled_leads(db, queue, tenant_id: str, *, actor: str = "secon
     opportunities = await db.opportunities.find(
         {"tenant_id": tenant_id}, {"_id": 0}
     ).sort("created_at", -1).to_list(DETECTION_LIMIT)
+    activity = await _latest_activity_by_resource(
+        db, tenant_id, [o.get("id") for o in opportunities if o.get("id")])
 
     for opp in opportunities:
         stage = str(opp.get("stage") or "").lower()
@@ -97,7 +117,7 @@ async def detect_stalled_leads(db, queue, tenant_id: str, *, actor: str = "secon
             _parse(opp.get("stage_changed_at")),
             _parse(opp.get("updated_at")),
             _parse(opp.get("created_at")),
-            await _latest_activity_at(db, tenant_id, opp.get("id")),
+            activity.get(opp.get("id")),
         ]
         last_activity = max([c for c in candidates if c], default=None)
         if last_activity is None:

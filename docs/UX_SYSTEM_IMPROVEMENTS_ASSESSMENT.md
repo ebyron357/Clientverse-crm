@@ -2,7 +2,7 @@
 
 > **SUPERSEDED — historical assessment.**
 > The canonical source of truth for ClientVerse CRM scope, capability status, and implementation order is
-> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.1, 2026-09-15).
+> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.2, 2026-09-15).
 > Its P0/P1/P2 portfolio is reconciled into sections 4 and 9 of the canonical document.
 
 

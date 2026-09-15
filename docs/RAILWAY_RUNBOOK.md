@@ -90,13 +90,20 @@ Google credentials are already isolated per tenant) that takes priority over the
 `STRIPE_API_KEY` for that tenant's syncs and payment intents. Calling connect with no
 body keeps the previous shared-key behavior.
 
-## 6. External scheduler (required — the app never calls these on its own)
+## 6. Scheduler (required — the application never calls these on its own)
 
-The three `/api/cron/*` endpoints exist, are authenticated, and are safe to call
-concurrently/repeatedly (idempotent per `X-Webhook-Id`), but **nothing in this codebase
-calls them automatically**. Without an external trigger wired to the production URL,
-commitments never auto-flag at-risk/breached, integrations never auto-sync, and digests
-never send — this is a configuration step, not a code deficiency.
+The `/api/cron/*` endpoints are authenticated and safe to call concurrently or
+repeatedly (idempotent per `X-Webhook-Id`), but the application never triggers them
+itself. Without a scheduler, commitments never auto-flag at-risk or breached,
+integrations never auto-sync, digests never send, and the durable work queue has no
+worker — this is a configuration step, not a code deficiency.
+
+**The repository ships a driver for this.** `.github/workflows/scheduled-jobs.yml`
+calls every endpoint below on its documented cadence once two repository secrets are
+set: `CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET`. Until both exist the
+workflow exits without calling anything, so an unconfigured repository produces neither
+failing runs nor silently skipped work. Configure exactly one scheduler: if you prefer a
+dedicated service, disable that workflow rather than running both.
 
 Wire an external scheduler (Railway Cron, n8n, or any HTTP-capable scheduler) to call, on
 the **production** domain:
@@ -109,12 +116,6 @@ the **production** domain:
 | Work-queue worker | `POST /api/cron/work-queue` | every 5 minutes — recovers leases abandoned by crashed workers, then claims and processes due durable jobs |
 | Second Chance detection | `POST /api/cron/second-chance` | hourly — detects stalled leads and missed follow-ups, then queues a recommendation refresh per tenant |
 | Next best actions | `POST /api/cron/next-best-actions` | every 30 minutes — recomputes the ranked recommendation queue |
-
-A ready-made driver ships with the repository: `.github/workflows/scheduled-jobs.yml`
-calls every endpoint on these cadences once the repository secrets
-`CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET` are set. It exits without
-calling anything while either secret is missing. Disable it if you prefer a
-dedicated scheduler.
 
 Every call must carry:
 

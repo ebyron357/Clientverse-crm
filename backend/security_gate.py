@@ -211,7 +211,7 @@ def _evaluate_gate(checks: dict, required: tuple[str, ...]) -> str:
 
 async def ensure_indexes(db) -> None:
     await db[COLLECTION].create_index(
-        [("tenant_id", 1), ("source_url", 1), ("version", 1)], unique=True
+        [("tenant_id", 1), ("source_url", 1), ("version", 1), ("digest", 1)], unique=True
     )
     await db[COLLECTION].create_index([("tenant_id", 1), ("state", 1)])
     await db[COLLECTION].create_index([("tenant_id", 1), ("kind", 1)])
@@ -226,11 +226,21 @@ async def register_component(db, *, tenant_id: str, name: str, kind: str, source
     if not source_url or not version:
         raise SecurityGateError("source_url and version are required — approval binds to an exact version")
 
+    # Identity includes the digest. A source that republishes the same version with
+    # different bytes is a different component: without this it would inherit the
+    # earlier approval, which is exactly the supply-chain substitution the gate exists
+    # to stop.
     existing = await db[COLLECTION].find_one(
         {"tenant_id": tenant_id, "source_url": source_url, "version": version}, {"_id": 0}
     )
     if existing:
-        return existing
+        if (existing.get("digest") or None) == (digest or None):
+            return existing
+        raise SecurityGateError(
+            "This source and version are already registered with a different digest. "
+            "Republished content must be registered and reviewed as a new component "
+            "rather than inheriting the existing decision."
+        )
 
     now = _iso(_now())
     doc = {
@@ -266,8 +276,12 @@ async def record_gate(db, *, tenant_id: str, component_id: str, gate: str, check
                       scanner_results: Optional[list] = None) -> dict:
     """Record a Gate A or Gate B evaluation.
 
-    `scanner_results` are attached verbatim. A result for a scanner that is not
-    configured is stored but does not count towards the gate passing.
+    `scanner_results` are attached verbatim and are operator-attested: this build has no
+    live connection to any scanner, so a result recorded here asserts that a reviewer ran
+    the scan, it does not prove it. Once the scanner endpoints in O-14 are configured,
+    results must be fetched from the scanner and bound to source/version/digest rather
+    than accepted from the caller. A result for an unconfigured scanner is stored but
+    never counts towards the gate passing.
     """
     if gate not in ("gate_a", "gate_b"):
         raise SecurityGateError("gate must be 'gate_a' or 'gate_b'")
@@ -300,6 +314,13 @@ async def record_gate(db, *, tenant_id: str, component_id: str, gate: str, check
     updates = {gate: gate_doc, "updated_at": now}
     if component.get("state") == DISCOVERED:
         updates["state"] = UNDER_REVIEW
+    elif component.get("state") in EXECUTABLE_STATES:
+        # Re-running a gate on an approved component re-opens review and suspends the
+        # decision. Otherwise a failing re-scan would leave the component executable,
+        # because enforcement only reads state and expiry.
+        updates["state"] = UNDER_REVIEW
+        updates["decision"] = None
+        updates["expires_at"] = None
 
     doc = await db[COLLECTION].find_one_and_update(
         {"tenant_id": tenant_id, "id": component_id},
@@ -393,14 +414,27 @@ async def decide(db, *, tenant_id: str, component_id: str, decision: str, actor:
     )
 
 
-async def assert_executable(db, *, tenant_id: str, source_url: str, version: str) -> dict:
-    """Enforcement hook: raise unless this exact source+version is currently trusted."""
+async def assert_executable(db, *, tenant_id: str, source_url: str, version: str,
+                            digest: Optional[str] = None) -> dict:
+    """Enforcement hook: raise unless this exact source, version and digest are trusted."""
     component = await db[COLLECTION].find_one(
         {"tenant_id": tenant_id, "source_url": source_url, "version": version}, {"_id": 0}
     )
     if not component:
         raise SecurityGateError(
             "External component is not registered with the security gate and cannot execute"
+        )
+    if digest is not None and (component.get("digest") or None) != (digest or None):
+        raise SecurityGateError(
+            "Component content does not match the reviewed digest for this version"
+        )
+    if component.get("state") == APPROVED_LIMITED and component.get("limitations"):
+        # Limitations are recorded but nothing evaluates them at invocation yet, so a
+        # limited approval must not silently grant full execution rights.
+        raise SecurityGateError(
+            "Component is APPROVED_LIMITED with recorded limitations, and this build has "
+            "no policy engine to enforce them; grant full APPROVED or remove the "
+            "limitations before allowing execution"
         )
     if component.get("state") not in EXECUTABLE_STATES:
         raise SecurityGateError(

@@ -9,6 +9,7 @@ The HTTP surface is covered by test_operations_api.py.
 import asyncio
 import os
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -78,7 +79,8 @@ def test_enqueue_claim_complete_happy_path(queue_env):
     processing = run(queue_env.start_processing(item["id"], tenant_id=TENANT, worker_id="w1"))
     assert processing["status"] == PROCESSING
 
-    done = run(queue_env.complete(item["id"], tenant_id=TENANT, result={"ok": True}))
+    done = run(queue_env.complete(item["id"], tenant_id=TENANT, result={"ok": True},
+                                  worker_id="w1"))
     assert done["status"] == COMPLETED
     assert done["completed_at"]
     assert done["result"] == {"ok": True}
@@ -133,14 +135,16 @@ def test_retry_then_dead_letter_after_max_attempts(queue_env):
     item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job",
                                  max_attempts=2))
     run(queue_env.claim(worker_id="w1", queue="system", limit=1))
-    retried = run(queue_env.fail(item["id"], tenant_id=TENANT, reason="transient upstream error"))
+    retried = run(queue_env.fail(item["id"], tenant_id=TENANT, reason="transient upstream error",
+                                 worker_id="w1"))
     assert retried["status"] == RETRY_SCHEDULED
     assert retried["last_error"] == "transient upstream error"
 
     run(queue_env.collection.update_one({"id": item["id"]},
                                         {"$set": {"available_at": "2000-01-01T00:00:00+00:00"}}))
     run(queue_env.claim(worker_id="w1", queue="system", limit=1))
-    dead = run(queue_env.fail(item["id"], tenant_id=TENANT, reason="still failing"))
+    dead = run(queue_env.fail(item["id"], tenant_id=TENANT, reason="still failing",
+                              worker_id="w1"))
     assert dead["status"] == DEAD_LETTER
     assert dead["failure_reason"] == "still failing"
 
@@ -150,7 +154,7 @@ def test_non_retryable_failure_dead_letters_immediately(queue_env):
                                  max_attempts=5))
     run(queue_env.claim(worker_id="w1", queue="system", limit=1))
     dead = run(queue_env.fail(item["id"], tenant_id=TENANT, reason="unknown type",
-                              retryable=False))
+                              retryable=False, worker_id="w1"))
     assert dead["status"] == DEAD_LETTER
 
 
@@ -184,7 +188,7 @@ def test_dedupe_key_does_not_block_a_new_item_once_closed(queue_env):
     first = run(queue_env.enqueue(tenant_id=TENANT, queue="second_chance",
                                   item_type="demo.job", dedupe_key="opp:2"))
     run(queue_env.claim(worker_id="w1", queue="second_chance", limit=1))
-    run(queue_env.complete(first["id"], tenant_id=TENANT))
+    run(queue_env.complete(first["id"], tenant_id=TENANT, worker_id="w1"))
     second = run(queue_env.enqueue(tenant_id=TENANT, queue="second_chance",
                                    item_type="demo.job", dedupe_key="opp:2"))
     assert second["id"] != first["id"]
@@ -202,7 +206,7 @@ def test_tenant_isolation_on_claim_and_read(queue_env):
     assert all(i["tenant_id"] == TENANT for i in listed)
 
     with pytest.raises(WorkQueueError):
-        run(queue_env.complete(theirs["id"], tenant_id=TENANT))
+        run(queue_env.complete(theirs["id"], tenant_id=TENANT, worker_id="w1"))
 
 
 def test_manual_replay_requires_failed_or_dead_letter(queue_env):
@@ -212,7 +216,7 @@ def test_manual_replay_requires_failed_or_dead_letter(queue_env):
         run(queue_env.replay(item["id"], tenant_id=TENANT, actor="admin@example.com"))
 
     run(queue_env.claim(worker_id="w1", queue="system", limit=1))
-    run(queue_env.fail(item["id"], tenant_id=TENANT, reason="boom"))
+    run(queue_env.fail(item["id"], tenant_id=TENANT, reason="boom", worker_id="w1"))
     replayed = run(queue_env.replay(item["id"], tenant_id=TENANT, actor="admin@example.com"))
     assert replayed["status"] == QUEUED
     assert replayed["attempts"] == 0
@@ -221,7 +225,7 @@ def test_manual_replay_requires_failed_or_dead_letter(queue_env):
 def test_invalid_state_transition_is_rejected(queue_env):
     item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job"))
     run(queue_env.claim(worker_id="w1", queue="system", limit=1))
-    run(queue_env.complete(item["id"], tenant_id=TENANT))
+    run(queue_env.complete(item["id"], tenant_id=TENANT, worker_id="w1"))
     # Completed is terminal: nothing may move out of it.
     with pytest.raises(InvalidTransition):
         run(queue_env.start_processing(item["id"], tenant_id=TENANT, worker_id="w1"))
@@ -256,7 +260,8 @@ def test_stats_reports_open_and_operator_attention(queue_env):
     dead = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job",
                                  idempotency_key="s2", max_attempts=1))
     run(queue_env.claim(worker_id="w1", queue="system", limit=10))
-    run(queue_env.fail(dead["id"], tenant_id=TENANT, reason="fatal", retryable=False))
+    run(queue_env.fail(dead["id"], tenant_id=TENANT, reason="fatal", retryable=False,
+                       worker_id="w1"))
 
     stats = run(queue_env.stats(tenant_id=TENANT))
     assert stats["total"] == 2
@@ -319,3 +324,114 @@ def test_claim_still_drains_a_single_tenant_when_scoped(queue_env):
     claimed = run(queue_env.claim(worker_id="w1", queue="system", tenant_id=TENANT, limit=10))
     assert len(claimed) == 5
     assert {c["tenant_id"] for c in claimed} == {TENANT}
+
+
+# --------------------------------------------------------------------------
+# Regression coverage for the concurrency defects found in review of PR #26.
+# --------------------------------------------------------------------------
+
+def test_stale_worker_cannot_complete_another_workers_item(queue_env):
+    """A worker whose lease expired must not finish the attempt that replaced it."""
+    item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job",
+                                 max_attempts=5))
+    run(queue_env.claim(worker_id="stale", queue="system", limit=1, lease_seconds=0))
+    run(queue_env.recover_expired_leases())
+    run(queue_env.collection.update_one({"id": item["id"]},
+                                        {"$set": {"available_at": "2000-01-01T00:00:00+00:00"}}))
+    run(queue_env.claim(worker_id="fresh", queue="system", limit=1))
+
+    with pytest.raises(WorkQueueError):
+        run(queue_env.complete(item["id"], tenant_id=TENANT, worker_id="stale"))
+    with pytest.raises(WorkQueueError):
+        run(queue_env.fail(item["id"], tenant_id=TENANT, reason="stale", worker_id="stale"))
+
+    done = run(queue_env.complete(item["id"], tenant_id=TENANT, worker_id="fresh"))
+    assert done["status"] == COMPLETED
+
+
+def test_leased_item_cannot_be_finished_anonymously(queue_env):
+    item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job"))
+    run(queue_env.claim(worker_id="w1", queue="system", limit=1))
+    with pytest.raises(WorkQueueError):
+        run(queue_env.complete(item["id"], tenant_id=TENANT))
+
+
+def test_recovery_does_not_steal_an_item_from_a_live_worker(queue_env):
+    """A worker that heartbeats before recovery writes keeps its item."""
+    item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job"))
+    run(queue_env.claim(worker_id="w1", queue="system", limit=1, lease_seconds=0))
+    # The worker renews its lease in the window between the recovery scan and its write.
+    run(queue_env.heartbeat(item["id"], tenant_id=TENANT, worker_id="w1", lease_seconds=300))
+    run(queue_env.recover_expired_leases())
+
+    refreshed = run(queue_env.get(item["id"], tenant_id=TENANT))
+    assert refreshed["status"] == CLAIMED
+    assert refreshed["lease_owner"] == "w1"
+
+
+def test_concurrent_detections_cannot_create_duplicate_open_items(queue_env):
+    """Deduplication is enforced by the database, not a read-then-insert check."""
+    async def _race():
+        return await asyncio.gather(*[
+            queue_env.enqueue(tenant_id=TENANT, queue="second_chance",
+                              item_type="second_chance.stalled_lead", dedupe_key="opp:race")
+            for _ in range(8)
+        ], return_exceptions=True)
+
+    results = run(_race())
+    assert all(not isinstance(r, Exception) for r in results), results
+    assert run(queue_env.collection.count_documents(
+        {"tenant_id": TENANT, "dedupe_key": "opp:race"})) == 1
+    assert len({r["id"] for r in results}) == 1
+
+
+def test_operator_cannot_resolve_an_item_a_worker_is_processing(queue_env):
+    item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job"))
+    run(queue_env.claim(worker_id="w1", queue="system", limit=1))
+    run(queue_env.start_processing(item["id"], tenant_id=TENANT, worker_id="w1"))
+    with pytest.raises(InvalidTransition):
+        run(queue_env.resolve(item["id"], tenant_id=TENANT, actor="ops@example.com"))
+
+    # Once the worker is done the operator can close it normally.
+    run(queue_env.complete(item["id"], tenant_id=TENANT, worker_id="w1"))
+    resolved = run(queue_env.resolve(item["id"], tenant_id=TENANT, actor="ops@example.com",
+                                     resolution="reviewed"))
+    assert resolved["resolution"] == "reviewed"
+
+
+def test_long_handler_keeps_its_lease_and_runs_once(queue_env):
+    """A handler slower than the lease must not be recovered and run twice."""
+    run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="slow.job"))
+    runs = []
+
+    async def slow_handler(item):
+        runs.append(item["id"])
+        await asyncio.sleep(3)
+        return {"ok": True}
+
+    async def _tick_then_recover():
+        tick = asyncio.create_task(
+            run_worker_tick(queue_env, {"slow.job": slow_handler}, queue_name="system",
+                            lease_seconds=2))
+        # Recovery runs while the handler is still working.
+        await asyncio.sleep(2.5)
+        recovery = await queue_env.recover_expired_leases()
+        return await tick, recovery
+
+    result, recovery = run(_tick_then_recover())
+    assert result["processed"] == 1
+    assert recovery["recovered"] == 0, "a heartbeating worker must not be recovered"
+    assert len(runs) == 1
+
+
+def test_fairness_serves_the_longest_waiting_tenant_first(queue_env):
+    """Ordering by oldest due item removes the starting-index bias across ticks."""
+    run(queue_env.enqueue(tenant_id="ten_waiting", queue="system", item_type="demo.job",
+                          idempotency_key="waiting-1",
+                          available_at=datetime(2020, 1, 1, tzinfo=timezone.utc)))
+    for i in range(5):
+        run(queue_env.enqueue(tenant_id="ten_busy", queue="system", item_type="demo.job",
+                              idempotency_key=f"busy-{i}"))
+
+    claimed = run(queue_env.claim(worker_id="w1", queue="system", limit=1))
+    assert [c["tenant_id"] for c in claimed] == ["ten_waiting"]

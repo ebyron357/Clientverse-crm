@@ -64,12 +64,37 @@ def test_work_queue_and_recommendations_are_readable_by_a_member(admin_token):
 
 # ------------------------------------------------------------- second chance
 
-def test_second_chance_detection_is_admin_only(other_tenant_token):
-    # A freshly registered user owns their tenant, so use a member-scoped assertion via
-    # the security gate registration route, which is also admin-only.
-    response = requests.post(f"{API}/second-chance/detect",
-                             headers=_headers(other_tenant_token), timeout=60)
-    assert response.status_code in (200, 403)
+MEMBER_EMAIL = os.environ.get("DEMO_MEMBER_EMAIL", "")
+MEMBER_PASSWORD = os.environ.get("DEMO_MEMBER_PASSWORD", "")
+
+
+@pytest.fixture(scope="module")
+def member_token():
+    """A non-admin member of the administrator's tenant.
+
+    A freshly registered user is an admin of their own tenant, so it cannot prove an
+    admin-only rule. The seeded demo member can.
+    """
+    if not MEMBER_EMAIL or not MEMBER_PASSWORD:
+        pytest.skip("DEMO_MEMBER_EMAIL/DEMO_MEMBER_PASSWORD are not configured")
+    return _token(MEMBER_EMAIL, MEMBER_PASSWORD)
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("post", "/second-chance/detect", None),
+    ("post", "/security-gate/components",
+     {"name": "x", "kind": "skill", "source_url": "https://example.invalid/x", "version": "1"}),
+])
+def test_admin_only_routes_reject_a_member(member_token, method, path, body):
+    response = getattr(requests, method)(f"{API}{path}", headers=_headers(member_token),
+                                         json=body, timeout=60)
+    assert response.status_code == 403, response.text
+
+
+def test_a_member_can_still_read_operations_surfaces(member_token):
+    for path in ("/work-queue", "/next-best-actions", "/security-gate/status"):
+        assert requests.get(f"{API}{path}", headers=_headers(member_token),
+                            timeout=30).status_code == 200
 
 
 def test_second_chance_detection_returns_an_explainable_summary(admin_token):
@@ -270,3 +295,13 @@ def test_unknown_gate_check_is_rejected(admin_token):
 def test_cron_endpoints_reject_an_unauthenticated_caller():
     for path in ("/cron/work-queue", "/cron/second-chance", "/cron/next-best-actions"):
         assert requests.post(f"{API}{path}", timeout=30).status_code == 401
+
+
+def test_work_item_replay_is_admin_only(member_token, admin_token):
+    items = requests.get(f"{API}/work-queue?status=open", headers=_headers(admin_token),
+                         timeout=30).json()
+    if not items:
+        pytest.skip("No work items available for this assertion")
+    response = requests.post(f"{API}/work-queue/{items[0]['id']}/replay",
+                             headers=_headers(member_token), timeout=30)
+    assert response.status_code == 403

@@ -3,9 +3,15 @@
  * and the external-component security gate, verified end to end against a running
  * deployment.
  *
- * Companion to proof_of_life.mjs. Same rules: no secret values are printed, records
- * created here are explicitly named so they can be found and removed, and every
- * assertion is recorded as an observed HTTP result rather than an assumption.
+ * Companion to proof_of_life.mjs, with one important difference: every record this
+ * script creates lives in a disposable tenant it registers for the run. The API has no
+ * delete endpoints, so seeding into the operator's tenant would leave fabricated
+ * recovery work and recommendations behind permanently. Working in a throwaway tenant
+ * also means every assertion runs against data this run created — there is no
+ * pre-existing data that could make a broken check look green.
+ *
+ * No secret values are printed. Every assertion records an observed HTTP result rather
+ * than an assumption.
  *
  * Required environment:
  *   CLIENTVERSE_API_BASE, CLIENTVERSE_ADMIN_EMAIL, CLIENTVERSE_ADMIN_PASSWORD
@@ -62,85 +68,146 @@ function daysAgo(days) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
 }
 
-async function main() {
-  // ---- authentication -------------------------------------------------------
-  const login = await call('/auth/login', { method: 'POST', body: { email: adminEmail, password: adminPassword } })
-  const adminToken = login.body.token || login.body.access_token
-  record('admin_login_http', login.status)
-  check('admin_login', login.status === 200 && !!adminToken)
-  if (!adminToken) throw new Error('Administrator login failed; cannot continue')
-
-  // A second, independent tenant for the isolation assertions.
-  const otherEmail = `operations-smoke-${Date.now()}@example.com`
-  const register = await call('/auth/register', {
+/**
+ * Register a disposable tenant. A newly registered user is an admin of its own tenant,
+ * so this token can exercise the admin-only routes without touching operator data.
+ */
+async function disposableTenant(label) {
+  const email = `operations-smoke-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`
+  const response = await call('/auth/register', {
     method: 'POST',
-    body: { email: otherEmail, password: 'OperationsSmoke2026!', name: `${PREFIX} Isolation User` },
+    body: { email, password: 'OperationsSmoke2026!', name: `${PREFIX} ${label}` },
   })
-  const otherToken = register.body.token || register.body.access_token
-  record('second_tenant_register_http', register.status)
-  check('second_tenant_register', register.status === 200 && !!otherToken)
+  const token = response.body.token || response.body.access_token
+  record(`${label}_tenant_register_http`, response.status)
+  check(`${label}_tenant_registered`, response.status === 200 && !!token)
+  return token
+}
 
-  // ---- seed a recoverable condition ----------------------------------------
+function assertCreated(name, response) {
+  const id = response.body?.id
+  record(`${name}_http`, response.status)
+  const ok = response.status === 200 && !!id
+  check(`${name}_created`, ok, ok ? null : response.body)
+  if (!ok) {
+    throw new Error(`${name} could not be seeded (HTTP ${response.status}); refusing to ` +
+      'assert against data this run did not create')
+  }
+  return id
+}
+
+async function main() {
+  // ---- the deployment's own administrator still has to work ------------------
+  const login = await call('/auth/login', {
+    method: 'POST', body: { email: adminEmail, password: adminPassword },
+  })
+  record('admin_login_http', login.status)
+  check('admin_login', login.status === 200 && !!(login.body.token || login.body.access_token))
+
+  // ---- everything else happens in disposable tenants -------------------------
+  const token = await disposableTenant('primary')
+  const otherToken = await disposableTenant('isolation')
+  if (!token) throw new Error('Could not register the disposable tenant; cannot continue')
+
+  // A brand-new tenant starts empty. Proving that makes every later assertion
+  // unambiguous: anything found afterwards was created by this run.
+  const initialQueue = await call('/work-queue?status=&limit=50', { token })
+  const initialRecommendations = await call('/next-best-actions?state=&limit=50', { token })
+  const startsEmpty = (initialQueue.body || []).length === 0 &&
+                      (initialRecommendations.body || []).length === 0
+  record('tenant_starts_empty', startsEmpty)
+  check('disposable_tenant_starts_empty', startsEmpty,
+        {queue: (initialQueue.body || []).length,
+         recommendations: (initialRecommendations.body || []).length})
+
+  // ---- seed a recoverable condition ------------------------------------------
+  // Every seed is asserted. An earlier revision only recorded status codes; two seeds
+  // were silently rejected with 422 and the run still passed by matching pre-existing
+  // data — exactly the false green this harness exists to prevent.
   const company = await call('/companies', {
-    method: 'POST', token: adminToken,
+    method: 'POST', token,
     body: { name: `${PREFIX} Recovery Co`, industry: 'Testing', website: 'operations-smoke.example', tier: 'growth' },
   })
+  const companyId = assertCreated('seed_company', company)
+
+  // `OppInput` takes `name`, not `title`.
   const opportunity = await call('/opportunities', {
-    method: 'POST', token: adminToken,
-    body: { title: `${PREFIX} Dormant renewal`, company_id: company.body.id, value: 24000, stage: 'proposal' },
+    method: 'POST', token,
+    body: { name: `${PREFIX} Dormant renewal`, company_id: companyId, value: 24000, stage: 'proposal' },
   })
-  record('seed_company_http', company.status)
-  record('seed_opportunity_http', opportunity.status)
+  const opportunityId = assertCreated('seed_opportunity', opportunity)
+
+  // `CommitmentInput.workspace_id` is required and is validated against the tenant.
+  const workspace = await call('/workspaces', {
+    method: 'POST', token,
+    body: { name: `${PREFIX} Recovery workspace`, company_id: companyId, stage: 'onboarding' },
+  })
+  const workspaceId = assertCreated('seed_workspace', workspace)
 
   const commitment = await call('/commitments', {
-    method: 'POST', token: adminToken,
+    method: 'POST', token,
     body: {
       title: `${PREFIX} Overdue follow-up`,
-      workspace_id: null,
+      workspace_id: workspaceId,
       due_date: daysAgo(6),
       owner: adminEmail,
     },
   })
-  record('seed_commitment_http', commitment.status)
+  const commitmentId = assertCreated('seed_commitment', commitment)
+  const seededRefs = new Set([`opportunity:${opportunityId}`, `commitment:${commitmentId}`])
 
-  // ---- Second Chance detection ---------------------------------------------
-  const detect = await call('/second-chance/detect', { method: 'POST', token: adminToken })
+  // ---- Second Chance detection ------------------------------------------------
+  const detect = await call('/second-chance/detect', { method: 'POST', token })
   record('detection_http', detect.status)
   record('detection_summary', detect.body)
-  check('detection_runs', detect.status === 200)
+  check('detection_runs', detect.status === 200, detect.body)
   check('detection_reports_thresholds', !!detect.body?.thresholds?.stalled_lead_days)
+  // The overdue commitment was created by this run, so detection must find it.
+  check('detection_found_the_seeded_missed_followup',
+        (detect.body?.missed_followups_detected ?? 0) >= 1, detect.body)
+  check('detection_created_work', (detect.body?.work_items_created ?? 0) >= 1, detect.body)
 
-  // Running detection twice must deduplicate rather than pile up duplicates.
-  const detectAgain = await call('/second-chance/detect', { method: 'POST', token: adminToken })
+  const detectAgain = await call('/second-chance/detect', { method: 'POST', token })
   record('detection_repeat_created', detectAgain.body?.work_items_created)
   record('detection_repeat_deduplicated', detectAgain.body?.work_items_deduplicated)
   check('detection_is_deduplicated',
-        (detectAgain.body?.work_items_created ?? 1) === 0 ||
-        (detectAgain.body?.work_items_deduplicated ?? 0) > 0,
+        (detectAgain.body?.work_items_created ?? 1) === 0 &&
+        (detectAgain.body?.work_items_deduplicated ?? 0) >= 1,
         detectAgain.body)
 
-  const queue = await call('/work-queue?status=open&limit=100', { token: adminToken })
+  const queue = await call('/work-queue?status=open&limit=100', { token })
   record('work_queue_http', queue.status)
   record('work_queue_open_items', Array.isArray(queue.body) ? queue.body.length : null)
-  const candidate = (queue.body || []).find((item) => String(item.type).startsWith('second_chance.'))
-  check('work_queue_has_recovery_candidate', !!candidate)
+  const candidate = (queue.body || []).find((item) => seededRefs.has(item.source_ref))
+  check('work_queue_has_recovery_candidate_from_this_run', !!candidate,
+        {seeded: [...seededRefs], seen: (queue.body || []).map((i) => i.source_ref)})
   if (candidate) {
     check('candidate_has_explainable_reason', !!candidate.payload?.reason, candidate.payload)
     check('candidate_has_source_reference', !!candidate.source_ref, candidate.source_ref)
     record('candidate_type', candidate.type)
   }
 
-  const stats = await call('/work-queue/stats', { token: adminToken })
+  // Coverage boundary, stated rather than implied: the API does not let a client set
+  // an opportunity's activity timestamps, so a freshly seeded opportunity can never be
+  // stale enough to trigger the stalled-lead rule. This run therefore exercises the
+  // missed-follow-up lane end to end; the stalled-lead rule is covered by
+  // backend/tests/test_second_chance.py against backdated records.
+  record('stalled_lead_lane_exercised_here', false)
+  record('stalled_lead_lane_covered_by', 'backend/tests/test_second_chance.py')
+
+  const stats = await call('/work-queue/stats', { token })
   record('work_queue_stats', stats.body)
   check('work_queue_stats_shape', stats.status === 200 && 'dead_letter' in (stats.body || {}))
 
-  // ---- Next Best Action ------------------------------------------------------
-  const generate = await call('/next-best-actions/generate', { method: 'POST', token: adminToken })
+  // ---- Next Best Action --------------------------------------------------------
+  const generate = await call('/next-best-actions/generate', { method: 'POST', token })
   record('nba_generate_http', generate.status)
   record('nba_generate_summary', generate.body)
   check('nba_generates', generate.status === 200)
+  check('nba_reports_no_failed_rules', (generate.body?.failed_rules || []).length === 0,
+        generate.body?.failed_rules)
 
-  const recommendations = await call('/next-best-actions?state=open&limit=50', { token: adminToken })
+  const recommendations = await call('/next-best-actions?state=open&limit=50', { token })
   record('nba_open_count', Array.isArray(recommendations.body) ? recommendations.body.length : null)
   const recommendation = (recommendations.body || [])[0]
   check('nba_returns_recommendations', !!recommendation)
@@ -148,43 +215,50 @@ async function main() {
     check('nba_has_reason', !!recommendation.reason)
     check('nba_has_source_refs', (recommendation.source_refs || []).length > 0)
     check('nba_has_no_fabricated_confidence', !('confidence' in recommendation))
-    record('nba_priority_ordering_is_ascending',
-           (recommendations.body || []).every((item, index, all) =>
-             index === 0 || all[index - 1].priority <= item.priority))
+    const ordered = (recommendations.body || []).every((item, index, all) =>
+      index === 0 || all[index - 1].priority <= item.priority)
+    record('nba_priority_ordering_is_ascending', ordered)
+    check('nba_is_priority_ordered', ordered)
 
     const accepted = await call(`/next-best-actions/${recommendation.id}`, {
-      method: 'PATCH', token: adminToken, body: { state: 'accepted' },
+      method: 'PATCH', token, body: { state: 'accepted' },
     })
     record('nba_feedback_http', accepted.status)
     check('nba_feedback_persists', accepted.status === 200 && accepted.body?.state === 'accepted')
   }
 
-  // ---- security gate ---------------------------------------------------------
-  const gateStatus = await call('/security-gate/status', { token: adminToken })
+  // ---- security gate -----------------------------------------------------------
+  const gateStatus = await call('/security-gate/status', { token })
   record('security_gate_status', gateStatus.body)
   check('security_gate_declares_two_gates', (gateStatus.body?.gates || []).length === 2)
   check('security_gate_lists_all_three_scanners', (gateStatus.body?.scanners || []).length === 3)
 
-  const componentPayload = {
-    name: `${PREFIX} example external skill`,
-    kind: 'skill',
-    source_url: `https://github.com/example/${PREFIX.toLowerCase()}-${Date.now()}`,
-    version: '1.0.0',
-  }
+  const sourceUrl = `https://github.com/example/${PREFIX.toLowerCase()}-${Date.now()}`
   const registered = await call('/security-gate/components', {
-    method: 'POST', token: adminToken, body: componentPayload,
+    method: 'POST', token,
+    body: { name: `${PREFIX} example external skill`, kind: 'skill', source_url: sourceUrl,
+            version: '1.0.0', digest: 'sha256:aaa' },
   })
-  record('security_gate_register_http', registered.status)
+  const componentId = assertCreated('security_gate_register', registered)
   check('registration_grants_nothing', registered.body?.state === 'DISCOVERED', registered.body?.state)
 
-  const approveAttempt = await call(`/security-gate/components/${registered.body?.id}/decision`, {
-    method: 'POST', token: adminToken,
+  const approveAttempt = await call(`/security-gate/components/${componentId}/decision`, {
+    method: 'POST', token,
     body: { decision: 'APPROVED', rationale: 'smoke check — must be refused' },
   })
   record('security_gate_premature_approval_http', approveAttempt.status)
   check('premature_approval_is_refused', approveAttempt.status >= 400, approveAttempt.body)
 
-  // ---- tenant isolation ------------------------------------------------------
+  // Republished content under the same version must not inherit the record.
+  const republished = await call('/security-gate/components', {
+    method: 'POST', token,
+    body: { name: `${PREFIX} example external skill`, kind: 'skill', source_url: sourceUrl,
+            version: '1.0.0', digest: 'sha256:bbb' },
+  })
+  record('security_gate_digest_change_http', republished.status)
+  check('digest_change_is_rejected', republished.status >= 400, republished.body)
+
+  // ---- tenant isolation --------------------------------------------------------
   if (otherToken && candidate) {
     const crossRead = await call(`/work-queue/${candidate.id}`, { token: otherToken })
     record('cross_tenant_work_item_http', crossRead.status)
@@ -197,26 +271,26 @@ async function main() {
     record('cross_tenant_recommendation_patch_http', crossPatch.status)
     check('cross_tenant_recommendation_denied', crossPatch.status === 404, crossPatch.status)
   }
-  if (otherToken && registered.body?.id) {
-    const crossComponent = await call(`/security-gate/components/${registered.body.id}`, { token: otherToken })
+  if (otherToken && componentId) {
+    const crossComponent = await call(`/security-gate/components/${componentId}`, { token: otherToken })
     record('cross_tenant_component_http', crossComponent.status)
     check('cross_tenant_component_denied', crossComponent.status === 404, crossComponent.status)
   }
 
-  // ---- scheduled work --------------------------------------------------------
+  // ---- scheduled work ----------------------------------------------------------
   const unauthenticatedCron = await call('/cron/work-queue', { method: 'POST' })
   record('cron_unauthenticated_http', unauthenticatedCron.status)
   check('cron_requires_authentication', unauthenticatedCron.status === 401)
 
   if (cronSecret) {
     const sweep = await call('/cron/second-chance', {
-      method: 'POST', headers: { Authorization: `Bearer ${cronSecret}`, 'X-Webhook-Id': `${PREFIX}-sweep-${Date.now()}` },
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cronSecret}`, 'X-Webhook-Id': `${PREFIX}-sweep-${Date.now()}` },
     })
     record('cron_second_chance_http', sweep.status)
     check('cron_second_chance_accepted', sweep.status === 200 && sweep.body?.accepted === true)
 
-    // The sweep acknowledges immediately and runs in the background, so give it time to
-    // enqueue its durable follow-up jobs before the worker tick looks for them.
+    // The sweep acknowledges immediately and runs in the background.
     await new Promise((resolve) => setTimeout(resolve, 5000))
 
     const runId = `${PREFIX}-tick-${Date.now()}`
@@ -232,34 +306,44 @@ async function main() {
     record('cron_duplicate_suppressed', duplicate.body?.duplicate === true)
     check('cron_is_idempotent', duplicate.body?.duplicate === true, duplicate.body)
 
-    // Each tick is bounded and rotates across tenants, so this tenant's job may not be
-    // claimed on the first pass. Drive the worker the way a scheduler would — repeated
-    // ticks — and assert the job is durably completed rather than lost.
-    let completedSystemJobs = 0
+    // Track the specific job queued for this tenant. Counting completed system jobs
+    // would also count work finished before this run, which proves nothing.
+    const systemQueue = await call('/work-queue?status=&queue=system&limit=50', { token })
+    const targetJob = (systemQueue.body || [])
+      .find((item) => item.type === 'next_best_action.generate')
+    record('system_job_queued', !!targetJob)
+    check('sweep_queued_a_durable_refresh_job', !!targetJob,
+          'the sweep should queue a recommendation refresh on the durable queue')
+
     let ticksUsed = 0
-    for (let attempt = 0; attempt < 10 && completedSystemJobs === 0; attempt += 1) {
-      ticksUsed += 1
-      await call('/cron/work-queue', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${cronSecret}`, 'X-Webhook-Id': `${PREFIX}-tick-${Date.now()}-${attempt}` },
-      })
-      await new Promise((resolve) => setTimeout(resolve, 3000))
-      const systemQueue = await call('/work-queue?status=completed&queue=system&limit=20', { token: adminToken })
-      completedSystemJobs = Array.isArray(systemQueue.body) ? systemQueue.body.length : 0
+    let jobState = targetJob?.status ?? null
+    if (targetJob) {
+      // Each tick is bounded and rotates across tenants, so this tenant's job may not
+      // be claimed on the first pass. Drive the worker the way a scheduler would.
+      for (let attempt = 0; attempt < 10 && jobState !== 'completed'; attempt += 1) {
+        ticksUsed += 1
+        await call('/cron/work-queue', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${cronSecret}`, 'X-Webhook-Id': `${PREFIX}-tick-${Date.now()}-${attempt}` },
+        })
+        await new Promise((resolve) => setTimeout(resolve, 3000))
+        const refreshed = await call(`/work-queue/${targetJob.id}`, { token })
+        jobState = refreshed.body?.status ?? jobState
+      }
     }
     record('worker_ticks_used', ticksUsed)
-    record('system_jobs_completed', completedSystemJobs)
-    check('worker_tick_processed_a_system_job', completedSystemJobs > 0,
-          'the durable worker tick should have completed the queued recommendation refresh')
-
+    record('tracked_system_job_state', jobState)
+    check('worker_tick_completed_this_runs_system_job', jobState === 'completed',
+          `last observed state: ${jobState}`)
   } else {
     record('cron_secret_supplied', false)
   }
 
   evidence.cleanup_note =
-    `This run creates explicitly named ${PREFIX} records (company, opportunity, commitment, ` +
-    'work items, recommendations, and one external-component registration) plus an isolated ' +
-    'second tenant. Remove them after retaining the approved evidence.'
+    'Every record this run created lives in disposable tenants registered for the run, so ' +
+    "nothing is written into an operator's tenant. The API exposes no delete endpoints, so " +
+    'those tenants and their records remain until an operator removes them; they are inert ' +
+    'and isolated by the same tenancy boundary this run asserts.'
   evidence.secret_redaction =
     'This evidence intentionally omits account identities, passwords, session tokens, database ' +
     'credentials, provider values, and internal record identifiers.'
@@ -279,5 +363,13 @@ async function main() {
 
 main().catch((error) => {
   console.error(error)
+  evidence.result = 'FAIL'
+  evidence.fatal_error = String(error).slice(0, 500)
+  if (evidencePath) {
+    try {
+      fs.mkdirSync(path.dirname(evidencePath), { recursive: true })
+      fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`)
+    } catch { /* evidence capture is best effort once the run has already failed */ }
+  }
   process.exit(1)
 })

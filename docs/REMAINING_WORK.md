@@ -2,7 +2,7 @@
 
 > **SUPERSEDED — historical closeout record.**
 > The canonical source of truth for ClientVerse CRM scope, capability status, and implementation order is
-> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.1, 2026-09-15).
+> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.2, 2026-09-15).
 > Owner-controlled blockers are carried into section 10 of the canonical document. Its statement that no incomplete repository task remains is true only for the pre-expansion release-closeout scope.
 
 

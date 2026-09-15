@@ -242,14 +242,25 @@ async def _from_integrations(db, tenant_id: str) -> list[dict]:
 
 
 async def _from_client_health(db, tenant_id: str) -> list[dict]:
+    """Use the health the application actually computes.
+
+    Workspace documents do not carry a health field: `record_health_snapshot` writes the
+    canonical score and band to `health_snapshots`. Reading a non-existent `ws["health"]`
+    meant this rule could never fire for a real unhealthy workspace.
+    """
     out = []
     workspaces = await db.workspaces.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(200)
     for ws in workspaces:
-        health = ws.get("health") or {}
-        band = str(health.get("band") or ws.get("health_band") or "").lower()
+        snapshot = await db.health_snapshots.find_one(
+            {"tenant_id": tenant_id, "workspace_id": ws.get("id")},
+            {"_id": 0, "score": 1, "band": 1},
+            sort=[("at", -1)],
+        ) or {}
+        health = ws.get("health") if isinstance(ws.get("health"), dict) else {}
+        band = str(snapshot.get("band") or health.get("band") or ws.get("health_band") or "").lower()
         if band in ("", "healthy", "good"):
             continue
-        score = health.get("score", ws.get("health_score"))
+        score = snapshot.get("score", health.get("score", ws.get("health_score")))
         out.append(_recommendation(
             tenant_id=tenant_id,
             action_type=ACTION_REVIEW_CLIENT_HEALTH,
@@ -280,12 +291,15 @@ async def generate(db, tenant_id: str, *, actor: str = "system") -> dict:
     Open recommendations whose underlying condition has cleared are retired.
     """
     candidates: list[dict] = []
+    failed_rules: list[str] = []
     for rule in RULES:
         try:
             candidates.extend(await rule(db, tenant_id))
-        except Exception:
-            # A single failing rule must not void the whole queue.
-            continue
+        except Exception as exc:
+            # A single failing rule must not void the whole queue — and, critically,
+            # must not let the retirement pass below conclude that the conditions it
+            # would have reported have cleared.
+            failed_rules.append(f"{rule.__name__}: {str(exc)[:200]}")
 
     seen: dict[str, dict] = {}
     for candidate in candidates:
@@ -294,24 +308,33 @@ async def generate(db, tenant_id: str, *, actor: str = "system") -> dict:
     created, refreshed = 0, 0
     now = _iso(_now())
     for key, candidate in seen.items():
-        existing = await db[COLLECTION].find_one(
-            {"tenant_id": tenant_id, "dedupe_key": key}, {"_id": 0}
-        )
-        if existing is None:
-            await db[COLLECTION].insert_one(dict(candidate))
-            created += 1
-            continue
-        # Refresh the explainable fields; never reset the user's state or feedback.
-        await db[COLLECTION].update_one(
+        # `dedupe_key` is uniquely indexed, so a find-then-insert races a concurrent
+        # generation (a user refresh alongside the cron sweep) into a duplicate-key
+        # error. An upsert that only sets the explainable fields is atomic and never
+        # touches the user's state or feedback.
+        result = await db[COLLECTION].update_one(
             {"tenant_id": tenant_id, "dedupe_key": key},
             {"$set": {"title": candidate["title"], "reason": candidate["reason"],
                       "priority": candidate["priority"], "evidence": candidate["evidence"],
-                      "source_refs": candidate["source_refs"], "updated_at": now}},
+                      "source_refs": candidate["source_refs"], "updated_at": now},
+             "$setOnInsert": {k: v for k, v in candidate.items()
+                              if k not in ("title", "reason", "priority", "evidence",
+                                           "source_refs", "updated_at")}},
+            upsert=True,
         )
-        refreshed += 1
+        if getattr(result, "upserted_id", None) is not None:
+            created += 1
+        else:
+            refreshed += 1
 
-    # Retire open recommendations whose source condition no longer holds.
+    # Retire open recommendations whose source condition no longer holds — but only
+    # when every rule actually ran. If a rule failed, its conditions are unknown, not
+    # cleared, and retiring them would silently erase real work.
     retired = 0
+    if failed_rules:
+        return {"tenant_id": tenant_id, "created": created, "refreshed": refreshed,
+                "retired": 0, "evaluated": len(seen), "failed_rules": failed_rules,
+                "retirement_skipped": True}
     open_docs = await db[COLLECTION].find(
         {"tenant_id": tenant_id, "state": {"$in": list(OPEN_STATES)}}, {"_id": 0}
     ).to_list(1000)
@@ -328,7 +351,7 @@ async def generate(db, tenant_id: str, *, actor: str = "system") -> dict:
         retired += 1
 
     return {"tenant_id": tenant_id, "created": created, "refreshed": refreshed,
-            "retired": retired, "evaluated": len(seen)}
+            "retired": retired, "evaluated": len(seen), "failed_rules": []}
 
 
 async def generate_all_tenants(db, *, actor: str = "cron") -> dict:

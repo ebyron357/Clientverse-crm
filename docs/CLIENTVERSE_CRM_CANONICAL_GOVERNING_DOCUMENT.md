@@ -1,6 +1,6 @@
 # ClientVerse CRM — Canonical Governing Document
 
-**Version:** 1.1 — complete replacement
+**Version:** 1.2 — complete replacement
 **Effective:** 2026-09-15
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
 **Repository:** `ebyron357/Clientverse-crm`
@@ -316,7 +316,19 @@ ALLOW  /  BLOCK  /  OWNER REVIEW
 6. `ALLOW` makes a component *eligible*; per-tenant allowlisting and approval level (C-11) still govern actual invocation.
 7. The gate is an internal control plane. It is not exposed as a customer-facing feature (§4.D).
 
-**Current state:** `APPROVED — NOT STARTED` (E-12). The CRM today has no external-component ingestion path at all — the MCP catalog is static and in-repo — so the gate must be built **before**, not after, any external skill/MCP ingestion capability ships.
+**Current state:** the pipeline above is implemented and tested (`backend/security_gate.py`,
+E-12 in §4.C): intake, both gates, the state machine, version-and-digest-bound decisions
+with expiry, and enforcement on `POST /api/mcp/invoke`. Intake routes exist at
+`/api/security-gate/components`.
+
+Two limits are real and deliberate. **No scanner is wired** (owner blockers O-13 and
+O-14), and the gate refuses every approval while a required scanner is unconfigured, so
+nothing can currently be approved — the safe default. **Scanner results are
+operator-attested**: a reviewer records that a scan ran, which the gate stores and
+requires, but cannot yet verify. Once the scanner endpoints exist, results must be
+fetched from the scanner and bound to source, version and digest rather than accepted
+from the caller. Until then no external component should be treated as trusted on the
+strength of a recorded result alone.
 
 ---
 
@@ -551,5 +563,6 @@ ClientVerse CRM is closed only when all of the following hold:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.2 | 2026-09-15 | Review-remediation pass on PR #26. Fixed concurrency defects in the durable queue (lease ownership on terminal transitions, atomic recovery, in-flight lease renewal, database-enforced deduplication, starvation-free tenant rotation, operator/worker resolve race); made cron deliveries releasable so a crashed job is retried rather than lost, and gave each tick a distinct worker identity; bound security-gate identity and enforcement to the content digest and made a re-scan re-open review; stopped a failed Next Best Action rule from retiring valid recommendations, moved the health rule onto the canonical health snapshot, and made generation upsert atomically; removed an N+1 scan from detection and indexed the lookup it performs. Rewrote the operations smoke to run in disposable tenants with asserted seeds — the previous evidence passed while two seeds were rejected with HTTP 422, so it proved less than claimed. |
 | 1.1 | 2026-09-15 | Execution pass. Reduced O-03 from "choose and wire a scheduler" to two repository secrets by adding `.github/workflows/scheduled-jobs.yml`. Recorded verified evidence for `main@3f14347` and the work branch. Moved E-03, E-04, E-05, E-07/NBA-1 and the E-12 pipeline to `TESTED`; added C-23 (CI lint gate). Corrected two further completion claims: CI never ran the documented lint gate, and Next Best Action was previously described as delivered when only a client-side strip existed. Added owner blockers O-14 (scanners unconfigured) and O-15 (production unreachable from the agent environment), and expanded O-03 with the three new cron entry points. |
 | 1.0 | 2026-09-15 | Initial canonical replacement. Merged `memory/PRD.md`, `docs/CLIENTVERSE_PRODUCT_COMPLETION_BRIEF.md`, `docs/UX_SYSTEM_IMPROVEMENTS_ASSESSMENT.md`, `docs/REMAINING_WORK.md`, `todo.md`, `AGENTS.md` closeout state, ClickUp `CONTROL — W2`, and Slack canvas `F0BPNUF7VK3` into one governing document. Added the recovered expansion capability register (§4.C), source-repository mapping (§5), the mandatory dual-gate security architecture (§6), unresolved source references (§7), implementation order (§9), dependencies and owner blockers (§10). Corrected six completion claims that evidence does not support (§3.3). |
