@@ -110,6 +110,12 @@ the **production** domain:
 | Second Chance detection | `POST /api/cron/second-chance` | hourly — detects stalled leads and missed follow-ups, then queues a recommendation refresh per tenant |
 | Next best actions | `POST /api/cron/next-best-actions` | every 30 minutes — recomputes the ranked recommendation queue |
 
+A ready-made driver ships with the repository: `.github/workflows/scheduled-jobs.yml`
+calls every endpoint on these cadences once the repository secrets
+`CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET` are set. It exits without
+calling anything while either secret is missing. Disable it if you prefer a
+dedicated scheduler.
+
 Every call must carry:
 
 ```
