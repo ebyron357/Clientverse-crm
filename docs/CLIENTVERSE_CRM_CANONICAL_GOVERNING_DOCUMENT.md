@@ -188,6 +188,8 @@ The module registry is the **contract of record** for which surfaces exist and w
 | C-21 | Shared surface states (loading/empty/error + retry) across Command Center, integrations, workspace activity, audit, MCP | MERGED | PR #24, `SurfaceState.jsx` | RECOVERED (PR #24) |
 | C-22 | Next Best Action | TESTED | Superseded by NBA-1 in §4.C — the client-side strip is removed and the surface now consumes the backend service. | RECOVERED (UX assessment P0 #3) |
 | C-23 | Frontend lint enforced in CI | TESTED | `.github/workflows/ci.yml` now runs `yarn lint --max-warnings=0` before the build; the pre-existing error on `main` is fixed. | This change set (§3.3) |
+| C-24 | `/operations` operator surface | TESTED | Work-queue queue depth and dead-letter visibility with acknowledge / resolve / admin replay, the recovery-detection trigger, the ranked recommendation queue, and the security-gate panel that reports scanner configuration honestly. Registered in `CLIENTVERSE_MODULES` as `available`. | This change set |
+| C-25 | Scheduled-job driver | TESTED | `.github/workflows/scheduled-jobs.yml` calls every cron endpoint on the documented cadences once two repository secrets exist, and exits cleanly while they do not. See O-03. | This change set |
 
 ### 4.B Approved module contracts — registered, not yet built
 
