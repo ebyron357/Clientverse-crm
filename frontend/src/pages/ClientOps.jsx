@@ -29,6 +29,8 @@ export default function ClientOps() {
   const [appointmentForm, setAppointmentForm] = useState({ title: "", start: "", end: "" });
   const [reviewMessage, setReviewMessage] = useState("");
   const [ruleTemplate, setRuleTemplate] = useState("new_lead_follow_up");
+  const [activeTab, setActiveTab] = useState("overview");
+  const [showSecondary, setShowSecondary] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,8 +99,45 @@ export default function ClientOps() {
     </div>
     <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"><ShieldCheck className="mr-2 inline h-4 w-4" /><strong>Safe-by-default:</strong> payment collection, email/SMS sends, and public review requests are never automatic. Their provider connections are visibly configuration-dependent.</div>
 
-    <Tabs defaultValue="portal">
-      <TabsList className="w-full justify-start overflow-x-auto"><TabsTrigger value="portal">Client portal</TabsTrigger><TabsTrigger value="commercial">Commercial & documents</TabsTrigger><TabsTrigger value="field">Appointments</TabsTrigger><TabsTrigger value="growth">Growth</TabsTrigger><TabsTrigger value="automation">Safe automation</TabsTrigger><TabsTrigger value="delivery">Capacity & playbooks</TabsTrigger></TabsList>
+    <Tabs value={activeTab} onValueChange={(value) => { setActiveTab(value); if (["field", "growth", "automation", "delivery"].includes(value)) setShowSecondary(true); }} data-testid="client-ops-tabs">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <TabsList className="w-full justify-start overflow-x-auto sm:w-auto">
+          <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
+          <TabsTrigger value="portal">Client portal</TabsTrigger>
+          <TabsTrigger value="commercial">Commercial</TabsTrigger>
+          {(showSecondary || ["field", "growth", "automation", "delivery"].includes(activeTab)) && (
+            <>
+              <TabsTrigger value="field">Appointments</TabsTrigger>
+              <TabsTrigger value="growth">Growth</TabsTrigger>
+              <TabsTrigger value="automation">Safe automation</TabsTrigger>
+              <TabsTrigger value="delivery">Capacity & playbooks</TabsTrigger>
+            </>
+          )}
+        </TabsList>
+        {!showSecondary && (
+          <Button type="button" size="sm" variant="outline" className="shrink-0" onClick={() => setShowSecondary(true)} data-testid="client-ops-show-more">More workflows</Button>
+        )}
+      </div>
+      <TabsContent value="overview" className="mt-5" data-testid="client-ops-overview">
+        <div className="grid gap-4 lg:grid-cols-3">
+          <button type="button" className="cv-card p-5 text-left hover:border-cyan-300" onClick={() => setActiveTab("portal")}>
+            <h2 className="cv-card-title">Portal readiness</h2>
+            <p className="cv-card-description mt-1">{data.portalLinks.filter((item) => item.status === "active" && item.workspace_id === workspaceId).length || 0} active link(s) for this workspace.</p>
+            <p className="mt-3 text-xs font-semibold text-[#1a9fbf]">Open portal tools →</p>
+          </button>
+          <button type="button" className="cv-card p-5 text-left hover:border-cyan-300" onClick={() => setActiveTab("commercial")}>
+            <h2 className="cv-card-title">Commercial pulse</h2>
+            <p className="cv-card-description mt-1">{summary.active_estimates || 0} active estimates · {summary.documents || 0} documents.</p>
+            <p className="mt-3 text-xs font-semibold text-[#1a9fbf]">Review commercial →</p>
+          </button>
+          <button type="button" className="cv-card p-5 text-left hover:border-cyan-300" onClick={() => { setShowSecondary(true); setActiveTab("field"); }}>
+            <h2 className="cv-card-title">Field & secondary</h2>
+            <p className="cv-card-description mt-1">{summary.scheduled_appointments || 0} appointments · growth/automation behind progressive disclosure.</p>
+            <p className="mt-3 text-xs font-semibold text-[#1a9fbf]">Open appointments →</p>
+          </button>
+        </div>
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">Overview keeps portal and commercial primary. Appointments, growth, automation, and playbooks stay behind <strong>More workflows</strong> until needed.</div>
+      </TabsContent>
       <TabsContent value="portal" className="mt-5"><div className="grid gap-5 lg:grid-cols-[1.05fr_.95fr]"><section className="cv-card p-5"><div className="flex items-start gap-3"><span className="rounded-xl bg-cyan-50 p-2 text-[#0a6177]"><Link2 className="h-5 w-5" /></span><div><h2 className="cv-card-title">Secure client portal</h2><p className="cv-card-description">Share approved commitments, documents, estimates, invoices, and a request form through an unguessable workspace-specific link.</p></div></div>{isAdmin ? <div className="mt-5 grid gap-3"><div className="grid gap-1.5"><Label>Client-facing label</Label><Input value={portalClient} onChange={(event) => setPortalClient(event.target.value)} placeholder={workspace?.name || "Choose a workspace"} /></div><Button disabled={busy || !workspaceId} onClick={createPortal} className="cv-action-primary"><Link2 className="mr-1.5 h-4 w-4" />Create secure portal link</Button></div> : <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">Only workspace administrators can issue or revoke client portal links.</div>}</section><section className="cv-card overflow-hidden"><div className="cv-card-header"><div><h2 className="cv-card-title">Active links</h2><p className="cv-card-description">Tokens are never shown again after creation.</p></div></div><div className="divide-y divide-slate-100">{data.portalLinks.filter((item) => item.workspace_id === workspaceId).map((item) => <div className="px-5 py-3" key={item.id}><div className="flex items-center justify-between gap-3"><span className="font-medium text-slate-800">{item.client_label}</span><Badge className={item.status === "active" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-100 text-slate-600"}>{item.status}</Badge></div><p className="mt-1 text-xs text-slate-500">Created {dateLabel(item.created_at)}{item.expires_at ? ` · expires ${dateLabel(item.expires_at)}` : ""}</p></div>)}{!data.portalLinks.filter((item) => item.workspace_id === workspaceId).length && <Empty label="No portal links have been created for this workspace." />}</div></section></div></TabsContent>
       <TabsContent value="commercial" className="mt-5"><div className="grid gap-5 xl:grid-cols-2"><RecordForm title="Document & approval coordination" icon={FileText} action="Add document" disabled={busy || !workspaceId} onSubmit={createDocument}><Field label="Document title"><Input value={documentForm.title} onChange={(event) => setDocumentForm({ ...documentForm, title: event.target.value })} placeholder="Proposal, scope, or signed file" /></Field><Field label="Secure external document URL (optional)"><Input value={documentForm.external_url} onChange={(event) => setDocumentForm({ ...documentForm, external_url: event.target.value })} placeholder="https://…" /></Field><p className="text-xs text-slate-500">Client-visible documents remain hidden until you approve or share them.</p></RecordForm><RecordForm title="Estimate to invoice" icon={CircleDollarSign} action="Create estimate" disabled={busy || !workspaceId} onSubmit={createEstimate}><Field label="Estimate title"><Input value={estimateForm.title} onChange={(event) => setEstimateForm({ ...estimateForm, title: event.target.value })} placeholder="Monthly service package" /></Field><div className="grid gap-3 sm:grid-cols-2"><Field label="Line item"><Input value={estimateForm.line} onChange={(event) => setEstimateForm({ ...estimateForm, line: event.target.value })} /></Field><Field label="Amount"><Input inputMode="decimal" value={estimateForm.amount} onChange={(event) => setEstimateForm({ ...estimateForm, amount: event.target.value })} placeholder="1250" /></Field></div><p className="text-xs text-amber-700">Invoices coordinate local records. Stripe payment collection stays disabled until its lifecycle certification passes.</p></RecordForm></div><div className="mt-5 grid gap-5 xl:grid-cols-2"><CommercialList title="Documents" items={inWorkspace(data.documents)} empty="No workspace documents" render={(item) => <><strong>{item.title}</strong><Meta status={item.status} extra={item.client_visible ? "Client visible" : "Internal"} /></>} /><CommercialList title="Estimates & invoices" items={[...inWorkspace(data.estimates), ...inWorkspace(data.invoices)]} empty="No commercial records" render={(item) => <div className="flex items-center justify-between gap-3"><div><strong>{item.title}</strong><Meta status={item.status} extra={money(item.total)} /></div>{isAdmin && item.id?.startsWith("est_") && ["sent", "approved"].includes(item.status) && <Button size="sm" variant="outline" onClick={() => run(() => api.post(`/estimates/${item.id}/invoice`), "Invoice created from estimate")}>Create invoice</Button>}</div>} /></div></TabsContent>
       <TabsContent value="field" className="mt-5"><div className="grid gap-5 xl:grid-cols-[.9fr_1.1fr]"><RecordForm title="Schedule an appointment" icon={CalendarClock} action="Schedule" disabled={busy || !workspaceId} onSubmit={createAppointment}><Field label="Appointment title"><Input value={appointmentForm.title} onChange={(event) => setAppointmentForm({ ...appointmentForm, title: event.target.value })} placeholder="Client check-in" /></Field><div className="grid gap-3 sm:grid-cols-2"><Field label="Start"><Input type="datetime-local" value={appointmentForm.start} onChange={(event) => setAppointmentForm({ ...appointmentForm, start: event.target.value })} /></Field><Field label="End"><Input type="datetime-local" value={appointmentForm.end} onChange={(event) => setAppointmentForm({ ...appointmentForm, end: event.target.value })} /></Field></div><p className="text-xs text-slate-500">Owner conflicts are rejected before the schedule is saved. Reminders create internal review tasks only.</p></RecordForm><CommercialList title="Workspace appointments" items={inWorkspace(data.appointments)} empty="No appointments" render={(item) => <div className="flex items-center justify-between gap-3"><div><strong>{item.title}</strong><Meta status={item.status} extra={dateLabel(item.start_at)} /></div><Button size="sm" variant="outline" onClick={() => run(() => api.post(`/appointments/${item.id}/reminder`), "Internal reminder task prepared")}>Prepare reminder</Button></div>} /></div></TabsContent>
