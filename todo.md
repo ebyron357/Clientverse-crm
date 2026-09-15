@@ -2,7 +2,7 @@
 
 > **SUPERSEDED — historical task ledger.**
 > The canonical source of truth for ClientVerse CRM scope, capability status, and implementation order is
-> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.0, 2026-09-15).
+> [`docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md`](docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (v1.1, 2026-09-15).
 > Completion ticks here are not capability status. Section 4 of the canonical document governs status; section 3.3 corrects the claims this ledger overstates.
 
 
