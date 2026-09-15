@@ -54,13 +54,23 @@ export default function CommandCenterInsights() {
   const [health, setHealth] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [healthError, setHealthError] = useState("");
 
   const load = useCallback(async () => {
     setError("");
+    setHealthError("");
     try {
       const a = await api.get("/alerts", { params: { status: "open" } });
       setAlerts(a.data);
-      if (isAdmin) { const h = await api.get("/integrations/health"); setHealth(h.data.providers); }
+      if (isAdmin) {
+        try {
+          const h = await api.get("/integrations/health");
+          setHealth(h.data.providers);
+        } catch (e) {
+          setHealth(null);
+          setHealthError(formatErr(e.response?.data?.detail) || "Connection health could not be loaded.");
+        }
+      }
     } catch (e) {
       setError(formatErr(e.response?.data?.detail) || "Operational insights could not be loaded.");
       toast.error(formatErr(e.response?.data?.detail));
@@ -144,9 +154,13 @@ export default function CommandCenterInsights() {
 
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm lg:col-span-5" data-testid="cc-connection-health">
         <h3 className="font-display mb-1 flex items-center gap-2 text-lg font-bold"><Activity className="h-4 w-4" />Connection Health</h3>
-        <p className="mb-4 text-xs text-gray-400">Provider sync status across your tenant</p>
+        <p className="mb-4 text-xs text-gray-400">API-backed connection status. This does not claim live Google or Stripe certification.</p>
         {!isAdmin ? (
           <div className="py-6 text-center text-sm text-gray-400" data-testid="cc-health-admin-only">Connection health is visible to admins.</div>
+        ) : healthError ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700" data-testid="cc-health-error">
+            {healthError} <button className="ml-1 font-semibold underline" onClick={load}>Try again</button>
+          </div>
         ) : !health ? (
           <div className="space-y-2" data-testid="cc-health-loading">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 rounded-lg" />)}</div>
         ) : (
