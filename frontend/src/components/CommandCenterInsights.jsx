@@ -1,14 +1,50 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
-import { Bell, Activity, Check, X, RefreshCw, Plug } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Bell, Activity, Check, X, RefreshCw, Plug, CircleAlert } from "lucide-react";
 
 const SEV = { info: "bg-slate-50 text-slate-600 border-slate-200", warning: "bg-amber-50 text-amber-700 border-amber-200", critical: "bg-red-50 text-red-700 border-red-200" };
 const CONN = { active: "bg-emerald-50 text-emerald-700 border-emerald-200", degraded: "bg-amber-50 text-amber-700 border-amber-200", expired: "bg-orange-50 text-orange-700 border-orange-200", revoked: "bg-red-50 text-red-700 border-red-200", error: "bg-red-50 text-red-700 border-red-200", disconnected: "bg-slate-50 text-slate-500 border-slate-200", connecting: "bg-blue-50 text-blue-600 border-blue-200" };
+
+function groupAlerts(alerts) {
+  const groups = new Map();
+  for (const alert of alerts) {
+    const family = alert.family || alert.type || "general";
+    const workspaceKey = alert.workspace_id || "tenant";
+    const key = `${family}::${workspaceKey}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        family,
+        workspace_id: alert.workspace_id || null,
+        workspace_label: alert.workspace_name || (alert.workspace_id ? `Workspace ${String(alert.workspace_id).slice(0, 8)}` : "Tenant-wide"),
+        severity: alert.severity,
+        count: 0,
+        occurrence_count: 0,
+        latest: alert,
+        alerts: [],
+      });
+    }
+    const group = groups.get(key);
+    group.count += 1;
+    group.occurrence_count += alert.occurrence_count || 1;
+    group.alerts.push(alert);
+    const rank = { critical: 3, warning: 2, info: 1 };
+    if ((rank[alert.severity] || 0) >= (rank[group.severity] || 0)) {
+      group.severity = alert.severity;
+      group.latest = alert;
+    }
+  }
+  return [...groups.values()].sort((a, b) => {
+    const rank = { critical: 3, warning: 2, info: 1 };
+    return (rank[b.severity] || 0) - (rank[a.severity] || 0) || b.occurrence_count - a.occurrence_count;
+  });
+}
 
 export default function CommandCenterInsights() {
   const { user } = useAuth();
@@ -17,13 +53,18 @@ export default function CommandCenterInsights() {
   const [alerts, setAlerts] = useState(null);
   const [health, setHealth] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
   const load = useCallback(async () => {
+    setError("");
     try {
       const a = await api.get("/alerts", { params: { status: "open" } });
       setAlerts(a.data);
       if (isAdmin) { const h = await api.get("/integrations/health"); setHealth(h.data.providers); }
-    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+    } catch (e) {
+      setError(formatErr(e.response?.data?.detail) || "Operational insights could not be loaded.");
+      toast.error(formatErr(e.response?.data?.detail));
+    }
   }, [isAdmin]);
   useEffect(() => { load(); }, [load]);
 
@@ -38,35 +79,62 @@ export default function CommandCenterInsights() {
     catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
   };
 
-  if (!alerts) return null;
-  const open = alerts.alerts || [];
+  const open = useMemo(() => alerts?.alerts || [], [alerts]);
+  const groups = useMemo(() => groupAlerts(open), [open]);
+
+  if (error) {
+    return (
+      <div className="cv-card p-6" data-testid="command-center-insights-error">
+        <div className="cv-empty py-8">
+          <CircleAlert className="h-8 w-8 text-red-500" />
+          <p className="mt-3 text-sm font-semibold text-slate-700">Insights unavailable</p>
+          <p className="mt-1 max-w-md text-xs text-slate-500">{error}</p>
+          <Button size="sm" className="mt-4 cv-action-primary" onClick={load}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />Try again</Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!alerts) {
+    return (
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12" data-testid="command-center-insights-skeleton">
+        <Skeleton className="h-64 rounded-xl lg:col-span-7" />
+        <Skeleton className="h-64 rounded-xl lg:col-span-5" />
+      </div>
+    );
+  }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6" data-testid="command-center-insights">
-      <div className="lg:col-span-7 bg-white border border-gray-200 rounded-xl p-6 shadow-sm" data-testid="cc-alerts">
-        <div className="flex items-center justify-between mb-4">
+    <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-12" data-testid="command-center-insights">
+      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm lg:col-span-7" data-testid="cc-alerts">
+        <div className="mb-4 flex items-center justify-between">
           <div>
-            <h3 className="font-display font-bold text-lg flex items-center gap-2"><Bell className="w-4 h-4" />Operational Alerts</h3>
-            <p className="text-xs text-gray-400">Deduplicated across integrations, commitments & health · {alerts.counts.open} open</p>
+            <h3 className="font-display flex items-center gap-2 text-lg font-bold"><Bell className="h-4 w-4" />Operational Alerts</h3>
+            <p className="text-xs text-gray-400">Grouped by family & workspace · {alerts.counts?.open ?? open.length} open</p>
           </div>
-          <Button size="sm" variant="outline" className="h-8" onClick={evaluate} disabled={busy} data-testid="evaluate-alerts"><RefreshCw className={`w-3.5 h-3.5 mr-1 ${busy ? "animate-spin" : ""}`} />Scan now</Button>
+          <Button size="sm" variant="outline" className="h-8" onClick={evaluate} disabled={busy} data-testid="evaluate-alerts"><RefreshCw className={`mr-1 h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />Scan now</Button>
         </div>
-        {open.length === 0 ? (
-          <div className="text-sm text-gray-400 py-6 text-center" data-testid="cc-alerts-empty">No open alerts. All clear.</div>
+        {groups.length === 0 ? (
+          <div className="py-6 text-center text-sm text-gray-400" data-testid="cc-alerts-empty">No open alerts. All clear.</div>
         ) : (
-          <div className="space-y-2 max-h-72 overflow-auto">
-            {open.slice(0, 10).map((a) => (
-              <div key={a.id} className="flex items-center justify-between p-2.5 rounded-lg border border-gray-100 hover:bg-gray-50" data-testid={`cc-alert-${a.id}`}>
-                <button className="flex items-center gap-2 text-left" onClick={() => a.workspace_id && navigate(`/workspaces/${a.workspace_id}`)}>
-                  <Badge className={SEV[a.severity]}>{a.severity}</Badge>
-                  <div>
-                    <div className="text-sm font-medium">{a.summary}</div>
-                    <div className="text-[11px] text-gray-400">{a.type} · {a.occurrence_count}×</div>
+          <div className="max-h-80 space-y-3 overflow-auto">
+            {groups.slice(0, 8).map((group) => (
+              <div key={group.key} className="rounded-lg border border-gray-100 p-3 hover:bg-gray-50" data-testid={`cc-alert-group-${group.key}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <button className="min-w-0 flex-1 text-left" onClick={() => group.workspace_id && navigate(`/workspaces/${group.workspace_id}`)}>
+                    <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                      <Badge className={SEV[group.severity] || SEV.info}>{group.severity}</Badge>
+                      <Badge className="border-slate-200 bg-slate-50 text-[10px] text-slate-600">{group.family}</Badge>
+                      <span className="text-[11px] text-gray-400">{group.workspace_label}</span>
+                      {group.count > 1 && <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">{group.count} linked</span>}
+                    </div>
+                    <div className="truncate text-sm font-medium">{group.latest.summary}</div>
+                    <div className="text-[11px] text-gray-400">{group.occurrence_count}× occurrences</div>
+                  </button>
+                  <div className="flex shrink-0 gap-1.5">
+                    {group.latest.status === "open" && <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act(group.latest.id, "acknowledge")} data-testid={`cc-ack-${group.latest.id}`}><Check className="h-3 w-3" /></Button>}
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act(group.latest.id, "resolve")} data-testid={`cc-resolve-${group.latest.id}`}><X className="h-3 w-3" /></Button>
                   </div>
-                </button>
-                <div className="flex gap-1.5 shrink-0">
-                  {a.status === "open" && <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act(a.id, "acknowledge")} data-testid={`cc-ack-${a.id}`}><Check className="w-3 h-3" /></Button>}
-                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => act(a.id, "resolve")} data-testid={`cc-resolve-${a.id}`}><X className="w-3 h-3" /></Button>
                 </div>
               </div>
             ))}
@@ -74,24 +142,24 @@ export default function CommandCenterInsights() {
         )}
       </div>
 
-      <div className="lg:col-span-5 bg-white border border-gray-200 rounded-xl p-6 shadow-sm" data-testid="cc-connection-health">
-        <h3 className="font-display font-bold text-lg flex items-center gap-2 mb-1"><Activity className="w-4 h-4" />Connection Health</h3>
-        <p className="text-xs text-gray-400 mb-4">Provider sync status across your tenant</p>
+      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm lg:col-span-5" data-testid="cc-connection-health">
+        <h3 className="font-display mb-1 flex items-center gap-2 text-lg font-bold"><Activity className="h-4 w-4" />Connection Health</h3>
+        <p className="mb-4 text-xs text-gray-400">Provider sync status across your tenant</p>
         {!isAdmin ? (
-          <div className="text-sm text-gray-400 py-6 text-center" data-testid="cc-health-admin-only">Connection health is visible to admins.</div>
+          <div className="py-6 text-center text-sm text-gray-400" data-testid="cc-health-admin-only">Connection health is visible to admins.</div>
         ) : !health ? (
-          <div className="text-sm text-gray-400 py-6 text-center">Loading…</div>
+          <div className="space-y-2" data-testid="cc-health-loading">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 rounded-lg" />)}</div>
         ) : (
           <div className="space-y-2">
             {health.map((p) => (
-              <div key={p.provider} className="flex items-center justify-between p-2.5 rounded-lg border border-gray-100" data-testid={`cc-provider-${p.provider}`}>
+              <div key={p.provider} className="flex items-center justify-between rounded-lg border border-gray-100 p-2.5" data-testid={`cc-provider-${p.provider}`}>
                 <div className="flex items-center gap-2">
-                  <Plug className="w-3.5 h-3.5 text-gray-400" />
+                  <Plug className="h-3.5 w-3.5 text-gray-400" />
                   <span className="text-sm font-medium capitalize">{p.provider.replace("_", " ")}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  {p.reconnect_required && <Badge className="bg-orange-50 text-orange-700 border-orange-200 text-[10px]">Reconnect</Badge>}
-                  {p.stale && <Badge className="bg-yellow-50 text-yellow-700 border-yellow-200 text-[10px]">Stale</Badge>}
+                  {p.reconnect_required && <Badge className="border-orange-200 bg-orange-50 text-[10px] text-orange-700">Reconnect</Badge>}
+                  {p.stale && <Badge className="border-yellow-200 bg-yellow-50 text-[10px] text-yellow-700">Stale</Badge>}
                   <span className="text-[11px] text-gray-400">{p.sync_age_hours != null ? `${p.sync_age_hours}h ago` : "never"}</span>
                   <Badge className={CONN[p.status]}>{p.status}</Badge>
                 </div>
