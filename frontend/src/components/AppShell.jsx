@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
-import { CLIENTVERSE_MODULES, getModuleByRoute, MODULE_GROUPS, MODULE_STATES } from "@/platform/modules";
+import { CLIENTVERSE_MODULES, getModuleByRoute, MODULE_GROUPS, MODULE_STATES, PINNED_GROUPS } from "@/platform/modules";
 import { ChevronRight, CirclePlus, LogOut, Menu, Orbit, PanelLeftClose, Search, X } from "lucide-react";
 
 export default function AppShell() {
@@ -34,12 +34,14 @@ export default function AppShell() {
         </button>
         {!collapsed && <button className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-4" /></button>}
       </div>
-      <nav aria-label="Primary navigation" className="flex flex-col gap-5 p-3">
+      <nav aria-label="Primary navigation" className="flex flex-col gap-4 p-3">
         {MODULE_GROUPS.map((group) => {
           const items = CLIENTVERSE_MODULES.filter((item) => item.group === group && (!item.adminOnly || user?.role === "admin"));
-          return <section key={group} aria-label={group}>
-            {!collapsed && <div className="mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground">{group}</div>}
-            <div className="flex flex-col gap-1">{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} />)}</div>
+          if (!items.length) return null;
+          const pinned = PINNED_GROUPS.includes(group);
+          return <section key={group} aria-label={group} className={pinned ? "" : "opacity-95"}>
+            {!collapsed && <div className={`mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.15em] ${pinned ? "text-foreground/70" : "text-muted-foreground"}`}>{pinned ? group : group}<span className="sr-only">{pinned ? " (pinned)" : ""}</span></div>}
+            <div className={`flex flex-col ${pinned ? "gap-1" : "gap-0.5"}`}>{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} dense={!pinned} />)}</div>
           </section>;
         })}
       </nav>
@@ -70,10 +72,10 @@ export default function AppShell() {
   </div>;
 }
 
-function SidebarLink({ item, collapsed }) {
+function SidebarLink({ item, collapsed, dense = false }) {
   const Icon = item.icon;
   const pending = item.state !== MODULE_STATES.AVAILABLE;
-  return <NavLink to={item.route} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={({ isActive }) => `group relative flex items-center rounded-xl py-2 text-sm font-medium transition-colors ${collapsed ? "justify-center px-2" : "gap-3 px-3"} ${isActive ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}><Icon className="size-4 shrink-0" />{!collapsed && <><span className="min-w-0 flex-1 truncate">{item.label}</span>{pending && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" aria-label="Backend contract pending" />}</>}</NavLink>;
+  return <NavLink to={item.route} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={({ isActive }) => `group relative flex items-center rounded-xl text-sm font-medium transition-colors ${dense ? "py-1.5" : "py-2"} ${collapsed ? "justify-center px-2" : "gap-3 px-3"} ${isActive ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}><Icon className="size-4 shrink-0" />{!collapsed && <><span className="min-w-0 flex-1 truncate">{item.label}</span>{pending && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Contract pending" aria-label="Backend contract pending" />}</>}</NavLink>;
 }
 
 export function Badge({ children, className = "" }) {
