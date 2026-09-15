@@ -27,6 +27,11 @@ jobs:
       - name: Install dependencies
         working-directory: frontend
         run: yarn install --frozen-lockfile
+      # The repository documents `yarn lint --max-warnings=0` as a release gate, but the
+      # workflow previously only ran the build, so lint regressions reached main unnoticed.
+      - name: Lint (warnings are errors)
+        working-directory: frontend
+        run: yarn lint --max-warnings=0
       - name: Build (warnings are errors)
         working-directory: frontend
         env:

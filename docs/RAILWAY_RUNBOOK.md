@@ -106,6 +106,9 @@ the **production** domain:
 | Commitment risk | `POST /api/cron/commitment-risk` | every 15 minutes |
 | Integration sync | `POST /api/cron/integration-sync` | every 30 minutes |
 | Daily digest | `POST /api/cron/daily-digest` | hourly (the job itself checks each tenant's configured local digest hour) |
+| Work-queue worker | `POST /api/cron/work-queue` | every 5 minutes — recovers leases abandoned by crashed workers, then claims and processes due durable jobs |
+| Second Chance detection | `POST /api/cron/second-chance` | hourly — detects stalled leads and missed follow-ups, then queues a recommendation refresh per tenant |
+| Next best actions | `POST /api/cron/next-best-actions` | every 30 minutes — recomputes the ranked recommendation queue |
 
 Every call must carry:
 

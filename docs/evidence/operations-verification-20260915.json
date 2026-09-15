@@ -1,0 +1,141 @@
+{
+  "captured_at": "2026-09-15T21:36:26.641255+00:00",
+  "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w (code equal to main@3f14347 plus this change set)",
+  "environment": {
+    "kind": "local verification environment",
+    "mongodb": "7.0.34",
+    "note": "Railway production is not reachable from this session: the egress policy rejects clientverse-crm-production-production.up.railway.app and backboard.railway.com with HTTP 403 at CONNECT. This is artifact evidence for the code under test, NOT production-runtime evidence."
+  },
+  "backend_suite": "290 passed, 4 skipped, 4 warnings",
+  "frontend_lint": "yarn lint --max-warnings=0 \u2014 exit 0",
+  "frontend_build": "CI=true yarn build \u2014 exit 0",
+  "operations_smoke": {
+    "generated_at": "2026-09-15T21:34:32.444Z",
+    "steps": {
+      "admin_login_http": 200,
+      "second_tenant_register_http": 200,
+      "seed_company_http": 200,
+      "seed_opportunity_http": 422,
+      "seed_commitment_http": 422,
+      "detection_http": 200,
+      "detection_summary": {
+        "tenant_id": "ten_bc1ff618cb80",
+        "stalled_leads_detected": 0,
+        "missed_followups_detected": 10,
+        "work_items_created": 0,
+        "work_items_deduplicated": 10,
+        "thresholds": {
+          "stalled_lead_days": 14,
+          "missed_followup_grace_hours": 24
+        }
+      },
+      "detection_repeat_created": 0,
+      "detection_repeat_deduplicated": 10,
+      "work_queue_http": 200,
+      "work_queue_open_items": 11,
+      "candidate_type": "second_chance.missed_followup",
+      "work_queue_stats": {
+        "queued": 11,
+        "claimed": 0,
+        "processing": 0,
+        "completed": 5,
+        "retry_scheduled": 0,
+        "failed": 0,
+        "dead_letter": 0,
+        "open": 11,
+        "total": 16,
+        "needs_operator": 0
+      },
+      "nba_generate_http": 200,
+      "nba_generate_summary": {
+        "tenant_id": "ten_bc1ff618cb80",
+        "created": 0,
+        "refreshed": 28,
+        "retired": 0,
+        "evaluated": 28
+      },
+      "nba_open_count": 28,
+      "nba_priority_ordering_is_ascending": true,
+      "nba_feedback_http": 200,
+      "security_gate_status": {
+        "gates": [
+          "gate_a_supply_chain_intake",
+          "gate_b_capability_execution_review"
+        ],
+        "scanners": [
+          {
+            "scanner": "nvidia_skillspector",
+            "configured": false,
+            "status": "not_configured",
+            "config_env": "SECURITY_GATE_NVIDIA_SKILLSPECTOR_URL"
+          },
+          {
+            "scanner": "cisco_skill_scanner",
+            "configured": false,
+            "status": "not_configured",
+            "config_env": "SECURITY_GATE_CISCO_SKILL_SCANNER_URL"
+          },
+          {
+            "scanner": "cisco_mcp_scanner",
+            "configured": false,
+            "status": "not_configured",
+            "config_env": "SECURITY_GATE_CISCO_MCP_SCANNER_URL"
+          }
+        ],
+        "operational": false,
+        "note": "Both gates are enforced. Approval additionally requires completed results from every required scanner; unconfigured scanners block approval rather than being treated as a pass."
+      },
+      "security_gate_register_http": 200,
+      "security_gate_premature_approval_http": 400,
+      "cross_tenant_work_item_http": 404,
+      "cross_tenant_recommendation_patch_http": 404,
+      "cross_tenant_component_http": 404,
+      "cron_unauthenticated_http": 401,
+      "cron_second_chance_http": 200,
+      "cron_work_queue_http": 200,
+      "cron_duplicate_suppressed": true,
+      "worker_ticks_used": 5,
+      "system_jobs_completed": 1
+    },
+    "failures": [],
+    "cleanup_note": "This run creates explicitly named OPERATIONS-SMOKE records (company, opportunity, commitment, work items, recommendations, and one external-component registration) plus an isolated second tenant. Remove them after retaining the approved evidence.",
+    "secret_redaction": "This evidence intentionally omits account identities, passwords, session tokens, database credentials, provider values, and internal record identifiers.",
+    "result": "PASS"
+  },
+  "proof_of_life": {
+    "run_label": "PRODUCTION-SMOKE-20260915213614",
+    "api_base": "http://localhost:8001/api",
+    "health": {
+      "initial_http": 200,
+      "final_http": 200,
+      "service": "ClientVerse",
+      "status": "ok",
+      "database": "up"
+    },
+    "authentication": {
+      "administrator_login_http": 200,
+      "administrator_relogin_http": 200,
+      "unauthenticated_access_http": 401
+    },
+    "workflow": {
+      "company_create_http": 200,
+      "contact_create_http": 200,
+      "opportunity_create_http": 200,
+      "close_won_http": 200,
+      "workspace_created_from_opportunity": true,
+      "commitment_create_http": 200
+    },
+    "persistence_after_refresh": {
+      "company": true,
+      "contact": true,
+      "opportunity": true,
+      "workspace": true,
+      "commitment": true
+    },
+    "tenant_isolation": {
+      "cross_tenant_workspace_http": 404
+    },
+    "cleanup_note": "This run creates explicitly named PRODUCTION-SMOKE records in the administrator tenant. Review and remove them only after retaining the approved validation evidence.",
+    "secret_redaction": "This evidence intentionally omits account identities, passwords, session tokens, database credentials, OAuth values, and internal record identifiers."
+  }
+}
