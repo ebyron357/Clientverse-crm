@@ -20,8 +20,21 @@ TENANT = "ten_gate_a"
 OTHER_TENANT = "ten_gate_b"
 
 
+_LOOP = None
+
+
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Run a coroutine on a loop this module owns.
+
+    The suite runs under xdist with `--dist loadscope`, so several modules share one
+    worker process. Relying on the ambient event loop makes these tests fail when an
+    earlier module closes it; owning the loop here keeps them independent.
+    """
+    global _LOOP
+    if _LOOP is None or _LOOP.is_closed():
+        _LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(_LOOP)
+    return _LOOP.run_until_complete(coro)
 
 
 @pytest.fixture()

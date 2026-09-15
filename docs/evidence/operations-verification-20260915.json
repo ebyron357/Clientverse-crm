@@ -1,17 +1,17 @@
 {
-  "captured_at": "2026-09-15T22:07:14.318752+00:00",
-  "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w after the PR #26 review-remediation pass",
-  "supersedes": "The 2026-09-15 revision of this file recorded a PASS while two of its seed requests had been rejected with HTTP 422, so its detection assertions matched pre-existing data rather than records the run created. That run proved less than it claimed. The harness now asserts every seed, works in disposable tenants that start empty, and scopes each assertion to this run's records.",
+  "captured_at": "2026-09-15T22:19:23.388687+00:00",
+  "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w after the PR #26 review-remediation pass and the CI failure fix",
+  "supersedes": "The first revision of this file recorded a PASS while two of its seed requests had been rejected with HTTP 422, so its detection assertions matched pre-existing data rather than records the run created. The harness now asserts every seed, works in disposable tenants that start empty, and scopes each assertion to that run's records.",
   "environment": {
     "kind": "local verification environment",
     "mongodb": "7.0.34",
     "note": "Railway production is not reachable from this session: the egress policy rejects clientverse-crm-production-production.up.railway.app and backboard.railway.com with HTTP 403 at CONNECT. This is artifact evidence for the code under test, NOT production-runtime evidence."
   },
-  "backend_suite": "300 passed, 4 skipped, 4 warnings (skips are the documented external-secret cases)",
+  "backend_suite": "300 passed, 4 skipped, 4 warnings on a freshly created database. The 4 skips are the documented external-secret cases only; no test skips for missing data.",
   "frontend_lint": "yarn lint --max-warnings=0 \u2014 exit 0",
   "frontend_build": "CI=true yarn build \u2014 exit 0",
   "operations_smoke": {
-    "generated_at": "2026-09-15T22:06:41.262Z",
+    "generated_at": "2026-09-15T22:18:27.335Z",
     "steps": {
       "admin_login_http": 200,
       "primary_tenant_register_http": 200,
@@ -23,7 +23,7 @@
       "seed_commitment_http": 200,
       "detection_http": 200,
       "detection_summary": {
-        "tenant_id": "ten_cfc4fca5eb80",
+        "tenant_id": "ten_10aca6f67c01",
         "stalled_leads_detected": 0,
         "missed_followups_detected": 1,
         "work_items_created": 1,
@@ -54,7 +54,7 @@
       },
       "nba_generate_http": 200,
       "nba_generate_summary": {
-        "tenant_id": "ten_cfc4fca5eb80",
+        "tenant_id": "ten_10aca6f67c01",
         "created": 2,
         "refreshed": 0,
         "retired": 0,
@@ -103,7 +103,7 @@
       "cron_work_queue_http": 200,
       "cron_duplicate_suppressed": true,
       "system_job_queued": true,
-      "worker_ticks_used": 4,
+      "worker_ticks_used": 1,
       "tracked_system_job_state": "completed"
     },
     "failures": [],
@@ -112,7 +112,7 @@
     "result": "PASS"
   },
   "proof_of_life": {
-    "run_label": "PRODUCTION-SMOKE-20260915220713",
+    "run_label": "PRODUCTION-SMOKE-20260915221901",
     "api_base": "http://localhost:8001/api",
     "health": {
       "initial_http": 200,
