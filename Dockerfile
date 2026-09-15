@@ -11,12 +11,15 @@ RUN CI=true yarn build
 
 FROM python:3.12-slim AS runtime
 
+# Optional non-secret commit SHA for GET /api/health (build-arg or platform env).
+ARG GIT_SHA=
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FRONTEND_BUILD_DIR=/app/frontend/build \
     APP_ENV=production \
     SEED_DEMO_DATA=false \
-    PORT=8000
+    PORT=8000 \
+    GIT_SHA=${GIT_SHA}
 
 WORKDIR /app
 COPY backend/requirements.txt /tmp/requirements.txt
