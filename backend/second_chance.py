@@ -16,11 +16,20 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
+
+import recovery_case
 
 QUEUE_NAME = "second_chance"
 TYPE_STALLED_LEAD = "second_chance.stalled_lead"
 TYPE_MISSED_FOLLOWUP = "second_chance.missed_followup"
+
+# Detector types map onto the normalized source vocabulary, so a dormant deal and a future
+# missed call differ only in this value rather than in which pipeline they travel.
+SOURCE_FOR_TYPE = {
+    TYPE_STALLED_LEAD: recovery_case.SOURCE_DORMANT_DEAL,
+    TYPE_MISSED_FOLLOWUP: recovery_case.SOURCE_MISSED_FOLLOWUP,
+}
 
 # Thresholds are configuration, not magic numbers, so an operator can tune the
 # definition of "stalled" without a code change.
@@ -204,12 +213,51 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
     return detections
 
 
-async def enqueue_detections(queue, detections: list[dict], *, actor: str = "second-chance") -> list[dict]:
-    """Place detections on the durable queue, deduplicated per source record."""
+def to_recovery_event(detection: dict) -> dict:
+    """Express a detection in the normalized recovery-event contract.
+
+    The detector's own reason, value and references carry across unchanged; what this adds
+    is the shape every other source will arrive in. `source_event_id` is the record that
+    went quiet, so re-detecting the same record resolves to the same case.
+    """
+    kind = detection.get("record_kind") or "opportunity"
+    return recovery_case.normalize_event(
+        tenant_id=detection["tenant_id"],
+        source=SOURCE_FOR_TYPE[detection["type"]],
+        source_event_id=f"{kind}:{detection['record_id']}",
+        reason=detection["reason"],
+        title=detection.get("title"),
+        occurred_at=detection.get("last_activity_at") or detection.get("due_at"),
+        workspace_id=detection.get("workspace_id"),
+        company_id=detection.get("company_id"),
+        contact_id=detection.get("contact_id"),
+        opportunity_id=detection["record_id"] if kind == "opportunity" else None,
+        # The opportunity's own value is what *might* be recovered. It is recorded as
+        # potential, with its provenance, and is never confirmed revenue.
+        potential_value=detection.get("value"),
+        evidence={k: v for k, v in detection.items() if k not in ("tenant_id", "type")},
+    )
+
+
+async def enqueue_detections(queue, detections: list[dict], *, actor: str = "second-chance",
+                             db=None,
+                             audit: Optional[Callable[..., Awaitable[Any]]] = None) -> list[dict]:
+    """Place detections on the durable queue, deduplicated per source record.
+
+    When `db` is supplied each detection also opens its Recovery Case and the two are
+    cross-referenced. `db` stays optional so an existing caller that only wants queue
+    items keeps working unchanged.
+    """
     items: list[dict] = []
     for detection in detections:
         kind = detection.get("record_kind") or "opportunity"
         dedupe_key = f"{detection['type']}:{kind}:{detection['record_id']}"
+
+        case = None
+        if db is not None:
+            case = await recovery_case.open_case(
+                db, to_recovery_event(detection), actor=actor, audit=audit)
+
         item = await queue.enqueue(
             tenant_id=detection["tenant_id"],
             queue=QUEUE_NAME,
@@ -219,6 +267,7 @@ async def enqueue_detections(queue, detections: list[dict], *, actor: str = "sec
                 "record_kind": kind,
                 "title": detection["title"],
                 "reason": detection["reason"],
+                "recovery_case_id": (case or {}).get("id"),
             },
             dedupe_key=dedupe_key,
             source_ref=f"{kind}:{detection['record_id']}",
@@ -227,15 +276,37 @@ async def enqueue_detections(queue, detections: list[dict], *, actor: str = "sec
             priority=50 if detection["type"] == TYPE_MISSED_FOLLOWUP else 70,
             actor=actor,
         )
+        if case and db is not None:
+            # Point the case at whichever work item is live now. Checking only that the
+            # field was empty left a case pointing at a resolved item: `resolve()` clears
+            # `active_dedupe_key`, so the next detection of the same record creates a new
+            # item, and the case would keep the old one forever.
+            if case.get("work_item_reference") != item["id"]:
+                await recovery_case.attach(db, tenant_id=detection["tenant_id"],
+                                           case_id=case["id"], actor=actor,
+                                           work_item_reference=item["id"])
+            # A folded item was created before this call shape existed, or by a caller
+            # that passed no `db`, so its stored payload carries no case id. Merging it
+            # only into the local copy left the link one-directional and invisible to
+            # anything reading the queue.
+            if item.get("payload", {}).get("recovery_case_id") != case["id"]:
+                persisted = await queue.set_payload_fields(
+                    item["id"], tenant_id=detection["tenant_id"],
+                    fields={"recovery_case_id": case["id"]})
+                if persisted:
+                    item = {**persisted, "deduplicated": item.get("deduplicated", False)}
+        if case:
+            item = {**item, "recovery_case_id": case["id"]}
         items.append(item)
     return items
 
 
-async def run_detection(db, queue, tenant_id: str, *, actor: str = "second-chance") -> dict:
+async def run_detection(db, queue, tenant_id: str, *, actor: str = "second-chance",
+                        audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Run both lanes for one tenant and return an explainable summary."""
     stalled = await detect_stalled_leads(db, queue, tenant_id, actor=actor)
     missed = await detect_missed_followups(db, queue, tenant_id)
-    items = await enqueue_detections(queue, stalled + missed, actor=actor)
+    items = await enqueue_detections(queue, stalled + missed, actor=actor, db=db, audit=audit)
     created = [i for i in items if not i.get("deduplicated")]
     return {
         "tenant_id": tenant_id,
@@ -243,6 +314,7 @@ async def run_detection(db, queue, tenant_id: str, *, actor: str = "second-chanc
         "missed_followups_detected": len(missed),
         "work_items_created": len(created),
         "work_items_deduplicated": len(items) - len(created),
+        "recovery_cases_linked": len([i for i in items if i.get("recovery_case_id")]),
         "thresholds": {
             "stalled_lead_days": STALLED_LEAD_DAYS,
             "missed_followup_grace_hours": MISSED_FOLLOWUP_GRACE_HOURS,
@@ -250,12 +322,13 @@ async def run_detection(db, queue, tenant_id: str, *, actor: str = "second-chanc
     }
 
 
-async def run_detection_all_tenants(db, queue, *, actor: str = "cron") -> dict:
+async def run_detection_all_tenants(db, queue, *, actor: str = "cron",
+                                    audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     tenant_ids = await db.tenants.distinct("tenant_id")
     summaries = []
     for tenant_id in tenant_ids:
         try:
-            summaries.append(await run_detection(db, queue, tenant_id, actor=actor))
+            summaries.append(await run_detection(db, queue, tenant_id, actor=actor, audit=audit))
         except Exception as exc:  # one tenant must never block the sweep
             summaries.append({"tenant_id": tenant_id, "error": str(exc)[:300]})
     return {"tenants": len(tenant_ids), "summaries": summaries}

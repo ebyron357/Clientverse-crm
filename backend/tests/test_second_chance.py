@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from motor.motor_asyncio import AsyncIOMotorClient
 
+import recovery_case
 import second_chance
 from work_queue import WorkQueue
 
@@ -49,6 +50,10 @@ def env():
     db = client[db_name]
     queue = WorkQueue(db)
     run(queue.ensure_indexes())
+    # Case identity is enforced by a unique index, exactly as the application creates it
+    # at startup. Without it here, re-detecting one record would open a second case and
+    # the test would be measuring a missing index rather than the behaviour.
+    run(recovery_case.ensure_indexes(db))
     run(db.tenants.insert_many([{"tenant_id": TENANT, "name": "A"},
                                 {"tenant_id": OTHER_TENANT, "name": "B"}]))
     yield db, queue
@@ -222,3 +227,49 @@ def test_sweep_covers_every_tenant(env):
     assert result["tenants"] == 2
     tenants_with_items = run(db.work_queue.distinct("tenant_id"))
     assert set(tenants_with_items) == {TENANT, OTHER_TENANT}
+
+
+# -------------------------------------------- the link between item and case
+
+def _detection(record_id="opp_link"):
+    return {"tenant_id": TENANT, "type": second_chance.TYPE_STALLED_LEAD,
+            "record_id": record_id, "record_kind": "opportunity",
+            "title": "Dormant deal", "reason": "No activity for 45 days.", "value": 9000}
+
+
+def test_a_preexisting_open_item_is_linked_to_its_case_durably(env):
+    """The pre-Phase-1 call shape stored no case id; folding into one must repair it."""
+    db, queue = env
+    run(db.opportunities.insert_one({"id": "opp_link", "tenant_id": TENANT,
+                                     "title": "Dormant deal", "stage": "proposal"}))
+    # An item created the way callers did before recovery cases existed.
+    run(second_chance.enqueue_detections(queue, [_detection()]))
+    stored = run(db.work_queue.find_one({"tenant_id": TENANT}))
+    assert stored["payload"].get("recovery_case_id") is None
+
+    items = run(second_chance.enqueue_detections(queue, [_detection()], db=db))
+    assert items[0]["deduplicated"] is True
+    case_id = items[0]["recovery_case_id"]
+
+    # Durable, not only on the returned copy: the queue itself now points at the case.
+    stored = run(db.work_queue.find_one({"tenant_id": TENANT}))
+    assert stored["payload"]["recovery_case_id"] == case_id
+    assert run(db.recovery_cases.find_one({"id": case_id}))["work_item_reference"] == stored["id"]
+
+
+def test_a_case_follows_its_record_to_a_new_work_item(env):
+    """`resolve()` clears the dedupe key, so the next detection makes a *new* item."""
+    db, queue = env
+    run(db.opportunities.insert_one({"id": "opp_link", "tenant_id": TENANT,
+                                     "title": "Dormant deal", "stage": "proposal"}))
+    first = run(second_chance.enqueue_detections(queue, [_detection()], db=db))[0]
+    case_id = first["recovery_case_id"]
+    run(queue.resolve(first["id"], tenant_id=TENANT, actor="operator",
+                      resolution="handled"))
+
+    second = run(second_chance.enqueue_detections(queue, [_detection()], db=db))[0]
+    assert second["id"] != first["id"], "a resolved item should not be folded into"
+    assert second["recovery_case_id"] == case_id, "the same record is the same case"
+    # The case points at the live item, not the resolved one.
+    case = run(db.recovery_cases.find_one({"id": case_id}))
+    assert case["work_item_reference"] == second["id"]

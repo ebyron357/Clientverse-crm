@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import approval_queue
+import recovery_case
 import second_chance
 
 COLLECTION = "recovery_strategies"
@@ -440,6 +441,102 @@ def _apply_channel_authority(steps: list[dict], channels: dict[str, dict]) -> li
 
 # -------------------------------------------------------------------- composition
 
+def candidate_from_case(case: dict) -> dict:
+    """Express a Recovery Case in the shape the planner already understands.
+
+    The planner was written against a work-queue candidate, and it works. Rather than
+    rewrite 700 lines, a case is translated into that shape at the boundary. What this
+    makes possible is the point of the whole slice: a case with no opportunity, no
+    workspace and no contact — a missed call, say — can be planned for, because the
+    translation carries whatever the case *does* have and omits what it does not.
+    """
+    evidence = dict(case.get("evidence") or {})
+    if case.get("potential_value") is not None:
+        evidence.setdefault("value", case["potential_value"])
+        # The value thresholds downstream compare bare numbers, so the unit has to travel
+        # with the number or a high-value lane is chosen on an amount whose currency the
+        # planner never saw.
+        evidence.setdefault("currency", case.get("currency")
+                            or recovery_case.DEFAULT_CURRENCY)
+    if case.get("external_identity"):
+        evidence.setdefault("external_identity", case["external_identity"])
+    # References the case has resolved override whatever the original detection evidence
+    # carried. Without this, identity resolved after detection — the whole point of an
+    # external case — never reaches the planner, and a known caller is still triaged as
+    # an unknown one.
+    for field in ("contact_id", "company_id"):
+        if case.get(field):
+            evidence[field] = case[field]
+
+    # Sources map back onto the detector item types the playbook branches on. A source
+    # with no established lane is left unmapped, so `select_lane` falls through to its
+    # explicit human-triage branch rather than guessing a motion for it.
+    item_type = {
+        recovery_case.SOURCE_DORMANT_DEAL: second_chance.TYPE_STALLED_LEAD,
+        recovery_case.SOURCE_MISSED_FOLLOWUP: second_chance.TYPE_MISSED_FOLLOWUP,
+    }.get(case.get("source"))
+
+    return {
+        "id": case["id"],
+        "tenant_id": case["tenant_id"],
+        "type": item_type or f"recovery_case.{case.get('source')}",
+        "payload": {
+            "record_id": case.get("opportunity_id") or case.get("source_event_id"),
+            "record_kind": evidence.get("record_kind") or (
+                "opportunity" if case.get("opportunity_id") else case.get("source")),
+            "title": case.get("title"),
+            "reason": case.get("reason"),
+        },
+        "evidence": evidence,
+        "workspace_id": case.get("workspace_id"),
+        "recovery_case_id": case["id"],
+    }
+
+
+async def compose_for_case(db, tenant_id: str, case: dict, *,
+                           actor: str = "recovery-composer",
+                           channels: Optional[dict] = None) -> dict:
+    """Plan for a Recovery Case, whatever it originated as.
+
+    Returns the composed strategy and links it back onto the case, moving the case to
+    `planned` (or `awaiting_approval` once its approval request exists) so the two records
+    never disagree about how far the recovery has got.
+    """
+    if case.get("tenant_id") != tenant_id:
+        raise recovery_case.CrossTenantReference(
+            "Recovery case does not belong to this tenant")
+
+    # Read the case's state from the database, not from the caller's copy, and refuse a
+    # terminal one before anything is written. Composing first and letting the transition
+    # fail afterwards still left a recovered or closed case holding a fresh plan and a
+    # live approval for work nobody is going to do.
+    current = (await recovery_case.get_case(db, tenant_id, case["id"]) or {}).get("state")
+    if current in recovery_case.TERMINAL_STATES:
+        raise recovery_case.InvalidCaseTransition(
+            f"Cannot compose a strategy for a '{current}' recovery case")
+
+    strategy = await compose_for_candidate(db, tenant_id, candidate_from_case(case),
+                                           actor=actor, channels=channels)
+    await recovery_case.attach(db, tenant_id=tenant_id, case_id=case["id"], actor=actor,
+                               plan_reference=strategy["id"],
+                               approval_reference=strategy.get("approval_id"))
+
+    state_now = (await recovery_case.get_case(db, tenant_id, case["id"]) or {}).get("state")
+    target = (recovery_case.AWAITING_APPROVAL if strategy.get("approval_id")
+              else recovery_case.PLANNED)
+    if state_now != target:
+        try:
+            await recovery_case.set_state(db, tenant_id=tenant_id, case_id=case["id"],
+                                          state=target, actor=actor,
+                                          detail={"lane": strategy["lane"],
+                                                  "rule": strategy["rule"]})
+        except recovery_case.InvalidCaseTransition:
+            # A case already past planning is not dragged backwards by a recompose. Only
+            # that is suppressed — a terminal case was refused above, before any write.
+            pass
+    return strategy
+
+
 async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
                                 actor: str = "recovery-composer",
                                 channels: Optional[dict] = None) -> dict:
@@ -605,17 +702,38 @@ def _risk_for(strategy: dict) -> str:
 
 async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recovery-composer",
                              limit: int = COMPOSE_LIMIT) -> dict:
-    """Compose a strategy for every open Second Chance candidate without one."""
+    """Compose a strategy for every open candidate without one.
+
+    Two populations, because they arrive by two routes. Second Chance detections sit on
+    the durable queue; a case from a source that was never a CRM record — a missed call, a
+    web enquiry — has no queue item, and sweeping only the queue would leave exactly the
+    sources this slice exists to serve permanently unplanned.
+    """
     candidates = await queue.list_items(tenant_id=tenant_id, status="open",
                                         queue=second_chance.QUEUE_NAME, limit=limit)
     channels = await authorized_channels(db, tenant_id)
     composed, errors = [], []
+    planned_case_ids: set[str] = set()
     for candidate in candidates:
         try:
             composed.append(await compose_for_candidate(db, tenant_id, candidate, actor=actor,
                                                         channels=channels))
+            if candidate.get("payload", {}).get("recovery_case_id"):
+                planned_case_ids.add(candidate["payload"]["recovery_case_id"])
         except Exception as exc:  # one bad candidate must not stop the sweep
             errors.append({"candidate_id": candidate.get("id"), "error": str(exc)[:300]})
+
+    remaining = max(0, limit - len(candidates))
+    cases = (await recovery_case.list_unplanned(db, tenant_id, limit=remaining)
+             if remaining else [])
+    for case in cases:
+        if case["id"] in planned_case_ids:
+            continue
+        try:
+            composed.append(await compose_for_case(db, tenant_id, case, actor=actor,
+                                                   channels=channels))
+        except Exception as exc:  # one bad case must not stop the sweep
+            errors.append({"candidate_id": case.get("id"), "error": str(exc)[:300]})
 
     blocked = [s for s in composed if s["blocked_reasons"]]
     lanes: dict[str, int] = {}
@@ -623,7 +741,9 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
         lanes[strategy["lane"]] = lanes.get(strategy["lane"], 0) + 1
     return {
         "tenant_id": tenant_id,
-        "candidates_examined": len(candidates),
+        "candidates_examined": len(candidates) + len(cases),
+        "queue_candidates_examined": len(candidates),
+        "recovery_cases_examined": len(cases),
         "strategies_composed": len(composed),
         "strategies_blocked": len(blocked),
         "lanes": lanes,

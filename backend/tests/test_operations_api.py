@@ -95,6 +95,7 @@ def seeded_tenant():
     "/approval-queue", "/approval-queue/summary", "/recovery-strategies",
     "/recovery-strategies/summary", "/recovery-strategies/channel-authority",
     "/conversations", "/conversations/summary",
+    "/recovery-cases", "/recovery-cases/summary", "/recovery-cases/rc_nonexistent",
 ])
 def test_operations_routes_require_authentication(path):
     assert requests.get(f"{API}{path}", timeout=30).status_code == 401
@@ -130,6 +131,7 @@ def member_token():
     ("post", "/security-gate/components",
      {"name": "x", "kind": "skill", "source_url": "https://example.invalid/x", "version": "1"}),
     ("post", "/recovery-strategies/compose", None),
+    ("post", "/recovery-cases/rc_nonexistent/run", None),
 ])
 def test_admin_only_routes_reject_a_member(member_token, method, path, body):
     response = getattr(requests, method)(f"{API}{path}", headers=_headers(member_token),
@@ -434,6 +436,76 @@ def test_recovery_summary_reports_blocked_proposals(composed_tenant):
                            headers=_headers(composed_tenant), timeout=30).json()
     assert summary["proposed"] >= 1
     assert summary["proposed_blocked"] >= 1
+
+
+# ------------------------------------------------------------- recovery cases
+
+def test_detection_opens_recovery_cases_readable_over_the_api(composed_tenant):
+    """Detection must produce cases the operations surface can actually read."""
+    response = requests.get(f"{API}/recovery-cases", headers=_headers(composed_tenant),
+                            timeout=30)
+    assert response.status_code == 200, response.text
+    cases = response.json()
+    assert cases, "detection ran but no recovery case is readable"
+    case = cases[0]
+    assert case["source"] and case["state"]
+    # The two amounts are separate fields and a detected case has recovered nothing.
+    assert case["confirmed_value"] is None
+
+
+def test_a_recovery_case_is_readable_by_id(composed_tenant):
+    cases = requests.get(f"{API}/recovery-cases", headers=_headers(composed_tenant),
+                         timeout=30).json()
+    response = requests.get(f"{API}/recovery-cases/{cases[0]['id']}",
+                            headers=_headers(composed_tenant), timeout=30)
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == cases[0]["id"]
+
+
+def test_recovery_cases_are_not_visible_to_another_tenant(composed_tenant,
+                                                          other_tenant_token):
+    cases = requests.get(f"{API}/recovery-cases", headers=_headers(composed_tenant),
+                         timeout=30).json()
+    response = requests.get(f"{API}/recovery-cases/{cases[0]['id']}",
+                            headers=_headers(other_tenant_token), timeout=30)
+    assert response.status_code == 404
+    assert requests.get(f"{API}/recovery-cases", headers=_headers(other_tenant_token),
+                        timeout=30).json() == []
+
+
+def test_an_unknown_recovery_case_is_a_404(composed_tenant):
+    assert requests.get(f"{API}/recovery-cases/rc_doesnotexist",
+                        headers=_headers(composed_tenant), timeout=30).status_code == 404
+
+
+def test_recovery_case_summary_keeps_potential_and_confirmed_apart(composed_tenant):
+    summary = requests.get(f"{API}/recovery-cases/summary",
+                           headers=_headers(composed_tenant), timeout=30).json()
+    assert summary["open_cases"] >= 1
+    assert summary["by_state"] and summary["by_source"]
+    # Nothing has been recovered, and an estimate must never be reported as revenue.
+    assert summary["confirmed_recovered_value"] == 0
+    assert summary["confirmed_recovered_value_by_currency"] == {}
+    assert "currencies" in summary
+
+
+def test_running_a_case_that_is_not_approved_is_refused(composed_tenant):
+    """Execution is gated on approval, and the API is where that is enforced."""
+    cases = requests.get(f"{API}/recovery-cases", headers=_headers(composed_tenant),
+                         timeout=30).json()
+    unapproved = [c for c in cases if c["state"] != "approved"]
+    assert unapproved, "expected at least one case that has not been approved"
+    response = requests.post(f"{API}/recovery-cases/{unapproved[0]['id']}/run",
+                             headers=_headers(composed_tenant), timeout=30)
+    assert response.status_code == 409, response.text
+
+
+def test_running_another_tenants_case_is_a_404(composed_tenant, other_tenant_token):
+    cases = requests.get(f"{API}/recovery-cases", headers=_headers(composed_tenant),
+                         timeout=30).json()
+    response = requests.post(f"{API}/recovery-cases/{cases[0]['id']}/run",
+                             headers=_headers(other_tenant_token), timeout=30)
+    assert response.status_code == 404, response.text
 
 
 # ------------------------------------------------------------ approval queue
