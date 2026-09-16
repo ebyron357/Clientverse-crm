@@ -1,0 +1,164 @@
+{
+ "captured_at": "2026-09-16T00:10:26.570325+00:00",
+ "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w, working tree at the approval queue (M-07) and recovery strategy composer (E-20) pass. Parent commit: 7e931958fb2a0d31bd384cdfdb23225f7668d188",
+ "scope": "Artifact evidence for the code under test only. It proves the composer turns a detected candidate into a strategy that cites its facts, that every outbound step is blocked while no channel is authorised, that composition raises an approval, and that an approval cannot be decided twice. It does NOT prove production behaviour.",
+ "environment": {
+  "kind": "local verification environment",
+  "mongodb": "7.0.34",
+  "note": "Railway production remains unreachable from this session: the egress policy rejects clientverse-crm-production-production.up.railway.app and backboard.railway.com with HTTP 403 at CONNECT (owner blocker O-15). Deployed-runtime gates therefore stay BLOCKED \u2014 TECHNICAL and are not claimed here."
+ },
+ "backend_suite": "371 passed, 4 skipped, 4 warnings on a freshly created database (300 passed before this pass; 27 approval-queue, 25 composer and 19 API tests added). The 4 skips are the documented external-secret cases only.",
+ "frontend_lint": "yarn lint --max-warnings=0 \u2014 exit 0",
+ "frontend_build": "yarn build \u2014 exit 0, compiled successfully",
+ "operations_smoke": {
+  "generated_at": "2026-09-16T00:12:21.393Z",
+  "steps": {
+   "admin_login_http": 200,
+   "primary_tenant_register_http": 200,
+   "isolation_tenant_register_http": 200,
+   "tenant_starts_empty": true,
+   "seed_company_http": 200,
+   "seed_opportunity_http": 200,
+   "seed_workspace_http": 200,
+   "seed_commitment_http": 200,
+   "detection_http": 200,
+   "detection_summary": {
+    "tenant_id": "ten_20903e07923f",
+    "stalled_leads_detected": 0,
+    "missed_followups_detected": 1,
+    "work_items_created": 1,
+    "work_items_deduplicated": 0,
+    "thresholds": {
+     "stalled_lead_days": 14,
+     "missed_followup_grace_hours": 24
+    }
+   },
+   "detection_repeat_created": 0,
+   "detection_repeat_deduplicated": 1,
+   "work_queue_http": 200,
+   "work_queue_open_items": 1,
+   "candidate_type": "second_chance.missed_followup",
+   "stalled_lead_lane_exercised_here": false,
+   "stalled_lead_lane_covered_by": "backend/tests/test_second_chance.py",
+   "work_queue_stats": {
+    "queued": 1,
+    "claimed": 0,
+    "processing": 0,
+    "completed": 0,
+    "retry_scheduled": 0,
+    "failed": 0,
+    "dead_letter": 0,
+    "open": 1,
+    "total": 1,
+    "needs_operator": 0
+   },
+   "nba_generate_http": 200,
+   "nba_generate_summary": {
+    "tenant_id": "ten_20903e07923f",
+    "created": 2,
+    "refreshed": 0,
+    "retired": 0,
+    "evaluated": 2,
+    "failed_rules": []
+   },
+   "nba_open_count": 2,
+   "nba_priority_ordering_is_ascending": true,
+   "nba_feedback_http": 200,
+   "channel_authority_http": 200,
+   "channel_authority": {
+    "internal": {
+     "authorized": true,
+     "reason": "Internal actions stay inside the CRM."
+    },
+    "email": {
+     "authorized": false,
+     "reason": "No connected email provider (gmail is not connected)."
+    },
+    "sms": {
+     "authorized": false,
+     "reason": "No sms provider is registered for this tenant."
+    },
+    "phone": {
+     "authorized": false,
+     "reason": "No phone provider is registered for this tenant."
+    }
+   },
+   "compose_http": 200,
+   "compose_summary": {
+    "tenant_id": "ten_20903e07923f",
+    "candidates_examined": 1,
+    "strategies_composed": 1,
+    "strategies_blocked": 1,
+    "lanes": {
+     "commitment_repair": 1
+    },
+    "errors": []
+   },
+   "proposed_strategy_count": 1,
+   "strategy_lane": "commitment_repair",
+   "strategy_rule": "missed_followup.commitment",
+   "strategy_approval_count": 1,
+   "approval_raise_http": 200,
+   "approval_decision_http": 200,
+   "approval_second_decision_http": 409,
+   "approval_summary": {
+    "tenant_id": "ten_20903e07923f",
+    "awaiting_decision": 1,
+    "awaiting_decision_blocked": 1,
+    "approved_awaiting_execution": 0,
+    "by_status": {
+     "approved": 1,
+     "requested": 1
+    },
+    "by_risk": {
+     "medium": 1
+    }
+   },
+   "security_gate_status": {
+    "gates": [
+     "gate_a_supply_chain_intake",
+     "gate_b_capability_execution_review"
+    ],
+    "scanners": [
+     {
+      "scanner": "nvidia_skillspector",
+      "configured": false,
+      "status": "not_configured",
+      "config_env": "SECURITY_GATE_NVIDIA_SKILLSPECTOR_URL"
+     },
+     {
+      "scanner": "cisco_skill_scanner",
+      "configured": false,
+      "status": "not_configured",
+      "config_env": "SECURITY_GATE_CISCO_SKILL_SCANNER_URL"
+     },
+     {
+      "scanner": "cisco_mcp_scanner",
+      "configured": false,
+      "status": "not_configured",
+      "config_env": "SECURITY_GATE_CISCO_MCP_SCANNER_URL"
+     }
+    ],
+    "operational": false,
+    "note": "Both gates are enforced. Approval additionally requires completed results from every required scanner; unconfigured scanners block approval rather than being treated as a pass."
+   },
+   "security_gate_register_http": 200,
+   "security_gate_premature_approval_http": 400,
+   "security_gate_digest_change_http": 400,
+   "cross_tenant_work_item_http": 404,
+   "cross_tenant_recommendation_patch_http": 404,
+   "cross_tenant_component_http": 404,
+   "cron_unauthenticated_http": 401,
+   "cron_second_chance_http": 200,
+   "cron_work_queue_http": 200,
+   "cron_duplicate_suppressed": true,
+   "system_job_queued": true,
+   "worker_ticks_used": 4,
+   "tracked_system_job_state": "completed"
+  },
+  "failures": [],
+  "cleanup_note": "Every record this run created lives in disposable tenants registered for the run, so nothing is written into an operator's tenant. The API exposes no delete endpoints, so those tenants and their records remain until an operator removes them; they are inert and isolated by the same tenancy boundary this run asserts.",
+  "secret_redaction": "This evidence intentionally omits account identities, passwords, session tokens, database credentials, provider values, and internal record identifiers.",
+  "result": "PASS"
+ }
+}

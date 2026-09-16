@@ -1,7 +1,7 @@
 /**
- * Operations smoke — durable work queue, Second Chance detection, Next Best Action,
- * and the external-component security gate, verified end to end against a running
- * deployment.
+ * Operations smoke — durable work queue, Second Chance detection, recovery strategy
+ * composition, the approval queue, Next Best Action, and the external-component security
+ * gate, verified end to end against a running deployment.
  *
  * Companion to proof_of_life.mjs, with one important difference: every record this
  * script creates lives in a disposable tenant it registers for the run. The API has no
@@ -226,6 +226,91 @@ async function main() {
     record('nba_feedback_http', accepted.status)
     check('nba_feedback_persists', accepted.status === 200 && accepted.body?.state === 'accepted')
   }
+
+  // ---- recovery strategy composition -------------------------------------------
+  // The candidate detected above must turn into a strategy that cites its facts and
+  // refuses to mark any outbound step ready while no channel is authorised.
+  const authority = await call('/recovery-strategies/channel-authority', { token })
+  record('channel_authority_http', authority.status)
+  record('channel_authority', authority.body)
+  check('internal_channel_is_available', authority.body?.internal?.authorized === true)
+  check('no_outbound_channel_is_authorized_for_a_new_tenant',
+        ['email', 'sms', 'phone'].every((channel) => authority.body?.[channel]?.authorized === false),
+        'a fresh tenant has no certified provider, so nothing may be sent')
+
+  const composed = await call('/recovery-strategies/compose', { method: 'POST', token })
+  record('compose_http', composed.status)
+  record('compose_summary', composed.body)
+  check('composer_runs', composed.status === 200)
+  check('composer_produces_a_strategy_for_this_runs_candidate',
+        (composed.body?.strategies_composed || 0) >= 1,
+        'detection queued a candidate, so composition must produce a strategy')
+  check('composer_reports_no_errors', (composed.body?.errors || []).length === 0)
+
+  const strategies = await call('/recovery-strategies?state=proposed', { token })
+  const strategy = Array.isArray(strategies.body) ? strategies.body[0] : null
+  record('proposed_strategy_count', Array.isArray(strategies.body) ? strategies.body.length : null)
+  check('proposed_strategies_are_listed', !!strategy)
+  if (strategy) {
+    record('strategy_lane', strategy.lane)
+    record('strategy_rule', strategy.rule)
+    check('strategy_names_its_rule', !!strategy.rule && !!strategy.rationale)
+    check('strategy_cites_facts_to_a_record',
+          (strategy.facts || []).length > 0 && (strategy.facts || []).every((f) => 'source' in f))
+    check('strategy_has_no_fabricated_confidence',
+          !('confidence' in strategy) && !('score' in strategy))
+    const steps = strategy.steps || []
+    check('strategy_has_steps', steps.length > 0)
+    check('every_outbound_step_is_blocked_with_a_reason',
+          steps.filter((s) => s.channel !== 'internal')
+               .every((s) => s.status === 'blocked' && !!s.blocked_reason),
+          'no channel is authorised, so no outbound step may read as ready')
+    check('internal_steps_are_ready',
+          steps.filter((s) => s.channel === 'internal').every((s) => s.status === 'ready'))
+  }
+
+  // ---- approval queue ------------------------------------------------------------
+  // Composition must raise an approval, and approving a blocked action must not make it
+  // executable. That second assertion is the whole point of the gate.
+  const queuedApprovals = await call('/approval-queue?kind=recovery_strategy', { token })
+  const strategyApproval = Array.isArray(queuedApprovals.body) ? queuedApprovals.body[0] : null
+  record('strategy_approval_count', Array.isArray(queuedApprovals.body) ? queuedApprovals.body.length : null)
+  check('composition_raises_an_approval_request', !!strategyApproval)
+  if (strategyApproval) {
+    check('approval_records_that_an_agent_raised_it',
+          strategyApproval.requester_kind === 'agent')
+    check('approval_binds_to_the_strategy_it_authorises',
+          strategyApproval.action?.strategy_id === strategy?.id)
+    check('approval_carries_its_blocks', (strategyApproval.blocked_reasons || []).length > 0)
+    check('approval_expires', !!strategyApproval.expires_at)
+  }
+
+  const raised = await call('/approval-queue', {
+    method: 'POST', token,
+    body: { title: `${PREFIX} approval ${Date.now()}`, kind: 'external_effect', risk: 'high' },
+  })
+  record('approval_raise_http', raised.status)
+  check('an_approval_can_be_raised', raised.status === 200 && raised.body?.status === 'requested')
+  if (raised.body?.id) {
+    const decided = await call(`/approval-queue/${raised.body.id}/decision`, {
+      method: 'POST', token, body: { decision: 'approved', rationale: `${PREFIX} smoke` },
+    })
+    record('approval_decision_http', decided.status)
+    check('an_approval_can_be_decided',
+          decided.status === 200 && decided.body?.status === 'approved' && !!decided.body?.decided_by)
+
+    const again = await call(`/approval-queue/${raised.body.id}/decision`, {
+      method: 'POST', token, body: { decision: 'rejected' },
+    })
+    record('approval_second_decision_http', again.status)
+    check('a_decided_approval_cannot_be_decided_again', again.status === 409,
+          'an approval decided twice is not a gate')
+  }
+
+  const approvalSummary = await call('/approval-queue/summary', { token })
+  record('approval_summary', approvalSummary.body)
+  check('approval_summary_counts_blocked_requests',
+        (approvalSummary.body?.awaiting_decision_blocked || 0) >= 1)
 
   // ---- security gate -----------------------------------------------------------
   const gateStatus = await call('/security-gate/status', { token })

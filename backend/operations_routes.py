@@ -1,5 +1,5 @@
-"""API surface for the durable work queue, Second Chance, Next Best Action, and the
-external-component security gate.
+"""API surface for the durable work queue, Second Chance, the recovery strategy
+composer, the approval queue, Next Best Action, and the external-component security gate.
 
 Routes are attached to the existing `/api` router with the application's own auth,
 tenancy and audit helpers injected, matching the pattern already used by
@@ -14,7 +14,9 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+import approval_queue
 import next_best_action as nba
+import recovery_strategy
 import second_chance
 import security_gate
 from work_queue import WorkQueue, WorkQueueError, InvalidTransition
@@ -29,6 +31,29 @@ class RecommendationPatch(BaseModel):
     outcome: Optional[str] = Field(default=None, max_length=200)
     note: Optional[str] = Field(default=None, max_length=1000)
     snooze_minutes: Optional[int] = Field(default=None, ge=1, le=60 * 24 * 30)
+
+
+class ApprovalRequestInput(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    kind: str = Field(default="external_effect", max_length=100)
+    summary: Optional[str] = Field(default=None, max_length=2000)
+    risk: str = Field(default=approval_queue.RISK_MEDIUM)
+    workspace_id: Optional[str] = None
+    subject_type: Optional[str] = Field(default=None, max_length=100)
+    subject_id: Optional[str] = Field(default=None, max_length=100)
+    action: Optional[dict] = None
+    facts: Optional[list] = None
+    expires_in_hours: Optional[int] = Field(default=None, ge=1, le=90 * 24)
+    require_separate_approver: bool = False
+
+
+class ApprovalDecisionInput(BaseModel):
+    decision: str
+    rationale: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ApprovalCancelInput(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class ComponentInput(BaseModel):
@@ -53,8 +78,15 @@ class DecisionInput(BaseModel):
     expires_in_days: Optional[int] = Field(default=None, ge=1, le=365)
 
 
-def register_operations_routes(router, db, record_event, get_current_user, require_role):
-    """Attach operations routes. Returns the shared WorkQueue instance."""
+def register_operations_routes(router, db, record_event, get_current_user, require_role,
+                               on_approval_decided=None):
+    """Attach operations routes. Returns the shared WorkQueue instance.
+
+    `on_approval_decided` is an optional async hook called with the decided approval and
+    the deciding user. The application uses it to run the follow-through an approval
+    authorises (executing a pending MCP write, for instance), so this surface and the
+    older `/approvals` route produce identical behaviour.
+    """
     queue = WorkQueue(db)
 
     # ------------------------------------------------------------ work queue
@@ -171,6 +203,141 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
                            workspace_id=updated.get("workspace_id"),
                            payload={"state": inp.state, "outcome": inp.outcome})
         return updated
+
+    # -------------------------------------------------------- approval queue
+
+    @router.get("/approval-queue")
+    async def list_approval_requests(status: Optional[str] = Query(default="open"),
+                                     kind: Optional[str] = Query(default=None),
+                                     risk: Optional[str] = Query(default=None),
+                                     limit: int = Query(default=100, ge=1, le=500),
+                                     user=Depends(get_current_user)):
+        return await approval_queue.list_requests(db, user["tenant_id"], status=status,
+                                                  kind=kind, risk=risk, limit=limit)
+
+    @router.get("/approval-queue/summary")
+    async def approval_queue_summary(user=Depends(get_current_user)):
+        return await approval_queue.summary(db, user["tenant_id"])
+
+    @router.post("/approval-queue")
+    async def raise_approval_request(inp: ApprovalRequestInput,
+                                     user=Depends(get_current_user)):
+        try:
+            request = await approval_queue.request(
+                db, tenant_id=user["tenant_id"], title=inp.title, kind=inp.kind,
+                actor=user["email"], requester_kind=approval_queue.REQUESTER_HUMAN,
+                summary=inp.summary, risk=inp.risk, action=inp.action,
+                subject_type=inp.subject_type, subject_id=inp.subject_id,
+                workspace_id=inp.workspace_id, facts=inp.facts,
+                expires_in_hours=inp.expires_in_hours,
+                require_separate_approver=inp.require_separate_approver)
+        except approval_queue.ApprovalError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_event("approval.requested", "approval", request["id"], user["tenant_id"],
+                           user["email"], workspace_id=inp.workspace_id,
+                           payload={"title": inp.title, "risk": request["risk"]})
+        return request
+
+    @router.get("/approval-queue/{approval_id}")
+    async def get_approval_request(approval_id: str, user=Depends(get_current_user)):
+        request = await approval_queue.get(db, user["tenant_id"], approval_id)
+        if not request:
+            raise HTTPException(status_code=404, detail="Approval request not found")
+        return request
+
+    @router.post("/approval-queue/{approval_id}/decision")
+    async def decide_approval_request(approval_id: str, inp: ApprovalDecisionInput,
+                                      user=Depends(require_role("admin"))):
+        try:
+            request = await approval_queue.decide(
+                db, tenant_id=user["tenant_id"], approval_id=approval_id,
+                decision=inp.decision, actor=user["email"], rationale=inp.rationale)
+        except approval_queue.ApprovalNotFound:
+            raise HTTPException(status_code=404, detail="Approval request not found")
+        except approval_queue.InvalidApprovalTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except approval_queue.ApprovalError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await _sync_strategy_state(request, user["email"])
+        if on_approval_decided:
+            side_effects = await on_approval_decided(request, user)
+            if side_effects:
+                request = {**request, **side_effects}
+        await record_event("approval.completed", "approval", approval_id, user["tenant_id"],
+                           user["email"], workspace_id=request.get("workspace_id"),
+                           payload={"decision": inp.decision})
+        return request
+
+    @router.post("/approval-queue/{approval_id}/cancel")
+    async def cancel_approval_request(approval_id: str, inp: ApprovalCancelInput,
+                                      user=Depends(get_current_user)):
+        try:
+            request = await approval_queue.cancel(
+                db, tenant_id=user["tenant_id"], approval_id=approval_id,
+                actor=user["email"], reason=inp.reason)
+        except approval_queue.ApprovalNotFound:
+            raise HTTPException(status_code=404, detail="Approval request not found")
+        except approval_queue.InvalidApprovalTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        await _sync_strategy_state(request, user["email"])
+        await record_event("approval.cancelled", "approval", approval_id, user["tenant_id"],
+                           user["email"], workspace_id=request.get("workspace_id"),
+                           payload={"reason": inp.reason})
+        return request
+
+    async def _sync_strategy_state(request: dict, actor: str):
+        """Keep a recovery strategy's own state in step with its approval decision, so
+        the two surfaces can never disagree about whether a proposal is still live."""
+        if request.get("subject_type") != "recovery_strategy" or not request.get("subject_id"):
+            return
+        mapping = {
+            approval_queue.APPROVED: recovery_strategy.STATE_APPROVED,
+            approval_queue.REJECTED: recovery_strategy.STATE_REJECTED,
+            approval_queue.CANCELLED: recovery_strategy.STATE_WITHDRAWN,
+        }
+        state = mapping.get(request.get("status"))
+        if not state:
+            return
+        try:
+            await recovery_strategy.set_state(db, request["tenant_id"], request["subject_id"],
+                                              state=state, actor=actor)
+        except recovery_strategy.RecoveryStrategyError:
+            pass
+
+    # ----------------------------------------------------- recovery strategies
+
+    @router.get("/recovery-strategies")
+    async def list_recovery_strategies(state: Optional[str] = Query(default=None),
+                                       lane: Optional[str] = Query(default=None),
+                                       limit: int = Query(default=100, ge=1, le=500),
+                                       user=Depends(get_current_user)):
+        return await recovery_strategy.list_strategies(db, user["tenant_id"], state=state,
+                                                       lane=lane, limit=limit)
+
+    @router.get("/recovery-strategies/summary")
+    async def recovery_strategies_summary(user=Depends(get_current_user)):
+        return await recovery_strategy.summary(db, user["tenant_id"])
+
+    @router.get("/recovery-strategies/channel-authority")
+    async def recovery_channel_authority(user=Depends(get_current_user)):
+        """What this tenant is actually allowed to send on, and why not."""
+        return await recovery_strategy.authorized_channels(db, user["tenant_id"])
+
+    @router.post("/recovery-strategies/compose")
+    async def compose_recovery_strategies(user=Depends(require_role("admin"))):
+        summary_ = await recovery_strategy.compose_for_tenant(db, queue, user["tenant_id"],
+                                                              actor=user["email"])
+        await record_event("recovery_strategy.composed", "recovery_strategy",
+                           user["tenant_id"], user["tenant_id"], user["email"],
+                           payload=summary_)
+        return summary_
+
+    @router.get("/recovery-strategies/{strategy_id}")
+    async def get_recovery_strategy(strategy_id: str, user=Depends(get_current_user)):
+        strategy = await recovery_strategy.get_strategy(db, user["tenant_id"], strategy_id)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Recovery strategy not found")
+        return strategy
 
     # --------------------------------------------------------- security gate
 

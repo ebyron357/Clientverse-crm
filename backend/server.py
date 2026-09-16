@@ -31,7 +31,9 @@ from pydantic import BaseModel, Field, EmailStr
 from cryptography.fernet import Fernet
 from client_value import register_client_value_routes
 from operations_routes import register_operations_routes
+import approval_queue as approval_service
 import next_best_action as nba_service
+import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
 from work_queue import WorkQueue, run_worker_tick
@@ -121,6 +123,8 @@ async def lifespan(_: FastAPI):
         await nba_service.ensure_indexes(db)
         await second_chance_service.ensure_indexes(db)
         await security_gate_service.ensure_indexes(db)
+        await approval_service.ensure_indexes(db)
+        await recovery_service.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
     try:
@@ -931,27 +935,48 @@ class ApprovalInput(BaseModel):
 
 @api.post("/approvals")
 async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
+    """Raise an approval request from the workspace surface.
+
+    Delegated to `approval_queue` so a request raised here carries the same expiry,
+    history and single-use execution binding as one raised by an agent. `inp.status` is
+    accepted for backward compatibility but no longer honoured: a request is created
+    `requested` and decided through the decision route, which is the only path that
+    records who decided it.
+    """
     await assert_workspace(user, inp.workspace_id)
-    doc = {"id": new_id("apr"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
-    await db.approvals.insert_one(doc)
+    try:
+        doc = await approval_service.request(
+            db, tenant_id=user["tenant_id"], title=inp.title, kind=inp.kind,
+            actor=user["email"], requester_kind=approval_service.REQUESTER_HUMAN,
+            workspace_id=inp.workspace_id)
+    except approval_service.ApprovalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     await record_event("approval.requested", "approval", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
-    return {k: v for k, v in doc.items() if k != "_id"}
+    return doc
 
 @api.patch("/approvals/{apr_id}")
 async def decide_approval(apr_id: str, inp: TaskStatus, user=Depends(require_role("admin"))):
+    """Decide an approval request.
+
+    The decision itself is delegated to `approval_queue` so this long-standing route and
+    the richer `/approval-queue` surface share one state machine: one expiry rule, one
+    audit trail, one release of the deduplication key. The MCP execution behaviour below
+    is unchanged.
+    """
     a = await db.approvals.find_one({"id": apr_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Not found")
-    await db.approvals.update_one({"id": apr_id}, {"$set": {"status": inp.status, "decided_by": user["email"], "decided_at": now_iso()}})
+    try:
+        await approval_service.decide(db, tenant_id=user["tenant_id"], approval_id=apr_id,
+                                      decision=inp.status, actor=user["email"])
+    except approval_service.ApprovalNotFound:
+        raise HTTPException(status_code=404, detail="Not found")
+    except approval_service.InvalidApprovalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except approval_service.ApprovalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     await record_event("approval.completed", "approval", apr_id, user["tenant_id"], user["email"], workspace_id=a["workspace_id"], payload={"decision": inp.status})
-    result = {"ok": True}
-    if a.get("kind") == "mcp_write" and a.get("pending_action_id"):
-        if inp.status == "approved":
-            result["execution"] = await execute_pending_mcp(a["pending_action_id"], user)
-        else:
-            await db.mcp_pending_actions.update_one({"id": a["pending_action_id"]}, {"$set": {"status": "rejected"}})
-            await db.mcp_tool_invocations.update_one({"approval_id": apr_id}, {"$set": {"status": "rejected"}})
-    return result
+    return {"ok": True, **await _apply_approval_side_effects({**a, "status": inp.status}, user)}
 
 class CommitmentInput(BaseModel):
     workspace_id: str
@@ -1557,17 +1582,23 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
     # Level 2 — reversible write gated behind an approval request
     if tool["level"] == 2:
         pending_id = new_id("mcpp")
-        approval_id = new_id("apr")
         ws_id = inp.args.get("workspace_id")
+        # The approval is raised through the shared queue so an MCP write appears in the
+        # same operator surface, with the same expiry and audit trail, as every other
+        # action waiting on a human. The pending action rides on the bound `action`
+        # payload, which is what an approval authorises.
+        approval_doc = await approval_service.request(
+            db, tenant_id=tenant, title=f"MCP write: {inp.tool}", kind="mcp_write",
+            actor=user["email"], requester_kind=approval_service.REQUESTER_HUMAN,
+            summary=f"Reversible internal write via MCP tool '{inp.tool}'.",
+            risk=approval_service.RISK_MEDIUM,
+            action={"type": "mcp_write", "tool": inp.tool, "pending_action_id": pending_id},
+            subject_type="mcp_pending_action", subject_id=pending_id, workspace_id=ws_id)
+        approval_id = approval_doc["id"]
         await db.mcp_pending_actions.insert_one({
             "id": pending_id, "tenant_id": tenant, "tool": inp.tool, "args": inp.args,
             "status": "pending_approval", "approval_id": approval_id, "workspace_id": ws_id,
             "invocation_id": inv_id, "created_by": user["email"], "created_at": now_iso(),
-        })
-        await db.approvals.insert_one({
-            "id": approval_id, "tenant_id": tenant, "workspace_id": ws_id,
-            "title": f"MCP write: {inp.tool}", "kind": "mcp_write", "status": "requested",
-            "pending_action_id": pending_id, "created_at": now_iso(),
         })
         await db.mcp_tool_invocations.insert_one({
             "id": inv_id, "tenant_id": tenant, "tool": inp.tool, "level": 2, "args": inp.args,
@@ -1993,6 +2024,35 @@ async def cron_next_best_actions(request: Request):
         return {"accepted": True, "duplicate": True}
     asyncio.create_task(_run_cron_job(
         "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron")))
+    return {"accepted": True, "run_id": run_id}
+
+
+@api.post("/cron/recovery-strategies")
+async def cron_recovery_strategies(request: Request):
+    """Compose a recovery strategy for every open Second Chance candidate.
+
+    Composition only. Nothing here sends, calls, or writes to a third party: each
+    strategy is raised as an approval request carrying whatever blocks it.
+    """
+    _authorize_cron(request)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if not await _claim_cron_run("recovery-strategies", run_id):
+        return {"accepted": True, "duplicate": True}
+    asyncio.create_task(_run_cron_job(
+        "recovery-strategies", run_id,
+        lambda: recovery_service.compose_all_tenants(db, work_queue, actor="cron")))
+    return {"accepted": True, "run_id": run_id}
+
+
+@api.post("/cron/approval-expiry")
+async def cron_approval_expiry(request: Request):
+    """Lapse approval requests nobody decided, so a stale request can never authorise."""
+    _authorize_cron(request)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if not await _claim_cron_run("approval-expiry", run_id):
+        return {"accepted": True, "duplicate": True}
+    asyncio.create_task(_run_cron_job(
+        "approval-expiry", run_id, lambda: approval_service.expire_due(db)))
     return {"accepted": True, "run_id": run_id}
 
 # ============================================================================
@@ -3394,7 +3454,33 @@ async def cron_daily_digest(request: Request):
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
-work_queue = register_operations_routes(api, db, record_event, get_current_user, require_role)
+
+
+async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
+    """Follow-through for a decided approval.
+
+    Both decision routes call this, so an MCP write executes on approval and is marked
+    rejected on rejection no matter which surface the operator used. Two decision paths
+    that behave differently is exactly how an approval gate stops meaning anything.
+    """
+    result: dict = {}
+    # `pending_action_id` was a top-level field before the approval queue existed; it now
+    # rides on the bound action. Read both so historical records still execute.
+    pending_action_id = (approval.get("pending_action_id")
+                         or (approval.get("action") or {}).get("pending_action_id"))
+    if approval.get("kind") == "mcp_write" and pending_action_id:
+        if approval.get("status") == "approved":
+            result["execution"] = await execute_pending_mcp(pending_action_id, user)
+        else:
+            await db.mcp_pending_actions.update_one({"id": pending_action_id},
+                                                    {"$set": {"status": "rejected"}})
+            await db.mcp_tool_invocations.update_one({"approval_id": approval["id"]},
+                                                     {"$set": {"status": "rejected"}})
+    return result
+
+
+work_queue = register_operations_routes(api, db, record_event, get_current_user, require_role,
+                                        on_approval_decided=_apply_approval_side_effects)
 
 # The durable queue carries two kinds of work.
 #   * SYSTEM_QUEUE — machine-executable jobs the worker tick claims, runs, retries and
