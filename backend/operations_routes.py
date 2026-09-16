@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 import approval_queue
 import conversations
 import next_best_action as nba
+import recovery_case
 import recovery_strategy
 import second_chance
 import security_gate
@@ -203,7 +204,7 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
     @router.post("/second-chance/detect")
     async def run_second_chance(user=Depends(require_role("admin"))):
         summary = await second_chance.run_detection(db, queue, user["tenant_id"],
-                                                    actor=user["email"])
+                                                    actor=user["email"], audit=record_event)
         await record_event("second_chance.detection_run", "second_chance", user["tenant_id"],
                            user["tenant_id"], user["email"], payload=summary)
         return summary
@@ -510,6 +511,30 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
                            user["tenant_id"], user["email"],
                            payload={"status": message["status"]})
         return message
+
+    # --------------------------------------------------------- recovery cases
+
+    @router.get("/recovery-cases")
+    async def list_recovery_cases(state: Optional[str] = Query(default="open"),
+                                  source: Optional[str] = Query(default=None),
+                                  workspace_id: Optional[str] = Query(default=None),
+                                  limit: int = Query(default=100, ge=1, le=500),
+                                  user=Depends(get_current_user)):
+        return await recovery_case.list_cases(db, user["tenant_id"], state=state,
+                                              source=source, workspace_id=workspace_id,
+                                              limit=limit)
+
+    @router.get("/recovery-cases/summary")
+    async def recovery_cases_summary(user=Depends(get_current_user)):
+        """Counts and value. Potential and confirmed are reported as separate figures."""
+        return await recovery_case.summary(db, user["tenant_id"])
+
+    @router.get("/recovery-cases/{case_id}")
+    async def get_recovery_case(case_id: str, user=Depends(get_current_user)):
+        case = await recovery_case.get_case(db, user["tenant_id"], case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Recovery case not found")
+        return case
 
     # ----------------------------------------------------- recovery strategies
 

@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import approval_queue
+import recovery_case
 import second_chance
 
 COLLECTION = "recovery_strategies"
@@ -439,6 +440,87 @@ def _apply_channel_authority(steps: list[dict], channels: dict[str, dict]) -> li
 
 
 # -------------------------------------------------------------------- composition
+
+def candidate_from_case(case: dict) -> dict:
+    """Express a Recovery Case in the shape the planner already understands.
+
+    The planner was written against a work-queue candidate, and it works. Rather than
+    rewrite 700 lines, a case is translated into that shape at the boundary. What this
+    makes possible is the point of the whole slice: a case with no opportunity, no
+    workspace and no contact — a missed call, say — can be planned for, because the
+    translation carries whatever the case *does* have and omits what it does not.
+    """
+    evidence = dict(case.get("evidence") or {})
+    if case.get("potential_value") is not None:
+        evidence.setdefault("value", case["potential_value"])
+    if case.get("external_identity"):
+        evidence.setdefault("external_identity", case["external_identity"])
+    # References the case has resolved override whatever the original detection evidence
+    # carried. Without this, identity resolved after detection — the whole point of an
+    # external case — never reaches the planner, and a known caller is still triaged as
+    # an unknown one.
+    for field in ("contact_id", "company_id"):
+        if case.get(field):
+            evidence[field] = case[field]
+
+    # Sources map back onto the detector item types the playbook branches on. A source
+    # with no established lane is left unmapped, so `select_lane` falls through to its
+    # explicit human-triage branch rather than guessing a motion for it.
+    item_type = {
+        recovery_case.SOURCE_DORMANT_DEAL: second_chance.TYPE_STALLED_LEAD,
+        recovery_case.SOURCE_MISSED_FOLLOWUP: second_chance.TYPE_MISSED_FOLLOWUP,
+    }.get(case.get("source"))
+
+    return {
+        "id": case["id"],
+        "tenant_id": case["tenant_id"],
+        "type": item_type or f"recovery_case.{case.get('source')}",
+        "payload": {
+            "record_id": case.get("opportunity_id") or case.get("source_event_id"),
+            "record_kind": evidence.get("record_kind") or (
+                "opportunity" if case.get("opportunity_id") else case.get("source")),
+            "title": case.get("title"),
+            "reason": case.get("reason"),
+        },
+        "evidence": evidence,
+        "workspace_id": case.get("workspace_id"),
+        "recovery_case_id": case["id"],
+    }
+
+
+async def compose_for_case(db, tenant_id: str, case: dict, *,
+                           actor: str = "recovery-composer",
+                           channels: Optional[dict] = None) -> dict:
+    """Plan for a Recovery Case, whatever it originated as.
+
+    Returns the composed strategy and links it back onto the case, moving the case to
+    `planned` (or `awaiting_approval` once its approval request exists) so the two records
+    never disagree about how far the recovery has got.
+    """
+    if case.get("tenant_id") != tenant_id:
+        raise recovery_case.CrossTenantReference(
+            "Recovery case does not belong to this tenant")
+
+    strategy = await compose_for_candidate(db, tenant_id, candidate_from_case(case),
+                                           actor=actor, channels=channels)
+    await recovery_case.attach(db, tenant_id=tenant_id, case_id=case["id"], actor=actor,
+                               plan_reference=strategy["id"],
+                               approval_reference=strategy.get("approval_id"))
+
+    current = (await recovery_case.get_case(db, tenant_id, case["id"]) or {}).get("state")
+    target = (recovery_case.AWAITING_APPROVAL if strategy.get("approval_id")
+              else recovery_case.PLANNED)
+    if current != target:
+        try:
+            await recovery_case.set_state(db, tenant_id=tenant_id, case_id=case["id"],
+                                          state=target, actor=actor,
+                                          detail={"lane": strategy["lane"],
+                                                  "rule": strategy["rule"]})
+        except recovery_case.InvalidCaseTransition:
+            # A case already past planning is not dragged backwards by a recompose.
+            pass
+    return strategy
+
 
 async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
                                 actor: str = "recovery-composer",

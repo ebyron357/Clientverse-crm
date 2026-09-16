@@ -34,6 +34,7 @@ from operations_routes import register_operations_routes
 import approval_queue as approval_service
 import conversations as conversation_service
 import next_best_action as nba_service
+import recovery_case as recovery_case_service
 import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
@@ -127,6 +128,7 @@ async def lifespan(_: FastAPI):
         await approval_service.ensure_indexes(db)
         await recovery_service.ensure_indexes(db)
         await conversation_service.ensure_indexes(db)
+        await recovery_case_service.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
     try:
@@ -3556,7 +3558,8 @@ WORK_QUEUE_HANDLERS = {
 
 async def run_second_chance_sweep(actor: str = "cron") -> dict:
     """Detect recovery candidates, then queue a durable recommendation refresh per tenant."""
-    summary = await second_chance_service.run_detection_all_tenants(db, work_queue, actor=actor)
+    summary = await second_chance_service.run_detection_all_tenants(
+        db, work_queue, actor=actor, audit=record_event)
     for tenant_summary in summary.get("summaries", []):
         tenant_id = tenant_summary.get("tenant_id")
         if not tenant_id or tenant_summary.get("error"):
