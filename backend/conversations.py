@@ -370,6 +370,24 @@ async def get_conversation(db, tenant_id: str, conversation_id: str) -> Optional
         {"id": conversation_id, "tenant_id": tenant_id}))
 
 
+async def find_conversation_by_external_thread(db, tenant_id: str, channel: str,
+                                              external_thread_id: str) -> Optional[dict]:
+    """The thread a provider (or a caller using its own key) already opened, if any."""
+    return _public(await db[CONVERSATIONS].find_one(
+        {"tenant_id": tenant_id, "channel": channel,
+         "external_thread_id": external_thread_id}))
+
+
+async def find_message_by_idempotency_key(db, tenant_id: str, key: str) -> Optional[dict]:
+    """The message a previous attempt already drafted under this key, if any.
+
+    A caller that wants to be re-runnable asks this before drafting, rather than relying
+    on the unique index to reject the second write.
+    """
+    return _public(await db[MESSAGES].find_one(
+        {"tenant_id": tenant_id, "idempotency_key": key}))
+
+
 async def list_conversations(db, tenant_id: str, *, status: Optional[str] = "open",
                              channel: Optional[str] = None,
                              handled_by: Optional[str] = None,

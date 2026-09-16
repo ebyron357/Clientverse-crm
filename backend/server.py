@@ -35,6 +35,7 @@ import approval_queue as approval_service
 import conversations as conversation_service
 import next_best_action as nba_service
 import recovery_case as recovery_case_service
+import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
@@ -2048,6 +2049,25 @@ async def cron_recovery_strategies(request: Request):
     return {"accepted": True, "run_id": run_id}
 
 
+@api.post("/cron/recovery-runner")
+async def cron_recovery_runner(request: Request):
+    """Queue every approved Recovery Case for execution.
+
+    Queuing only — the durable worker runs them, so a slow or failing case retries with
+    backoff rather than stalling the sweep. Nothing outbound is sent: with no provider
+    registered, each outbound step is drafted and refused at the boundary.
+    """
+    _authorize_cron(request)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if not await _claim_cron_run("recovery-runner", run_id):
+        return {"accepted": True, "duplicate": True}
+    asyncio.create_task(_run_cron_job(
+        "recovery-runner", run_id,
+        lambda: recovery_runner_service.run_ready_cases_all_tenants(
+            db, work_queue, actor="cron", audit=record_event)))
+    return {"accepted": True, "run_id": run_id}
+
+
 @api.post("/cron/approval-expiry")
 async def cron_approval_expiry(request: Request):
     """Lapse approval requests nobody decided, so a stale request can never authorise."""
@@ -3551,8 +3571,23 @@ async def _handle_generate_next_best_actions(item: dict) -> dict:
     return await nba_service.generate(db, tenant_id, actor="work-queue")
 
 
+async def _handle_run_recovery_case(item: dict) -> dict:
+    """Execute one approved Recovery Case.
+
+    Raising here is correct for a case that is not runnable: the durable queue records the
+    failure, retries with backoff and eventually dead-letters, which is what should happen
+    to a job whose case was withdrawn between queueing and running.
+    """
+    payload = item.get("payload") or {}
+    tenant_id = payload.get("tenant_id") or item.get("tenant_id")
+    return await recovery_runner_service.run_case(
+        db, tenant_id=tenant_id, case_id=payload["case_id"],
+        actor="work-queue", audit=record_event)
+
+
 WORK_QUEUE_HANDLERS = {
     JOB_GENERATE_NEXT_BEST_ACTIONS: _handle_generate_next_best_actions,
+    recovery_runner_service.JOB_RUN_RECOVERY_CASE: _handle_run_recovery_case,
 }
 
 
