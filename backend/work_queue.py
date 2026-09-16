@@ -530,6 +530,23 @@ class WorkQueue:
     async def get(self, item_id: str, *, tenant_id: str) -> Optional[dict]:
         return await self.collection.find_one({"id": item_id, "tenant_id": tenant_id}, {"_id": 0})
 
+    async def set_payload_fields(self, item_id: str, *, tenant_id: str,
+                                 fields: dict) -> Optional[dict]:
+        """Merge keys into a queued item's payload without touching anything else.
+
+        `enqueue()` returns the *existing* item when a detection folds into an open one,
+        so a caller that wants to record something about that item — a link back to the
+        record it belongs to — has no other way to make the change durable. Scoped to the
+        payload, so it cannot be used to move an item's state behind the state machine.
+        """
+        if not fields:
+            return await self.get(item_id, tenant_id=tenant_id)
+        return await self.collection.find_one_and_update(
+            {"id": item_id, "tenant_id": tenant_id},
+            {"$set": {**{f"payload.{k}": v for k, v in fields.items()},
+                      "updated_at": _iso(_now())}},
+            projection={"_id": 0}, return_document=True)
+
     async def stats(self, *, tenant_id: str) -> dict:
         counts = {state: 0 for state in STATES}
         pipeline = [{"$match": {"tenant_id": tenant_id}},

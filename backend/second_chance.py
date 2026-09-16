@@ -276,10 +276,25 @@ async def enqueue_detections(queue, detections: list[dict], *, actor: str = "sec
             priority=50 if detection["type"] == TYPE_MISSED_FOLLOWUP else 70,
             actor=actor,
         )
-        if case and db is not None and not case.get("work_item_reference"):
-            await recovery_case.attach(db, tenant_id=detection["tenant_id"],
-                                       case_id=case["id"], actor=actor,
-                                       work_item_reference=item["id"])
+        if case and db is not None:
+            # Point the case at whichever work item is live now. Checking only that the
+            # field was empty left a case pointing at a resolved item: `resolve()` clears
+            # `active_dedupe_key`, so the next detection of the same record creates a new
+            # item, and the case would keep the old one forever.
+            if case.get("work_item_reference") != item["id"]:
+                await recovery_case.attach(db, tenant_id=detection["tenant_id"],
+                                           case_id=case["id"], actor=actor,
+                                           work_item_reference=item["id"])
+            # A folded item was created before this call shape existed, or by a caller
+            # that passed no `db`, so its stored payload carries no case id. Merging it
+            # only into the local copy left the link one-directional and invisible to
+            # anything reading the queue.
+            if item.get("payload", {}).get("recovery_case_id") != case["id"]:
+                persisted = await queue.set_payload_fields(
+                    item["id"], tenant_id=detection["tenant_id"],
+                    fields={"recovery_case_id": case["id"]})
+                if persisted:
+                    item = {**persisted, "deduplicated": item.get("deduplicated", False)}
         if case:
             item = {**item, "recovery_case_id": case["id"]}
         items.append(item)

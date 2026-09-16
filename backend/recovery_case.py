@@ -38,6 +38,8 @@ it is built — §11 of the readiness report lists what is still missing.
 
 from __future__ import annotations
 
+import asyncio
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
@@ -77,6 +79,8 @@ IDENTITY_EMAIL = "email"
 IDENTITY_EXTERNAL_ID = "external_id"
 IDENTITY_KINDS = (IDENTITY_PHONE, IDENTITY_EMAIL, IDENTITY_EXTERNAL_ID)
 
+DEFAULT_CURRENCY = "USD"
+
 # -------------------------------------------------------------------- states
 
 DETECTED = "detected"
@@ -111,14 +115,33 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     FAILED: {DETECTED},
 }
 
-# Reference fields that point at tenant-owned records, and the collection each lives in.
-# `attach()` verifies ownership against these before writing anything.
+# CRM records a normalized event may already point at, and the collection each lives in.
+# These are the references an event can arrive carrying, so `open_case()` verifies them.
 REFERENCE_COLLECTIONS = {
     "contact_id": "contacts",
     "company_id": "companies",
     "opportunity_id": "opportunities",
     "workspace_id": "workspaces",
 }
+
+# Records this system creates *for* a case and later staples back onto it. They are as
+# tenant-scoped as the CRM records above, so attaching one is verified the same way —
+# otherwise a caller could point a case at another tenant's plan, approval, conversation
+# or queue item and the cross-tenant guarantee would hold only for half the fields.
+ATTACHED_RECORD_COLLECTIONS = {
+    "plan_reference": "recovery_strategies",
+    "approval_reference": "approvals",
+    "conversation_reference": "conversations",
+    "work_item_reference": "work_queue",
+}
+
+# Everything `attach()` accepts, and where each one is checked.
+ATTACHABLE_REFERENCES = {**REFERENCE_COLLECTIONS, **ATTACHED_RECORD_COLLECTIONS}
+
+# An identity is looked up by its exact stored value and deduplicated on it, so it cannot
+# be silently shortened. Descriptive text (a reason, a title) is trimmed instead, because
+# nothing matches on it.
+MAX_IDENTITY_LENGTH = 200
 
 
 class RecoveryCaseError(Exception):
@@ -143,6 +166,25 @@ def _now() -> datetime:
 
 def _iso(value: datetime) -> str:
     return value.isoformat()
+
+
+def _amount(value: Any, label: str) -> float:
+    """Convert to a usable amount, refusing the values that quietly poison a total.
+
+    `float()` accepts `nan` and the infinities, and none of them are negative, so a bare
+    `< 0` check lets them through. One of either in a case makes every aggregate that
+    touches it non-finite, which is exactly the financial-integrity failure the separate
+    potential/confirmed fields exist to prevent.
+    """
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        raise RecoveryCaseError(f"{label} must be a number")
+    if not math.isfinite(amount):
+        raise RecoveryCaseError(f"{label} must be a finite number")
+    if amount < 0:
+        raise RecoveryCaseError(f"{label} cannot be negative")
+    return amount
 
 
 def _history(action: str, actor: str, detail: Optional[dict] = None) -> dict:
@@ -180,7 +222,8 @@ def normalize_event(*, tenant_id: str, source: str, source_event_id: str, reason
                     contact_id: Optional[str] = None, company_id: Optional[str] = None,
                     opportunity_id: Optional[str] = None,
                     external_identity: Optional[dict] = None,
-                    potential_value: Optional[float] = None, currency: str = "USD",
+                    potential_value: Optional[float] = None,
+                    currency: str = DEFAULT_CURRENCY,
                     evidence: Optional[dict] = None, title: Optional[str] = None) -> dict:
     """Put any source into the one shape the recovery pipeline accepts.
 
@@ -205,20 +248,27 @@ def normalize_event(*, tenant_id: str, source: str, source_event_id: str, reason
             raise RecoveryCaseError(f"external identity kind must be one of {IDENTITY_KINDS}")
         if not value:
             raise RecoveryCaseError("external identity requires a value")
-        identity = {"kind": kind, "value": value[:200]}
+        if len(value) > MAX_IDENTITY_LENGTH:
+            raise RecoveryCaseError(
+                f"external identity value exceeds {MAX_IDENTITY_LENGTH} characters")
+        identity = {"kind": kind, "value": value}
 
     if potential_value is not None:
-        try:
-            potential_value = float(potential_value)
-        except (TypeError, ValueError):
-            raise RecoveryCaseError("potential_value must be a number")
-        if potential_value < 0:
-            raise RecoveryCaseError("potential_value cannot be negative")
+        potential_value = _amount(potential_value, "potential_value")
+
+    event_id = str(source_event_id).strip()
+    if len(event_id) > MAX_IDENTITY_LENGTH:
+        # Truncating here would change the case's identity. Two distinct events sharing a
+        # long prefix would collapse into one case under the unique index, and
+        # `find_by_source_event()` would then fail to find the case when handed the real
+        # id. Refusing is the only option that keeps identity meaning what it says.
+        raise RecoveryCaseError(
+            f"source_event_id exceeds {MAX_IDENTITY_LENGTH} characters")
 
     return {
         "tenant_id": tenant_id,
         "source": source,
-        "source_event_id": str(source_event_id).strip()[:200],
+        "source_event_id": event_id,
         "reason": str(reason).strip()[:1000],
         "title": (str(title).strip()[:300] if title else None),
         "occurred_at": occurred_at or _iso(_now()),
@@ -242,7 +292,7 @@ async def _assert_owned(db, tenant_id: str, field: str, value: Optional[str]) ->
     """
     if not value:
         return
-    collection = REFERENCE_COLLECTIONS.get(field)
+    collection = ATTACHABLE_REFERENCES.get(field)
     if not collection:
         return
     if not await db[collection].find_one({"id": value, "tenant_id": tenant_id}, {"_id": 1}):
@@ -259,8 +309,11 @@ async def open_case(db, event: dict, *, actor: str = "system",
     are wired. Nothing here writes a parallel audit trail.
     """
     tenant_id = event["tenant_id"]
-    for field in REFERENCE_COLLECTIONS:
-        await _assert_owned(db, tenant_id, field, event.get(field))
+    # Four independent point lookups. Running them concurrently keeps a detection sweep
+    # over hundreds of records from paying four serial round trips each.
+    await asyncio.gather(*(
+        _assert_owned(db, tenant_id, field, event.get(field))
+        for field in REFERENCE_COLLECTIONS))
 
     now = _now()
     doc = {
@@ -286,7 +339,7 @@ async def open_case(db, event: dict, *, actor: str = "system",
             if event.get("potential_value") is not None else None),
         "confirmed_value": None,
         "confirmed_value_evidence": None,
-        "currency": event.get("currency") or "USD",
+        "currency": event.get("currency") or DEFAULT_CURRENCY,
         "state": DETECTED,
         "evidence": event.get("evidence") or {},
         "plan_reference": None,
@@ -351,6 +404,21 @@ async def list_cases(db, tenant_id: str, *, state: Optional[str] = "open",
     return [_public(d) for d in docs]
 
 
+async def list_unplanned(db, tenant_id: str, *, limit: int = 200) -> list[dict]:
+    """Open cases that have never been planned for.
+
+    A case created from a work item is reached by the composer through that item. A case
+    with no work item — a missed call, a web enquiry, anything that never was a CRM record
+    — has no such route, so the sweep needs to be able to ask for them directly.
+    """
+    docs = await db[COLLECTION].find({
+        "tenant_id": tenant_id,
+        "state": {"$in": [DETECTED]},
+        "plan_reference": None,
+    }).sort("created_at", 1).to_list(int(limit))
+    return [_public(d) for d in docs]
+
+
 async def attach(db, *, tenant_id: str, case_id: str, actor: str = "system",
                  audit: Optional[Callable[..., Awaitable[Any]]] = None,
                  **references) -> dict:
@@ -364,12 +432,9 @@ async def attach(db, *, tenant_id: str, case_id: str, actor: str = "system",
     if not case:
         raise RecoveryCaseNotFound("Recovery case not found")
 
-    allowed = set(REFERENCE_COLLECTIONS) | {
-        "plan_reference", "approval_reference", "conversation_reference",
-        "work_item_reference"}
     update: dict[str, Any] = {}
     for field, value in references.items():
-        if field not in allowed:
+        if field not in ATTACHABLE_REFERENCES:
             raise RecoveryCaseError(f"'{field}' is not an attachable reference")
         if value is None:
             continue
@@ -393,10 +458,16 @@ async def attach(db, *, tenant_id: str, case_id: str, actor: str = "system",
     return _public(updated)
 
 
-async def set_state(db, *, tenant_id: str, case_id: str, state: str, actor: str = "system",
-                    detail: Optional[dict] = None,
-                    audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
-    """Move a case, refusing any transition the matrix does not allow."""
+async def _transition(db, *, tenant_id: str, case_id: str, state: str, actor: str,
+                      detail: Optional[dict],
+                      audit: Optional[Callable[..., Awaitable[Any]]],
+                      extra_set: Optional[dict] = None) -> dict:
+    """Move a case and, in the same write, set whatever belongs to that move.
+
+    `extra_set` exists so a caller that must record data *with* a transition — a confirmed
+    amount, say — cannot end up having done one and not the other. The state change and
+    its data land in a single conditional update or neither does.
+    """
     if state not in STATES:
         raise RecoveryCaseError(f"state must be one of {STATES}")
     case = await get_case(db, tenant_id, case_id)
@@ -409,7 +480,7 @@ async def set_state(db, *, tenant_id: str, case_id: str, state: str, actor: str 
 
     updated = await db[COLLECTION].find_one_and_update(
         {"id": case_id, "tenant_id": tenant_id, "state": current},
-        {"$set": {"state": state, "updated_at": _iso(_now())},
+        {"$set": {**(extra_set or {}), "state": state, "updated_at": _iso(_now())},
          "$push": {"history": _history(state, actor, detail)}},
         return_document=True)
     if not updated:
@@ -422,6 +493,14 @@ async def set_state(db, *, tenant_id: str, case_id: str, state: str, actor: str 
     return _public(updated)
 
 
+async def set_state(db, *, tenant_id: str, case_id: str, state: str, actor: str = "system",
+                    detail: Optional[dict] = None,
+                    audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
+    """Move a case, refusing any transition the matrix does not allow."""
+    return await _transition(db, tenant_id=tenant_id, case_id=case_id, state=state,
+                             actor=actor, detail=detail, audit=audit)
+
+
 async def confirm_recovery(db, *, tenant_id: str, case_id: str, amount: float,
                            evidence: dict, actor: str = "system",
                            audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
@@ -431,24 +510,18 @@ async def confirm_recovery(db, *, tenant_id: str, case_id: str, amount: float,
     it. An estimate is not a recovery, and this refuses to record one without something to
     point at.
     """
-    try:
-        amount = float(amount)
-    except (TypeError, ValueError):
-        raise RecoveryCaseError("Confirmed amount must be a number")
-    if amount < 0:
-        raise RecoveryCaseError("Confirmed amount cannot be negative")
+    amount = _amount(amount, "Confirmed amount")
     if not evidence:
         raise RecoveryCaseError(
             "Confirming recovered revenue requires evidence of the recovery")
 
-    case = await set_state(db, tenant_id=tenant_id, case_id=case_id, state=RECOVERED,
-                           actor=actor, detail={"confirmed_value": amount}, audit=audit)
-    updated = await db[COLLECTION].find_one_and_update(
-        {"id": case_id, "tenant_id": tenant_id},
-        {"$set": {"confirmed_value": amount, "confirmed_value_evidence": evidence,
-                  "updated_at": _iso(_now())}},
-        return_document=True)
-    return _public(updated) or case
+    # One write. Splitting this would let the case reach `recovered` with no confirmed
+    # value and no way back — `recovered -> recovered` is not an allowed transition, so a
+    # retry could not repair it.
+    return await _transition(
+        db, tenant_id=tenant_id, case_id=case_id, state=RECOVERED, actor=actor,
+        detail={"confirmed_value": amount}, audit=audit,
+        extra_set={"confirmed_value": amount, "confirmed_value_evidence": evidence})
 
 
 async def summary(db, tenant_id: str) -> dict:
@@ -467,20 +540,29 @@ async def summary(db, tenant_id: str) -> dict:
     ]):
         by_source[row["_id"] or "unknown"] = row["count"]
 
-    potential = 0.0
+    # Money is grouped by currency, never summed across it. £40,000 plus $40,000 is not
+    # 80,000 of anything, and a single figure would be read as though it were.
+    potential_by_currency: dict[str, float] = {}
     async for row in db[COLLECTION].aggregate([
         {"$match": {"tenant_id": tenant_id, "state": {"$in": list(OPEN_STATES)},
                     "potential_value": {"$type": "number"}}},
-        {"$group": {"_id": None, "total": {"$sum": "$potential_value"}}},
+        {"$group": {"_id": "$currency", "total": {"$sum": "$potential_value"}}},
     ]):
-        potential = row["total"]
+        potential_by_currency[row["_id"] or DEFAULT_CURRENCY] = row["total"]
 
-    confirmed = 0.0
+    confirmed_by_currency: dict[str, float] = {}
     async for row in db[COLLECTION].aggregate([
         {"$match": {"tenant_id": tenant_id, "confirmed_value": {"$type": "number"}}},
-        {"$group": {"_id": None, "total": {"$sum": "$confirmed_value"}}},
+        {"$group": {"_id": "$currency", "total": {"$sum": "$confirmed_value"}}},
     ]):
-        confirmed = row["total"]
+        confirmed_by_currency[row["_id"] or DEFAULT_CURRENCY] = row["total"]
+
+    currencies = sorted(set(potential_by_currency) | set(confirmed_by_currency))
+    # The scalar figures stay, because one currency is the ordinary case and callers read
+    # them — but they are only a truthful total while there *is* one currency. With more
+    # than one they are None, so a mixed tenant reads as "look at the breakdown" rather
+    # than as a number that silently means nothing.
+    single = currencies[0] if len(currencies) == 1 else None
 
     return {
         "tenant_id": tenant_id,
@@ -488,7 +570,15 @@ async def summary(db, tenant_id: str) -> dict:
         "recovered_cases": by_state.get(RECOVERED, 0),
         "by_state": by_state,
         "by_source": by_source,
+        "currencies": currencies,
         # Named so the two can never be read as the same number.
-        "potential_value_open": potential,
-        "confirmed_recovered_value": confirmed,
+        "potential_value_open_by_currency": potential_by_currency,
+        "confirmed_recovered_value_by_currency": confirmed_by_currency,
+        "potential_value_open": (
+            potential_by_currency.get(single, 0.0) if single is not None
+            else (0.0 if not currencies else None)),
+        "confirmed_recovered_value": (
+            confirmed_by_currency.get(single, 0.0) if single is not None
+            else (0.0 if not currencies else None)),
+        "value_currency": single,
     }

@@ -424,3 +424,191 @@ def test_history_records_the_source_and_every_move(env):
     actions = [h["action"] for h in case["history"]]
     assert actions == ["detected", "planned"]
     assert case["history"][0]["detail"]["source"] == rc.SOURCE_MISSED_CALL
+
+
+# ------------------------------------------- review findings: identity and money
+
+def test_an_overlong_source_event_id_is_refused_not_truncated(env):
+    """Truncating the identity would merge two distinct events into one case.
+
+    The id is what the unique index deduplicates on and what `find_by_source_event()`
+    looks up, so shortening it silently is worse than refusing it.
+    """
+    shared_prefix = "x" * rc.MAX_IDENTITY_LENGTH
+    with pytest.raises(rc.RecoveryCaseError):
+        missed_call_event(source_event_id=shared_prefix + "-first")
+    # At the limit exactly is fine, and stored whole.
+    event = missed_call_event(source_event_id=shared_prefix)
+    assert event["source_event_id"] == shared_prefix
+
+
+def test_two_long_ids_sharing_a_prefix_stay_two_cases(env):
+    db, _ = env
+    prefix = "evt_" + "y" * 150
+    first = run(rc.open_case(db, missed_call_event(source_event_id=prefix + "-a")))
+    second = run(rc.open_case(db, missed_call_event(source_event_id=prefix + "-b")))
+    assert first["id"] != second["id"]
+    assert second["deduplicated"] is False
+    found = run(rc.find_by_source_event(db, TENANT, rc.SOURCE_MISSED_CALL, prefix + "-b"))
+    assert found and found["id"] == second["id"]
+
+
+def test_an_overlong_external_identity_is_refused(env):
+    with pytest.raises(rc.RecoveryCaseError):
+        missed_call_event(external_identity={"kind": rc.IDENTITY_PHONE,
+                                             "value": "+" + "1" * 250})
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_potential_value_is_refused(env, bad):
+    """`nan` and the infinities are not negative, so the sign check alone lets them in."""
+    with pytest.raises(rc.RecoveryCaseError):
+        missed_call_event(potential_value=bad)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_a_non_finite_confirmed_amount_cannot_become_revenue(env, bad):
+    db, _ = env
+    case = run(rc.open_case(db, missed_call_event()))
+    for state in (rc.PLANNED, rc.AWAITING_APPROVAL, rc.APPROVED, rc.EXECUTING, rc.ENGAGED):
+        run(rc.set_state(db, tenant_id=TENANT, case_id=case["id"], state=state))
+    with pytest.raises(rc.RecoveryCaseError):
+        run(rc.confirm_recovery(db, tenant_id=TENANT, case_id=case["id"], amount=bad,
+                                evidence={"invoice": "INV-1"}))
+    # And the case is untouched: no terminal state, no confirmed value.
+    after = run(rc.get_case(db, TENANT, case["id"]))
+    assert after["state"] == rc.ENGAGED
+    assert after["confirmed_value"] is None
+
+
+def test_confirming_recovery_writes_the_state_and_the_amount_together(env):
+    """One write. A case cannot end up terminal with nothing recorded against it."""
+    db, _ = env
+    case = run(rc.open_case(db, missed_call_event()))
+    for state in (rc.PLANNED, rc.AWAITING_APPROVAL, rc.APPROVED, rc.EXECUTING, rc.ENGAGED):
+        run(rc.set_state(db, tenant_id=TENANT, case_id=case["id"], state=state))
+    confirmed = run(rc.confirm_recovery(db, tenant_id=TENANT, case_id=case["id"],
+                                        amount=1250.5, evidence={"invoice": "INV-9"}))
+    assert confirmed["state"] == rc.RECOVERED
+    assert confirmed["confirmed_value"] == 1250.5
+    assert confirmed["confirmed_value_evidence"] == {"invoice": "INV-9"}
+    # The value arrived on the same history entry as the transition, not after it.
+    assert confirmed["history"][-1]["action"] == rc.RECOVERED
+    assert confirmed["history"][-1]["detail"]["confirmed_value"] == 1250.5
+
+
+def test_value_is_never_summed_across_currencies(env):
+    """£40,000 plus $40,000 is not 80,000 of anything."""
+    db, _ = env
+    run(rc.open_case(db, missed_call_event(potential_value=40000, currency="GBP")))
+    run(rc.open_case(db, missed_call_event(potential_value=40000, currency="USD")))
+    summary = run(rc.summary(db, TENANT))
+    assert summary["potential_value_open_by_currency"] == {"GBP": 40000, "USD": 40000}
+    assert summary["currencies"] == ["GBP", "USD"]
+    # No single figure is offered, because no single figure is true.
+    assert summary["potential_value_open"] is None
+    assert summary["value_currency"] is None
+
+
+def test_a_single_currency_tenant_still_gets_a_plain_total(env):
+    db, _ = env
+    run(rc.open_case(db, missed_call_event(potential_value=1500, currency="GBP")))
+    run(rc.open_case(db, missed_call_event(potential_value=500, currency="GBP")))
+    summary = run(rc.summary(db, TENANT))
+    assert summary["potential_value_open"] == 2000
+    assert summary["value_currency"] == "GBP"
+
+
+# ------------------------------------ review findings: cross-tenant attachment
+
+def test_a_plan_from_another_tenant_cannot_be_attached(env):
+    """Every attachable reference is tenant-checked, not only the CRM ones."""
+    db, _ = env
+    case = run(rc.open_case(db, missed_call_event()))
+    run(db.recovery_strategies.insert_one({"id": "rcv_foreign", "tenant_id": OTHER_TENANT}))
+    with pytest.raises(rc.CrossTenantReference):
+        run(rc.attach(db, tenant_id=TENANT, case_id=case["id"],
+                      plan_reference="rcv_foreign"))
+    assert run(rc.get_case(db, TENANT, case["id"]))["plan_reference"] is None
+
+
+@pytest.mark.parametrize("field,collection,prefix", [
+    ("approval_reference", "approvals", "apr"),
+    ("conversation_reference", "conversations", "cnv"),
+    ("work_item_reference", "work_queue", "wq"),
+])
+def test_every_created_record_reference_is_tenant_checked(env, field, collection, prefix):
+    db, _ = env
+    case = run(rc.open_case(db, missed_call_event()))
+    foreign = f"{prefix}_foreign"
+    run(db[collection].insert_one({"id": foreign, "tenant_id": OTHER_TENANT}))
+    with pytest.raises(rc.CrossTenantReference):
+        run(rc.attach(db, tenant_id=TENANT, case_id=case["id"], **{field: foreign}))
+    # And the tenant's own record attaches normally.
+    own = f"{prefix}_own"
+    run(db[collection].insert_one({"id": own, "tenant_id": TENANT}))
+    attached = run(rc.attach(db, tenant_id=TENANT, case_id=case["id"], **{field: own}))
+    assert attached[field] == own
+
+
+# ------------------------------- review findings: planning and the queue link
+
+def test_a_terminal_case_cannot_be_given_a_fresh_plan(env):
+    """A closed case must not acquire a new strategy and a live approval request."""
+    db, _ = env
+    case = run(rc.open_case(db, missed_call_event()))
+    run(rc.set_state(db, tenant_id=TENANT, case_id=case["id"], state=rc.CLOSED,
+                     actor="operator"))
+    before = run(rs.list_strategies(db, TENANT))
+    with pytest.raises(rc.InvalidCaseTransition):
+        run(rs.compose_for_case(db, TENANT, case))
+    # Nothing was written: no strategy, and the case still points at no plan.
+    assert run(rs.list_strategies(db, TENANT)) == before
+    after = run(rc.get_case(db, TENANT, case["id"]))
+    assert after["state"] == rc.CLOSED
+    assert after["plan_reference"] is None
+
+
+def test_a_recompose_of_a_live_case_is_still_allowed(env):
+    """Only terminal cases are refused; replanning an open one remains normal."""
+    db, _ = env
+    case = run(rc.open_case(db, missed_call_event()))
+    run(rs.compose_for_case(db, TENANT, case))
+    second = run(rs.compose_for_case(db, TENANT, run(rc.get_case(db, TENANT, case["id"]))))
+    assert second["id"]
+
+
+def test_the_planner_is_told_which_currency_a_value_is_in(env):
+    """A bare number reaching a value threshold without its unit is a silent misread."""
+    db, _ = env
+    case = run(rc.open_case(db, missed_call_event(potential_value=40000, currency="GBP")))
+    candidate = rs.candidate_from_case(run(rc.get_case(db, TENANT, case["id"])))
+    assert candidate["evidence"]["value"] == 40000
+    assert candidate["evidence"]["currency"] == "GBP"
+
+
+def test_a_case_with_no_work_item_is_still_reached_by_the_sweep(env):
+    """The whole point of the slice: a missed call has no queue item to be found by."""
+    db, queue = env
+    case = run(rc.open_case(db, missed_call_event()))
+    summary = run(rs.compose_for_tenant(db, queue, TENANT))
+    assert summary["recovery_cases_examined"] >= 1
+    assert summary["strategies_composed"] >= 1
+    planned = run(rc.get_case(db, TENANT, case["id"]))
+    assert planned["plan_reference"], "a case-only source was never planned for"
+    assert planned["state"] in (rc.PLANNED, rc.AWAITING_APPROVAL)
+
+
+def test_the_sweep_does_not_plan_the_same_case_twice(env):
+    """A detection reached through its work item must not also be swept as a case."""
+    db, queue = env
+    run(db.opportunities.insert_one({
+        "id": "opp_sweep", "tenant_id": TENANT, "title": "Dormant deal",
+        "stage": "proposal", "value": 5000}))
+    run(second_chance.enqueue_detections(queue, [{
+        "tenant_id": TENANT, "type": second_chance.TYPE_STALLED_LEAD,
+        "record_id": "opp_sweep", "record_kind": "opportunity",
+        "title": "Dormant deal", "reason": "No activity for 45 days.", "value": 5000,
+    }], db=db))
+    summary = run(rs.compose_for_tenant(db, queue, TENANT))
+    assert summary["strategies_composed"] == 1, summary
