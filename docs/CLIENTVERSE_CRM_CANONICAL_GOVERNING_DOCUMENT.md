@@ -5,6 +5,7 @@
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
 **Repository:** `ebyron357/Clientverse-crm`
 **Baseline commit at issue:** `main@3f14347610e5ca6cd8521c74f4420d3b2c08a9e8` (PR #24 merged 2026-09-15T18:19Z)
+**Current `main` at this revision:** `main@3150530` (PR #26 squash-merged 2026-09-15T23:53Z)
 
 ---
 
@@ -123,7 +124,8 @@ The module registry is the **contract of record** for which surfaces exist and w
   - `CI=true yarn build` **passed**;
   - `yarn lint --max-warnings=0` **FAILED** — one `no-unused-vars` error in `frontend/src/pages/WorkspaceDetail.jsx`. See §3.3.
   - `scripts/proof_of_life.mjs` exit 0 (login, unauthenticated 401, full CRM lifecycle, close-won → workspace, persistence, cross-tenant 404).
-- Current work branch `claude/clientverse-scope-recovery-bj6u7w` — backend **290 passed, 4 skipped**, lint exit 0, build exit 0, `scripts/operations_smoke.mjs` **PASS** with zero failed checks. Evidence: `docs/evidence/operations-verification-20260915.json`.
+- `main@3150530` (head as of 2026-09-16) — PR #26 squash-merged at 2026-09-15T23:53Z, bringing the durable work queue, the Second Chance detectors, the Next Best Action service, the dual-gate pipeline, the `/operations` surface and the CI lint gate into `main`. Those capabilities move from `TESTED` to `MERGED`. **`MERGED` is not `DEPLOYED`**: this head has not been deployed or certified against production, and §3.2 still applies.
+- Current work branch `claude/clientverse-scope-recovery-bj6u7w`, restarted from `main@3150530` — backend **371 passed, 4 skipped**, lint exit 0, build exit 0, `scripts/operations_smoke.mjs` **PASS** with zero failed checks across 49 recorded steps. Evidence: `docs/evidence/operations-verification-20260916.json` (the 2026-09-15 file records the previous pass).
 
 ### 3.2 Production truth
 
@@ -149,7 +151,8 @@ The module registry is the **contract of record** for which surfaces exist and w
 | PR | Title | State | Disposition |
 |---|---|---|---|
 | #21 | expose non-secret `git_sha` on `/api/health` for deploy parity | closed, merged | Merged into `main` at `3706c7a`; production still does not expose SHA because production has not been redeployed to a head containing it. |
-| — | No CRM pull request is currently open. | | |
+| #26 | Durable work queue, Second Chance detection, Next Best Action service, and the dual security gate | closed, merged | Squash-merged into `main` at `3150530` on 2026-09-15. The capabilities it carries are `MERGED`; none is `DEPLOYED`. |
+| — | No CRM pull request is currently open. The M-07 / E-20 work sits on `claude/clientverse-scope-recovery-bj6u7w`, restarted from `main@3150530`. | | |
 | Workforce PR #9 | AI-WOS v2 canonical operating contract + implementation register | **open (draft)** | Governs the agent-workforce repository, not the CRM. Do not merge as part of CRM work. |
 
 ---
@@ -186,10 +189,10 @@ The module registry is the **contract of record** for which surfaces exist and w
 | C-19 | AI generation endpoint | BLOCKED — OWNER INPUT | `/api/ai/generate` requires `EMERGENT_LLM_KEY`; 2 tests skipped for its absence | RECOVERED (PRD, CI skips) |
 | C-20 | Railway production deployment + health check | DEPLOYED | LIVE VERIFIED at `ca30587` 2026-09-01; current `main` not re-certified | RECOVERED (Issue #10) |
 | C-21 | Shared surface states (loading/empty/error + retry) across Command Center, integrations, workspace activity, audit, MCP | MERGED | PR #24, `SurfaceState.jsx` | RECOVERED (PR #24) |
-| C-22 | Next Best Action | TESTED | Superseded by NBA-1 in §4.C — the client-side strip is removed and the surface now consumes the backend service. | RECOVERED (UX assessment P0 #3) |
-| C-23 | Frontend lint enforced in CI | TESTED | `.github/workflows/ci.yml` now runs `yarn lint --max-warnings=0` before the build; the pre-existing error on `main` is fixed. | This change set (§3.3) |
-| C-24 | `/operations` operator surface | TESTED | Work-queue queue depth and dead-letter visibility with acknowledge / resolve / admin replay, the recovery-detection trigger, the ranked recommendation queue, and the security-gate panel that reports scanner configuration honestly. Registered in `CLIENTVERSE_MODULES` as `available`. | This change set |
-| C-25 | Scheduled-job driver | TESTED | `.github/workflows/scheduled-jobs.yml` calls every cron endpoint on the documented cadences once two repository secrets exist, and exits cleanly while they do not. See O-03. | This change set |
+| C-22 | Next Best Action | MERGED | Superseded by NBA-1 in §4.C — the client-side strip is removed and the surface now consumes the backend service. | RECOVERED (UX assessment P0 #3) |
+| C-23 | Frontend lint enforced in CI | MERGED | `.github/workflows/ci.yml` now runs `yarn lint --max-warnings=0` before the build; the pre-existing error on `main` is fixed. | PR #26 (§3.3) |
+| C-24 | `/operations` operator surface | MERGED | Work-queue queue depth and dead-letter visibility with acknowledge / resolve / admin replay, the recovery-detection trigger, the ranked recommendation queue, and the security-gate panel that reports scanner configuration honestly. Registered in `CLIENTVERSE_MODULES` as `available`. The Recovery strategies and Approvals panels added on top of it are `TESTED`, not yet merged. | PR #26 |
+| C-25 | Scheduled-job driver | MERGED | `.github/workflows/scheduled-jobs.yml` calls every cron endpoint on the documented cadences once two repository secrets exist, and exits cleanly while they do not. See O-03. | PR #26 |
 
 ### 4.B Approved module contracts — registered, not yet built
 
@@ -217,16 +220,16 @@ These were declared in `frontend/src/platform/modules.js` as `contract_pending` 
 |---|---|---|---|---|
 | E-01 | **Second Chance** — missed-opportunity / dormant-and-lost revenue recovery (the ten-step north-star workflow end to end) | APPROVED — NOT STARTED | RECOVERED — ClickUp `CONTROL — W2` §11 | The umbrella capability, still not started **as a whole**: steps 1–4 exist (detection E-03/E-04, strategy composition E-20), steps 5–10 do not. E-02…E-04 are its detection lanes; E-05…E-15 are its execution and intelligence services. |
 | E-02 | Missed-call recovery | APPROVED — NOT STARTED | DIRECTIVE 2026-09-15 (corroborated by the public product promise on `clientverse.io`: "cannot afford a missed call") | Hard-blocked on E-06 (call activity capture). No prior CRM record specifies the recovery behavior; contract must be written before build. |
-| E-03 | Stalled-lead recovery | TESTED | RECOVERED — ClickUp §11 ("dormant or lost opportunity"); UX assessment ("opportunity has no future activity") | `backend/second_chance.py`. Deterministic rule: an open opportunity with no qualifying activity (event, stage change, or update) for `SECOND_CHANCE_STALLED_LEAD_DAYS` (default 14). Emits an explainable reason, an `opportunity:<id>` source reference, and a deduplicated durable work item. Closed stages are out of scope. No outbound communication. 13 tests. |
-| E-04 | Missed-follow-up recovery | TESTED | RECOVERED — C-06 commitment-risk evaluation exists and is the seed signal | `backend/second_chance.py`. An unresolved commitment or delivery task past its due date plus a configurable grace window becomes a recovery candidate with overdue days, owner and source reference. No outbound communication. |
-| E-05 | Durable autonomous work queues | TESTED | DIRECTIVE 2026-09-15 | `backend/work_queue.py`. MongoDB-backed, tenant-scoped, explicit state machine (`queued`/`claimed`/`processing`/`completed`/`retry_scheduled`/`failed`/`dead_letter`) with a rejected-transition matrix, atomic single-winner claim, leases with crash recovery, exponential capped backoff, dead-letter, database-enforced idempotency key, dedupe key, acknowledgement/resolution, admin replay, operator stats, bounded concurrency and round-robin per-tenant fairness. Worker tick at `POST /api/cron/work-queue`. 20 engine tests + API tests. |
+| E-03 | Stalled-lead recovery | MERGED | RECOVERED — ClickUp §11 ("dormant or lost opportunity"); UX assessment ("opportunity has no future activity") | `backend/second_chance.py`. Deterministic rule: an open opportunity with no qualifying activity (event, stage change, or update) for `SECOND_CHANCE_STALLED_LEAD_DAYS` (default 14). Emits an explainable reason, an `opportunity:<id>` source reference, and a deduplicated durable work item. Closed stages are out of scope. No outbound communication. 13 tests. |
+| E-04 | Missed-follow-up recovery | MERGED | RECOVERED — C-06 commitment-risk evaluation exists and is the seed signal | `backend/second_chance.py`. An unresolved commitment or delivery task past its due date plus a configurable grace window becomes a recovery candidate with overdue days, owner and source reference. No outbound communication. |
+| E-05 | Durable autonomous work queues | MERGED | DIRECTIVE 2026-09-15 | `backend/work_queue.py`. MongoDB-backed, tenant-scoped, explicit state machine (`queued`/`claimed`/`processing`/`completed`/`retry_scheduled`/`failed`/`dead_letter`) with a rejected-transition matrix, atomic single-winner claim, leases with crash recovery, exponential capped backoff, dead-letter, database-enforced idempotency key, dedupe key, acknowledgement/resolution, admin replay, operator stats, bounded concurrency and round-robin per-tenant fairness. Worker tick at `POST /api/cron/work-queue`. 20 engine tests + API tests. |
 | E-06 | Scheduled agent follow-up | APPROVED — NOT STARTED | RECOVERED — ClickUp §11 step 9 ("continue permitted follow-up") | E-05 and M-07 are now delivered, so this is unblocked technically. It still requires an authorised outbound channel (M-01 or M-03) before a follow-up can leave the CRM. |
-| E-07 (NBA-1) | Next Best Action / agent task routing (backend service + aggregate queue) | TESTED | RECOVERED — UX assessment P0 #3 | `backend/next_best_action.py`. Tenant-scoped records from six deterministic rules (commitments, approvals, overdue tasks, Second Chance work items, degraded integrations, client health), each with reason, cited `source_refs`, evidence and a fixed priority band. Lifecycle `new`/`accepted`/`dismissed`/`completed`/`snoozed` with outcome and note; generation refreshes explanation without trampling feedback and retires cleared conditions. No fabricated confidence score. Surfaced in Client 360, the Command Center and `/operations`. 14 service tests + API tests. |
+| E-07 (NBA-1) | Next Best Action / agent task routing (backend service + aggregate queue) | MERGED | RECOVERED — UX assessment P0 #3 | `backend/next_best_action.py`. Tenant-scoped records from six deterministic rules (commitments, approvals, overdue tasks, Second Chance work items, degraded integrations, client health), each with reason, cited `source_refs`, evidence and a fixed priority band. Lifecycle `new`/`accepted`/`dismissed`/`completed`/`snoozed` with outcome and note; generation refreshes explanation without trampling feedback and retires cleared conditions. No fabricated confidence score. Surfaced in Client 360, the Command Center and `/operations`. 14 service tests + API tests. |
 | E-08 | Phone execution / phone agent capability | APPROVED — NOT STARTED | DIRECTIVE 2026-09-15 (module M-04 pre-registers the surface) | Telephony provider is an unmade owner decision. Consent, recording, and jurisdiction policy must precede any build. |
 | E-09 | Omnichannel conversations | APPROVED — NOT STARTED | RECOVERED — module registry M-01/M-02/M-03; ClickUp §10 "communications surface" | Unified `Conversation` model is the prerequisite for every channel module. |
 | E-10 | Human handoff | APPROVED — NOT STARTED | RECOVERED — ClickUp §10; Command Brief (approvals/undo) | The approval half is delivered under M-07 and reuses C-09's `approvals` collection rather than introducing a parallel gate. The conversation-level handoff (assignment, agent/human boundary) still requires M-02. |
 | E-11 | Agent workforce roles surfaced in CRM | APPROVED — NOT STARTED | RECOVERED — ClickUp §10 "agent workforce/activity surface"; `Clientverse-AI-AGENT-Workforce` implements nine roles (operations, sales, marketing, support, engineering, research, browser, project_management, communications) | The workforce runtime is a **separate repository and separate lifecycle**. The CRM consumes it across a contract; it is not merged into the CRM. |
-| E-12 | Security scanning before external skills/MCPs are trusted (dual NVIDIA + Cisco gate) | TESTED (pipeline) / BLOCKED — OWNER INPUT (scanners) | DIRECTIVE 2026-09-15; architectural need corroborated by the AI Project Governance Blueprint v2 "third-party intake/security gate" (Slack, 2026-09-13) | `backend/security_gate.py`. Intake registry plus Gate A (16 supply-chain checks) and Gate B (14 capability/execution checks), the full state machine (`DISCOVERED`/`UNDER_REVIEW`/`REJECTED`/`QUARANTINED`/`APPROVED_LIMITED`/`APPROVED`/`REVOKED`), decisions bound to an exact source and version with expiry, and enforcement on `POST /api/mcp/invoke` for any tool marked external. **Approval is impossible while a required scanner is unconfigured — an unrun scanner is never treated as a pass** (owner blocker O-13/O-14). Provenance conflict remains as recorded in §7.2. 24 tests. |
+| E-12 | Security scanning before external skills/MCPs are trusted (dual NVIDIA + Cisco gate) | MERGED (pipeline) / BLOCKED — OWNER INPUT (scanners) | DIRECTIVE 2026-09-15; architectural need corroborated by the AI Project Governance Blueprint v2 "third-party intake/security gate" (Slack, 2026-09-13) | `backend/security_gate.py`. Intake registry plus Gate A (16 supply-chain checks) and Gate B (14 capability/execution checks), the full state machine (`DISCOVERED`/`UNDER_REVIEW`/`REJECTED`/`QUARANTINED`/`APPROVED_LIMITED`/`APPROVED`/`REVOKED`), decisions bound to an exact source and version with expiry, and enforcement on `POST /api/mcp/invoke` for any tool marked external. **Approval is impossible while a required scanner is unconfigured — an unrun scanner is never treated as a pass** (owner blocker O-13/O-14). Provenance conflict remains as recorded in §7.2. 24 tests. |
 | E-13 | OSINT / intelligence enrichment | APPROVED — NOT STARTED | DIRECTIVE 2026-09-15 (ClickUp §10 approves a "research/intelligence surface" generically) | Data-protection and lawful-basis review required before any build. |
 | E-14 | SEO / growth intelligence | APPROVED — NOT STARTED | RECOVERED — ClickUp §10 "contextual growth/video/SEO actions **where approved**" | The ClickUp clause is conditional. Treat the 2026-09-15 directive as the approval that satisfies "where approved". |
 | E-15 | Video-agent capability | APPROVED — NOT STARTED | RECOVERED — ClickUp §10 (same conditional clause); ClickUp §11 step 7 ("generate personalized media/content when useful") | Serves north-star step 7. |
@@ -415,13 +418,13 @@ Carried forward from the September 12 principles recorded in ClickUp `CONTROL �
 3. Expose the runtime SHA on `/api/health` in production (code already merged at `3706c7a`). → §3.2
 
 **Wave 1 — Foundations**
-4. ~~Durable work-queue service~~ — **DONE** (TESTED, awaiting merge + deploy). → §8 #3
+4. ~~Durable work-queue service~~ — **DONE** (MERGED at `main@3150530`, awaiting deploy). → §8 #3
 5. Scheduler contract — **partially done**; misfire detection outstanding. → §8 #4
 6. Approval queue module surface. → §8 #6
-7. ~~Recommendation service v1 + Command Center aggregate NBA queue~~ — **DONE** (TESTED). → §8 #5
+7. ~~Recommendation service v1 + Command Center aggregate NBA queue~~ — **DONE** (MERGED). → §8 #5
 
 **Wave 2 — Second Chance, lowest-dependency lanes first**
-8. ~~Recovery-candidate detector for stalled leads (E-03) and missed follow-ups (E-04)~~ — **DONE** (TESTED). → §8 #7
+8. ~~Recovery-candidate detector for stalled leads (E-03) and missed follow-ups (E-04)~~ — **DONE** (MERGED). → §8 #7
 9. Recovery strategy composer. → §8 #8
 10. Recovery campaign runner with mandatory approval gate. → §8 #9
 11. Attribution ledger (E-01 step 10). → §8 #11
@@ -433,8 +436,8 @@ Carried forward from the September 12 principles recorded in ClickUp `CONTROL �
 15. Reply/meeting/decision/task return path (closes the Second Chance loop). → §8 #10
 
 **Wave 4 — Governance gate (mandatory before any external component is ingested)**
-16. ~~External-component intake registry + §6 dual-gate pipeline~~ — **DONE** (TESTED); scanner wiring is owner-blocked (O-13, O-14). → §8 #19
-17. ~~MCP invoke requires a passing gate record for external tools~~ — **DONE** (TESTED). → §8 #20
+16. ~~External-component intake registry + §6 dual-gate pipeline~~ — **DONE** (MERGED); scanner wiring is owner-blocked (O-13, O-14). → §8 #19
+17. ~~MCP invoke requires a passing gate record for external tools~~ — **DONE** (MERGED). → §8 #20
 
 **Wave 5 — Agent workforce and orchestration**
 18. CRM ↔ workforce contract. → §8 #21
@@ -506,20 +509,22 @@ Secrets are never to be pasted into GitHub, ClickUp, Slack, chat, logs, or evide
 
 ## 11. What can start immediately
 
-Delivered in the 2026-09-15 execution pass (all `TESTED`, pending merge and deploy): the
-durable work queue, the stalled-lead and missed-follow-up detectors, the Next Best Action
-backend service with its aggregate queues, the dual-gate security pipeline with MCP
-enforcement, the CI lint gate, and the `/operations` operator surface.
+Delivered in the 2026-09-15 execution pass and **merged into `main@3150530`** via PR #26:
+the durable work queue, the stalled-lead and missed-follow-up detectors, the Next Best
+Action backend service with its aggregate queues, the dual-gate security pipeline with MCP
+enforcement, the CI lint gate, and the `/operations` operator surface. Merged, **not
+deployed** — see §3.2.
 
-Delivered in the 2026-09-16 pass (also `TESTED`, pending merge and deploy): the approval
-queue module surface (M-07) and the recovery strategy composer (E-20), with their operator
-panels on `/operations` and two further cron entry points.
+Delivered in the 2026-09-16 pass (`TESTED`, pending merge and deploy): the approval queue
+module surface (M-07) and the recovery strategy composer (E-20), with their operator panels
+on `/operations` and two further cron entry points.
 
 Remaining work that needs no owner input and no unresolved source:
 
-1. **Merge this change set and certify the resulting head** — exact-head CI, then deploy
+1. **Merge the M-07 / E-20 change set, then certify `main`** — exact-head CI, then deploy
    and run `scripts/proof_of_life.mjs` and `scripts/operations_smoke.mjs` against
-   production from an environment that can reach Railway (O-15).
+   production from an environment that can reach Railway (O-15). Nothing merged so far has
+   been certified against production.
 2. **`Conversation` / `CommunicationMessage` models (§8 #1, #2)** — schema and contract work
    needs no provider credential. This is now the largest single blocker: it gates M-01, M-02,
    M-03, E-09, E-10 and every outbound step the composer currently marks blocked.
@@ -571,7 +576,7 @@ ClientVerse CRM is closed only when all of the following hold:
 
 | Version | Date | Change |
 |---|---|---|
-| 1.3 | 2026-09-16 | Wave 2 execution pass. Added the approval queue module surface (M-07, `backend/approval_queue.py`) built on C-09's own `approvals` collection rather than beside it: bound actions, single-use consumption, expiry on read as well as by sweep, database-enforced deduplication, requester provenance, risk tiers, optional separation of duties, and a decision history. `POST /api/approvals`, `PATCH /api/approvals/{id}` and MCP level-2 writes were re-pointed at it so one state machine governs every approval, and both decision routes now share one follow-through. Added the recovery strategy composer (E-20, `backend/recovery_strategy.py`): authorised CRM context only, an ordered playbook of named lanes, facts cited to their source record, per-step channel authority derived from the tenant's own integration records, and an approval request per proposal. Added `/api/cron/recovery-strategies` and `/api/cron/approval-expiry` and wired both into the scheduled-jobs workflow. Added the Recovery strategies and Approvals panels to `/operations` and moved the `approvals` module out of `contract_pending`. Restated E-01: steps 1–4 of the north star exist, steps 5–10 do not, so the umbrella capability stays `APPROVED — NOT STARTED`. 71 new tests (backend suite 371 passed, 4 skipped). |
+| 1.3 | 2026-09-16 | Wave 2 execution pass. Added the approval queue module surface (M-07, `backend/approval_queue.py`) built on C-09's own `approvals` collection rather than beside it: bound actions, single-use consumption, expiry on read as well as by sweep, database-enforced deduplication, requester provenance, risk tiers, optional separation of duties, and a decision history. `POST /api/approvals`, `PATCH /api/approvals/{id}` and MCP level-2 writes were re-pointed at it so one state machine governs every approval, and both decision routes now share one follow-through. Added the recovery strategy composer (E-20, `backend/recovery_strategy.py`): authorised CRM context only, an ordered playbook of named lanes, facts cited to their source record, per-step channel authority derived from the tenant's own integration records, and an approval request per proposal. Added `/api/cron/recovery-strategies` and `/api/cron/approval-expiry` and wired both into the scheduled-jobs workflow. Added the Recovery strategies and Approvals panels to `/operations` and moved the `approvals` module out of `contract_pending`. Restated E-01: steps 1–4 of the north star exist, steps 5–10 do not, so the umbrella capability stays `APPROVED — NOT STARTED`. 71 new tests (backend suite 371 passed, 4 skipped). Reconciled §3 and §4 with the squash-merge of PR #26 into `main@3150530`: the Wave-1 capabilities (E-03, E-04, E-05, E-07, the E-12 pipeline, C-23) move from `TESTED` to `MERGED`, which is still not `DEPLOYED`. |
 | 1.2 | 2026-09-15 | Review-remediation pass on PR #26. Fixed concurrency defects in the durable queue (lease ownership on terminal transitions, atomic recovery, in-flight lease renewal, database-enforced deduplication, starvation-free tenant rotation, operator/worker resolve race); made cron deliveries releasable so a crashed job is retried rather than lost, and gave each tick a distinct worker identity; bound security-gate identity and enforcement to the content digest and made a re-scan re-open review; stopped a failed Next Best Action rule from retiring valid recommendations, moved the health rule onto the canonical health snapshot, and made generation upsert atomically; removed an N+1 scan from detection and indexed the lookup it performs. Rewrote the operations smoke to run in disposable tenants with asserted seeds — the previous evidence passed while two seeds were rejected with HTTP 422, so it proved less than claimed. |
 | 1.1 | 2026-09-15 | Execution pass. Reduced O-03 from "choose and wire a scheduler" to two repository secrets by adding `.github/workflows/scheduled-jobs.yml`. Recorded verified evidence for `main@3f14347` and the work branch. Moved E-03, E-04, E-05, E-07/NBA-1 and the E-12 pipeline to `TESTED`; added C-23 (CI lint gate). Corrected two further completion claims: CI never ran the documented lint gate, and Next Best Action was previously described as delivered when only a client-side strip existed. Added owner blockers O-14 (scanners unconfigured) and O-15 (production unreachable from the agent environment), and expanded O-03 with the three new cron entry points. |
 | 1.0 | 2026-09-15 | Initial canonical replacement. Merged `memory/PRD.md`, `docs/CLIENTVERSE_PRODUCT_COMPLETION_BRIEF.md`, `docs/UX_SYSTEM_IMPROVEMENTS_ASSESSMENT.md`, `docs/REMAINING_WORK.md`, `todo.md`, `AGENTS.md` closeout state, ClickUp `CONTROL — W2`, and Slack canvas `F0BPNUF7VK3` into one governing document. Added the recovered expansion capability register (§4.C), source-repository mapping (§5), the mandatory dual-gate security architecture (§6), unresolved source references (§7), implementation order (§9), dependencies and owner blockers (§10). Corrected six completion claims that evidence does not support (§3.3). |
