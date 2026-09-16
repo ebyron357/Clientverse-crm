@@ -45,18 +45,29 @@ def db():
 
 
 class RecordingProvider:
-    """A stand-in for the email adapter that does not exist yet."""
+    """A stand-in for the email adapter that does not exist yet.
+
+    `fail="rejected"` proves the provider did not accept the message; `fail="unknown"`
+    simulates a response lost after acceptance — the case that must never be retried
+    blindly.
+    """
 
     channel = cv.CHANNEL_EMAIL
     name = "recording-test-provider"
 
-    def __init__(self, fail=False):
+    def __init__(self, fail=None):
         self.sent = []
+        self.keys = []
         self.fail = fail
 
-    async def send(self, *, message, conversation):
-        if self.fail:
-            raise RuntimeError("provider rejected the message")
+    async def send(self, *, message, conversation, idempotency_key):
+        self.keys.append(idempotency_key)
+        if self.fail == "rejected":
+            raise cv.DeliveryRejected("provider refused: invalid recipient")
+        if self.fail == "unknown":
+            # Acceptance happened; the response was lost on the way back.
+            self.sent.append(message["id"])
+            raise TimeoutError("connection dropped after dispatch")
         self.sent.append(message["id"])
         return cv.DeliveryResult(provider_message_id=f"prov_{len(self.sent)}",
                                  detail={"accepted": True})
@@ -334,17 +345,125 @@ def test_a_fully_satisfied_message_is_dispatched_once(db, registry):
     assert conversation_now["last_direction"] == cv.OUTBOUND
 
 
-def test_a_provider_failure_becomes_message_state_not_an_exception(db, registry):
+def test_a_proven_rejection_becomes_a_retryable_failure(db, registry):
     conversation = make_conversation(db)
     authorize_email(db)
     grant_consent(db, conversation["id"])
-    registry.register(RecordingProvider(fail=True))
+    registry.register(RecordingProvider(fail="rejected"))
     message = approved_message(db, conversation["id"])
 
     failed = run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
                                      actor="worker-1", registry=registry))
     assert failed["status"] == cv.FAILED
-    assert "provider rejected" in failed["error"]
+    assert "provider refused" in failed["error"]
+    # Proven not sent, so re-requesting approval for another attempt is legitimate.
+    assert cv.PENDING_APPROVAL in cv.MESSAGE_TRANSITIONS[cv.FAILED]
+
+
+def test_a_lost_response_is_an_unknown_outcome_not_a_failure(db, registry):
+    """A timeout after the provider accepted looks identical to a rejection from here.
+    Recording it as `failed` would invite a retry that sends the client a second copy."""
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    provider = RecordingProvider(fail="unknown")
+    registry.register(provider)
+    message = approved_message(db, conversation["id"])
+
+    result = run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                                     actor="worker-1", registry=registry))
+    assert result["status"] == cv.OUTCOME_UNKNOWN
+    assert provider.sent == [message["id"]], "the provider really did accept it"
+    # There is no path back to draft or approval, so it cannot be re-approved and resent.
+    assert cv.MESSAGE_TRANSITIONS[cv.OUTCOME_UNKNOWN] == {cv.SENT, cv.DELIVERED, cv.FAILED}
+
+
+def test_an_unknown_outcome_cannot_be_resent(db, registry):
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    provider = RecordingProvider(fail="unknown")
+    registry.register(provider)
+    message = approved_message(db, conversation["id"])
+    run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                            actor="worker-1", registry=registry))
+
+    with pytest.raises(cv.DeliveryRefused) as exc:
+        run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                                actor="worker-2", registry=registry))
+    assert exc.value.reason == cv.REFUSAL_NOT_DISPATCHABLE
+    assert provider.sent == [message["id"]], "no second external send"
+
+
+def test_reconciliation_resolves_an_unknown_outcome(db, registry):
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    registry.register(RecordingProvider(fail="unknown"))
+    message = approved_message(db, conversation["id"])
+    run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                            actor="worker-1", registry=registry))
+
+    # The adapter asks the provider and finds it did accept the message.
+    resolved = run(cv.reconcile_unknown(db, tenant_id=TENANT, message_id=message["id"],
+                                        actor="adapter", found=True,
+                                        provider_message_id="prov_real"))
+    assert resolved["status"] == cv.SENT
+    assert resolved["provider_message_id"] == "prov_real"
+
+
+def test_reconciliation_needs_the_provider_id_when_it_claims_the_message_was_sent(db, registry):
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    registry.register(RecordingProvider(fail="unknown"))
+    message = approved_message(db, conversation["id"])
+    run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                            actor="worker-1", registry=registry))
+    with pytest.raises(cv.ConversationError):
+        run(cv.reconcile_unknown(db, tenant_id=TENANT, message_id=message["id"],
+                                 actor="adapter", found=True))
+
+
+def test_reconciliation_that_proves_no_send_makes_a_retry_safe(db, registry):
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    registry.register(RecordingProvider(fail="unknown"))
+    message = approved_message(db, conversation["id"])
+    run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                            actor="worker-1", registry=registry))
+
+    resolved = run(cv.reconcile_unknown(db, tenant_id=TENANT, message_id=message["id"],
+                                        actor="adapter", found=False))
+    assert resolved["status"] == cv.FAILED
+    assert "never accepted" in resolved["error"]
+
+
+def test_only_an_unknown_outcome_can_be_reconciled(db, registry):
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    registry.register(RecordingProvider())
+    message = approved_message(db, conversation["id"])
+    run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                            actor="worker-1", registry=registry))
+    with pytest.raises(cv.InvalidMessageTransition):
+        run(cv.reconcile_unknown(db, tenant_id=TENANT, message_id=message["id"],
+                                 actor="adapter", found=False))
+
+
+def test_the_provider_receives_an_idempotency_key(db, registry):
+    """The message's own key protects local creation; the provider needs its own."""
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    provider = RecordingProvider()
+    registry.register(provider)
+    message = approved_message(db, conversation["id"])
+    run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                            actor="worker-1", registry=registry))
+    assert provider.keys == [f"{message['id']}:1"]
 
 
 def test_an_internal_message_needs_no_provider_or_channel(db, registry):

@@ -1,17 +1,17 @@
 {
- "captured_at": "2026-09-16T00:44:15.026428+00:00",
- "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w, working tree after the PR #27 review-remediation pass. Parent commit: 0d2059002ab04042811b2e347f55ccbc55136f42",
+ "captured_at": "2026-09-16T01:32:16.483016+00:00",
+ "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w, working tree after the delivery outcome-uncertainty pass. Parent commit: 78a31e987f0d5376422439f2db647332c38efd5f",
  "scope": "Artifact evidence for the code under test only. It proves a conversation starts with no consent, a message can be drafted without a channel, an approved message is still refused with 'channel_not_authorized', the approval decision promotes the message, consent cannot be recorded as granted without a basis, and no delivery provider is registered. It does NOT prove production behaviour, and nothing here sent anything.",
  "environment": {
   "kind": "local verification environment",
   "mongodb": "7.0.34",
   "note": "Railway production remains unreachable from this session: the egress policy rejects clientverse-crm-production-production.up.railway.app and backboard.railway.com with HTTP 403 at CONNECT (owner blocker O-15). Deployed-runtime gates stay BLOCKED \u2014 TECHNICAL."
  },
- "backend_suite": "425 passed, 4 skipped, 4 warnings on a freshly created database, against a server restarted on the code under test (371 before the conversations pass, 300 before this change set).",
+ "backend_suite": "432 passed, 4 skipped, 4 warnings on a freshly created database, against a server restarted on the code under test (425 before this pass).",
  "frontend_lint": "yarn lint --max-warnings=0 \u2014 exit 0",
  "frontend_build": "yarn build \u2014 exit 0, compiled successfully",
  "operations_smoke": {
-  "generated_at": "2026-09-16T00:43:39.163Z",
+  "generated_at": "2026-09-16T01:30:55.847Z",
   "steps": {
    "admin_login_http": 200,
    "primary_tenant_register_http": 200,
@@ -23,7 +23,7 @@
    "seed_commitment_http": 200,
    "detection_http": 200,
    "detection_summary": {
-    "tenant_id": "ten_3e350a6c4b98",
+    "tenant_id": "ten_999716621c2c",
     "stalled_leads_detected": 0,
     "missed_followups_detected": 1,
     "work_items_created": 1,
@@ -54,7 +54,7 @@
    },
    "nba_generate_http": 200,
    "nba_generate_summary": {
-    "tenant_id": "ten_3e350a6c4b98",
+    "tenant_id": "ten_999716621c2c",
     "created": 2,
     "refreshed": 0,
     "retired": 0,
@@ -85,7 +85,7 @@
    },
    "compose_http": 200,
    "compose_summary": {
-    "tenant_id": "ten_3e350a6c4b98",
+    "tenant_id": "ten_999716621c2c",
     "candidates_examined": 1,
     "strategies_composed": 1,
     "strategies_blocked": 1,
@@ -102,13 +102,13 @@
    "approval_decision_http": 200,
    "approval_second_decision_http": 409,
    "approval_summary": {
-    "tenant_id": "ten_3e350a6c4b98",
+    "tenant_id": "ten_999716621c2c",
     "awaiting_decision": 1,
     "awaiting_decision_blocked": 1,
     "approved_awaiting_execution": 0,
     "by_status": {
-     "approved": 1,
-     "requested": 1
+     "requested": 1,
+     "approved": 1
     },
     "by_risk": {
      "medium": 1
@@ -190,12 +190,15 @@
    "cron_work_queue_http": 200,
    "cron_duplicate_suppressed": true,
    "system_job_queued": true,
-   "worker_ticks_used": 7,
+   "work_queue_open_for_this_tenant_at_tick_start": 2,
+   "worker_tick_budget": 30,
+   "worker_ticks_used": 21,
    "tracked_system_job_state": "completed"
   },
   "failures": [],
   "cleanup_note": "Every record this run created lives in disposable tenants registered for the run, so nothing is written into an operator's tenant. The API exposes no delete endpoints, so those tenants and their records remain until an operator removes them; they are inert and isolated by the same tenancy boundary this run asserts.",
   "secret_redaction": "This evidence intentionally omits account identities, passwords, session tokens, database credentials, provider values, and internal record identifiers.",
   "result": "PASS"
- }
+ },
+ "note_on_a_non_reproducing_failure": "One run of the suite immediately after a server restart reported a single failure in tests/test_client_value.py::test_client_value_workflows_are_safe_and_tenant_scoped, a module this change set does not touch. It did not reproduce on a re-run (432 passed) and the hypothesis that appointment slot collisions caused it was checked and ruled out: all 18 appointments in the development database have distinct start times. Recorded rather than omitted, because evidence that reports only the passing run is the kind of false green this harness exists to prevent."
 }

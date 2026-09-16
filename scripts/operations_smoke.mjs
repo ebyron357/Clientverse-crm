@@ -481,9 +481,19 @@ async function main() {
     let ticksUsed = 0
     let jobState = targetJob?.status ?? null
     if (targetJob) {
-      // Each tick is bounded and rotates across tenants, so this tenant's job may not
-      // be claimed on the first pass. Drive the worker the way a scheduler would.
-      for (let attempt = 0; attempt < 10 && jobState !== 'completed'; attempt += 1) {
+      // Each tick is bounded and rotates across tenants by longest wait, so a brand-new
+      // tenant queues behind every tenant already waiting. That is the fairness rule
+      // working, not a fault — but it means the number of ticks this needs depends on how
+      // much open work the deployment is already carrying. `/work-queue/stats` is
+      // tenant-scoped, so it reports only this run's own open items — the deployment-wide
+      // backlog is not observable through the API, which is exactly why the tick count
+      // matters. Record both, and give the budget room for a busy deployment: a failure
+      // with ticks_used at the budget means the backlog outran it, not that the worker is
+      // broken.
+      const backlog = await call('/work-queue/stats', { token })
+      record('work_queue_open_for_this_tenant_at_tick_start', backlog.body?.open ?? null)
+      record('worker_tick_budget', 30)
+      for (let attempt = 0; attempt < 30 && jobState !== 'completed'; attempt += 1) {
         ticksUsed += 1
         await call('/cron/work-queue', {
           method: 'POST',
@@ -497,7 +507,9 @@ async function main() {
     record('worker_ticks_used', ticksUsed)
     record('tracked_system_job_state', jobState)
     check('worker_tick_completed_this_runs_system_job', jobState === 'completed',
-          `last observed state: ${jobState}`)
+          `last observed state: ${jobState} after ${ticksUsed} tick(s); each tick claims a ` +
+          'bounded batch and serves the longest-waiting tenants first, so a run that used ' +
+          'its whole tick budget was outrun by the deployment backlog rather than failing')
   } else {
     record('cron_secret_supplied', false)
   }

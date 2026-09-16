@@ -26,6 +26,13 @@ outbound attempt refuses, and the reason says which precondition failed.
 Inbound and receipt paths exist too, so a provider adapter added later has somewhere to
 deliver into rather than inventing its own storage.
 
+One guarantee is deliberately *not* claimed: "the approval was consumed once" is not the
+same statement as "the external communication happened once". A provider call that times
+out after acceptance is indistinguishable here from one that was rejected, so the two are
+separate states — `failed` for a rejection the provider proved, `outcome_unknown` for
+everything else — and only the first is retryable. An unknown outcome is resolved by
+reconciling against the provider, never by sending again.
+
 Not in scope here: `crm_communications`, the read-only Gmail sync mirror. Folding it into
 this model is follow-on work and is recorded as such in the canonical document.
 """
@@ -86,10 +93,16 @@ SENDING = "sending"
 SENT = "sent"
 DELIVERED = "delivered"
 FAILED = "failed"
+# The provider may or may not have accepted the message — a timeout or a dropped
+# connection after dispatch looks exactly like a rejection from here, and treating the two
+# alike is how a retry turns into a duplicate message to a client. `failed` means proven
+# not sent; `outcome_unknown` means nobody knows yet, and it is deliberately a dead end
+# until an adapter reconciles it against the provider.
+OUTCOME_UNKNOWN = "outcome_unknown"
 BLOCKED = "blocked"
 RECEIVED = "received"
 MESSAGE_STATES = (DRAFT, PENDING_APPROVAL, APPROVED, SENDING, SENT, DELIVERED, FAILED,
-                  BLOCKED, RECEIVED)
+                  OUTCOME_UNKNOWN, BLOCKED, RECEIVED)
 
 MESSAGE_TRANSITIONS = {
     DRAFT: {PENDING_APPROVAL, BLOCKED},
@@ -97,10 +110,15 @@ MESSAGE_TRANSITIONS = {
     # an approval authorises the text that was approved, not a later rewrite of it.
     PENDING_APPROVAL: {APPROVED, BLOCKED, DRAFT},
     APPROVED: {SENDING, BLOCKED, PENDING_APPROVAL},
-    SENDING: {SENT, FAILED, BLOCKED},
+    SENDING: {SENT, FAILED, OUTCOME_UNKNOWN, BLOCKED},
     SENT: {DELIVERED, FAILED},
     DELIVERED: set(),
     FAILED: {PENDING_APPROVAL, DRAFT},
+    # No path back to draft or approval. A message whose outcome is unknown can only be
+    # resolved by reconciling it with the provider: to `sent` if the provider has it, to
+    # `failed` if it proves it does not. Re-approving and resending from here is exactly
+    # the duplicate this state exists to prevent.
+    OUTCOME_UNKNOWN: {SENT, DELIVERED, FAILED},
     BLOCKED: {DRAFT, PENDING_APPROVAL},
     RECEIVED: set(),
 }
@@ -138,6 +156,17 @@ class DeliveryRefused(ConversationError):
         super().__init__(f"{reason}: {detail}")
         self.reason = reason
         self.detail = detail
+
+
+class DeliveryRejected(ConversationError):
+    """Raised by a provider that can prove it did not accept the message.
+
+    A provider raises this only for a definite rejection it observed — a validation error,
+    an authentication failure, a 4xx the provider returned. Anything else (a timeout, a
+    dropped connection, an ambiguous 5xx) must **not** use it: the provider may already
+    have accepted the message, and the caller has to treat that as an unknown outcome
+    rather than a failure it can retry.
+    """
 
 
 def _now() -> datetime:
@@ -199,14 +228,33 @@ class DeliveryResult:
         self.detail = detail or {}
 
 
+def dispatch_key(message: dict) -> str:
+    """The idempotency key an adapter must hand to its provider.
+
+    It is derived from the message id and its dispatch attempt, so a provider that
+    supports idempotent sends collapses a retried dispatch of the same message rather than
+    delivering it twice. The message's own `idempotency_key` protects local creation only;
+    it says nothing about the provider's side effect.
+    """
+    attempts = len([h for h in (message.get("history") or []) if h.get("action") == SENDING])
+    return f"{message['id']}:{max(1, attempts)}"
+
+
 class ChannelProvider(Protocol):
     """What an email/SMS adapter must implement. Nothing in this repository implements it
-    yet, which is why every outbound attempt refuses with `no_provider_registered`."""
+    yet, which is why every outbound attempt refuses with `no_provider_registered`.
+
+    `send` receives an `idempotency_key` and must pass it to the provider wherever the
+    provider supports one. It may raise `DeliveryRejected` **only** when it can prove the
+    provider did not accept the message; every other exception is treated as an unknown
+    outcome, which is the safe reading.
+    """
 
     channel: str
     name: str
 
-    async def send(self, *, message: dict, conversation: dict) -> DeliveryResult:
+    async def send(self, *, message: dict, conversation: dict,
+                   idempotency_key: str) -> DeliveryResult:
         ...
 
 
@@ -709,12 +757,23 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
         return delivered
 
     try:
-        result = await provider.send(message=sending, conversation=conversation)
-    except Exception as exc:  # a provider failure is the message's state, not an exception
-        failed = await _transition(db, tenant_id, sending, FAILED, actor,
-                                   extra={"error": str(exc)[:500]},
-                                   detail={"reason": REFUSAL_PROVIDER_ERROR})
-        return failed
+        result = await provider.send(message=sending, conversation=conversation,
+                                     idempotency_key=dispatch_key(sending))
+    except DeliveryRejected as exc:
+        # The provider proved it did not accept the message, so this is an ordinary
+        # failure and a fresh attempt is safe.
+        return await _transition(db, tenant_id, sending, FAILED, actor,
+                                 extra={"error": str(exc)[:500]},
+                                 detail={"reason": REFUSAL_PROVIDER_ERROR, "proven": True})
+    except Exception as exc:
+        # Anything else is ambiguous. A timeout or a dropped connection after the provider
+        # accepted looks identical from here, so recording this as `failed` would invite a
+        # retry that sends the client a second copy. `approval consumed once` is not the
+        # same guarantee as `external communication happened once`, and this is where the
+        # two come apart.
+        return await _transition(db, tenant_id, sending, OUTCOME_UNKNOWN, actor,
+                                 extra={"error": str(exc)[:500]},
+                                 detail={"reason": REFUSAL_PROVIDER_ERROR, "proven": False})
 
     sent = await _transition(db, tenant_id, sending, SENT, actor,
                              extra={"provider_message_id": result.provider_message_id,
@@ -724,6 +783,38 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
     await _touch_conversation(db, tenant_id, conversation["id"], direction=OUTBOUND,
                               counted=True)
     return sent
+
+
+async def reconcile_unknown(db, *, tenant_id: str, message_id: str, actor: str,
+                            found: bool, provider_message_id: Optional[str] = None,
+                            detail: Optional[dict] = None) -> dict:
+    """Resolve a message whose dispatch outcome was never observed.
+
+    An adapter answers one question against the provider — does it hold this message? —
+    and this records the answer. `found` moves it to `sent` with the provider's own id;
+    not found moves it to `failed`, from which a fresh approval and a fresh attempt are
+    safe. Nothing else may move a message out of `outcome_unknown`, which is what stops a
+    lost response from becoming a second message to the client.
+    """
+    message = await get_message(db, tenant_id, message_id)
+    if not message:
+        raise MessageNotFound("Message not found")
+    if message.get("status") != OUTCOME_UNKNOWN:
+        raise InvalidMessageTransition(
+            f"Only a message in '{OUTCOME_UNKNOWN}' can be reconciled; this one is "
+            f"'{message.get('status')}'")
+    if found and not provider_message_id:
+        raise ConversationError(
+            "Reconciling a message the provider holds requires its provider message id")
+
+    if found:
+        return await _transition(db, tenant_id, message, SENT, actor,
+                                 extra={"provider_message_id": provider_message_id,
+                                        "sent_at": _iso(_now()), "error": None},
+                                 detail={"reconciled": True, **(detail or {})})
+    return await _transition(db, tenant_id, message, FAILED, actor,
+                             extra={"error": "Provider confirmed it never accepted this message"},
+                             detail={"reconciled": True, "proven": True, **(detail or {})})
 
 
 async def record_receipt(db, *, tenant_id: str, provider: str, provider_message_id: str,
@@ -831,6 +922,8 @@ async def summary(db, tenant_id: str) -> dict:
     awaiting_approval = await db[MESSAGES].count_documents(
         {"tenant_id": tenant_id, "status": PENDING_APPROVAL})
     blocked = await db[MESSAGES].count_documents({"tenant_id": tenant_id, "status": BLOCKED})
+    unknown = await db[MESSAGES].count_documents(
+        {"tenant_id": tenant_id, "status": OUTCOME_UNKNOWN})
     agent_handled = await db[CONVERSATIONS].count_documents(
         {"tenant_id": tenant_id, "handled_by": HANDLED_BY_AGENT,
          "status": {"$in": list(OPEN_CONVERSATION_STATUSES)}})
@@ -841,6 +934,7 @@ async def summary(db, tenant_id: str) -> dict:
         "agent_handled_open": agent_handled,
         "messages_awaiting_approval": awaiting_approval,
         "messages_blocked": blocked,
+        "messages_outcome_unknown": unknown,
         "by_status": by_status,
         "by_channel": by_channel,
         "providers": REGISTRY.describe(),
