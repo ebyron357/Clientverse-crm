@@ -16,6 +16,7 @@ from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 import approval_queue
+import attribution
 import conversations
 import next_best_action as nba
 import recovery_case
@@ -24,6 +25,15 @@ import recovery_strategy
 import second_chance
 import security_gate
 from work_queue import WorkQueue, WorkQueueError, InvalidTransition
+
+
+class AttributionAssertion(BaseModel):
+    """A person's claim that a recovery was ours, and why.
+
+    The reason is required: an assertion with no stated basis is indistinguishable from
+    wishful accounting, and the ledger reports how much revenue rests on these.
+    """
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class WorkItemResolution(BaseModel):
@@ -559,6 +569,65 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
                            payload={"work_item_id": item["id"]})
         return {"queued": True, "work_item_id": item["id"],
                 "deduplicated": item.get("deduplicated", False)}
+
+    # ------------------------------------------------------ attribution ledger
+
+    @router.get("/attribution")
+    async def list_attribution(outcome: Optional[str] = Query(default=None),
+                               basis: Optional[str] = Query(default=None),
+                               lane: Optional[str] = Query(default=None),
+                               period: Optional[str] = Query(default=None),
+                               limit: int = Query(default=100, ge=1, le=500),
+                               user=Depends(get_current_user)):
+        return await attribution.list_entries(db, user["tenant_id"], outcome=outcome,
+                                              basis=basis, lane=lane, period=period,
+                                              limit=limit)
+
+    @router.get("/attribution/summary")
+    async def attribution_summary(period: Optional[str] = Query(default=None),
+                                  user=Depends(get_current_user)):
+        """Recovered, lost and pending, per lane and per period.
+
+        Money is reported per currency and never as one total. Recovered revenue and
+        revenue *attributable to our outreach* are separate figures — the second requires
+        an outbound message that actually reached the provider.
+        """
+        return await attribution.summary(db, user["tenant_id"], period=period)
+
+    @router.get("/attribution/cases/{case_id}")
+    async def get_attribution_for_case(case_id: str, user=Depends(get_current_user)):
+        entry = await attribution.get_for_case(db, user["tenant_id"], case_id)
+        if not entry:
+            raise HTTPException(status_code=404,
+                                detail="No attribution entry for this recovery case")
+        return entry
+
+    @router.post("/attribution/cases/{case_id}/refresh")
+    async def refresh_attribution(case_id: str, user=Depends(require_role("admin"))):
+        """Re-read this case's outcome and evidence into the ledger."""
+        try:
+            entry = await attribution.record_outcome(
+                db, tenant_id=user["tenant_id"], case_id=case_id, actor=user["email"],
+                audit=record_event)
+        except attribution.AttributionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return entry
+
+    @router.post("/attribution/cases/{case_id}/assert")
+    async def assert_attribution(case_id: str, body: AttributionAssertion,
+                                 user=Depends(require_role("admin"))):
+        """Record a person's claim that a recovery was ours.
+
+        Stored as a human assertion beside the derived basis, never in place of it, so the
+        ledger can always report how much attributed revenue rests on someone's word.
+        """
+        try:
+            entry = await attribution.assert_operator_attribution(
+                db, tenant_id=user["tenant_id"], case_id=case_id, actor=user["email"],
+                reason=body.reason, audit=record_event)
+        except attribution.AttributionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return entry
 
     # ----------------------------------------------------- recovery strategies
 

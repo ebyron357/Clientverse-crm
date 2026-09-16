@@ -96,6 +96,7 @@ def seeded_tenant():
     "/recovery-strategies/summary", "/recovery-strategies/channel-authority",
     "/conversations", "/conversations/summary",
     "/recovery-cases", "/recovery-cases/summary", "/recovery-cases/rc_nonexistent",
+    "/attribution", "/attribution/summary", "/attribution/cases/rc_nonexistent",
 ])
 def test_operations_routes_require_authentication(path):
     assert requests.get(f"{API}{path}", timeout=30).status_code == 401
@@ -132,6 +133,8 @@ def member_token():
      {"name": "x", "kind": "skill", "source_url": "https://example.invalid/x", "version": "1"}),
     ("post", "/recovery-strategies/compose", None),
     ("post", "/recovery-cases/rc_nonexistent/run", None),
+    ("post", "/attribution/cases/rc_nonexistent/refresh", None),
+    ("post", "/attribution/cases/rc_nonexistent/assert", {"reason": "because"}),
 ])
 def test_admin_only_routes_reject_a_member(member_token, method, path, body):
     response = getattr(requests, method)(f"{API}{path}", headers=_headers(member_token),
@@ -332,7 +335,7 @@ def test_unknown_gate_check_is_rejected(admin_token):
 
 def test_cron_endpoints_reject_an_unauthenticated_caller():
     for path in ("/cron/work-queue", "/cron/second-chance", "/cron/next-best-actions",
-                 "/cron/recovery-strategies", "/cron/approval-expiry"):
+                 "/cron/recovery-strategies", "/cron/approval-expiry", "/cron/attribution"):
         assert requests.post(f"{API}{path}", timeout=30).status_code == 401
 
 
@@ -506,6 +509,64 @@ def test_running_another_tenants_case_is_a_404(composed_tenant, other_tenant_tok
     response = requests.post(f"{API}/recovery-cases/{cases[0]['id']}/run",
                              headers=_headers(other_tenant_token), timeout=30)
     assert response.status_code == 404, response.text
+
+
+# -------------------------------------------------------- attribution ledger
+
+def test_attribution_entries_are_readable_and_tenant_scoped(composed_tenant,
+                                                            other_tenant_token):
+    cases = requests.get(f"{API}/recovery-cases", headers=_headers(composed_tenant),
+                         timeout=30).json()
+    assert cases, "expected detection to have opened a case"
+    refreshed = requests.post(f"{API}/attribution/cases/{cases[0]['id']}/refresh",
+                              headers=_headers(composed_tenant), timeout=30)
+    assert refreshed.status_code == 200, refreshed.text
+    entry = refreshed.json()
+    assert entry["case_id"] == cases[0]["id"]
+
+    listed = requests.get(f"{API}/attribution", headers=_headers(composed_tenant),
+                          timeout=30)
+    assert listed.status_code == 200
+    assert any(e["case_id"] == cases[0]["id"] for e in listed.json())
+
+    # Another tenant sees neither the list nor the entry.
+    assert requests.get(f"{API}/attribution", headers=_headers(other_tenant_token),
+                        timeout=30).json() == []
+    assert requests.get(f"{API}/attribution/cases/{cases[0]['id']}",
+                        headers=_headers(other_tenant_token),
+                        timeout=30).status_code == 404
+
+
+def test_attribution_summary_separates_recovered_from_attributed(composed_tenant):
+    """The figure the product is tempted to inflate is the one under test."""
+    summary = requests.get(f"{API}/attribution/summary",
+                           headers=_headers(composed_tenant), timeout=30)
+    assert summary.status_code == 200, summary.text
+    body = summary.json()
+    # No provider adapter exists, so no outreach can have been delivered, so no revenue
+    # is attributable to it — whatever else the ledger holds.
+    assert body["attributable_to_outreach_by_currency"] == {}
+    assert "attribution_note" in body
+    # Money is reported per currency; there is no scalar total to misread.
+    for field in ("confirmed_recovered_by_currency", "potential_open_by_currency",
+                  "potential_lost_by_currency"):
+        assert isinstance(body[field], dict), field
+
+
+def test_an_unknown_case_has_no_attribution_entry(composed_tenant):
+    assert requests.get(f"{API}/attribution/cases/rc_doesnotexist",
+                        headers=_headers(composed_tenant), timeout=30).status_code == 404
+    assert requests.post(f"{API}/attribution/cases/rc_doesnotexist/refresh",
+                         headers=_headers(composed_tenant), timeout=30).status_code == 404
+
+
+def test_an_operator_assertion_requires_a_reason(composed_tenant):
+    cases = requests.get(f"{API}/recovery-cases", headers=_headers(composed_tenant),
+                         timeout=30).json()
+    response = requests.post(f"{API}/attribution/cases/{cases[0]['id']}/assert",
+                             headers=_headers(composed_tenant), json={"reason": ""},
+                             timeout=30)
+    assert response.status_code == 422, response.text
 
 
 # ------------------------------------------------------------ approval queue

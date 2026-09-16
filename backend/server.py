@@ -34,6 +34,7 @@ from operations_routes import register_operations_routes
 import approval_queue as approval_service
 import conversations as conversation_service
 import next_best_action as nba_service
+import attribution as attribution_service
 import recovery_case as recovery_case_service
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
@@ -130,6 +131,7 @@ async def lifespan(_: FastAPI):
         await recovery_service.ensure_indexes(db)
         await conversation_service.ensure_indexes(db)
         await recovery_case_service.ensure_indexes(db)
+        await attribution_service.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
     try:
@@ -2065,6 +2067,24 @@ async def cron_recovery_runner(request: Request):
         "recovery-runner", run_id,
         lambda: recovery_runner_service.run_ready_cases_all_tenants(
             db, work_queue, actor="cron", audit=record_event)))
+    return {"accepted": True, "run_id": run_id}
+
+
+@api.post("/cron/attribution")
+async def cron_attribution(request: Request):
+    """Refresh the recovery attribution ledger for every tenant.
+
+    Reads outcomes and evidence; writes no case state and sends nothing. A basis that
+    depends on outreach having been delivered stays unreachable while no channel provider
+    is registered, so this sweep cannot manufacture attributed revenue.
+    """
+    _authorize_cron(request)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    if not await _claim_cron_run("attribution", run_id):
+        return {"accepted": True, "duplicate": True}
+    asyncio.create_task(_run_cron_job(
+        "attribution", run_id,
+        lambda: attribution_service.reconcile_all_tenants(db, actor="cron")))
     return {"accepted": True, "run_id": run_id}
 
 
