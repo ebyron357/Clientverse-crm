@@ -1,6 +1,6 @@
 # ClientVerse CRM — Canonical Governing Document
 
-**Version:** 1.3 — complete replacement
+**Version:** 1.4 — complete replacement
 **Effective:** 2026-09-16
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
 **Repository:** `ebyron357/Clientverse-crm`
@@ -193,6 +193,7 @@ The module registry is the **contract of record** for which surfaces exist and w
 | C-23 | Frontend lint enforced in CI | MERGED | `.github/workflows/ci.yml` now runs `yarn lint --max-warnings=0` before the build; the pre-existing error on `main` is fixed. | PR #26 (§3.3) |
 | C-24 | `/operations` operator surface | MERGED | Work-queue queue depth and dead-letter visibility with acknowledge / resolve / admin replay, the recovery-detection trigger, the ranked recommendation queue, and the security-gate panel that reports scanner configuration honestly. Registered in `CLIENTVERSE_MODULES` as `available`. The Recovery strategies and Approvals panels added on top of it are `TESTED`, not yet merged. | PR #26 |
 | C-25 | Scheduled-job driver | MERGED | `.github/workflows/scheduled-jobs.yml` calls every cron endpoint on the documented cadences once two repository secrets exist, and exits cleanly while they do not. See O-03. | PR #26 |
+| C-26 | Conversations operator surface | TESTED | The `/operations` Conversations panel: open threads with channel, handler, consent state and message count; a thread reader with its messages and any blocked-send reason; assign, handoff and close. It states plainly that no delivery provider is registered rather than offering a send button that would fail. | This change set |
 
 ### 4.B Approved module contracts — registered, not yet built
 
@@ -200,9 +201,9 @@ These were declared in `frontend/src/platform/modules.js` as `contract_pending` 
 
 | ID | Module | Declared contract | Status | Expansion role |
 |---|---|---|---|---|
-| M-01 | Email | `CommunicationMessage service` | APPROVED — NOT STARTED | Omnichannel (E-08) |
-| M-02 | Unified Inbox | `Conversation service` | APPROVED — NOT STARTED | Omnichannel (E-08), human handoff (E-09) |
-| M-03 | SMS | `Message delivery service` | APPROVED — NOT STARTED | Omnichannel (E-08), Second Chance outreach |
+| M-01 | Email | `CommunicationMessage service` | **BLOCKED — OWNER INPUT** | The `CommunicationMessage` model, its state machine and the provider-agnostic delivery interface are delivered (§8 #2). What is missing is an email provider adapter and the Google authorisation to run it (O-01). Drafting works; sending is refused, and the refusal names the missing precondition. |
+| M-02 | Unified Inbox | `Conversation service` | **TESTED** | `backend/conversations.py`. Tenant-scoped threads with participants, channel, status, assignment, the agent/human boundary, a per-channel consent record, provider-thread deduplication, and an inbound path that reopens a closed thread. Operator surface at `/operations`. 29 tests. |
+| M-03 | SMS | `Message delivery service` | **BLOCKED — OWNER INPUT** | Same position as M-01: the message model and delivery interface exist; no SMS provider is registered in the integration catalogue and none has been chosen (O-06 covers the adjacent telephony decision). |
 | M-04 | Calling | `Call activity service` | APPROVED — NOT STARTED | Phone execution (E-06), missed-call recovery (E-02) |
 | M-05 | Calendar | `Calendar event service` | APPROVED — NOT STARTED | Meeting intelligence (E-12) |
 | M-06 | Workflows | `Workflow definition and run services` | APPROVED — NOT STARTED | Durable work queues (E-04), orchestration (E-15) |
@@ -226,8 +227,8 @@ These were declared in `frontend/src/platform/modules.js` as `contract_pending` 
 | E-06 | Scheduled agent follow-up | APPROVED — NOT STARTED | RECOVERED — ClickUp §11 step 9 ("continue permitted follow-up") | E-05 and M-07 are now delivered, so this is unblocked technically. It still requires an authorised outbound channel (M-01 or M-03) before a follow-up can leave the CRM. |
 | E-07 (NBA-1) | Next Best Action / agent task routing (backend service + aggregate queue) | MERGED | RECOVERED — UX assessment P0 #3 | `backend/next_best_action.py`. Tenant-scoped records from six deterministic rules (commitments, approvals, overdue tasks, Second Chance work items, degraded integrations, client health), each with reason, cited `source_refs`, evidence and a fixed priority band. Lifecycle `new`/`accepted`/`dismissed`/`completed`/`snoozed` with outcome and note; generation refreshes explanation without trampling feedback and retires cleared conditions. No fabricated confidence score. Surfaced in Client 360, the Command Center and `/operations`. 14 service tests + API tests. |
 | E-08 | Phone execution / phone agent capability | APPROVED — NOT STARTED | DIRECTIVE 2026-09-15 (module M-04 pre-registers the surface) | Telephony provider is an unmade owner decision. Consent, recording, and jurisdiction policy must precede any build. |
-| E-09 | Omnichannel conversations | APPROVED — NOT STARTED | RECOVERED — module registry M-01/M-02/M-03; ClickUp §10 "communications surface" | Unified `Conversation` model is the prerequisite for every channel module. |
-| E-10 | Human handoff | APPROVED — NOT STARTED | RECOVERED — ClickUp §10; Command Brief (approvals/undo) | The approval half is delivered under M-07 and reuses C-09's `approvals` collection rather than introducing a parallel gate. The conversation-level handoff (assignment, agent/human boundary) still requires M-02. |
+| E-09 | Omnichannel conversations | APPROVED — NOT STARTED | RECOVERED — module registry M-01/M-02/M-03; ClickUp §10 "communications surface" | **Its prerequisite is now delivered**: the unified `Conversation` model and the provider-agnostic `CommunicationMessage` interface exist (M-02, §8 #1–#2). The capability itself stays not started, because "omnichannel" means channels, and no channel can carry traffic until a provider adapter is built and authorised (M-01, M-03). |
+| E-10 | Human handoff | TESTED | RECOVERED — ClickUp §10; Command Brief (approvals/undo) | Both halves exist. The approval gate is M-07, reusing C-09's `approvals` collection rather than a parallel gate; the conversation-level handoff is `conversations.handoff` — an explicit, audited state change with an actor and a reason, never an implicit consequence of somebody replying. **Limit stated plainly:** handoff operates on conversations that cannot yet send externally, so today it is exercised on internal threads and on drafts waiting for a channel. |
 | E-11 | Agent workforce roles surfaced in CRM | APPROVED — NOT STARTED | RECOVERED — ClickUp §10 "agent workforce/activity surface"; `Clientverse-AI-AGENT-Workforce` implements nine roles (operations, sales, marketing, support, engineering, research, browser, project_management, communications) | The workforce runtime is a **separate repository and separate lifecycle**. The CRM consumes it across a contract; it is not merged into the CRM. |
 | E-12 | Security scanning before external skills/MCPs are trusted (dual NVIDIA + Cisco gate) | MERGED (pipeline) / BLOCKED — OWNER INPUT (scanners) | DIRECTIVE 2026-09-15; architectural need corroborated by the AI Project Governance Blueprint v2 "third-party intake/security gate" (Slack, 2026-09-13) | `backend/security_gate.py`. Intake registry plus Gate A (16 supply-chain checks) and Gate B (14 capability/execution checks), the full state machine (`DISCOVERED`/`UNDER_REVIEW`/`REJECTED`/`QUARANTINED`/`APPROVED_LIMITED`/`APPROVED`/`REVOKED`), decisions bound to an exact source and version with expiry, and enforcement on `POST /api/mcp/invoke` for any tool marked external. **Approval is impossible while a required scanner is unconfigured — an unrun scanner is never treated as a pass** (owner blocker O-13/O-14). Provenance conflict remains as recorded in §7.2. 24 tests. |
 | E-13 | OSINT / intelligence enrichment | APPROVED — NOT STARTED | DIRECTIVE 2026-09-15 (ClickUp §10 approves a "research/intelligence surface" generically) | Data-protection and lawful-basis review required before any build. |
@@ -369,8 +370,8 @@ Concrete build items, by capability. Items struck through and marked **DELIVERED
 been built since this list was first written; everything not so marked does not exist.
 
 **Foundations (block most expansion work)**
-1. `Conversation` domain model — tenant-scoped thread, participants, channel, direction, consent state, assignment, status. (M-02, E-09)
-2. `CommunicationMessage` model + provider-agnostic delivery/receipt interface. (M-01, M-03)
+1. ~~`Conversation` domain model — tenant-scoped thread, participants, channel, direction, consent state, assignment, status~~ — **DELIVERED** (`backend/conversations.py`; see M-02). Adds the agent/human boundary E-10 requires to be visible, provider-thread deduplication so a replayed webhook cannot fork a thread, and an inbound path that reopens a closed conversation. Consent starts `unknown`: no record means no permission, never assumed permission. (M-02, E-09)
+2. ~~`CommunicationMessage` model + provider-agnostic delivery/receipt interface~~ — **DELIVERED** (`backend/conversations.py`; see M-01, M-03). An explicit message state machine, a `ChannelProvider` protocol with a per-channel registry, and one delivery choke point that checks — in order — that the message is dispatchable, the channel is authorised, consent is granted, an M-07 approval exists and is claimed for exactly this message, and a provider is registered. Each failure is a named refusal recorded on the message. **The application registry is empty**: no provider adapter has been built or certified, so every outbound attempt refuses today. Receipt and inbound paths exist so an adapter added later has somewhere to deliver into. (M-01, M-03)
 3. ~~Durable work-queue service~~ — **DELIVERED** (`backend/work_queue.py`; see E-05). Persisted items, lease with crash recovery, attempt counter, capped exponential backoff, dead-letter, database-enforced idempotency key, dedupe key, round-robin per-tenant fairness, admin replay. (E-05)
 4. Scheduler contract — **partially delivered**: durable jobs now survive redeploys and record every attempt, and five new authenticated cron entry points exist (`/api/cron/work-queue`, `/api/cron/second-chance`, `/api/cron/next-best-actions`, `/api/cron/recovery-strategies`, `/api/cron/approval-expiry`, all idempotent per delivery id and documented in `docs/RAILWAY_RUNBOOK.md`). Misfire detection and a first-class schedule record remain open. (E-06, still needs O-03)
 5. ~~Recommendation service v1~~ — **DELIVERED** (`backend/next_best_action.py`; see NBA-1). Explainable facts, cited source records, priority bands, and accept/dismiss/complete/snooze feedback with outcome; Command Center and `/operations` aggregate queues. (M-11, E-07)
@@ -382,6 +383,9 @@ been built since this list was first written; everything not so marked does not 
 9. Recovery campaign runner on the durable queue, with approval gate before any outbound step. The gate (M-07) and the strategies it decides (E-20) now exist; the runner that consumes an approved strategy does not, and cannot do anything client-visible until a channel is authorised. (E-01 steps 5–6, 9)
 10. Reply/meeting/decision/task return path into CRM objects. (E-01 step 8)
 11. Recovery attribution ledger: recovered / lost / pending revenue per candidate, per lane, per period. (E-01 step 10, M-08)
+
+25. Fold the Gmail sync mirror (`crm_communications`) into `Conversation` / `CommunicationMessage`. The sync writes a read-only inbound mirror that predates the conversation model and is not threaded, consent-aware or outbound-capable; the two are not yet one store. (M-01, M-02)
+26. Channel provider adapters implementing `conversations.ChannelProvider` — one per channel, each behind its own authorisation. Nothing implements the protocol today. (M-01, M-03, O-01, O-06)
 
 **Channels and execution**
 12. Call activity capture + telephony provider adapter behind a consent/recording/jurisdiction policy. (M-04, E-08, unblocks E-02)
@@ -467,14 +471,14 @@ Fold pattern improvements into whichever wave touches the relevant surface. Neve
 
 | Capability | Requires |
 |---|---|
-| E-01 Second Chance | E-05, M-07, M-11, plus at least one outbound channel (M-01 or M-03) |
+| E-01 Second Chance | E-05, M-07, M-11 and E-20 are delivered; it still needs at least one **authorised** outbound channel (M-01 or M-03), which is an owner decision |
 | E-02 Missed-call recovery | E-08 → M-04 → owner telephony + consent decision (O-06) |
 | E-03 Stalled-lead recovery | E-05 only — **no new external dependency** |
 | E-04 Missed-follow-up recovery | E-05 + existing C-06 |
 | E-06 Scheduled agent follow-up | E-05 + §8 #4 + M-07 |
 | E-07 Next Best Action | M-11 |
-| E-09 Omnichannel | §8 #1, #2 → M-01/M-02/M-03 |
-| E-10 Human handoff | M-02 + C-09 |
+| E-09 Omnichannel | ~~§8 #1, #2~~ delivered → now only M-01/M-03, i.e. a provider adapter and its authorisation (O-01, O-06) |
+| E-10 Human handoff | ~~M-02 + C-09~~ — both delivered; `TESTED` |
 | E-11 Agent workforce in CRM | §8 #21; workforce repo runtime verification (its own register lists approval gates and durable run store as PARTIAL) |
 | E-12 Security gate | Nothing internal — buildable immediately; **must precede** any external-skill/MCP ingestion |
 | E-13 OSINT | O-07 lawful-basis decision |
@@ -516,29 +520,34 @@ enforcement, the CI lint gate, and the `/operations` operator surface. Merged, *
 deployed** — see §3.2.
 
 Delivered in the 2026-09-16 pass (`TESTED`, pending merge and deploy): the approval queue
-module surface (M-07) and the recovery strategy composer (E-20), with their operator panels
-on `/operations` and two further cron entry points.
+module surface (M-07), the recovery strategy composer (E-20), the `Conversation` and
+`CommunicationMessage` models with their provider-agnostic delivery interface (M-02, E-10),
+their operator panels on `/operations`, and two further cron entry points.
 
 Remaining work that needs no owner input and no unresolved source:
 
-1. **Merge the M-07 / E-20 change set, then certify `main`** — exact-head CI, then deploy
-   and run `scripts/proof_of_life.mjs` and `scripts/operations_smoke.mjs` against
-   production from an environment that can reach Railway (O-15). Nothing merged so far has
-   been certified against production.
-2. **`Conversation` / `CommunicationMessage` models (§8 #1, #2)** — schema and contract work
-   needs no provider credential. This is now the largest single blocker: it gates M-01, M-02,
-   M-03, E-09, E-10 and every outbound step the composer currently marks blocked.
-3. **Recovery campaign runner (§8 #9)** — consumes an approved strategy off the durable queue
-   and executes only its internal steps, leaving outbound steps blocked until a channel is
-   authorised.
-4. **Reply/decision return path (§8 #10)** — turning an outcome back into CRM objects.
+1. **Merge the current change set, then certify `main`** — exact-head CI, then deploy and
+   run `scripts/proof_of_life.mjs` and `scripts/operations_smoke.mjs` against production
+   from an environment that can reach Railway (O-15). Nothing merged so far has been
+   certified against production.
+2. **Recovery campaign runner (§8 #9)** — consumes an approved strategy off the durable queue
+   and executes only its internal steps, drafting the outbound ones into conversations where
+   they wait, correctly, for a channel.
+3. **Reply/decision return path (§8 #10)** — turning an inbound reply, meeting or decision
+   back into CRM objects. The inbound path now exists to hang this on.
+4. **Fold the Gmail sync mirror into conversations (§8 #25)** — one store rather than two.
 5. **Attribution ledger (§8 #11)** — closes the north-star loop for recovered/lost/pending revenue.
 6. **Scheduler misfire detection (§8 #4)** — completes the scheduler contract.
 7. **Twenty-derived UX refinements (E-17)** on surfaces already being touched.
 
+What is **not** on that list, deliberately: a channel provider adapter (§8 #26). Writing one
+needs a provider decision and its credentials (O-01 for email, O-06 for telephony), so it is
+owner-blocked rather than agent-blocked.
+
 **Recommendation:** merge and certify first (item 1), then item 2. Steps 1–4 of the north
-star now exist end to end and stop, correctly, at a gate; steps 5 onward cannot be built
-honestly until a channel exists to execute on.
+star exist end to end and stop, correctly, at a gate. The runner can carry steps 5–6 as far
+as a drafted, approved message sitting in a conversation; the last hop out of the CRM waits
+on an owner decision, not on more building.
 
 ## 12. Status control and evidence rules
 
@@ -576,6 +585,7 @@ ClientVerse CRM is closed only when all of the following hold:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.4 | 2026-09-16 | Omnichannel foundation. Added `backend/conversations.py`: the tenant-scoped `Conversation` thread (participants, channel, status, assignment, the visible agent/human boundary, a per-channel consent record that starts `unknown`, provider-thread deduplication, and an inbound path that reopens a closed thread) and the `CommunicationMessage` model with an explicit state machine. Added the provider-agnostic delivery interface — a `ChannelProvider` protocol, a per-channel registry, and one choke point that checks dispatchability, channel authority, consent, a claimed M-07 approval and a registered provider, recording a named refusal for each failure. The application registry is empty, so every outbound attempt refuses today and says why. Added `approval_queue.refresh_blocks` so a prerequisite that has since been resolved stops refusing forever, while remaining unable to revive a rejected, cancelled or lapsed request. Consolidated every approval decision path — the legacy `PATCH /api/approvals/{id}`, the queue decision route and the cancel route — onto one follow-through hook. M-02 and E-10 move to `TESTED`; M-01 and M-03 move to `BLOCKED — OWNER INPUT` because their model is built and only a provider adapter and its authorisation are missing; E-09 stays not started because omnichannel means channels. §8 gains two honest follow-on items (#25 folding the Gmail sync mirror into conversations, #26 the provider adapters). 40 new tests (backend suite 416 passed, 4 skipped). |
 | 1.3 | 2026-09-16 | Wave 2 execution pass. Added the approval queue module surface (M-07, `backend/approval_queue.py`) built on C-09's own `approvals` collection rather than beside it: bound actions, single-use consumption, expiry on read as well as by sweep, database-enforced deduplication, requester provenance, risk tiers, optional separation of duties, and a decision history. `POST /api/approvals`, `PATCH /api/approvals/{id}` and MCP level-2 writes were re-pointed at it so one state machine governs every approval, and both decision routes now share one follow-through. Added the recovery strategy composer (E-20, `backend/recovery_strategy.py`): authorised CRM context only, an ordered playbook of named lanes, facts cited to their source record, per-step channel authority derived from the tenant's own integration records, and an approval request per proposal. Added `/api/cron/recovery-strategies` and `/api/cron/approval-expiry` and wired both into the scheduled-jobs workflow. Added the Recovery strategies and Approvals panels to `/operations` and moved the `approvals` module out of `contract_pending`. Restated E-01: steps 1–4 of the north star exist, steps 5–10 do not, so the umbrella capability stays `APPROVED — NOT STARTED`. 71 new tests (backend suite 371 passed, 4 skipped). Reconciled §3 and §4 with the squash-merge of PR #26 into `main@3150530`: the Wave-1 capabilities (E-03, E-04, E-05, E-07, the E-12 pipeline, C-23) move from `TESTED` to `MERGED`, which is still not `DEPLOYED`. |
 | 1.2 | 2026-09-15 | Review-remediation pass on PR #26. Fixed concurrency defects in the durable queue (lease ownership on terminal transitions, atomic recovery, in-flight lease renewal, database-enforced deduplication, starvation-free tenant rotation, operator/worker resolve race); made cron deliveries releasable so a crashed job is retried rather than lost, and gave each tick a distinct worker identity; bound security-gate identity and enforcement to the content digest and made a re-scan re-open review; stopped a failed Next Best Action rule from retiring valid recommendations, moved the health rule onto the canonical health snapshot, and made generation upsert atomically; removed an N+1 scan from detection and indexed the lookup it performs. Rewrote the operations smoke to run in disposable tenants with asserted seeds — the previous evidence passed while two seeds were rejected with HTTP 422, so it proved less than claimed. |
 | 1.1 | 2026-09-15 | Execution pass. Reduced O-03 from "choose and wire a scheduler" to two repository secrets by adding `.github/workflows/scheduled-jobs.yml`. Recorded verified evidence for `main@3f14347` and the work branch. Moved E-03, E-04, E-05, E-07/NBA-1 and the E-12 pipeline to `TESTED`; added C-23 (CI lint gate). Corrected two further completion claims: CI never ran the documented lint gate, and Next Best Action was previously described as delivered when only a client-side strip existed. Added owner blockers O-14 (scanners unconfigured) and O-15 (production unreachable from the agent environment), and expanded O-03 with the three new cron entry points. |

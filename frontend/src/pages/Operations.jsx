@@ -8,18 +8,19 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
 import NextBestActions from "@/components/NextBestActions";
-import { ClipboardCheck, Inbox, ListChecks, Lock, RefreshCw, Route, ShieldCheck, Undo2 } from "lucide-react";
+import { ClipboardCheck, Inbox, ListChecks, Lock, MessagesSquare, RefreshCw, Route, ShieldCheck, Undo2 } from "lucide-react";
 
 /**
  * Operations — operator visibility for the durable work queue, Second Chance recovery
- * candidates, composed recovery strategies, the approval queue, and the
+ * candidates, composed recovery strategies, the approval queue, conversations, and the
  * external-component security gate.
  *
  * Every state shown here is read from the server. Nothing on this page implies a
  * capability is live when it is not: the security-gate panel reports scanner
  * configuration honestly rather than presenting the pipeline as operational, and a
  * recovery step whose channel is unauthorised is shown as blocked with the reason,
- * never as an action the operator can take.
+ * never as an action the operator can take. The conversations panel says plainly that no
+ * delivery provider is registered rather than presenting a send button that would fail.
  */
 
 const STATUS_TONE = {
@@ -464,6 +465,218 @@ function ApprovalQueuePanel({ isAdmin }) {
   );
 }
 
+const CONSENT_TONE = {
+  granted: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  unknown: "bg-slate-50 text-slate-700 border-slate-200",
+  denied: "bg-red-50 text-red-700 border-red-200",
+  withdrawn: "bg-red-50 text-red-700 border-red-200",
+};
+
+const CONVERSATION_TONE = {
+  open: "bg-cyan-50 text-cyan-800 border-cyan-200",
+  pending: "bg-amber-50 text-amber-900 border-amber-200",
+  snoozed: "bg-slate-50 text-slate-700 border-slate-200",
+  closed: "bg-slate-50 text-slate-500 border-slate-200",
+};
+
+function ConversationsPanel({ isAdmin }) {
+  const [threads, setThreads] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const [list, totals] = await Promise.all([
+        api.get("/conversations", { params: { status: "open", limit: 100 } }),
+        api.get("/conversations/summary"),
+      ]);
+      setThreads(list.data || []);
+      setSummary(totals.data || null);
+    } catch (e) {
+      setThreads([]);
+      setError(formatErr(e.response?.data?.detail) || "Conversations could not be read.");
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const open = async (thread) => {
+    setBusy(true);
+    try {
+      const { data } = await api.get(`/conversations/${thread.id}`);
+      setSelected(data);
+    } catch (e) {
+      toast.error(formatErr(e.response?.data?.detail) || "That conversation could not be opened");
+    } finally { setBusy(false); }
+  };
+
+  const act = async (path, body, message) => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await api.post(`/conversations/${selected.id}/${path}`, body);
+      toast.success(message);
+      await open(selected);
+      await load();
+    } catch (e) {
+      toast.error(formatErr(e.response?.data?.detail) || "That action could not be completed");
+    } finally { setBusy(false); }
+  };
+
+  if (threads === null) return <SurfaceLoading rows={3} testid="conversations-loading" />;
+  if (error) return <SurfaceError title="Conversations unavailable" description={error}
+                                  onRetry={load} testid="conversations-error" />;
+
+  const providers = summary?.providers || [];
+  const registered = providers.filter((p) => p.registered);
+
+  return (
+    <div data-testid="conversations-panel">
+      {summary ? (
+        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatTile label="Open threads" value={summary.open_conversations} />
+          <StatTile label="Agent handled" value={summary.agent_handled_open} />
+          <StatTile label="Awaiting approval" value={summary.messages_awaiting_approval} />
+          <StatTile label="Blocked messages" value={summary.messages_blocked}
+                    tone={summary.messages_blocked ? "text-amber-700" : "text-[#0a1628]"} />
+        </div>
+      ) : null}
+
+      {registered.length === 0 ? (
+        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50/60 p-4"
+             data-testid="no-provider-notice">
+          <div className="text-xs font-bold uppercase tracking-[0.12em] text-amber-900">
+            No delivery provider is registered
+          </div>
+          <p className="mt-2 text-[11px] leading-5 text-amber-900">
+            Conversations, drafts, consent and handoff all work. Nothing can be sent: no channel
+            adapter has been built or certified, so every outbound attempt is refused and the
+            refusal names the precondition that stopped it.
+          </p>
+        </div>
+      ) : null}
+
+      <div className="mb-4">
+        <Button size="sm" variant="outline" onClick={load} data-testid="conversations-refresh">
+          <RefreshCw className="mr-2 h-3.5 w-3.5" />Refresh
+        </Button>
+      </div>
+
+      {threads.length === 0 ? (
+        <SurfaceEmpty icon={MessagesSquare} title="No open conversations"
+                      description="Threads appear here with their channel, who is handling them, and what the counterparty has consented to."
+                      testid="conversations-empty" />
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
+          <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+            {threads.map((thread) => (
+              <button key={thread.id} type="button" onClick={() => open(thread)}
+                      className={`block w-full px-4 py-3 text-left transition hover:bg-slate-50 ${
+                        selected?.id === thread.id ? "bg-slate-50" : ""}`}
+                      data-testid={`conversation-${thread.channel}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge className={CONVERSATION_TONE[thread.status] || CONVERSATION_TONE.open}>
+                    {thread.status}
+                  </Badge>
+                  <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                    {thread.channel}
+                  </span>
+                  <Badge className={CONSENT_TONE[thread.consent?.state] || CONSENT_TONE.unknown}>
+                    consent {thread.consent?.state}
+                  </Badge>
+                </div>
+                <div className="mt-1 truncate text-sm font-semibold text-[#132038]">
+                  {thread.subject || "No subject"}
+                </div>
+                <div className="mt-1 text-[11px] text-slate-400">
+                  handled by {thread.handled_by}
+                  {thread.assignee ? ` · ${thread.assignee}` : ""}
+                  {` · ${thread.message_count} message(s)`}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            {!selected ? (
+              <p className="text-xs text-slate-500">Select a conversation to read it.</p>
+            ) : (
+              <div data-testid="conversation-detail">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-[#132038]">
+                    {selected.subject || "No subject"}
+                  </span>
+                  <Badge className={CONSENT_TONE[selected.consent?.state] || CONSENT_TONE.unknown}>
+                    consent {selected.consent?.state}
+                  </Badge>
+                </div>
+                {selected.consent?.basis ? (
+                  <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                    Basis: {selected.consent.basis}
+                  </p>
+                ) : null}
+
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  <Button size="sm" variant="outline" className="h-7 text-xs" disabled={busy}
+                          onClick={() => act("handoff",
+                            { to: selected.handled_by === "agent" ? "human" : "agent" },
+                            "Handoff recorded")}
+                          data-testid="conversation-handoff">
+                    Hand to {selected.handled_by === "agent" ? "human" : "agent"}
+                  </Button>
+                  {selected.status !== "closed" ? (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy}
+                            onClick={() => act("status", { status: "closed" }, "Closed")}
+                            data-testid="conversation-close">Close</Button>
+                  ) : null}
+                  {isAdmin && selected.consent?.state !== "granted" ? (
+                    <span className="self-center text-[11px] text-slate-400">
+                      Consent is recorded by an administrator with a stated basis.
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+                  {(selected.messages || []).length === 0 ? (
+                    <p className="text-xs text-slate-500">No messages yet.</p>
+                  ) : (
+                    selected.messages.map((message) => (
+                      <div key={message.id} className="rounded-lg border border-slate-200 px-3 py-2"
+                           data-testid={`message-${message.status}`}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                            {message.direction}
+                          </span>
+                          <Badge className={message.status === "blocked"
+                            ? "bg-amber-50 text-amber-900 border-amber-200"
+                            : "bg-slate-50 text-slate-700 border-slate-200"}>
+                            {message.status.replace(/_/g, " ")}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-slate-600">
+                          {message.body}
+                        </p>
+                        {message.blocked_detail ? (
+                          <p className="mt-1 text-[11px] leading-5 text-amber-700">
+                            {message.blocked_detail}
+                          </p>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SecurityGatePanel() {
   const [status, setStatus] = useState(null);
   const [components, setComponents] = useState(null);
@@ -558,8 +771,9 @@ export default function Operations() {
           <h1 className="cv-page-title">Recovery &amp; automation control</h1>
           <p className="cv-page-description">
             The durable work queue, Second Chance recovery candidates and the strategies
-            composed from them, the approvals those strategies wait on, ranked next best
-            actions, and the security gate that governs external agent capability.
+            composed from them, the approvals those strategies wait on, client conversations,
+            ranked next best actions, and the security gate that governs external agent
+            capability.
           </p>
         </div>
       </div>
@@ -578,6 +792,9 @@ export default function Operations() {
           <TabsTrigger value="approvals" data-testid="tab-approvals">
             <ClipboardCheck className="mr-2 h-3.5 w-3.5" />Approvals
           </TabsTrigger>
+          <TabsTrigger value="conversations" data-testid="tab-conversations">
+            <MessagesSquare className="mr-2 h-3.5 w-3.5" />Conversations
+          </TabsTrigger>
           <TabsTrigger value="gate" data-testid="tab-gate">
             <ShieldCheck className="mr-2 h-3.5 w-3.5" />Security gate
           </TabsTrigger>
@@ -593,6 +810,9 @@ export default function Operations() {
         </TabsContent>
         <TabsContent value="approvals" className="mt-5">
           <ApprovalQueuePanel isAdmin={isAdmin} />
+        </TabsContent>
+        <TabsContent value="conversations" className="mt-5">
+          <ConversationsPanel isAdmin={isAdmin} />
         </TabsContent>
         <TabsContent value="gate" className="mt-5"><SecurityGatePanel /></TabsContent>
       </Tabs>

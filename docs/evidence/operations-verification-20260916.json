@@ -1,17 +1,17 @@
 {
- "captured_at": "2026-09-16T00:10:26.570325+00:00",
- "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w, working tree at the approval queue (M-07) and recovery strategy composer (E-20) pass. Parent commit: 7e931958fb2a0d31bd384cdfdb23225f7668d188",
- "scope": "Artifact evidence for the code under test only. It proves the composer turns a detected candidate into a strategy that cites its facts, that every outbound step is blocked while no channel is authorised, that composition raises an approval, and that an approval cannot be decided twice. It does NOT prove production behaviour.",
+ "captured_at": "2026-09-16T00:34:03.581772+00:00",
+ "commit_under_test": "claude/clientverse-scope-recovery-bj6u7w, working tree at the Conversation / CommunicationMessage pass (\u00a78 #1, #2). Parent commit: 4750ba5bc3cb6bae5d4bfdbf15d8f780b5ff131e",
+ "scope": "Artifact evidence for the code under test only. It proves a conversation starts with no consent, a message can be drafted without a channel, an approved message is still refused with 'channel_not_authorized', the approval decision promotes the message, consent cannot be recorded as granted without a basis, and no delivery provider is registered. It does NOT prove production behaviour, and nothing here sent anything.",
  "environment": {
   "kind": "local verification environment",
   "mongodb": "7.0.34",
-  "note": "Railway production remains unreachable from this session: the egress policy rejects clientverse-crm-production-production.up.railway.app and backboard.railway.com with HTTP 403 at CONNECT (owner blocker O-15). Deployed-runtime gates therefore stay BLOCKED \u2014 TECHNICAL and are not claimed here."
+  "note": "Railway production remains unreachable from this session: the egress policy rejects clientverse-crm-production-production.up.railway.app and backboard.railway.com with HTTP 403 at CONNECT (owner blocker O-15). Deployed-runtime gates stay BLOCKED \u2014 TECHNICAL."
  },
- "backend_suite": "371 passed, 4 skipped, 4 warnings on a freshly created database (300 passed before this pass; 27 approval-queue, 25 composer and 19 API tests added). The 4 skips are the documented external-secret cases only.",
+ "backend_suite": "416 passed, 4 skipped, 4 warnings on a freshly created database (371 before this pass; 29 conversation, 4 approval-block-refresh and 11 API tests added). The 4 skips are the documented external-secret cases only.",
  "frontend_lint": "yarn lint --max-warnings=0 \u2014 exit 0",
  "frontend_build": "yarn build \u2014 exit 0, compiled successfully",
  "operations_smoke": {
-  "generated_at": "2026-09-16T00:12:21.393Z",
+  "generated_at": "2026-09-16T00:33:39.099Z",
   "steps": {
    "admin_login_http": 200,
    "primary_tenant_register_http": 200,
@@ -23,7 +23,7 @@
    "seed_commitment_http": 200,
    "detection_http": 200,
    "detection_summary": {
-    "tenant_id": "ten_20903e07923f",
+    "tenant_id": "ten_4be823df9fd8",
     "stalled_leads_detected": 0,
     "missed_followups_detected": 1,
     "work_items_created": 1,
@@ -54,7 +54,7 @@
    },
    "nba_generate_http": 200,
    "nba_generate_summary": {
-    "tenant_id": "ten_20903e07923f",
+    "tenant_id": "ten_4be823df9fd8",
     "created": 2,
     "refreshed": 0,
     "retired": 0,
@@ -85,7 +85,7 @@
    },
    "compose_http": 200,
    "compose_summary": {
-    "tenant_id": "ten_20903e07923f",
+    "tenant_id": "ten_4be823df9fd8",
     "candidates_examined": 1,
     "strategies_composed": 1,
     "strategies_blocked": 1,
@@ -102,7 +102,7 @@
    "approval_decision_http": 200,
    "approval_second_decision_http": 409,
    "approval_summary": {
-    "tenant_id": "ten_20903e07923f",
+    "tenant_id": "ten_4be823df9fd8",
     "awaiting_decision": 1,
     "awaiting_decision_blocked": 1,
     "approved_awaiting_execution": 0,
@@ -114,6 +114,43 @@
      "medium": 1
     }
    },
+   "conversation_create_http": 200,
+   "conversation_providers": [
+    {
+     "channel": "internal",
+     "provider": null,
+     "registered": false
+    },
+    {
+     "channel": "email",
+     "provider": null,
+     "registered": false
+    },
+    {
+     "channel": "sms",
+     "provider": null,
+     "registered": false
+    },
+    {
+     "channel": "phone",
+     "provider": null,
+     "registered": false
+    }
+   ],
+   "message_draft_http": 200,
+   "message_send_draft_http": 409,
+   "message_approval_request_http": 200,
+   "message_approval_blocks": [
+    "No connected email provider (gmail is not connected).",
+    "Consent for this conversation is 'unknown', not 'granted'.",
+    "No delivery provider is registered for email."
+   ],
+   "message_approval_decision_http": 200,
+   "message_state_after_approval": "approved",
+   "message_send_after_approval_http": 409,
+   "message_send_refusal_reason": "channel_not_authorized",
+   "consent_without_basis_http": 400,
+   "conversation_handoff_http": 200,
    "security_gate_status": {
     "gates": [
      "gate_a_supply_chain_intake",
@@ -153,7 +190,7 @@
    "cron_work_queue_http": 200,
    "cron_duplicate_suppressed": true,
    "system_job_queued": true,
-   "worker_ticks_used": 4,
+   "worker_ticks_used": 6,
    "tracked_system_job_state": "completed"
   },
   "failures": [],

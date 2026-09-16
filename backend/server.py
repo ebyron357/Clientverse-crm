@@ -32,6 +32,7 @@ from cryptography.fernet import Fernet
 from client_value import register_client_value_routes
 from operations_routes import register_operations_routes
 import approval_queue as approval_service
+import conversations as conversation_service
 import next_best_action as nba_service
 import recovery_strategy as recovery_service
 import second_chance as second_chance_service
@@ -125,6 +126,7 @@ async def lifespan(_: FastAPI):
         await security_gate_service.ensure_indexes(db)
         await approval_service.ensure_indexes(db)
         await recovery_service.ensure_indexes(db)
+        await conversation_service.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
     try:
@@ -3457,25 +3459,63 @@ register_client_value_routes(api, db, new_id, now_iso, record_event, assert_work
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
-    """Follow-through for a decided approval.
+    """Follow-through for a decided approval — the one place every decision path runs.
 
-    Both decision routes call this, so an MCP write executes on approval and is marked
-    rejected on rejection no matter which surface the operator used. Two decision paths
-    that behave differently is exactly how an approval gate stops meaning anything.
+    The legacy `PATCH /api/approvals/{id}` route, the `/approval-queue` decision route and
+    the cancel route all call this, so an MCP write executes on approval, and a recovery
+    strategy or a communication message moves to match the decision, no matter which
+    surface the operator used. Two decision paths that behave differently is exactly how
+    an approval gate stops meaning anything.
     """
     result: dict = {}
+    actor = user.get("email", "system")
+    tenant_id = approval.get("tenant_id") or user.get("tenant_id")
+    status = approval.get("status")
+    subject_type, subject_id = approval.get("subject_type"), approval.get("subject_id")
+
     # `pending_action_id` was a top-level field before the approval queue existed; it now
     # rides on the bound action. Read both so historical records still execute.
     pending_action_id = (approval.get("pending_action_id")
                          or (approval.get("action") or {}).get("pending_action_id"))
     if approval.get("kind") == "mcp_write" and pending_action_id:
-        if approval.get("status") == "approved":
+        if status == "approved":
             result["execution"] = await execute_pending_mcp(pending_action_id, user)
         else:
             await db.mcp_pending_actions.update_one({"id": pending_action_id},
                                                     {"$set": {"status": "rejected"}})
             await db.mcp_tool_invocations.update_one({"approval_id": approval["id"]},
                                                      {"$set": {"status": "rejected"}})
+
+    if subject_type == "recovery_strategy" and subject_id:
+        strategy_state = {
+            approval_service.APPROVED: recovery_service.STATE_APPROVED,
+            approval_service.REJECTED: recovery_service.STATE_REJECTED,
+            approval_service.CANCELLED: recovery_service.STATE_WITHDRAWN,
+        }.get(status)
+        if strategy_state:
+            try:
+                await recovery_service.set_state(db, tenant_id, subject_id,
+                                                 state=strategy_state, actor=actor)
+            except recovery_service.RecoveryStrategyError:
+                logger.warning("Could not sync recovery strategy %s after a decision", subject_id)
+
+    if subject_type == "communication_message" and subject_id:
+        try:
+            if status == approval_service.APPROVED:
+                # `mark_approved` re-reads the approval rather than trusting this call, so
+                # nothing can promote a message by asserting that it was approved.
+                await conversation_service.mark_approved(db, tenant_id=tenant_id,
+                                                         message_id=subject_id, actor=actor)
+            elif status in (approval_service.REJECTED, approval_service.CANCELLED):
+                await conversation_service.mark_refused(
+                    db, tenant_id=tenant_id, message_id=subject_id, actor=actor,
+                    reason=conversation_service.REFUSAL_APPROVAL,
+                    detail=("The approval request was rejected."
+                            if status == approval_service.REJECTED
+                            else "The approval request was withdrawn."))
+        except conversation_service.ConversationError:
+            logger.warning("Could not sync communication message %s after a decision", subject_id)
+
     return result
 
 

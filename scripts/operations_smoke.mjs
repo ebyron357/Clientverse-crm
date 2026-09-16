@@ -1,7 +1,8 @@
 /**
  * Operations smoke — durable work queue, Second Chance detection, recovery strategy
- * composition, the approval queue, Next Best Action, and the external-component security
- * gate, verified end to end against a running deployment.
+ * composition, the approval queue, conversations and communication messages, Next Best
+ * Action, and the external-component security gate, verified end to end against a running
+ * deployment.
  *
  * Companion to proof_of_life.mjs, with one important difference: every record this
  * script creates lives in a disposable tenant it registers for the run. The API has no
@@ -311,6 +312,83 @@ async function main() {
   record('approval_summary', approvalSummary.body)
   check('approval_summary_counts_blocked_requests',
         (approvalSummary.body?.awaiting_decision_blocked || 0) >= 1)
+
+  // ---- conversations and communication messages ---------------------------------
+  // The point of this section is what does NOT happen. A message can be drafted and
+  // approved, and it still cannot be sent, because approval does not authorise a channel.
+  const thread = await call('/conversations', {
+    method: 'POST', token,
+    body: {
+      channel: 'email',
+      subject: `${PREFIX} thread ${Date.now()}`,
+      participants: [{ kind: 'contact', id: 'con_smoke', address: 'client@example.invalid' }],
+    },
+  })
+  record('conversation_create_http', thread.status)
+  check('a_conversation_can_be_created', thread.status === 200 && !!thread.body?.id)
+  check('a_new_conversation_has_no_consent', thread.body?.consent?.state === 'unknown',
+        'no record must mean no permission, never assumed permission')
+
+  const conversationSummary = await call('/conversations/summary', { token })
+  record('conversation_providers', conversationSummary.body?.providers)
+  check('no_delivery_provider_is_registered',
+        (conversationSummary.body?.providers || []).every((p) => p.registered === false),
+        'no channel adapter has been built or certified')
+
+  if (thread.body?.id) {
+    const drafted = await call(`/conversations/${thread.body.id}/messages`, {
+      method: 'POST', token, body: { body: `${PREFIX} draft body`, to_address: 'client@example.invalid' },
+    })
+    record('message_draft_http', drafted.status)
+    check('a_message_can_be_drafted', drafted.status === 200 && drafted.body?.status === 'draft',
+          'composing is not sending, so drafting must never require a channel')
+
+    const premature = await call(`/messages/${drafted.body?.id}/send`, { method: 'POST', token })
+    record('message_send_draft_http', premature.status)
+    check('a_draft_cannot_be_sent', premature.status === 409)
+
+    const requested = await call(`/messages/${drafted.body?.id}/request-approval`, {
+      method: 'POST', token, body: {},
+    })
+    record('message_approval_request_http', requested.status)
+    check('a_message_raises_an_approval', requested.status === 200 && !!requested.body?.approval_id)
+
+    const messageApproval = await call(`/approval-queue/${requested.body?.approval_id}`, { token })
+    record('message_approval_blocks', messageApproval.body?.blocked_reasons)
+    check('the_operator_can_see_what_still_blocks_the_send',
+          (messageApproval.body?.blocked_reasons || []).length > 0)
+
+    const approvedMessage = await call(`/approval-queue/${requested.body?.approval_id}/decision`, {
+      method: 'POST', token, body: { decision: 'approved', rationale: `${PREFIX} smoke` },
+    })
+    record('message_approval_decision_http', approvedMessage.status)
+    check('the_message_approval_can_be_decided', approvedMessage.status === 200)
+
+    const afterApproval = await call(`/messages/${drafted.body?.id}`, { token })
+    record('message_state_after_approval', afterApproval.body?.status)
+    check('approval_promotes_the_message', afterApproval.body?.status === 'approved',
+          'the decision hook must move the message, not leave the two records disagreeing')
+
+    const refused = await call(`/messages/${drafted.body?.id}/send`, { method: 'POST', token })
+    record('message_send_after_approval_http', refused.status)
+    record('message_send_refusal_reason', refused.body?.detail?.reason)
+    check('an_approved_message_is_still_refused_with_no_channel',
+          refused.status === 409 && refused.body?.detail?.reason === 'channel_not_authorized',
+          'approving an action does not authorise a channel')
+
+    const consentWithoutBasis = await call(`/conversations/${thread.body.id}/consent`, {
+      method: 'POST', token, body: { state: 'granted' },
+    })
+    record('consent_without_basis_http', consentWithoutBasis.status)
+    check('consent_granted_requires_a_stated_basis', consentWithoutBasis.status === 400)
+
+    const handoff = await call(`/conversations/${thread.body.id}/handoff`, {
+      method: 'POST', token, body: { to: 'agent', reason: `${PREFIX} smoke` },
+    })
+    record('conversation_handoff_http', handoff.status)
+    check('the_agent_human_boundary_is_recordable',
+          handoff.status === 200 && handoff.body?.handled_by === 'agent')
+  }
 
   // ---- security gate -----------------------------------------------------------
   const gateStatus = await call('/security-gate/status', { token })

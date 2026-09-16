@@ -94,6 +94,7 @@ def seeded_tenant():
     "/next-best-actions/summary", "/security-gate/status", "/security-gate/components",
     "/approval-queue", "/approval-queue/summary", "/recovery-strategies",
     "/recovery-strategies/summary", "/recovery-strategies/channel-authority",
+    "/conversations", "/conversations/summary",
 ])
 def test_operations_routes_require_authentication(path):
     assert requests.get(f"{API}{path}", timeout=30).status_code == 401
@@ -536,3 +537,151 @@ def test_the_legacy_approvals_route_shares_one_state_machine(admin_token, compos
     assert decided.status_code == 200, decided.text
     assert requests.get(f"{API}/approval-queue/{approval_id}",
                         headers=_headers(composed_tenant), timeout=30).json()["status"] == "approved"
+
+
+# --------------------------------------------------- conversations and messages
+
+@pytest.fixture(scope="module")
+def conversation(seeded_tenant):
+    """A conversation owned by the seeded tenant, with one contact participant."""
+    response = requests.post(f"{API}/conversations", headers=_headers(seeded_tenant),
+                             json={"channel": "email",
+                                   "subject": f"OPS-API thread {uuid.uuid4().hex[:6]}",
+                                   "participants": [{"kind": "contact", "id": "con_api",
+                                                     "address": "client@example.invalid",
+                                                     "display_name": "API Client"}]},
+                             timeout=30)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_a_new_conversation_starts_open_with_no_consent(conversation):
+    assert conversation["status"] == "open"
+    assert conversation["handled_by"] == "human"
+    assert conversation["consent"]["state"] == "unknown"
+
+
+def test_an_unknown_channel_is_rejected(seeded_tenant):
+    response = requests.post(f"{API}/conversations", headers=_headers(seeded_tenant),
+                             json={"channel": "carrier_pigeon"}, timeout=30)
+    assert response.status_code == 400, response.text
+
+
+def test_no_delivery_provider_is_registered(seeded_tenant):
+    """The honest state: no channel adapter has been built or certified."""
+    summary = requests.get(f"{API}/conversations/summary", headers=_headers(seeded_tenant),
+                           timeout=30).json()
+    assert summary["providers"]
+    assert all(entry["registered"] is False for entry in summary["providers"]), summary["providers"]
+
+
+def test_a_message_can_be_drafted_but_not_sent(seeded_tenant, conversation):
+    drafted = requests.post(f"{API}/conversations/{conversation['id']}/messages",
+                            headers=_headers(seeded_tenant),
+                            json={"body": "Following up on the proposal.",
+                                  "to_address": "client@example.invalid"}, timeout=30)
+    assert drafted.status_code == 200, drafted.text
+    message = drafted.json()
+    assert message["status"] == "draft"
+
+    # Sending a draft is refused before anything else is considered.
+    premature = requests.post(f"{API}/messages/{message['id']}/send",
+                              headers=_headers(seeded_tenant), timeout=30)
+    assert premature.status_code == 409, premature.text
+    assert premature.json()["detail"]["reason"] == "message_not_dispatchable"
+
+
+def test_an_approved_message_is_still_refused_with_no_channel_or_provider(seeded_tenant,
+                                                                         conversation):
+    drafted = requests.post(f"{API}/conversations/{conversation['id']}/messages",
+                            headers=_headers(seeded_tenant),
+                            json={"body": "Second attempt."}, timeout=30).json()
+    requested = requests.post(f"{API}/messages/{drafted['id']}/request-approval",
+                              headers=_headers(seeded_tenant), json={}, timeout=30)
+    assert requested.status_code == 200, requested.text
+    approval_id = requested.json()["approval_id"]
+    assert approval_id
+
+    approval = requests.get(f"{API}/approval-queue/{approval_id}",
+                            headers=_headers(seeded_tenant), timeout=30).json()
+    assert approval["subject_type"] == "communication_message"
+    assert approval["blocked_reasons"], "the operator must see what still blocks it"
+
+    decided = requests.post(f"{API}/approval-queue/{approval_id}/decision",
+                            headers=_headers(seeded_tenant),
+                            json={"decision": "approved"}, timeout=30)
+    assert decided.status_code == 200, decided.text
+
+    # Approving moved the message to `approved` through the shared decision hook.
+    message = requests.get(f"{API}/messages/{drafted['id']}", headers=_headers(seeded_tenant),
+                           timeout=30).json()
+    assert message["status"] == "approved"
+
+    # And it still cannot be sent, because approving does not authorise a channel.
+    refused = requests.post(f"{API}/messages/{drafted['id']}/send",
+                            headers=_headers(seeded_tenant), timeout=30)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["reason"] == "channel_not_authorized"
+    blocked = requests.get(f"{API}/messages/{drafted['id']}", headers=_headers(seeded_tenant),
+                           timeout=30).json()
+    assert blocked["status"] == "blocked"
+    assert blocked["blocked_reason"] == "channel_not_authorized"
+
+
+def test_rejecting_an_approval_blocks_its_message(seeded_tenant, conversation):
+    drafted = requests.post(f"{API}/conversations/{conversation['id']}/messages",
+                            headers=_headers(seeded_tenant),
+                            json={"body": "Third attempt."}, timeout=30).json()
+    requested = requests.post(f"{API}/messages/{drafted['id']}/request-approval",
+                              headers=_headers(seeded_tenant), json={}, timeout=30).json()
+    rejected = requests.post(f"{API}/approval-queue/{requested['approval_id']}/decision",
+                             headers=_headers(seeded_tenant),
+                             json={"decision": "rejected"}, timeout=30)
+    assert rejected.status_code == 200, rejected.text
+    message = requests.get(f"{API}/messages/{drafted['id']}", headers=_headers(seeded_tenant),
+                           timeout=30).json()
+    assert message["status"] == "blocked"
+
+
+def test_consent_granted_requires_a_basis(seeded_tenant, conversation):
+    without = requests.post(f"{API}/conversations/{conversation['id']}/consent",
+                            headers=_headers(seeded_tenant),
+                            json={"state": "granted"}, timeout=30)
+    assert without.status_code == 400, without.text
+    with_basis = requests.post(f"{API}/conversations/{conversation['id']}/consent",
+                               headers=_headers(seeded_tenant),
+                               json={"state": "granted",
+                                     "basis": "Client asked us to email them."}, timeout=30)
+    assert with_basis.status_code == 200, with_basis.text
+    assert with_basis.json()["consent"]["basis"]
+
+
+def test_handoff_records_the_agent_human_boundary(seeded_tenant, conversation):
+    handed = requests.post(f"{API}/conversations/{conversation['id']}/handoff",
+                           headers=_headers(seeded_tenant),
+                           json={"to": "agent", "reason": "Routine follow-up"}, timeout=30)
+    assert handed.status_code == 200, handed.text
+    assert handed.json()["handled_by"] == "agent"
+    back = requests.post(f"{API}/conversations/{conversation['id']}/handoff",
+                         headers=_headers(seeded_tenant),
+                         json={"to": "human", "assignee": "rep@example.invalid"}, timeout=30)
+    assert back.status_code == 200, back.text
+    assert back.json()["assignee"] == "rep@example.invalid"
+
+
+def test_conversations_are_not_visible_to_another_tenant(conversation, other_tenant_token):
+    response = requests.get(f"{API}/conversations/{conversation['id']}",
+                            headers=_headers(other_tenant_token), timeout=30)
+    assert response.status_code == 404
+    assert requests.get(f"{API}/conversations", headers=_headers(other_tenant_token),
+                        timeout=30).json() == []
+
+
+def test_recording_consent_is_admin_only(member_token, admin_token):
+    created = requests.post(f"{API}/conversations", headers=_headers(admin_token),
+                            json={"channel": "email", "subject": "RBAC check"},
+                            timeout=30).json()
+    response = requests.post(f"{API}/conversations/{created['id']}/consent",
+                             headers=_headers(member_token),
+                             json={"state": "granted", "basis": "nope"}, timeout=30)
+    assert response.status_code == 403, response.text

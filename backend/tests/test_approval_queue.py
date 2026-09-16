@@ -308,3 +308,55 @@ def test_legacy_records_without_the_new_fields_still_decide(db):
     decided = run(aq.decide(db, tenant_id=TENANT, approval_id="apr_legacy",
                             decision=aq.APPROVED, actor="admin@example.com"))
     assert decided["status"] == aq.APPROVED
+
+
+# ----------------------------------------------------------- refreshing blocks
+
+def test_refreshing_blocks_lets_a_resolved_prerequisite_proceed(db):
+    req = _request(db, blocked_reasons=["No delivery provider is registered for email."])
+    run(aq.decide(db, tenant_id=TENANT, approval_id=req["id"], decision=aq.APPROVED,
+                  actor="admin@example.com"))
+    with pytest.raises(aq.InvalidApprovalTransition):
+        run(aq.consume(db, tenant_id=TENANT, approval_id=req["id"], actor="worker-1"))
+
+    # The caller re-checked the condition live and it no longer holds.
+    refreshed = run(aq.refresh_blocks(db, tenant_id=TENANT, approval_id=req["id"],
+                                      blocked_reasons=[], actor="worker-1"))
+    assert refreshed["blocked_reasons"] == []
+    assert any(h["action"] == "blocks_refreshed" for h in refreshed["history"])
+    assert run(aq.consume(db, tenant_id=TENANT, approval_id=req["id"],
+                          actor="worker-1"))["execution"]["state"] == aq.EXECUTION_CONSUMED
+
+
+def test_refreshing_blocks_can_add_a_new_one(db):
+    req = _request(db)
+    run(aq.decide(db, tenant_id=TENANT, approval_id=req["id"], decision=aq.APPROVED,
+                  actor="admin@example.com"))
+    run(aq.refresh_blocks(db, tenant_id=TENANT, approval_id=req["id"],
+                          blocked_reasons=["Consent was withdrawn."], actor="worker-1"))
+    with pytest.raises(aq.InvalidApprovalTransition):
+        run(aq.consume(db, tenant_id=TENANT, approval_id=req["id"], actor="worker-1"))
+
+
+def test_refreshing_blocks_cannot_revive_a_closed_request(db):
+    """It must never be a back door that makes a rejected or lapsed request usable."""
+    rejected = _request(db, blocked_reasons=["Something"])
+    run(aq.decide(db, tenant_id=TENANT, approval_id=rejected["id"], decision=aq.REJECTED,
+                  actor="admin@example.com"))
+    with pytest.raises(aq.InvalidApprovalTransition):
+        run(aq.refresh_blocks(db, tenant_id=TENANT, approval_id=rejected["id"],
+                              blocked_reasons=[], actor="worker-1"))
+
+    lapsed = _request(db, blocked_reasons=["Something"])
+    _backdate(db, lapsed["id"])
+    run(aq.expire_due(db, tenant_id=TENANT))
+    with pytest.raises(aq.InvalidApprovalTransition):
+        run(aq.refresh_blocks(db, tenant_id=TENANT, approval_id=lapsed["id"],
+                              blocked_reasons=[], actor="worker-1"))
+
+
+def test_refreshing_blocks_is_tenant_scoped(db):
+    req = _request(db)
+    with pytest.raises(aq.ApprovalNotFound):
+        run(aq.refresh_blocks(db, tenant_id=OTHER_TENANT, approval_id=req["id"],
+                              blocked_reasons=[], actor="worker-1"))

@@ -387,6 +387,43 @@ async def consume(db, *, tenant_id: str, approval_id: str, actor: str) -> dict:
     return _public(updated)
 
 
+async def refresh_blocks(db, *, tenant_id: str, approval_id: str,
+                         blocked_reasons: list, actor: str) -> dict:
+    """Re-record what currently blocks an approved or pending request.
+
+    `blocked_reasons` is a snapshot of conditions that can legitimately change — a channel
+    gets authorised, consent gets recorded, a provider gets registered. Leaving the
+    original snapshot in place would make a resolved block refuse forever, so the caller
+    that re-checks those conditions live writes the result back here before consuming.
+
+    This never changes status, so it cannot revive a rejected, cancelled or lapsed
+    request; and it is recorded in the history, so a block that disappeared is visible
+    rather than silent.
+    """
+    doc = await db[COLLECTION].find_one({"id": approval_id, "tenant_id": tenant_id})
+    if not doc:
+        raise ApprovalNotFound("Approval request not found")
+    if doc.get("status") not in (REQUESTED, APPROVED):
+        raise InvalidApprovalTransition(
+            f"Cannot refresh blocks on a '{doc.get('status')}' request")
+
+    current = list(doc.get("blocked_reasons") or [])
+    incoming = [str(reason) for reason in (blocked_reasons or [])]
+    if current == incoming:
+        return _public(doc)
+
+    updated = await db[COLLECTION].find_one_and_update(
+        {"id": approval_id, "tenant_id": tenant_id, "status": doc["status"]},
+        {"$set": {"blocked_reasons": incoming},
+         "$push": {"history": _history("blocks_refreshed", actor,
+                                       {"was": current, "now": incoming})}},
+        return_document=True,
+    )
+    if not updated:
+        raise InvalidApprovalTransition("Approval request changed concurrently")
+    return _public(updated)
+
+
 async def expire_due(db, *, tenant_id: Optional[str] = None, limit: int = 500) -> dict:
     """Sweep lapsed requests. Safe to run repeatedly; it only ever closes open requests."""
     criteria: dict[str, Any] = {"status": REQUESTED, "expires_at": {"$lte": _iso(_now())}}
