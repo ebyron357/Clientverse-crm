@@ -1,5 +1,6 @@
-"""API surface for the durable work queue, Second Chance, Next Best Action, and the
-external-component security gate.
+"""API surface for the durable work queue, Second Chance, the recovery strategy
+composer, the approval queue, conversations and communication messages, Next Best Action,
+and the external-component security gate.
 
 Routes are attached to the existing `/api` router with the application's own auth,
 tenancy and audit helpers injected, matching the pattern already used by
@@ -14,7 +15,10 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+import approval_queue
+import conversations
 import next_best_action as nba
+import recovery_strategy
 import second_chance
 import security_gate
 from work_queue import WorkQueue, WorkQueueError, InvalidTransition
@@ -29,6 +33,75 @@ class RecommendationPatch(BaseModel):
     outcome: Optional[str] = Field(default=None, max_length=200)
     note: Optional[str] = Field(default=None, max_length=1000)
     snooze_minutes: Optional[int] = Field(default=None, ge=1, le=60 * 24 * 30)
+
+
+class ApprovalRequestInput(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    kind: str = Field(default="external_effect", max_length=100)
+    summary: Optional[str] = Field(default=None, max_length=2000)
+    risk: str = Field(default=approval_queue.RISK_MEDIUM)
+    workspace_id: Optional[str] = None
+    subject_type: Optional[str] = Field(default=None, max_length=100)
+    subject_id: Optional[str] = Field(default=None, max_length=100)
+    action: Optional[dict] = None
+    facts: Optional[list] = None
+    expires_in_hours: Optional[int] = Field(default=None, ge=1, le=90 * 24)
+    require_separate_approver: bool = False
+
+
+class ApprovalDecisionInput(BaseModel):
+    decision: str
+    rationale: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ApprovalCancelInput(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class ConversationInput(BaseModel):
+    channel: str
+    subject: Optional[str] = Field(default=None, max_length=300)
+    participants: Optional[list] = None
+    workspace_id: Optional[str] = None
+    company_id: Optional[str] = None
+    contact_id: Optional[str] = None
+    handled_by: str = conversations.HANDLED_BY_HUMAN
+    assignee: Optional[str] = Field(default=None, max_length=200)
+    external_thread_id: Optional[str] = Field(default=None, max_length=300)
+
+
+class ConversationStatusInput(BaseModel):
+    status: str
+    snooze_minutes: Optional[int] = Field(default=None, ge=1, le=60 * 24 * 30)
+
+
+class AssignInput(BaseModel):
+    assignee: Optional[str] = Field(default=None, max_length=200)
+
+
+class HandoffInput(BaseModel):
+    to: str
+    assignee: Optional[str] = Field(default=None, max_length=200)
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class ConsentInput(BaseModel):
+    state: str
+    basis: Optional[str] = Field(default=None, max_length=500)
+    source: Optional[str] = Field(default=None, max_length=300)
+
+
+class MessageDraftInput(BaseModel):
+    body: str = Field(min_length=1, max_length=20000)
+    subject: Optional[str] = Field(default=None, max_length=300)
+    to_address: Optional[str] = Field(default=None, max_length=300)
+    from_address: Optional[str] = Field(default=None, max_length=300)
+    idempotency_key: Optional[str] = Field(default=None, max_length=200)
+
+
+class MessageApprovalInput(BaseModel):
+    risk: str = Field(default=approval_queue.RISK_MEDIUM)
+    expires_in_hours: Optional[int] = Field(default=None, ge=1, le=90 * 24)
 
 
 class ComponentInput(BaseModel):
@@ -53,8 +126,16 @@ class DecisionInput(BaseModel):
     expires_in_days: Optional[int] = Field(default=None, ge=1, le=365)
 
 
-def register_operations_routes(router, db, record_event, get_current_user, require_role):
-    """Attach operations routes. Returns the shared WorkQueue instance."""
+def register_operations_routes(router, db, record_event, get_current_user, require_role,
+                               on_approval_decided=None):
+    """Attach operations routes. Returns the shared WorkQueue instance.
+
+    `on_approval_decided` is an optional async hook called with the decided approval and
+    the deciding user, on approve, reject and cancel alike. The application uses it to run
+    the follow-through a decision implies — executing a pending MCP write, moving a
+    recovery strategy or a communication message to match — so this surface and the older
+    `/approvals` route produce identical behaviour.
+    """
     queue = WorkQueue(db)
 
     # ------------------------------------------------------------ work queue
@@ -171,6 +252,299 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
                            workspace_id=updated.get("workspace_id"),
                            payload={"state": inp.state, "outcome": inp.outcome})
         return updated
+
+    # -------------------------------------------------------- approval queue
+
+    @router.get("/approval-queue")
+    async def list_approval_requests(status: Optional[str] = Query(default="open"),
+                                     kind: Optional[str] = Query(default=None),
+                                     risk: Optional[str] = Query(default=None),
+                                     limit: int = Query(default=100, ge=1, le=500),
+                                     user=Depends(get_current_user)):
+        return await approval_queue.list_requests(db, user["tenant_id"], status=status,
+                                                  kind=kind, risk=risk, limit=limit)
+
+    @router.get("/approval-queue/summary")
+    async def approval_queue_summary(user=Depends(get_current_user)):
+        return await approval_queue.summary(db, user["tenant_id"])
+
+    @router.post("/approval-queue")
+    async def raise_approval_request(inp: ApprovalRequestInput,
+                                     user=Depends(get_current_user)):
+        try:
+            request = await approval_queue.request(
+                db, tenant_id=user["tenant_id"], title=inp.title, kind=inp.kind,
+                actor=user["email"], requester_kind=approval_queue.REQUESTER_HUMAN,
+                summary=inp.summary, risk=inp.risk, action=inp.action,
+                subject_type=inp.subject_type, subject_id=inp.subject_id,
+                workspace_id=inp.workspace_id, facts=inp.facts,
+                expires_in_hours=inp.expires_in_hours,
+                require_separate_approver=inp.require_separate_approver)
+        except approval_queue.ApprovalError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_event("approval.requested", "approval", request["id"], user["tenant_id"],
+                           user["email"], workspace_id=inp.workspace_id,
+                           payload={"title": inp.title, "risk": request["risk"]})
+        return request
+
+    @router.get("/approval-queue/{approval_id}")
+    async def get_approval_request(approval_id: str, user=Depends(get_current_user)):
+        request = await approval_queue.get(db, user["tenant_id"], approval_id)
+        if not request:
+            raise HTTPException(status_code=404, detail="Approval request not found")
+        return request
+
+    @router.post("/approval-queue/{approval_id}/decision")
+    async def decide_approval_request(approval_id: str, inp: ApprovalDecisionInput,
+                                      user=Depends(require_role("admin"))):
+        try:
+            request = await approval_queue.decide(
+                db, tenant_id=user["tenant_id"], approval_id=approval_id,
+                decision=inp.decision, actor=user["email"], rationale=inp.rationale)
+        except approval_queue.ApprovalNotFound:
+            raise HTTPException(status_code=404, detail="Approval request not found")
+        except approval_queue.InvalidApprovalTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except approval_queue.ApprovalError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if on_approval_decided:
+            side_effects = await on_approval_decided(request, user)
+            if side_effects:
+                request = {**request, **side_effects}
+        await record_event("approval.completed", "approval", approval_id, user["tenant_id"],
+                           user["email"], workspace_id=request.get("workspace_id"),
+                           payload={"decision": inp.decision})
+        return request
+
+    @router.post("/approval-queue/{approval_id}/cancel")
+    async def cancel_approval_request(approval_id: str, inp: ApprovalCancelInput,
+                                      user=Depends(get_current_user)):
+        try:
+            request = await approval_queue.cancel(
+                db, tenant_id=user["tenant_id"], approval_id=approval_id,
+                actor=user["email"], reason=inp.reason)
+        except approval_queue.ApprovalNotFound:
+            raise HTTPException(status_code=404, detail="Approval request not found")
+        except approval_queue.InvalidApprovalTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        if on_approval_decided:
+            await on_approval_decided(request, user)
+        await record_event("approval.cancelled", "approval", approval_id, user["tenant_id"],
+                           user["email"], workspace_id=request.get("workspace_id"),
+                           payload={"reason": inp.reason})
+        return request
+
+    # --------------------------------------------------------- conversations
+
+    @router.get("/conversations")
+    async def list_conversations(status: Optional[str] = Query(default="open"),
+                                 channel: Optional[str] = Query(default=None),
+                                 handled_by: Optional[str] = Query(default=None),
+                                 assignee: Optional[str] = Query(default=None),
+                                 workspace_id: Optional[str] = Query(default=None),
+                                 limit: int = Query(default=100, ge=1, le=500),
+                                 user=Depends(get_current_user)):
+        return await conversations.list_conversations(
+            db, user["tenant_id"], status=status, channel=channel, handled_by=handled_by,
+            assignee=assignee, workspace_id=workspace_id, limit=limit)
+
+    @router.get("/conversations/summary")
+    async def conversations_summary(user=Depends(get_current_user)):
+        return await conversations.summary(db, user["tenant_id"])
+
+    @router.post("/conversations")
+    async def create_conversation(inp: ConversationInput, user=Depends(get_current_user)):
+        try:
+            conversation = await conversations.create_conversation(
+                db, tenant_id=user["tenant_id"], channel=inp.channel, actor=user["email"],
+                subject=inp.subject, participants=inp.participants,
+                workspace_id=inp.workspace_id, company_id=inp.company_id,
+                contact_id=inp.contact_id, handled_by=inp.handled_by,
+                assignee=inp.assignee, external_thread_id=inp.external_thread_id)
+        except conversations.ConversationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_event("conversation.created", "conversation", conversation["id"],
+                           user["tenant_id"], user["email"],
+                           workspace_id=inp.workspace_id, payload={"channel": inp.channel})
+        return conversation
+
+    @router.get("/conversations/{conversation_id}")
+    async def get_conversation(conversation_id: str, user=Depends(get_current_user)):
+        conversation = await conversations.get_conversation(db, user["tenant_id"], conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        conversation["messages"] = await conversations.list_messages(
+            db, user["tenant_id"], conversation_id)
+        return conversation
+
+    async def _conversation_action(conversation_id: str, user, event: str, action, payload):
+        try:
+            conversation = await action()
+        except conversations.ConversationNotFound:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        except conversations.ConversationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_event(event, "conversation", conversation_id, user["tenant_id"],
+                           user["email"], workspace_id=conversation.get("workspace_id"),
+                           payload=payload)
+        return conversation
+
+    @router.post("/conversations/{conversation_id}/status")
+    async def set_conversation_status(conversation_id: str, inp: ConversationStatusInput,
+                                      user=Depends(get_current_user)):
+        return await _conversation_action(
+            conversation_id, user, "conversation.status",
+            lambda: conversations.set_status(
+                db, tenant_id=user["tenant_id"], conversation_id=conversation_id,
+                status=inp.status, actor=user["email"], snooze_minutes=inp.snooze_minutes),
+            {"status": inp.status})
+
+    @router.post("/conversations/{conversation_id}/assign")
+    async def assign_conversation(conversation_id: str, inp: AssignInput,
+                                  user=Depends(get_current_user)):
+        return await _conversation_action(
+            conversation_id, user, "conversation.assigned",
+            lambda: conversations.assign(
+                db, tenant_id=user["tenant_id"], conversation_id=conversation_id,
+                assignee=inp.assignee, actor=user["email"]),
+            {"assignee": inp.assignee})
+
+    @router.post("/conversations/{conversation_id}/handoff")
+    async def handoff_conversation(conversation_id: str, inp: HandoffInput,
+                                   user=Depends(get_current_user)):
+        return await _conversation_action(
+            conversation_id, user, "conversation.handoff",
+            lambda: conversations.handoff(
+                db, tenant_id=user["tenant_id"], conversation_id=conversation_id,
+                to=inp.to, actor=user["email"], assignee=inp.assignee, reason=inp.reason),
+            {"to": inp.to})
+
+    @router.post("/conversations/{conversation_id}/consent")
+    async def record_conversation_consent(conversation_id: str, inp: ConsentInput,
+                                          user=Depends(require_role("admin"))):
+        return await _conversation_action(
+            conversation_id, user, "conversation.consent",
+            lambda: conversations.record_consent(
+                db, tenant_id=user["tenant_id"], conversation_id=conversation_id,
+                state=inp.state, actor=user["email"], basis=inp.basis, source=inp.source),
+            {"state": inp.state})
+
+    # --------------------------------------------------- communication messages
+
+    @router.get("/conversations/{conversation_id}/messages")
+    async def list_conversation_messages(conversation_id: str,
+                                         limit: int = Query(default=200, ge=1, le=500),
+                                         user=Depends(get_current_user)):
+        conversation = await conversations.get_conversation(db, user["tenant_id"], conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return await conversations.list_messages(db, user["tenant_id"], conversation_id,
+                                                 limit=limit)
+
+    @router.post("/conversations/{conversation_id}/messages")
+    async def draft_conversation_message(conversation_id: str, inp: MessageDraftInput,
+                                         user=Depends(get_current_user)):
+        """Compose an outbound message. Drafting is always allowed; sending is not."""
+        try:
+            message = await conversations.draft_message(
+                db, tenant_id=user["tenant_id"], conversation_id=conversation_id,
+                body=inp.body, actor=user["email"], subject=inp.subject,
+                to_address=inp.to_address, from_address=inp.from_address,
+                idempotency_key=inp.idempotency_key)
+        except conversations.ConversationNotFound:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        except conversations.ConversationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_event("communication_message.drafted", "communication_message",
+                           message["id"], user["tenant_id"], user["email"],
+                           payload={"channel": message["channel"]})
+        return message
+
+    @router.get("/messages/{message_id}")
+    async def get_communication_message(message_id: str, user=Depends(get_current_user)):
+        message = await conversations.get_message(db, user["tenant_id"], message_id)
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+        return message
+
+    @router.post("/messages/{message_id}/request-approval")
+    async def request_message_approval(message_id: str, inp: MessageApprovalInput,
+                                       user=Depends(get_current_user)):
+        try:
+            message = await conversations.request_approval(
+                db, tenant_id=user["tenant_id"], message_id=message_id, actor=user["email"],
+                risk=inp.risk, expires_in_hours=inp.expires_in_hours)
+        except (conversations.MessageNotFound, conversations.ConversationNotFound):
+            raise HTTPException(status_code=404, detail="Message not found")
+        except conversations.InvalidMessageTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except conversations.ConversationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_event("communication_message.approval_requested", "communication_message",
+                           message_id, user["tenant_id"], user["email"],
+                           payload={"approval_id": message.get("approval_id")})
+        return message
+
+    @router.post("/messages/{message_id}/send")
+    async def send_communication_message(message_id: str, user=Depends(get_current_user)):
+        """Attempt delivery.
+
+        This refuses today, and the refusal names which precondition stopped it. No
+        channel is authorised and no provider adapter is registered, so the endpoint
+        exists to make that state explicit rather than to send anything.
+        """
+        try:
+            message = await conversations.attempt_delivery(
+                db, tenant_id=user["tenant_id"], message_id=message_id, actor=user["email"])
+        except conversations.DeliveryRefused as exc:
+            await record_event("communication_message.refused", "communication_message",
+                               message_id, user["tenant_id"], user["email"],
+                               payload={"reason": exc.reason})
+            raise HTTPException(status_code=409,
+                                detail={"reason": exc.reason, "detail": exc.detail})
+        except (conversations.MessageNotFound, conversations.ConversationNotFound):
+            raise HTTPException(status_code=404, detail="Message not found")
+        except conversations.InvalidMessageTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        await record_event("communication_message.sent", "communication_message", message_id,
+                           user["tenant_id"], user["email"],
+                           payload={"status": message["status"]})
+        return message
+
+    # ----------------------------------------------------- recovery strategies
+
+    @router.get("/recovery-strategies")
+    async def list_recovery_strategies(state: Optional[str] = Query(default=None),
+                                       lane: Optional[str] = Query(default=None),
+                                       limit: int = Query(default=100, ge=1, le=500),
+                                       user=Depends(get_current_user)):
+        return await recovery_strategy.list_strategies(db, user["tenant_id"], state=state,
+                                                       lane=lane, limit=limit)
+
+    @router.get("/recovery-strategies/summary")
+    async def recovery_strategies_summary(user=Depends(get_current_user)):
+        return await recovery_strategy.summary(db, user["tenant_id"])
+
+    @router.get("/recovery-strategies/channel-authority")
+    async def recovery_channel_authority(user=Depends(get_current_user)):
+        """What this tenant is actually allowed to send on, and why not."""
+        return await recovery_strategy.authorized_channels(db, user["tenant_id"])
+
+    @router.post("/recovery-strategies/compose")
+    async def compose_recovery_strategies(user=Depends(require_role("admin"))):
+        summary_ = await recovery_strategy.compose_for_tenant(db, queue, user["tenant_id"],
+                                                              actor=user["email"])
+        await record_event("recovery_strategy.composed", "recovery_strategy",
+                           user["tenant_id"], user["tenant_id"], user["email"],
+                           payload=summary_)
+        return summary_
+
+    @router.get("/recovery-strategies/{strategy_id}")
+    async def get_recovery_strategy(strategy_id: str, user=Depends(get_current_user)):
+        strategy = await recovery_strategy.get_strategy(db, user["tenant_id"], strategy_id)
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Recovery strategy not found")
+        return strategy
 
     # --------------------------------------------------------- security gate
 

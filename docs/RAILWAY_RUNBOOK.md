@@ -116,6 +116,8 @@ the **production** domain:
 | Work-queue worker | `POST /api/cron/work-queue` | every 5 minutes — recovers leases abandoned by crashed workers, then claims and processes due durable jobs |
 | Second Chance detection | `POST /api/cron/second-chance` | hourly — detects stalled leads and missed follow-ups, then queues a recommendation refresh per tenant |
 | Next best actions | `POST /api/cron/next-best-actions` | every 30 minutes — recomputes the ranked recommendation queue |
+| Recovery strategy composition | `POST /api/cron/recovery-strategies` | hourly — composes a recovery strategy for every open Second Chance candidate and raises its approval request. Composition only: no outbound step can execute while its channel is unauthorised |
+| Approval expiry | `POST /api/cron/approval-expiry` | hourly — lapses approval requests nobody decided, so a stale request can never authorise an action |
 
 Every call must carry:
 

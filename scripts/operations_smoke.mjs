@@ -1,6 +1,7 @@
 /**
- * Operations smoke — durable work queue, Second Chance detection, Next Best Action,
- * and the external-component security gate, verified end to end against a running
+ * Operations smoke — durable work queue, Second Chance detection, recovery strategy
+ * composition, the approval queue, conversations and communication messages, Next Best
+ * Action, and the external-component security gate, verified end to end against a running
  * deployment.
  *
  * Companion to proof_of_life.mjs, with one important difference: every record this
@@ -227,6 +228,168 @@ async function main() {
     check('nba_feedback_persists', accepted.status === 200 && accepted.body?.state === 'accepted')
   }
 
+  // ---- recovery strategy composition -------------------------------------------
+  // The candidate detected above must turn into a strategy that cites its facts and
+  // refuses to mark any outbound step ready while no channel is authorised.
+  const authority = await call('/recovery-strategies/channel-authority', { token })
+  record('channel_authority_http', authority.status)
+  record('channel_authority', authority.body)
+  check('internal_channel_is_available', authority.body?.internal?.authorized === true)
+  check('no_outbound_channel_is_authorized_for_a_new_tenant',
+        ['email', 'sms', 'phone'].every((channel) => authority.body?.[channel]?.authorized === false),
+        'a fresh tenant has no certified provider, so nothing may be sent')
+
+  const composed = await call('/recovery-strategies/compose', { method: 'POST', token })
+  record('compose_http', composed.status)
+  record('compose_summary', composed.body)
+  check('composer_runs', composed.status === 200)
+  check('composer_produces_a_strategy_for_this_runs_candidate',
+        (composed.body?.strategies_composed || 0) >= 1,
+        'detection queued a candidate, so composition must produce a strategy')
+  check('composer_reports_no_errors', (composed.body?.errors || []).length === 0)
+
+  const strategies = await call('/recovery-strategies?state=proposed', { token })
+  const strategy = Array.isArray(strategies.body) ? strategies.body[0] : null
+  record('proposed_strategy_count', Array.isArray(strategies.body) ? strategies.body.length : null)
+  check('proposed_strategies_are_listed', !!strategy)
+  if (strategy) {
+    record('strategy_lane', strategy.lane)
+    record('strategy_rule', strategy.rule)
+    check('strategy_names_its_rule', !!strategy.rule && !!strategy.rationale)
+    check('strategy_cites_facts_to_a_record',
+          (strategy.facts || []).length > 0 && (strategy.facts || []).every((f) => 'source' in f))
+    check('strategy_has_no_fabricated_confidence',
+          !('confidence' in strategy) && !('score' in strategy))
+    const steps = strategy.steps || []
+    check('strategy_has_steps', steps.length > 0)
+    check('every_outbound_step_is_blocked_with_a_reason',
+          steps.filter((s) => s.channel !== 'internal')
+               .every((s) => s.status === 'blocked' && !!s.blocked_reason),
+          'no channel is authorised, so no outbound step may read as ready')
+    check('internal_steps_are_ready',
+          steps.filter((s) => s.channel === 'internal').every((s) => s.status === 'ready'))
+  }
+
+  // ---- approval queue ------------------------------------------------------------
+  // Composition must raise an approval, and approving a blocked action must not make it
+  // executable. That second assertion is the whole point of the gate.
+  const queuedApprovals = await call('/approval-queue?kind=recovery_strategy', { token })
+  const strategyApproval = Array.isArray(queuedApprovals.body) ? queuedApprovals.body[0] : null
+  record('strategy_approval_count', Array.isArray(queuedApprovals.body) ? queuedApprovals.body.length : null)
+  check('composition_raises_an_approval_request', !!strategyApproval)
+  if (strategyApproval) {
+    check('approval_records_that_an_agent_raised_it',
+          strategyApproval.requester_kind === 'agent')
+    check('approval_binds_to_the_strategy_it_authorises',
+          strategyApproval.action?.strategy_id === strategy?.id)
+    check('approval_carries_its_blocks', (strategyApproval.blocked_reasons || []).length > 0)
+    check('approval_expires', !!strategyApproval.expires_at)
+  }
+
+  const raised = await call('/approval-queue', {
+    method: 'POST', token,
+    body: { title: `${PREFIX} approval ${Date.now()}`, kind: 'external_effect', risk: 'high' },
+  })
+  record('approval_raise_http', raised.status)
+  check('an_approval_can_be_raised', raised.status === 200 && raised.body?.status === 'requested')
+  if (raised.body?.id) {
+    const decided = await call(`/approval-queue/${raised.body.id}/decision`, {
+      method: 'POST', token, body: { decision: 'approved', rationale: `${PREFIX} smoke` },
+    })
+    record('approval_decision_http', decided.status)
+    check('an_approval_can_be_decided',
+          decided.status === 200 && decided.body?.status === 'approved' && !!decided.body?.decided_by)
+
+    const again = await call(`/approval-queue/${raised.body.id}/decision`, {
+      method: 'POST', token, body: { decision: 'rejected' },
+    })
+    record('approval_second_decision_http', again.status)
+    check('a_decided_approval_cannot_be_decided_again', again.status === 409,
+          'an approval decided twice is not a gate')
+  }
+
+  const approvalSummary = await call('/approval-queue/summary', { token })
+  record('approval_summary', approvalSummary.body)
+  check('approval_summary_counts_blocked_requests',
+        (approvalSummary.body?.awaiting_decision_blocked || 0) >= 1)
+
+  // ---- conversations and communication messages ---------------------------------
+  // The point of this section is what does NOT happen. A message can be drafted and
+  // approved, and it still cannot be sent, because approval does not authorise a channel.
+  const thread = await call('/conversations', {
+    method: 'POST', token,
+    body: {
+      channel: 'email',
+      subject: `${PREFIX} thread ${Date.now()}`,
+      participants: [{ kind: 'contact', id: 'con_smoke', address: 'client@example.invalid' }],
+    },
+  })
+  record('conversation_create_http', thread.status)
+  check('a_conversation_can_be_created', thread.status === 200 && !!thread.body?.id)
+  check('a_new_conversation_has_no_consent', thread.body?.consent?.state === 'unknown',
+        'no record must mean no permission, never assumed permission')
+
+  const conversationSummary = await call('/conversations/summary', { token })
+  record('conversation_providers', conversationSummary.body?.providers)
+  check('no_delivery_provider_is_registered',
+        (conversationSummary.body?.providers || []).every((p) => p.registered === false),
+        'no channel adapter has been built or certified')
+
+  if (thread.body?.id) {
+    const drafted = await call(`/conversations/${thread.body.id}/messages`, {
+      method: 'POST', token, body: { body: `${PREFIX} draft body`, to_address: 'client@example.invalid' },
+    })
+    record('message_draft_http', drafted.status)
+    check('a_message_can_be_drafted', drafted.status === 200 && drafted.body?.status === 'draft',
+          'composing is not sending, so drafting must never require a channel')
+
+    const premature = await call(`/messages/${drafted.body?.id}/send`, { method: 'POST', token })
+    record('message_send_draft_http', premature.status)
+    check('a_draft_cannot_be_sent', premature.status === 409)
+
+    const requested = await call(`/messages/${drafted.body?.id}/request-approval`, {
+      method: 'POST', token, body: {},
+    })
+    record('message_approval_request_http', requested.status)
+    check('a_message_raises_an_approval', requested.status === 200 && !!requested.body?.approval_id)
+
+    const messageApproval = await call(`/approval-queue/${requested.body?.approval_id}`, { token })
+    record('message_approval_blocks', messageApproval.body?.blocked_reasons)
+    check('the_operator_can_see_what_still_blocks_the_send',
+          (messageApproval.body?.blocked_reasons || []).length > 0)
+
+    const approvedMessage = await call(`/approval-queue/${requested.body?.approval_id}/decision`, {
+      method: 'POST', token, body: { decision: 'approved', rationale: `${PREFIX} smoke` },
+    })
+    record('message_approval_decision_http', approvedMessage.status)
+    check('the_message_approval_can_be_decided', approvedMessage.status === 200)
+
+    const afterApproval = await call(`/messages/${drafted.body?.id}`, { token })
+    record('message_state_after_approval', afterApproval.body?.status)
+    check('approval_promotes_the_message', afterApproval.body?.status === 'approved',
+          'the decision hook must move the message, not leave the two records disagreeing')
+
+    const refused = await call(`/messages/${drafted.body?.id}/send`, { method: 'POST', token })
+    record('message_send_after_approval_http', refused.status)
+    record('message_send_refusal_reason', refused.body?.detail?.reason)
+    check('an_approved_message_is_still_refused_with_no_channel',
+          refused.status === 409 && refused.body?.detail?.reason === 'channel_not_authorized',
+          'approving an action does not authorise a channel')
+
+    const consentWithoutBasis = await call(`/conversations/${thread.body.id}/consent`, {
+      method: 'POST', token, body: { state: 'granted' },
+    })
+    record('consent_without_basis_http', consentWithoutBasis.status)
+    check('consent_granted_requires_a_stated_basis', consentWithoutBasis.status === 400)
+
+    const handoff = await call(`/conversations/${thread.body.id}/handoff`, {
+      method: 'POST', token, body: { to: 'agent', reason: `${PREFIX} smoke` },
+    })
+    record('conversation_handoff_http', handoff.status)
+    check('the_agent_human_boundary_is_recordable',
+          handoff.status === 200 && handoff.body?.handled_by === 'agent')
+  }
+
   // ---- security gate -----------------------------------------------------------
   const gateStatus = await call('/security-gate/status', { token })
   record('security_gate_status', gateStatus.body)
@@ -318,9 +481,19 @@ async function main() {
     let ticksUsed = 0
     let jobState = targetJob?.status ?? null
     if (targetJob) {
-      // Each tick is bounded and rotates across tenants, so this tenant's job may not
-      // be claimed on the first pass. Drive the worker the way a scheduler would.
-      for (let attempt = 0; attempt < 10 && jobState !== 'completed'; attempt += 1) {
+      // Each tick is bounded and rotates across tenants by longest wait, so a brand-new
+      // tenant queues behind every tenant already waiting. That is the fairness rule
+      // working, not a fault — but it means the number of ticks this needs depends on how
+      // much open work the deployment is already carrying. `/work-queue/stats` is
+      // tenant-scoped, so it reports only this run's own open items — the deployment-wide
+      // backlog is not observable through the API, which is exactly why the tick count
+      // matters. Record both, and give the budget room for a busy deployment: a failure
+      // with ticks_used at the budget means the backlog outran it, not that the worker is
+      // broken.
+      const backlog = await call('/work-queue/stats', { token })
+      record('work_queue_open_for_this_tenant_at_tick_start', backlog.body?.open ?? null)
+      record('worker_tick_budget', 30)
+      for (let attempt = 0; attempt < 30 && jobState !== 'completed'; attempt += 1) {
         ticksUsed += 1
         await call('/cron/work-queue', {
           method: 'POST',
@@ -334,7 +507,9 @@ async function main() {
     record('worker_ticks_used', ticksUsed)
     record('tracked_system_job_state', jobState)
     check('worker_tick_completed_this_runs_system_job', jobState === 'completed',
-          `last observed state: ${jobState}`)
+          `last observed state: ${jobState} after ${ticksUsed} tick(s); each tick claims a ` +
+          'bounded batch and serves the longest-waiting tenants first, so a run that used ' +
+          'its whole tick budget was outrun by the deployment backlog rather than failing')
   } else {
     record('cron_secret_supplied', false)
   }

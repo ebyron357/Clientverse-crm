@@ -16,12 +16,16 @@ name: Scheduled jobs
 # With either secret missing the workflow exits successfully without calling anything,
 # so an unconfigured repository does not produce a wall of failing scheduled runs.
 
+# Ordering within a tick is eventual, not sequential: each endpoint starts its work in
+# the background and returns immediately, so strategy composition may run against the
+# previous tick's detections. Both sweeps are idempotent, so the next tick catches up.
+
 on:
   schedule:
     - cron: '*/15 * * * *'   # commitment risk
     - cron: '*/5 * * * *'    # durable work-queue worker
     - cron: '0,30 * * * *'   # integration sync + next best actions
-    - cron: '5 * * * *'      # daily digest + Second Chance detection
+    - cron: '5 * * * *'      # daily digest + Second Chance detection, strategy composition, approval expiry
   workflow_dispatch:
     inputs:
       jobs:
@@ -55,8 +59,8 @@ jobs:
             '*/15 * * * *')  paths='commitment-risk' ;;
             '*/5 * * * *')   paths='work-queue' ;;
             '0,30 * * * *')  paths='integration-sync,next-best-actions' ;;
-            '5 * * * *')     paths='daily-digest,second-chance' ;;
-            *)               paths='commitment-risk,work-queue,integration-sync,next-best-actions,daily-digest,second-chance' ;;
+            '5 * * * *')     paths='daily-digest,second-chance,recovery-strategies,approval-expiry' ;;
+            *)               paths='commitment-risk,work-queue,integration-sync,next-best-actions,daily-digest,second-chance,recovery-strategies,approval-expiry' ;;
           esac
           echo "paths=$paths" >> "$GITHUB_OUTPUT"
 
