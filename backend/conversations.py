@@ -688,8 +688,11 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
         await refuse(REFUSAL_APPROVAL, str(exc)[:300])
 
     try:
-        await approval_queue.consume(db, tenant_id=tenant_id, approval_id=approval_id,
-                                     actor=actor)
+        # Bind the claim to this exact message, so an approval for one message can never
+        # be spent sending another.
+        await approval_queue.consume(
+            db, tenant_id=tenant_id, approval_id=approval_id, actor=actor,
+            expected_action={"type": "communication_message.send", "message_id": message_id})
     except approval_queue.ApprovalError as exc:
         await refuse(REFUSAL_APPROVAL, str(exc)[:300])
 

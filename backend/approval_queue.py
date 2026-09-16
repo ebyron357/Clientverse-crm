@@ -111,6 +111,18 @@ def normalise_risk(risk: Optional[str]) -> str:
     return candidate if candidate in RISK_TIERS else RISK_MEDIUM
 
 
+def _not_lapsed_criteria() -> dict:
+    """Query clause matching requests that have not passed their expiry.
+
+    Legacy records written before the queue existed carry no `expires_at` and never
+    lapse, so they must still match. Timestamps are always written as UTC ISO-8601 with a
+    `+00:00` offset, which makes the string comparison order-correct.
+    """
+    return {"$or": [{"expires_at": {"$exists": False}},
+                    {"expires_at": None},
+                    {"expires_at": {"$gt": _iso(_now())}}]}
+
+
 def _is_expired(doc: dict, reference: Optional[datetime] = None) -> bool:
     """True when an undecided request has passed its expiry."""
     if doc.get("status") not in OPEN_STATUSES:
@@ -213,6 +225,15 @@ async def request(db, *, tenant_id: str, title: str, kind: str = "external_effec
                 raise
             existing = await db[COLLECTION].find_one(
                 {"tenant_id": tenant_id, "active_dedupe_key": dedupe_key}, {"_id": 0})
+            if existing and _is_expired(existing):
+                # The request holding the key has lapsed and the sweep has not run yet.
+                # Deduplicating onto it would leave the caller unable to raise anything,
+                # so lapse it now — which releases the key — and insert for real.
+                await _mark_expired(db, existing)
+                await db[COLLECTION].insert_one(dict(doc))
+                result = _public(doc)
+                result["deduplicated"] = False
+                return result
             if existing:
                 result = _public(existing)
                 result["deduplicated"] = True
@@ -312,8 +333,10 @@ async def decide(db, *, tenant_id: str, approval_id: str, decision: str, actor: 
         raise InvalidApprovalTransition(
             "This request requires a different approver from the person who raised it")
 
+    # Expiry is part of the conditional update, not only the read above: without it, a
+    # request that lapses between the two can still be approved by this write.
     updated = await db[COLLECTION].find_one_and_update(
-        {"id": approval_id, "tenant_id": tenant_id, "status": status},
+        {"id": approval_id, "tenant_id": tenant_id, "status": status, **_not_lapsed_criteria()},
         {"$set": {"status": decision, "decided_by": actor, "decided_at": _iso(_now()),
                   "decision_rationale": (str(rationale)[:2000] if rationale else None)},
          "$unset": {"active_dedupe_key": ""},
@@ -321,7 +344,14 @@ async def decide(db, *, tenant_id: str, approval_id: str, decision: str, actor: 
         return_document=True,
     )
     if not updated:
-        # Someone decided it between our read and our write.
+        # Either someone decided it between our read and our write, or it lapsed in that
+        # window. Re-read to say which.
+        current = await db[COLLECTION].find_one({"id": approval_id, "tenant_id": tenant_id})
+        if current and _is_expired(current):
+            await _mark_expired(db, current)
+            raise InvalidApprovalTransition(
+                f"Approval request expired at {current.get('expires_at')} and can no longer "
+                f"be decided")
         raise InvalidApprovalTransition("Approval request was decided concurrently")
     return _public(updated)
 
@@ -348,12 +378,20 @@ async def cancel(db, *, tenant_id: str, approval_id: str, actor: str,
     return _public(updated)
 
 
-async def consume(db, *, tenant_id: str, approval_id: str, actor: str) -> dict:
+async def consume(db, *, tenant_id: str, approval_id: str, actor: str,
+                  expected_action: Optional[dict] = None) -> dict:
     """Claim an approved request for exactly one execution.
 
     This is the property that makes the gate real rather than decorative: the flip from
     `pending` to `consumed` is a single conditional update, so concurrent workers cannot
     both act on one approval. The caller executes only if this returns.
+
+    `expected_action` binds the claim to the action the caller is about to perform. Storing
+    the action is not the same as enforcing it: without this, a caller could claim one
+    approval and then execute a different payload. Every field given here must match the
+    recorded action, and the check is part of the same atomic update, so it cannot be
+    raced. Callers pass the identifying fields — the action type and the id of the thing
+    being acted on.
     """
     doc = await db[COLLECTION].find_one({"id": approval_id, "tenant_id": tenant_id})
     if not doc:
@@ -373,9 +411,21 @@ async def consume(db, *, tenant_id: str, approval_id: str, actor: str) -> dict:
     if execution.get("state") == EXECUTION_NOT_APPLICABLE:
         raise InvalidApprovalTransition("This approval carries no bound action to execute")
 
+    recorded = doc.get("action") or {}
+    for key, value in (expected_action or {}).items():
+        if recorded.get(key) != value:
+            raise InvalidApprovalTransition(
+                f"This approval authorises a different action: its {key} is "
+                f"{recorded.get(key)!r}, not {value!r}")
+
+    criteria = {"id": approval_id, "tenant_id": tenant_id, "status": APPROVED,
+                "execution.state": EXECUTION_PENDING}
+    # The action match is part of the atomic claim, not merely checked above, so a
+    # concurrent edit cannot slip a different payload in between.
+    criteria.update({f"action.{key}": value for key, value in (expected_action or {}).items()})
+
     updated = await db[COLLECTION].find_one_and_update(
-        {"id": approval_id, "tenant_id": tenant_id, "status": APPROVED,
-         "execution.state": EXECUTION_PENDING},
+        criteria,
         {"$set": {"execution.state": EXECUTION_CONSUMED,
                   "execution.consumed_at": _iso(_now()),
                   "execution.consumed_by": actor},
@@ -438,7 +488,13 @@ async def expire_due(db, *, tenant_id: Optional[str] = None, limit: int = 500) -
 
 
 async def summary(db, tenant_id: str) -> dict:
-    """Counts for the operator surface: what is waiting, and how risky is it."""
+    """Counts for the operator surface: what is waiting, and how risky is it.
+
+    Lapsed requests are closed first. Counting them as awaiting a decision would tell the
+    operator to act on requests `decide` will refuse, and expiry is already applied on
+    every other read path.
+    """
+    await expire_due(db, tenant_id=tenant_id)
     by_status: dict[str, int] = {}
     async for row in db[COLLECTION].aggregate([
         {"$match": {"tenant_id": tenant_id}},

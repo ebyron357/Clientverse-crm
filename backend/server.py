@@ -3479,6 +3479,18 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
                          or (approval.get("action") or {}).get("pending_action_id"))
     if approval.get("kind") == "mcp_write" and pending_action_id:
         if status == "approved":
+            # Claim the approval before executing. Without this the write ran while its
+            # approval stayed `pending`, so the single-use guarantee was never recorded and
+            # the operator surface reported it as approved-but-unexecuted forever.
+            # Approvals written before the queue existed carry no execution binding; those
+            # raise, and executing them anyway preserves the historical behaviour.
+            try:
+                await approval_service.consume(
+                    db, tenant_id=tenant_id, approval_id=approval["id"], actor=actor,
+                    expected_action={"type": "mcp_write", "pending_action_id": pending_action_id})
+            except approval_service.InvalidApprovalTransition as exc:
+                if (approval.get("execution") or {}).get("state"):
+                    raise HTTPException(status_code=409, detail=str(exc))
             result["execution"] = await execute_pending_mcp(pending_action_id, user)
         else:
             await db.mcp_pending_actions.update_one({"id": pending_action_id},

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
@@ -219,6 +219,20 @@ function StepRow({ step }) {
   );
 }
 
+function strategyLabel(strategy) {
+  // `executable` only means no channel blocks the steps. A proposal still waiting on an
+  // administrator is not ready, and saying so would misrepresent the approval gate.
+  if (strategy.blocked_reasons?.length) return "Blocked";
+  if (strategy.state !== "approved") return "Awaiting approval";
+  return "Approved";
+}
+
+function strategyTone(strategy) {
+  if (strategy.blocked_reasons?.length) return "bg-amber-50 text-amber-900 border-amber-200";
+  if (strategy.state !== "approved") return "bg-cyan-50 text-cyan-800 border-cyan-200";
+  return "bg-emerald-50 text-emerald-700 border-emerald-200";
+}
+
 function RecoveryStrategiesPanel({ isAdmin }) {
   const [strategies, setStrategies] = useState(null);
   const [summary, setSummary] = useState(null);
@@ -316,11 +330,7 @@ function RecoveryStrategiesPanel({ isAdmin }) {
             <div key={strategy.id} className="rounded-xl border border-slate-200 bg-white p-4"
                  data-testid={`strategy-${strategy.lane}`}>
               <div className="flex flex-wrap items-center gap-2">
-                <Badge className={strategy.executable
-                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                  : "bg-amber-50 text-amber-900 border-amber-200"}>
-                  {strategy.executable ? "Ready" : "Blocked"}
-                </Badge>
+                <Badge className={strategyTone(strategy)}>{strategyLabel(strategy)}</Badge>
                 <span className="text-sm font-semibold text-[#132038]">{strategy.title}</span>
                 <span className="text-[11px] uppercase tracking-wide text-slate-500">
                   {strategy.lane.replace(/_/g, " ")}
@@ -421,7 +431,7 @@ function ApprovalQueuePanel({ isAdmin }) {
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge className={RISK_TONE[request.risk] || RISK_TONE.medium}>
-                    {request.risk} risk
+                    {request.risk || "medium"} risk
                   </Badge>
                   <span className="text-[11px] uppercase tracking-wide text-slate-500">
                     {request.kind}
@@ -758,10 +768,17 @@ function SecurityGatePanel() {
   );
 }
 
+const TABS = ["actions", "queue", "recovery", "approvals", "conversations", "gate"];
+
 export default function Operations() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const isAdmin = user?.role === "admin";
+  // Several module-registry entries deep-link to a tab of this page, so the tab is part of
+  // the URL rather than local state.
+  const requested = params.get("tab");
+  const tab = TABS.includes(requested) ? requested : "actions";
 
   return (
     <div className="cv-page">
@@ -778,7 +795,8 @@ export default function Operations() {
         </div>
       </div>
 
-      <Tabs defaultValue="actions">
+      <Tabs value={tab} onValueChange={(next) => setParams(next === "actions" ? {} : { tab: next },
+                                                          { replace: true })}>
         <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="actions" data-testid="tab-actions">
             <ListChecks className="mr-2 h-3.5 w-3.5" />Next best actions

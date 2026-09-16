@@ -100,7 +100,7 @@ def test_a_connected_but_unconfigured_provider_is_not_authorised(env):
         {"tenant_id": TENANT, "name": "Gmail", "status": "REQUIRES_CONFIGURATION"}))
     email = run(rs.authorized_channels(db, TENANT))[rs.CHANNEL_EMAIL]
     assert email["authorized"] is False
-    assert "not past configuration" in email["reason"]
+    assert "no integration record marks it configured" in email["reason"]
 
 
 def test_a_connected_and_configured_provider_is_authorised(env):
@@ -350,3 +350,72 @@ def test_an_approved_strategy_is_not_re_proposed_by_the_next_sweep(env):
     assert again["state"] == rs.STATE_APPROVED
     assert again["approval_id"] == strategy["approval_id"]
     assert run(aq.get(db, TENANT, strategy["approval_id"]))["status"] == aq.APPROVED
+
+
+def test_a_connection_without_a_catalogue_record_is_not_authorised(env):
+    """Fail closed. A newly registered tenant has no `integrations` rows at all, so a
+    missing catalogue entry must never read as permission to send."""
+    db, _ = env
+    run(db.integration_connections.insert_one(
+        {"tenant_id": TENANT, "provider": "gmail", "status": "active"}))
+    email = run(rs.authorized_channels(db, TENANT))[rs.CHANNEL_EMAIL]
+    assert email["authorized"] is False
+    assert "no integration record marks it configured" in email["reason"]
+
+
+def test_a_detector_candidate_reaches_the_owner_led_lane(env):
+    """The real detector payload carries only a record id, so the composer must load the
+    opportunity itself to find the owner and its workspace."""
+    db, queue = env
+    run(db.companies.insert_one({"tenant_id": TENANT, "id": "co_2", "name": "Beta Ltd"}))
+    run(db.workspaces.insert_one({"tenant_id": TENANT, "id": "ws_2", "company_id": "co_2",
+                                  "name": "Beta"}))
+    run(db.opportunities.insert_one({"tenant_id": TENANT, "id": "opp_real", "name": "Beta renewal",
+                                     "stage": "proposal", "value": 80000, "company_id": "co_2",
+                                     "owner": "owner@example.com"}))
+    # Exactly what `second_chance.enqueue_detections` produces: no workspace_id, no owner.
+    item = {
+        "id": f"wq_{uuid.uuid4().hex[:10]}",
+        "tenant_id": TENANT,
+        "type": second_chance.TYPE_STALLED_LEAD,
+        "payload": {"record_id": "opp_real", "record_kind": "opportunity",
+                    "title": "Beta renewal"},
+        "evidence": {"idle_days": 30, "stage": "proposal", "value": 80000},
+        "workspace_id": None,
+    }
+    strategy = run(rs.compose_for_candidate(db, TENANT, item))
+    assert strategy["lane"] == "owner_led_reengagement", strategy["lane"]
+    assert strategy["context"]["owner"] == "owner@example.com"
+    assert strategy["workspace_id"] == "ws_2"
+
+
+def test_a_lapsed_approval_does_not_strand_a_candidate(env):
+    """If nobody decides, the sweep lapses the approval — the strategy must then re-ask."""
+    db, queue = env
+    seed_owner_workspace(db)
+    item = candidate(workspace_id="ws_1")
+    first = run(rs.compose_for_candidate(db, TENANT, item))
+
+    run(db[aq.COLLECTION].update_one(
+        {"id": first["approval_id"]},
+        {"$set": {"expires_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()}}))
+    run(aq.expire_due(db, tenant_id=TENANT))
+
+    again = run(rs.compose_for_candidate(db, TENANT, item))
+    assert again["approval_id"] != first["approval_id"]
+    assert run(aq.get(db, TENANT, again["approval_id"]))["status"] == aq.REQUESTED
+
+
+def test_changed_evidence_refreshes_the_proposal(env):
+    """Facts move within a lane; the operator must not be shown stale record-backed evidence."""
+    db, queue = env
+    seed_owner_workspace(db)
+    first = run(rs.compose_for_candidate(db, TENANT, candidate(workspace_id="ws_1")))
+    idle_first = [f for f in first["facts"] if f["label"] == "Days idle"][0]["value"]
+
+    moved = candidate(workspace_id="ws_1", evidence={"idle_days": idle_first + 40})
+    second = run(rs.compose_for_candidate(db, TENANT, moved))
+    assert second["lane"] == first["lane"]
+    assert [f for f in second["facts"] if f["label"] == "Days idle"][0]["value"] == idle_first + 40
+    assert second["approval_id"] != first["approval_id"], \
+        "a proposal shown on different evidence is a different proposal"

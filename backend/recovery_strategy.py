@@ -57,7 +57,12 @@ CHANNEL_PROVIDERS = {
 # (see CONN_STATUSES in server.py). `degraded` deliberately does not count: a
 # connection that is already struggling is not a foundation for new outbound work.
 CONNECTED_STATUSES = ("active",)
-UNCONFIGURED_INTEGRATION_STATUSES = ("REQUIRES_CONFIGURATION", "PLANNED", "DISABLED")
+# Authorisation fails closed: a provider counts as configured only when the tenant has a
+# catalogue row for it in one of these states. A *missing* row is not permission — a newly
+# registered tenant has no `integrations` rows at all (only the seeded demo tenant does),
+# so treating "not explicitly unconfigured" as configured would let a freshly connected
+# account send before any configuration or certification record existed.
+CONFIGURED_INTEGRATION_STATUSES = ("CONNECTED", "ACTIVE", "CERTIFIED", "ENABLED", "AVAILABLE")
 
 # Value bands are configuration so the playbook can be tuned without a code change.
 HIGH_VALUE_THRESHOLD = float(os.environ.get("RECOVERY_HIGH_VALUE_THRESHOLD", "25000"))
@@ -119,8 +124,8 @@ async def authorized_channels(db, tenant_id: str) -> dict[str, dict]:
 
     catalogue = await db.integrations.find(
         {"tenant_id": tenant_id}, {"_id": 0, "name": 1, "provider": 1, "status": 1}).to_list(100)
-    unconfigured = {str(row.get("name") or "").lower() for row in catalogue
-                    if str(row.get("status") or "") in UNCONFIGURED_INTEGRATION_STATUSES}
+    configured = {str(row.get("name") or "").lower() for row in catalogue
+                  if str(row.get("status") or "").upper() in CONFIGURED_INTEGRATION_STATUSES}
 
     result: dict[str, dict] = {
         CHANNEL_INTERNAL: {"authorized": True,
@@ -141,17 +146,16 @@ async def authorized_channels(db, tenant_id: str) -> dict[str, dict]:
                            f"({', '.join(providers)} is not connected)."),
             }
             continue
-        still_unconfigured = [p for p in live if p in unconfigured]
-        if still_unconfigured:
+        certified = [p for p in live if p in configured]
+        if not certified:
             result[channel] = {
                 "authorized": False,
-                "reason": (f"{', '.join(still_unconfigured)} is connected but its integration "
-                           f"record is not past configuration, so outbound {channel} is not "
-                           f"certified."),
+                "reason": (f"{', '.join(live)} is connected, but no integration record marks it "
+                           f"configured for this tenant, so outbound {channel} is not certified."),
             }
             continue
         result[channel] = {"authorized": True,
-                           "reason": f"Connected provider: {', '.join(live)}."}
+                           "reason": f"Connected and configured provider: {', '.join(certified)}."}
     return result
 
 
@@ -187,6 +191,26 @@ async def gather_context(db, tenant_id: str, candidate: dict) -> dict:
     if evidence.get("value") is not None:
         facts.append(_fact("Value", evidence["value"], f"{record_kind}:{record_id}"))
 
+    # Load the source record. Detector candidates carry a `record_id` and little else:
+    # the owner, company and value live on the opportunity, and the workspace is reached
+    # through its company. Without this the main stalled-lead lane could never find an
+    # owner and every real candidate fell through to triage.
+    if record_kind == "opportunity" and record_id:
+        opportunity = await db.opportunities.find_one(
+            {"tenant_id": tenant_id, "id": record_id}, {"_id": 0})
+        if opportunity:
+            context["company_id"] = context["company_id"] or opportunity.get("company_id")
+            context["contact_id"] = context["contact_id"] or opportunity.get("contact_id")
+            context["owner"] = opportunity.get("owner") or opportunity.get("assignee")
+            if context["owner"]:
+                facts.append(_fact("Opportunity owner", context["owner"],
+                                   f"opportunity:{record_id}"))
+    if not context.get("workspace_id") and context.get("company_id"):
+        workspace_row = await db.workspaces.find_one(
+            {"tenant_id": tenant_id, "company_id": context["company_id"]}, {"_id": 0, "id": 1})
+        if workspace_row:
+            context["workspace_id"] = workspace_row["id"]
+
     company = None
     if context["company_id"]:
         company = await db.companies.find_one(
@@ -210,7 +234,8 @@ async def gather_context(db, tenant_id: str, candidate: dict) -> dict:
             {"tenant_id": tenant_id, "id": context["workspace_id"]}, {"_id": 0})
         if workspace:
             context["workspace_name"] = workspace.get("name")
-            context["owner"] = workspace.get("owner") or workspace.get("account_manager")
+            context["owner"] = (context.get("owner") or workspace.get("owner")
+                                or workspace.get("account_manager"))
             if context["owner"]:
                 facts.append(_fact("Relationship owner", context["owner"],
                                    f"workspace:{workspace.get('id')}"))
@@ -247,7 +272,6 @@ async def gather_context(db, tenant_id: str, candidate: dict) -> dict:
     if prior:
         facts.append(_fact("Prior recovery attempts", len(prior), f"{record_kind}:{record_id}"))
 
-    context["owner"] = context.get("owner")
     return context
 
 
@@ -417,13 +441,16 @@ def _apply_channel_authority(steps: list[dict], channels: dict[str, dict]) -> li
 # -------------------------------------------------------------------- composition
 
 async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
-                                actor: str = "recovery-composer") -> dict:
+                                actor: str = "recovery-composer",
+                                channels: Optional[dict] = None) -> dict:
     """Compose one strategy, persist it, and raise its approval request.
 
     Returns the stored strategy. Nothing is executed and nothing is sent.
     """
     context = await gather_context(db, tenant_id, candidate)
-    channels = await authorized_channels(db, tenant_id)
+    # Channel authority is tenant-wide, so a sweep computes it once and passes it in
+    # rather than re-reading two collections for every candidate.
+    channels = channels if channels is not None else await authorized_channels(db, tenant_id)
     lane = select_lane(candidate, context)
     steps = _apply_channel_authority(lane["steps"], channels)
 
@@ -468,9 +495,10 @@ async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
                                         {"$set": {"updated_at": _iso(now)}})
         return _public_strategy({**existing, "updated_at": _iso(now)})
 
-    if existing and not _materially_changed(existing, strategy):
-        # Same candidate, same recommendation: touch the timestamp and leave the
-        # operator's pending decision alone. Re-raising here would nag.
+    if existing and not _materially_changed(existing, strategy) and \
+            await _approval_is_live(db, tenant_id, existing.get("approval_id")):
+        # Same candidate, same recommendation, and its approval is still decidable: touch
+        # the timestamp and leave the operator's pending decision alone. Re-raising would nag.
         await db[COLLECTION].update_one({"_id": existing["_id"]},
                                         {"$set": {"updated_at": _iso(now)}})
         return _public_strategy({**existing, "updated_at": _iso(now)})
@@ -523,11 +551,34 @@ def _public_strategy(strategy: dict) -> dict:
 
 
 def _fingerprint(strategy: dict) -> str:
-    """Identity of the *recommendation*, so a changed proposal cannot reuse an approval."""
-    parts = [strategy.get("lane") or "", strategy.get("rule") or ""]
+    """Identity of the *recommendation*, so a changed proposal cannot reuse an approval.
+
+    The cited facts and the rationale are part of that identity, not decoration: an
+    operator decides on the evidence shown, so evidence that moved within the same lane —
+    idle days, value, open commitments — still makes this a different proposal. Leaving
+    them out let a strategy keep displaying stale record-backed facts.
+    """
+    parts = [strategy.get("lane") or "", strategy.get("rule") or "",
+             strategy.get("rationale") or ""]
     for step in strategy.get("steps") or []:
         parts.append(f"{step.get('action')}|{step.get('channel')}|{step.get('status')}")
+    for fact in strategy.get("facts") or []:
+        parts.append(f"{fact.get('label')}={fact.get('value')}@{fact.get('source')}")
     return uuid.uuid5(uuid.NAMESPACE_URL, "::".join(parts)).hex[:12]
+
+
+async def _approval_is_live(db, tenant_id: str, approval_id: Optional[str]) -> bool:
+    """Is this strategy's approval still something an operator can decide?
+
+    If it lapsed — nobody decided it before `approval-expiry` swept it — the strategy would
+    otherwise sit `proposed` forever behind a request that can never be approved, and its
+    candidate would never be proposed again. A closed approval means recompose and re-ask.
+    """
+    if not approval_id:
+        return False
+    approval = await approval_queue.get(db, tenant_id, approval_id)
+    return bool(approval) and approval.get("status") in (approval_queue.REQUESTED,
+                                                         approval_queue.APPROVED)
 
 
 def _materially_changed(existing: dict, composed: dict) -> bool:
@@ -557,10 +608,12 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
     """Compose a strategy for every open Second Chance candidate without one."""
     candidates = await queue.list_items(tenant_id=tenant_id, status="open",
                                         queue=second_chance.QUEUE_NAME, limit=limit)
+    channels = await authorized_channels(db, tenant_id)
     composed, errors = [], []
     for candidate in candidates:
         try:
-            composed.append(await compose_for_candidate(db, tenant_id, candidate, actor=actor))
+            composed.append(await compose_for_candidate(db, tenant_id, candidate, actor=actor,
+                                                        channels=channels))
         except Exception as exc:  # one bad candidate must not stop the sweep
             errors.append({"candidate_id": candidate.get("id"), "error": str(exc)[:300]})
 

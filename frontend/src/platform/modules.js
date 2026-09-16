@@ -19,14 +19,14 @@ export const CLIENTVERSE_MODULES = [
   { id: "deals", group: "CRM", label: "Deals", description: "Qualified revenue opportunities", route: "/deals", icon: CircleDollarSign, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/opportunities", actions: ["view", "create", "advance"] },
   { id: "pipelines", group: "CRM", label: "Pipelines", description: "Stage-based revenue movement", route: "/pipeline", icon: GitBranch, state: MODULE_STATES.AVAILABLE, contract: "GET /api/opportunities", actions: ["view", "advance"] },
   { id: "email", group: "Communications", label: "Email", description: "Shared email context and drafting", route: "/communications/email", icon: Mail, state: MODULE_STATES.CONFIGURATION_REQUIRED, contract: "CommunicationMessage service (delivered) + an authorised email provider", actions: [] },
-  { id: "inbox", group: "Communications", label: "Unified Inbox", description: "Cross-channel relationship conversations, assignment, and the agent/human boundary", route: "/operations", icon: Inbox, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/conversations", actions: ["view", "create", "assign", "handoff", "consent", "draft", "close"] },
+  { id: "inbox", group: "Communications", label: "Unified Inbox", description: "Cross-channel relationship conversations, assignment, and the agent/human boundary", route: "/operations?tab=conversations", icon: Inbox, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/conversations", actions: ["view", "create", "assign", "handoff", "consent", "draft", "close"] },
   { id: "sms", group: "Communications", label: "SMS", description: "Consent-aware client messaging", route: "/communications/sms", icon: MessageSquareText, state: MODULE_STATES.CONFIGURATION_REQUIRED, contract: "CommunicationMessage service (delivered) + an authorised SMS provider", actions: [] },
   { id: "calling", group: "Communications", label: "Calling", description: "Call activity and outcomes", route: "/communications/calling", icon: Phone, state: MODULE_STATES.CONTRACT_PENDING, contract: "Call activity service", actions: [] },
   { id: "calendar", group: "Scheduling", label: "Calendar", description: "Meetings and relationship moments", route: "/scheduling/calendar", icon: CalendarDays, state: MODULE_STATES.CONTRACT_PENDING, contract: "Calendar event service", actions: [] },
   { id: "client-360", group: "Client Success", label: "Client 360", description: "Health, outcomes, commitments, and delivery", route: "/workspaces", icon: BriefcaseBusiness, state: MODULE_STATES.AVAILABLE, contract: "GET /api/workspaces", actions: ["view", "create", "update"] },
   { id: "client-operations", group: "Client Success", label: "Client Operations", description: "Portal, commercial, and playbook workflows", route: "/client-ops", icon: Handshake, state: MODULE_STATES.AVAILABLE, contract: "Client operations endpoint set", actions: ["view", "manage"] },
   { id: "workflows", group: "Automation", label: "Workflows", description: "Deterministic, auditable orchestration", route: "/automation/workflows", icon: Workflow, state: MODULE_STATES.CONTRACT_PENDING, contract: "Workflow definition and run services", actions: [] },
-  { id: "approvals", group: "Automation", label: "Approvals", description: "Human governance for consequential actions", route: "/operations", icon: ClipboardCheck, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/approval-queue", actions: ["view", "request", "approve", "reject", "cancel"] },
+  { id: "approvals", group: "Automation", label: "Approvals", description: "Human governance for consequential actions", route: "/operations?tab=approvals", icon: ClipboardCheck, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/approval-queue", actions: ["view", "request", "approve", "reject", "cancel"] },
   { id: "revenue", group: "Revenue", label: "Revenue Operations", description: "Forecasting, billing, and revenue intelligence", route: "/revenue", icon: BarChart3, state: MODULE_STATES.CONTRACT_PENDING, contract: "Revenue ledger and forecast services", actions: [] },
   { id: "support", group: "Support", label: "Support", description: "Cases, SLAs, and resolution context", route: "/support", icon: Headphones, state: MODULE_STATES.CONTRACT_PENDING, contract: "Case and SLA services", actions: [] },
   { id: "reporting", group: "Intelligence", label: "Reporting", description: "Explainable operating performance", route: "/intelligence/reporting", icon: BarChart3, state: MODULE_STATES.CONTRACT_PENDING, contract: "Metric and report services", actions: [] },
@@ -47,5 +47,12 @@ export const MODULE_GROUPS = [
   ...[...new Set(CLIENTVERSE_MODULES.map((module) => module.group))].filter((group) => !PINNED_GROUPS.includes(group)),
 ];
 export const getModule = (id) => CLIENTVERSE_MODULES.find((module) => module.id === id);
-export const getModuleByRoute = (pathname) => CLIENTVERSE_MODULES.find((module) => pathname === module.route || pathname.startsWith(`${module.route}/`));
+// Several modules are tabs of a shared page and carry a query string in their route so the
+// sidebar can deep-link to them. A pathname never equals such a route, so those entries
+// only ever match an exact full-route lookup: a page resolves to the module that owns it
+// rather than to whichever of its tabs happens to be listed first.
+export const getModuleByRoute = (pathname) =>
+  CLIENTVERSE_MODULES.find((module) => module.route === pathname)
+  || CLIENTVERSE_MODULES.find((module) => !module.route.includes("?")
+    && (pathname === module.route || pathname.startsWith(`${module.route}/`)));
 export const isModuleActionable = (module) => module?.state === MODULE_STATES.AVAILABLE;

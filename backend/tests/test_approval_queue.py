@@ -360,3 +360,66 @@ def test_refreshing_blocks_is_tenant_scoped(db):
     with pytest.raises(aq.ApprovalNotFound):
         run(aq.refresh_blocks(db, tenant_id=OTHER_TENANT, approval_id=req["id"],
                               blocked_reasons=[], actor="worker-1"))
+
+
+# ------------------------------------------------- the action a claim authorises
+
+def test_consume_refuses_an_approval_for_a_different_action(db):
+    """Storing the bound action is not enforcing it: the claim must match it."""
+    req = _request(db, action={"type": "communication_message.send", "message_id": "msg_1"})
+    run(aq.decide(db, tenant_id=TENANT, approval_id=req["id"], decision=aq.APPROVED,
+                  actor="admin@example.com"))
+    with pytest.raises(aq.InvalidApprovalTransition) as exc:
+        run(aq.consume(db, tenant_id=TENANT, approval_id=req["id"], actor="worker-1",
+                       expected_action={"type": "communication_message.send",
+                                        "message_id": "msg_2"}))
+    assert "different action" in str(exc.value)
+    # And the approval is still unspent, so the legitimate execution can still happen.
+    assert run(aq.consume(db, tenant_id=TENANT, approval_id=req["id"], actor="worker-1",
+                          expected_action={"type": "communication_message.send",
+                                           "message_id": "msg_1"}))["execution"]["state"] \
+        == aq.EXECUTION_CONSUMED
+
+
+def test_consume_without_an_expected_action_still_works(db):
+    req = _request(db)
+    run(aq.decide(db, tenant_id=TENANT, approval_id=req["id"], decision=aq.APPROVED,
+                  actor="admin@example.com"))
+    assert run(aq.consume(db, tenant_id=TENANT, approval_id=req["id"],
+                          actor="worker-1"))["execution"]["state"] == aq.EXECUTION_CONSUMED
+
+
+# ------------------------------------------------------- expiry, more carefully
+
+def test_a_lapsed_request_does_not_hold_its_dedupe_key(db):
+    """Before the sweep runs, a lapsed request must not block an identical new one."""
+    first = _request(db, dedupe_key="strategy:rcv_stuck")
+    _backdate(db, first["id"])
+    again = _request(db, dedupe_key="strategy:rcv_stuck")
+    assert again["deduplicated"] is False
+    assert again["id"] != first["id"]
+    assert run(aq.get(db, TENANT, first["id"]))["status"] == aq.EXPIRED
+
+
+def test_a_request_that_lapses_mid_decision_is_not_approved(db):
+    """The read-time check alone leaves a window; the conditional update must close it."""
+    req = _request(db)
+    doc = run(db[aq.COLLECTION].find_one({"id": req["id"]}))
+    # Simulate the lapse landing after `decide` read the record: backdate without the
+    # read-time path having seen it, then decide against the record we already read.
+    _backdate(db, req["id"])
+    with pytest.raises(aq.InvalidApprovalTransition) as exc:
+        run(aq.decide(db, tenant_id=TENANT, approval_id=req["id"], decision=aq.APPROVED,
+                      actor="admin@example.com"))
+    assert "expired" in str(exc.value)
+    assert doc["status"] == aq.REQUESTED  # it really was live when the flow started
+
+
+def test_summary_does_not_report_lapsed_requests_as_awaiting(db):
+    live = _request(db)
+    stale = _request(db)
+    _backdate(db, stale["id"])
+    summary = run(aq.summary(db, TENANT))
+    assert summary["awaiting_decision"] == 1, summary
+    assert summary["by_status"].get(aq.EXPIRED) == 1
+    assert live["id"]
