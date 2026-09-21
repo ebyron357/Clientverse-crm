@@ -31,7 +31,7 @@ on:
     - cron: '*/5 * * * *'    # durable work-queue worker
     - cron: '0,30 * * * *'   # integration sync + next best actions
     - cron: '10,40 * * * *'  # inbound mail + reconciliation of unobserved dispatches
-    - cron: '5 * * * *'      # daily digest + Second Chance detection, strategy composition, approval expiry
+    - cron: '5 * * * *'      # daily digest + all detector families, strategy composition, approval expiry
   workflow_dispatch:
     inputs:
       jobs:
@@ -88,8 +88,8 @@ jobs:
             '*/5 * * * *')   paths='work-queue' ;;
             '0,30 * * * *')  paths='integration-sync,next-best-actions' ;;
             '10,40 * * * *') paths='inbound-email,reconcile-unknown' ;;
-            '5 * * * *')     paths='daily-digest,second-chance,recovery-strategies,approval-expiry' ;;
-            *)               paths='commitment-risk,work-queue,integration-sync,next-best-actions,daily-digest,second-chance,recovery-strategies,approval-expiry,inbound-email,reconcile-unknown' ;;
+            '5 * * * *')     paths='daily-digest,second-chance,detect-recovery,recovery-strategies,approval-expiry' ;;
+            *)               paths='commitment-risk,work-queue,integration-sync,next-best-actions,daily-digest,second-chance,detect-recovery,recovery-strategies,approval-expiry,inbound-email,reconcile-unknown' ;;
           esac
           echo "paths=$paths" >> "$GITHUB_OUTPUT"
 

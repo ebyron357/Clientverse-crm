@@ -39,9 +39,11 @@ import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import attribution as attribution_service
 import cron_ledger
+import detectors
 import crm_core
 import email_inbound
 import gmail_provider
+import recovery_intake
 import recovery_proof
 import second_chance as second_chance_service
 import security_gate as security_gate_service
@@ -142,6 +144,8 @@ async def lifespan(_: FastAPI):
         await crm_core.ensure_indexes(db)
         await email_inbound.ensure_indexes(db)
         await attribution_service.ensure_indexes(db)
+        await detectors.ensure_indexes(db)
+        await recovery_intake.ensure_indexes(db)
         await WorkQueue(db).ensure_indexes()
         await nba_service.ensure_indexes(db)
         await second_chance_service.ensure_indexes(db)
@@ -2202,6 +2206,25 @@ async def cron_work_queue(request: Request):
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
+@api.post("/cron/detect-recovery")
+async def cron_detect_recovery(request: Request):
+    """Run every remaining detector family across every tenant.
+
+    Detection creates internal work: a Recovery Case and a durable work item. It sends
+    nothing, and it does not reach the controlled execution path directly -- strategy
+    composition, approval and the runner still stand between a detection and anything
+    a client would notice.
+    """
+    run_id, entry_id = await _begin_cron(request, "detect-recovery")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    asyncio.create_task(_run_cron_job(
+        "detect-recovery", run_id,
+        lambda: detectors.run_detection_all_tenants(db, work_queue, actor="cron",
+                                                    audit=record_event), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
 @api.post("/cron/second-chance")
 async def cron_second_chance(request: Request):
     """Second Chance detection sweep across every tenant."""
@@ -4083,6 +4106,7 @@ async def cron_daily_digest(request: Request):
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
