@@ -289,6 +289,40 @@ try {
     '58 the other tenant can list its own deals')
   assert(!crossList.some((d) => d.id === deal.id), '59 no cross-tenant record in the list')
 
+  // The recovery surfaces must hold their own invariants on a live release, not only
+  // in unit tests: a report that quietly adds potential to confirmed is a defect that
+  // only shows up in front of a buyer.
+  const portfolio = mustBe(await request('/proof/portfolio', auth(admin2)), 200,
+    '60 the recovery portfolio report answers')
+  assert(portfolio.revenue?.potential_value_open_by_currency !== undefined
+    && portfolio.revenue?.attributed_recovered_value_by_currency !== undefined,
+    '61 potential and attributed revenue are separate named figures')
+  assert(portfolio.revenue?.total === undefined,
+    '62 the report offers no single combined revenue total')
+  assert(typeof portfolio.messages?.drafted === 'number'
+    && typeof portfolio.messages?.actually_sent === 'number',
+    '63 drafted and actually-sent messages are counted separately')
+  assert(portfolio.messages.actually_sent <= portfolio.messages.drafted,
+    '64 sent can never exceed drafted')
+
+  const traceability = mustBe(await request('/proof/traceability', auth(admin2)), 200,
+    '65 every reported figure names the query behind it')
+  assert(Object.keys(traceability).length >= 8, '66 traceability covers the report')
+
+  const totals = mustBe(await request('/attribution/totals', auth(admin2)), 200,
+    '67 the attribution ledger reports totals')
+  assert((totals.attributed_entries || 0) + (totals.unattributed_entries || 0)
+    === (totals.entries || 0), '68 every ledger entry is either claimed or not claimed')
+
+  const cronHealth = mustBe(await request('/cron/health', auth(admin2)), 200,
+    '69 scheduled-execution health is readable by an admin')
+  assert('receiving_scheduled_traffic' in cronHealth,
+    '70 the release can state whether production is receiving scheduled traffic')
+  result.scheduler = {
+    receiving_scheduled_traffic: cronHealth.receiving_scheduled_traffic,
+    last_authenticated_call_at: cronHealth.last_authenticated_call_at,
+  }
+
   result.records = { company: company.id, contact: contact.id, deal: deal.id, task: task.id }
   result.cross_tenant = crossResults
 

@@ -184,9 +184,13 @@ CONTENT_SECURITY_POLICY = "; ".join([
     # The compiled SPA ships one small inline bootstrap script (public/index.html); CRA's
     # own build output is otherwise all same-origin bundles.
     "script-src 'self' 'unsafe-inline'",
-    # Google Fonts stylesheet + the SPA's own inline styles.
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    # Web-font stylesheets + the SPA's own inline styles. Fontshare is here because
+    # `frontend/src/index.css` imports the display and body typefaces from it; without
+    # it the policy silently blocked both stylesheets in production and the whole
+    # application fell back to system fonts. Found by loading the built SPA and
+    # reading the console, which is the only place that failure was visible.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://api.fontshare.com",
+    "font-src 'self' https://fonts.gstatic.com https://cdn.fontshare.com",
     "img-src 'self' data: blob:",
     "connect-src 'self'",
     "frame-ancestors 'self'",
