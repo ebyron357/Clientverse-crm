@@ -13,12 +13,17 @@ name: Scheduled jobs
 #   CLIENTVERSE_PRODUCTION_URL — e.g. https://clientverse-crm-production-production.up.railway.app
 #   WEBHOOK_CRON_SECRET        — the same value configured on the service
 #
-# With either secret missing the workflow exits successfully without calling anything,
-# so an unconfigured repository does not produce a wall of failing scheduled runs.
-
-# Ordering within a tick is eventual, not sequential: each endpoint starts its work in
-# the background and returns immediately, so strategy composition may run against the
-# previous tick's detections. Both sweeps are idempotent, so the next tick catches up.
+# A NOTE ON WHY THIS WORKFLOW FAILS LOUDLY
+#
+# It used to exit 0 when either secret was missing, "so an unconfigured repository does
+# not produce a wall of failing scheduled runs". That traded a wall of red for something
+# far worse: 1,600+ consecutive green runs while not one HTTP request reached production
+# and not one recovery sweep ever ran. A scheduler that reports success without calling
+# anything is not a quiet scheduler, it is a broken one that lies.
+#
+# So: no configuration is a failure, no dispatched request is a failure, and a request
+# production did not record is a failure. Green here now means production was called,
+# answered, and has the evidence to prove it.
 
 on:
   schedule:
@@ -45,6 +50,28 @@ jobs:
     name: Call scheduled endpoints
     runs-on: ubuntu-latest
     steps:
+      - name: Require the scheduler to be configured
+        env:
+          BASE_URL: ${{ secrets.CLIENTVERSE_PRODUCTION_URL }}
+          CRON_SECRET: ${{ secrets.WEBHOOK_CRON_SECRET }}
+        run: |
+          set -u
+          missing=''
+          [ -z "${BASE_URL:-}" ] && missing="${missing} CLIENTVERSE_PRODUCTION_URL"
+          [ -z "${CRON_SECRET:-}" ] && missing="${missing} WEBHOOK_CRON_SECRET"
+          if [ -n "$missing" ]; then
+            {
+              echo "### Scheduler not configured"
+              echo
+              echo "Missing repository secret(s):${missing}"
+              echo
+              echo "No production request was made. Until these are set, the deployed"
+              echo "recovery automation does not run at all."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Scheduler not configured::Missing repository secret(s):${missing}. No production request was made."
+            exit 1
+          fi
+
       - name: Select endpoints for this tick
         id: select
         env:
@@ -65,37 +92,90 @@ jobs:
           echo "paths=$paths" >> "$GITHUB_OUTPUT"
 
       - name: Call the endpoints
+        id: call
         env:
           BASE_URL: ${{ secrets.CLIENTVERSE_PRODUCTION_URL }}
           CRON_SECRET: ${{ secrets.WEBHOOK_CRON_SECRET }}
           PATHS: ${{ steps.select.outputs.paths }}
         run: |
           set -u
-          if [ -z "${BASE_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
-            echo "CLIENTVERSE_PRODUCTION_URL or WEBHOOK_CRON_SECRET is not configured; nothing was called."
-            exit 0
-          fi
           base="${BASE_URL%/}"
+          attempted=0
+          dispatched=0
           failures=0
           # A distinct delivery id per call keeps the endpoints' idempotency guard
           # meaningful: a retried delivery is suppressed, a new tick is not.
           run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "| endpoint | HTTP | accepted | evidence id |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
           IFS=','
           for path in $PATHS; do
             path="$(echo "$path" | tr -d '[:space:]')"
             [ -z "$path" ] && continue
+            attempted=$((attempted + 1))
             status=$(curl -sS -o /tmp/response.json -w '%{http_code}' -X POST \
               -H "Authorization: Bearer ${CRON_SECRET}" \
               -H "X-Webhook-Id: gha-${path}-${run_id}" \
               --max-time 30 --retry 2 --retry-delay 5 \
               "${base}/api/cron/${path}" || echo "000")
-            # Never echo the response body: it is application output, not secret, but
-            # keeping scheduled logs to status codes avoids accidental disclosure.
-            echo "${path}: HTTP ${status}"
-            if [ "$status" != "200" ]; then failures=$((failures + 1)); fi
+            # The response body carries no secret: it is `accepted`, the delivery id we
+            # sent, and the id of the ledger entry production wrote. Those two ids are
+            # the evidence that ties this workflow run to a production record, so they
+            # are worth printing; nothing else from the body is.
+            accepted=$(sed -n 's/.*"accepted":[[:space:]]*\(true\|false\).*/\1/p' /tmp/response.json | head -1)
+            evidence=$(sed -n 's/.*"evidence_id":"\([^"]*\)".*/\1/p' /tmp/response.json | head -1)
+            [ -z "$accepted" ] && accepted='-'
+            [ -z "$evidence" ] && evidence='-'
+            echo "${path}: HTTP ${status} accepted=${accepted} evidence=${evidence}"
+            echo "| ${path} | ${status} | ${accepted} | ${evidence} |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$status" = "200" ]; then
+              dispatched=$((dispatched + 1))
+            else
+              failures=$((failures + 1))
+            fi
           done
           unset IFS
+          echo "attempted=${attempted}" >> "$GITHUB_OUTPUT"
+          echo "dispatched=${dispatched}" >> "$GITHUB_OUTPUT"
+          echo "delivery_prefix=gha-" >> "$GITHUB_OUTPUT"
+          if [ "$attempted" -eq 0 ]; then
+            echo "::error title=No endpoint selected::This tick chose no endpoints, so nothing was called."
+            exit 1
+          fi
+          if [ "$dispatched" -eq 0 ]; then
+            echo "::error title=No request reached production::${attempted} call(s) attempted, none returned HTTP 200."
+            exit 1
+          fi
           if [ "$failures" -gt 0 ]; then
             echo "::error::${failures} scheduled endpoint call(s) did not return HTTP 200"
             exit 1
           fi
+
+      - name: Verify production recorded this run
+        # A 200 proves the request was accepted. It does not prove the work was recorded,
+        # and a scheduler that cannot tell those apart is how this subsystem went blind
+        # in the first place. Read the production-side ledger back.
+        env:
+          BASE_URL: ${{ secrets.CLIENTVERSE_PRODUCTION_URL }}
+          CRON_SECRET: ${{ secrets.WEBHOOK_CRON_SECRET }}
+        run: |
+          set -u
+          base="${BASE_URL%/}"
+          run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          status=$(curl -sS -o /tmp/runs.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            --max-time 30 "${base}/api/cron/runs?limit=100" || echo "000")
+          if [ "$status" != "200" ]; then
+            echo "::error title=Ledger unreadable::/api/cron/runs returned HTTP ${status}; cannot confirm production recorded this run."
+            exit 1
+          fi
+          if ! grep -q "${run_id}" /tmp/runs.json; then
+            echo "::error title=Run not recorded::Production returned 200 but has no ledger entry for delivery ids containing ${run_id}."
+            exit 1
+          fi
+          recorded=$(grep -o "${run_id}" /tmp/runs.json | wc -l)
+          {
+            echo
+            echo "Production recorded ${recorded} ledger reference(s) for this run (\`${run_id}\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "production recorded ${recorded} reference(s) for ${run_id}"

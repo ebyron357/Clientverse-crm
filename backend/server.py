@@ -37,6 +37,7 @@ import next_best_action as nba_service
 import recovery_case as recovery_case_service
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
+import cron_ledger
 import second_chance as second_chance_service
 import security_gate as security_gate_service
 from work_queue import WorkQueue, run_worker_tick
@@ -45,7 +46,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clientverse")
 
 mongo_url = os.environ['MONGO_URL']
-mclient = AsyncIOMotorClient(mongo_url)
+if mongo_url.startswith("mongomock://"):
+    # Local/CI fallback for environments where no MongoDB server can be reached.
+    # `mongomock://` is not a scheme any real deployment can use, so production
+    # cannot silently land here. Kept narrow on purpose: it swaps the driver and
+    # nothing else, so the same application code and the same behavioural suite
+    # run against it.
+    from mongomock_motor import AsyncMongoMockClient  # type: ignore[import-not-found]
+
+    mclient = AsyncMongoMockClient()
+else:
+    mclient = AsyncIOMotorClient(mongo_url)
 db = mclient[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
@@ -122,6 +133,7 @@ async def lifespan(_: FastAPI):
         await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
         await db.login_lockouts.create_index("email", unique=True)
         await db.cron_runs.create_index("run_id", unique=True)
+        await cron_ledger.ensure_indexes(db)
         await WorkQueue(db).ensure_indexes()
         await nba_service.ensure_indexes(db)
         await second_chance_service.ensure_indexes(db)
@@ -1945,16 +1957,13 @@ async def _claim_cron_run(job: str, run_id: str) -> bool:
 @api.post("/cron/commitment-risk")
 async def cron_commitment_risk(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
-    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else ""
-    if not secret or not token or not hmac.compare_digest(token, secret):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("commitment-risk", run_id):
-        return {"accepted": True, "duplicate": True}
-    asyncio.create_task(evaluate_commitment_risk(tenant_id=None, actor="cron"))
-    return {"accepted": True, "run_id": run_id}
+    run_id, entry_id = await _begin_cron(request, "commitment-risk")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    asyncio.create_task(_run_cron_job(
+        "commitment-risk", run_id,
+        lambda: evaluate_commitment_risk(tenant_id=None, actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 async def _release_cron_run(job: str, run_id: str) -> None:
@@ -1964,6 +1973,10 @@ async def _release_cron_run(job: str, run_id: str) -> None:
     id stays claimed and a redelivery is treated as a duplicate, silently losing the
     work. Releasing on failure keeps the idempotency guard (a concurrent duplicate is
     still suppressed) without turning a crash into lost work.
+
+    The claim row is transient by design, which is why the evidence of what happened
+    lives in `cron_ledger` instead: releasing the claim must not erase the record that
+    the job ran and failed.
     """
     try:
         await db.cron_runs.delete_one({"run_id": run_id, "job": job})
@@ -1971,20 +1984,80 @@ async def _release_cron_run(job: str, run_id: str) -> None:
         logger.exception("Failed to release a cron run claim")
 
 
-async def _run_cron_job(job: str, run_id: str, coro_factory):
+async def _run_cron_job(job: str, run_id: str, coro_factory, entry_id: Optional[str] = None):
+    if entry_id:
+        await cron_ledger.mark_started(db, entry_id)
     try:
-        return await coro_factory()
-    except Exception:
+        result = await coro_factory()
+    except Exception as exc:
         logger.exception("Scheduled job '%s' failed", job)
+        if entry_id:
+            await cron_ledger.mark_finished(db, entry_id, status=cron_ledger.FAILED,
+                                            error=f"{type(exc).__name__}: {exc}"[:500])
         await _release_cron_run(job, run_id)
         raise
+    if entry_id:
+        await cron_ledger.mark_finished(db, entry_id, status=cron_ledger.SUCCEEDED,
+                                        result=result)
+    return result
+
+
+def _cron_token(request: Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    return auth[7:] if auth.startswith("Bearer ") else ""
+
+
+def _cron_secret_matches(request: Request) -> bool:
+    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
+    token = _cron_token(request)
+    return bool(secret and token and hmac.compare_digest(token, secret))
+
+
+def _cron_source(request: Request) -> str:
+    """A non-secret hint about who called, so a ledger entry is attributable."""
+    agent = (request.headers.get("User-Agent") or "unknown")[:120]
+    delivery = (request.headers.get("X-Webhook-Id") or "")[:120]
+    return f"{agent} delivery={delivery}" if delivery else agent
+
+
+async def _authorize_cron_observed(request: Request, job: str) -> None:
+    """Authorize a scheduled request and record the attempt either way.
+
+    A rejected call is recorded because an unset or mismatched shared secret is
+    otherwise indistinguishable from a scheduler that never fired at all, and those
+    two have completely different fixes. The token itself is never stored.
+    """
+    if _cron_secret_matches(request):
+        return
+    await cron_ledger.record_request(
+        db, job=job, run_id=request.headers.get("X-Webhook-Id"),
+        status=cron_ledger.UNAUTHORIZED, source=_cron_source(request),
+        detail={"reason": "shared secret missing or does not match"})
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def _begin_cron(request: Request, job: str):
+    """Authorize, deduplicate and record one scheduled request.
+
+    Returns `(run_id, entry_id)` when the caller should do the work, or `(run_id, None)`
+    when this delivery was already claimed. Every outcome leaves a ledger entry, so the
+    chain from "a request reached production" to "the job recorded a result" can be read
+    back from production rather than inferred from the scheduler's own logs.
+    """
+    await _authorize_cron_observed(request, job)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    source = _cron_source(request)
+    if not await _claim_cron_run(job, run_id):
+        await cron_ledger.record_request(db, job=job, run_id=run_id,
+                                         status=cron_ledger.DUPLICATE, source=source)
+        return run_id, None
+    entry_id = await cron_ledger.record_request(db, job=job, run_id=run_id,
+                                                status=cron_ledger.ACCEPTED, source=source)
+    return run_id, entry_id
 
 
 def _authorize_cron(request: Request) -> None:
-    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else ""
-    if not secret or not token or not hmac.compare_digest(token, secret):
+    if not _cron_secret_matches(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -1995,41 +2068,38 @@ async def cron_work_queue(request: Request):
     Recovers leases abandoned by crashed workers, then claims and processes due items.
     Idempotent per delivery id, like every other cron endpoint.
     """
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("work-queue", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "work-queue")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
     # Each tick gets a distinct worker identity so lease-ownership checks can tell a
     # stale tick apart from the one that replaced it.
     asyncio.create_task(_run_cron_job(
         "work-queue", run_id,
         lambda: run_worker_tick(work_queue, WORK_QUEUE_HANDLERS,
-                                worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE)))
-    return {"accepted": True, "run_id": run_id}
+                                worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/second-chance")
 async def cron_second_chance(request: Request):
     """Second Chance detection sweep across every tenant."""
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("second-chance", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "second-chance")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
     asyncio.create_task(_run_cron_job(
-        "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron")))
-    return {"accepted": True, "run_id": run_id}
+        "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/next-best-actions")
 async def cron_next_best_actions(request: Request):
     """Recompute Next Best Action recommendations for every tenant."""
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("next-best-actions", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "next-best-actions")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
     asyncio.create_task(_run_cron_job(
-        "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron")))
-    return {"accepted": True, "run_id": run_id}
+        "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/recovery-strategies")
@@ -2039,14 +2109,13 @@ async def cron_recovery_strategies(request: Request):
     Composition only. Nothing here sends, calls, or writes to a third party: each
     strategy is raised as an approval request carrying whatever blocks it.
     """
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("recovery-strategies", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "recovery-strategies")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
     asyncio.create_task(_run_cron_job(
         "recovery-strategies", run_id,
-        lambda: recovery_service.compose_all_tenants(db, work_queue, actor="cron")))
-    return {"accepted": True, "run_id": run_id}
+        lambda: recovery_service.compose_all_tenants(db, work_queue, actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/recovery-runner")
@@ -2057,27 +2126,25 @@ async def cron_recovery_runner(request: Request):
     backoff rather than stalling the sweep. Nothing outbound is sent: with no provider
     registered, each outbound step is drafted and refused at the boundary.
     """
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("recovery-runner", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "recovery-runner")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
     asyncio.create_task(_run_cron_job(
         "recovery-runner", run_id,
         lambda: recovery_runner_service.run_ready_cases_all_tenants(
-            db, work_queue, actor="cron", audit=record_event)))
-    return {"accepted": True, "run_id": run_id}
+            db, work_queue, actor="cron", audit=record_event), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/approval-expiry")
 async def cron_approval_expiry(request: Request):
     """Lapse approval requests nobody decided, so a stale request can never authorise."""
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("approval-expiry", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "approval-expiry")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
     asyncio.create_task(_run_cron_job(
-        "approval-expiry", run_id, lambda: approval_service.expire_due(db)))
-    return {"accepted": True, "run_id": run_id}
+        "approval-expiry", run_id, lambda: approval_service.expire_due(db), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
 #  LIVE INTEGRATIONS V1 — providers, secure credential storage, sync engine
@@ -2559,6 +2626,49 @@ class StripeConnectInput(BaseModel):
     api_key: Optional[str] = None
 
 
+async def _authorize_cron_observer(request: Request) -> str:
+    """Let either the scheduler or a tenant admin read the scheduled-execution ledger.
+
+    The scheduler needs it so a workflow run can verify that production actually
+    recorded the request it just made, rather than trusting its own exit code. An admin
+    needs it because "is the recovery engine running at all?" is an operational
+    question, not a debugging one.
+    """
+    if _cron_secret_matches(request):
+        return "scheduler"
+    user = await get_current_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
+    return user["email"]
+
+
+@api.get("/cron/runs")
+async def cron_runs(request: Request, job: Optional[str] = None,
+                    status: Optional[str] = None, limit: int = 50):
+    """Append-only evidence of every scheduled request production received.
+
+    Each entry carries the whole chain for one delivery: when the request arrived and
+    from where (`received_at`, `source`), whether it was authenticated and claimed
+    (`status`), when the job started and finished (`started_at`, `finished_at`,
+    `duration_ms`), and what it returned or raised (`result`, `error`).
+    """
+    await _authorize_cron_observer(request)
+    return {"runs": await cron_ledger.list_runs(db, job=job, status=status, limit=limit)}
+
+
+@api.get("/cron/health")
+async def cron_health(request: Request, window_minutes: int = 120):
+    """Whether production is actually receiving scheduled traffic.
+
+    `receiving_scheduled_traffic: false` with a scheduler configured is the failure this
+    subsystem was previously blind to: a workflow that reports success every tick while
+    never making a request. A scheduler is expected to fail its own run on this.
+    """
+    await _authorize_cron_observer(request)
+    return await cron_ledger.health(db, window_minutes=window_minutes)
+
+
+
 @api.post("/integrations/stripe/connect")
 async def stripe_connect(inp: Optional[StripeConnectInput] = None, user=Depends(require_role("admin"))):
     tenant_key = (inp.api_key.strip() if inp and inp.api_key else None) or None
@@ -2872,14 +2982,9 @@ async def workspace_activity(ws_id: str, user=Depends(get_current_user)):
 @api.post("/cron/integration-sync")
 async def cron_integration_sync(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
-    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else ""
-    if not secret or not token or not hmac.compare_digest(token, secret):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("integration-sync", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "integration-sync")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
 
     async def _sweep():
         actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
@@ -2889,8 +2994,8 @@ async def cron_integration_sync(request: Request):
                 await evaluate_alerts(c["tenant_id"])
             except Exception:
                 pass
-    asyncio.create_task(_sweep())
-    return {"accepted": True, "run_id": run_id}
+    asyncio.create_task(_run_cron_job("integration-sync", run_id, _sweep, entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
 #  INTEGRATION INSIGHTS — unified timeline, alert engine, connection health
@@ -3447,14 +3552,9 @@ async def alerts_escalate(user=Depends(require_role("admin"))):
 @api.post("/cron/daily-digest")
 async def cron_daily_digest(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
-    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else ""
-    if not secret or not token or not hmac.compare_digest(token, secret):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("daily-digest", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "daily-digest")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
 
     async def _sweep():
         for t in await db.tenants.find({}, {"_id": 0, "tenant_id": 1}).to_list(500):
@@ -3471,8 +3571,8 @@ async def cron_daily_digest(request: Request):
                     await deliver_digest(tid, local.strftime("%Y-%m-%d"))
             except Exception:
                 pass
-    asyncio.create_task(_sweep())
-    return {"accepted": True, "run_id": run_id}
+    asyncio.create_task(_run_cron_job("daily-digest", run_id, _sweep, entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 # Client portal, field operations, commercial coordination, and safe automation
