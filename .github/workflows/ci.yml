@@ -94,6 +94,28 @@ jobs:
       - name: Run test suite
         working-directory: backend
         run: python -m pytest tests/ -q
+      # The behavioural suite proves the pieces. This proves a person can actually run
+      # their week in the product: invite a colleague, create an account, a contact and
+      # a deal, link them, assign and complete work, move the deal, read the history
+      # back, search for it, sign out and in -- and then fails the build if a second
+      # tenant can reach any of it. It is a release gate, not a smoke screen.
+      - name: CRM release smoke test
+        env:
+          CLIENTVERSE_API_BASE: http://localhost:8001
+          CLIENTVERSE_EVIDENCE_PATH: /tmp/crm-release-smoke.json
+        run: |
+          # ADMIN_EMAIL comes from the job env, ADMIN_PASSWORD from the ephemeral
+          # secrets step above; both are already in the environment here.
+          CLIENTVERSE_ADMIN_EMAIL="$ADMIN_EMAIL" \
+          CLIENTVERSE_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+          node scripts/crm_release_smoke.mjs
+      - name: Upload CRM smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crm-release-smoke
+          path: /tmp/crm-release-smoke.json
+          if-no-files-found: ignore
       - name: Backend logs
         if: always()
         run: tail -n 200 /tmp/backend.log || true

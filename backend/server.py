@@ -38,6 +38,7 @@ import recovery_case as recovery_case_service
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import cron_ledger
+import crm_core
 import second_chance as second_chance_service
 import security_gate as security_gate_service
 from work_queue import WorkQueue, run_worker_tick
@@ -134,6 +135,7 @@ async def lifespan(_: FastAPI):
         await db.login_lockouts.create_index("email", unique=True)
         await db.cron_runs.create_index("run_id", unique=True)
         await cron_ledger.ensure_indexes(db)
+        await crm_core.ensure_indexes(db)
         await WorkQueue(db).ensure_indexes()
         await nba_service.ensure_indexes(db)
         await second_chance_service.ensure_indexes(db)
@@ -725,12 +727,34 @@ class CompanyInput(BaseModel):
     tier: Optional[str] = "standard"
 
 @api.get("/companies")
-async def list_companies(user=Depends(get_current_user)):
-    return await gen_list("companies", user)
+async def list_companies(
+    q: Optional[str] = None,
+    owner: Optional[str] = None,
+    industry: Optional[str] = None,
+    tier: Optional[str] = None,
+    include_archived: bool = False,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    """List companies, with the search, filtering and sorting a directory needs.
+
+    Still returns a bare array: the SPA and the existing integrations read it that way,
+    and breaking that to add query parameters would be a gratuitous incompatibility.
+    """
+    filters = {k: v for k, v in (("owner", owner), ("industry", industry), ("tier", tier))
+               if v}
+    return await crm_core.query_records(
+        db, crm_core.COMPANIES, user["tenant_id"], q=q, filters=filters, sort=sort,
+        order=order, limit=limit, offset=offset, include_archived=include_archived)
 
 @api.post("/companies")
 async def create_company(inp: CompanyInput, user=Depends(get_current_user)):
     doc = {"id": new_id("co"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
+           "updated_at": now_iso(), "archived_at": None, "owner": user["email"],
+           "history": [crm_core.created_history(user["email"])],
            **inp.model_dump()}
     await db.companies.insert_one(doc)
     await record_event("company.created", "company", doc["id"], user["tenant_id"], user["email"], payload={"name": inp.name})
@@ -745,13 +769,39 @@ class ContactInput(BaseModel):
     sentiment: Optional[str] = "neutral"
 
 @api.get("/contacts")
-async def list_contacts(company_id: Optional[str] = None, user=Depends(get_current_user)):
-    extra = {"company_id": company_id} if company_id else None
-    return await gen_list("contacts", user, extra)
+async def list_contacts(
+    company_id: Optional[str] = None,
+    q: Optional[str] = None,
+    owner: Optional[str] = None,
+    include_archived: bool = False,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    filters = {k: v for k, v in (("company_id", company_id), ("owner", owner)) if v}
+    return await crm_core.query_records(
+        db, crm_core.CONTACTS, user["tenant_id"], q=q, filters=filters, sort=sort,
+        order=order, limit=limit, offset=offset, include_archived=include_archived)
 
 @api.post("/contacts")
 async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
-    doc = {"id": new_id("ct"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
+    payload = inp.model_dump()
+    if payload.get("email") is not None:
+        payload["email"] = str(payload["email"])
+    if payload.get("company_id"):
+        known = await db.companies.find_one(
+            {"id": payload["company_id"], "tenant_id": user["tenant_id"]}, {"_id": 1})
+        if not known:
+            # A contact pointed at another tenant's company would quietly join two
+            # tenants' data together.
+            raise HTTPException(status_code=422, detail="Unknown company_id")
+    doc = {"id": new_id("ct"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
+           "updated_at": now_iso(), "archived_at": None, "owner": user["email"],
+           "phone": None, "title": None,
+           "history": [crm_core.created_history(user["email"])],
+           **payload}
     await db.contacts.insert_one(doc)
     await record_event("contact.created", "contact", doc["id"], user["tenant_id"], user["email"], payload={"name": inp.name})
     return {k: v for k, v in doc.items() if k != "_id"}
@@ -766,14 +816,64 @@ class OppInput(BaseModel):
     value: float = 0
     stage: str = "lead"
     owner: Optional[str] = None
+    currency: str = "USD"
+    expected_close_date: Optional[str] = None
+    contact_ids: List[str] = []
 
 @api.get("/opportunities")
-async def list_opps(user=Depends(get_current_user)):
-    return await gen_list("opportunities", user)
+async def list_opps(
+    q: Optional[str] = None,
+    stage: Optional[str] = None,
+    owner: Optional[str] = None,
+    company_id: Optional[str] = None,
+    include_archived: bool = False,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    filters = {k: v for k, v in (("stage", stage), ("owner", owner),
+                                 ("company_id", company_id)) if v}
+    return await crm_core.query_records(
+        db, crm_core.DEALS, user["tenant_id"], q=q, filters=filters, sort=sort,
+        order=order, limit=limit, offset=offset, include_archived=include_archived)
 
 @api.post("/opportunities")
 async def create_opp(inp: OppInput, user=Depends(get_current_user)):
-    doc = {"id": new_id("opp"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
+    payload = inp.model_dump()
+    stages = await crm_core.stage_keys(db, user["tenant_id"])
+    if payload["stage"] not in stages:
+        raise HTTPException(status_code=422,
+                            detail=f"stage must be one of {', '.join(stages)}")
+    if payload.get("company_id"):
+        known = await db.companies.find_one(
+            {"id": payload["company_id"], "tenant_id": user["tenant_id"]}, {"_id": 1})
+        if not known:
+            raise HTTPException(status_code=422, detail="Unknown company_id")
+    contact_ids = list(dict.fromkeys(payload.get("contact_ids") or []))[:100]
+    if contact_ids:
+        visible = await db.contacts.find(
+            {"tenant_id": user["tenant_id"], "id": {"$in": contact_ids}},
+            {"_id": 0, "id": 1}).to_list(100)
+        unknown = [cid for cid in contact_ids if cid not in {c["id"] for c in visible}]
+        if unknown:
+            raise HTTPException(status_code=422,
+                                detail=f"Unknown contact_id(s): {', '.join(unknown[:5])}")
+    payload["contact_ids"] = contact_ids
+    payload["expected_close_date"] = crm_core.parse_date(
+        payload.get("expected_close_date"), "expected_close_date")
+    doc = {"id": new_id("opp"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
+           "updated_at": now_iso(), "archived_at": None,
+           "history": [crm_core.created_history(user["email"])],
+           # A deal's stage history is kept on the deal itself. `domain_events` answers
+           # "what happened in this organisation"; this answers "how did this deal get
+           # here", and the two are not interchangeable.
+           "stage_history": [{"from": None, "to": payload["stage"], "at": now_iso(),
+                              "actor": user["email"]}],
+           **payload}
+    if not doc.get("owner"):
+        doc["owner"] = user["email"]
     await db.opportunities.insert_one(doc)
     await record_event("opportunity.created", "opportunity", doc["id"], user["tenant_id"], user["email"], payload={"name": inp.name, "value": inp.value})
     return {k: v for k, v in doc.items() if k != "_id"}
@@ -783,12 +883,21 @@ class StageInput(BaseModel):
 
 @api.patch("/opportunities/{opp_id}/stage")
 async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user)):
-    if inp.stage not in STAGES:
+    # Validated against this tenant's configured pipeline, not a module constant, so a
+    # tenant that added a stage can actually move deals into it.
+    stages = await crm_core.stage_keys(db, user["tenant_id"])
+    if inp.stage not in stages:
         raise HTTPException(status_code=400, detail="Invalid stage")
     opp = await db.opportunities.find_one({"id": opp_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not opp:
         raise HTTPException(status_code=404, detail="Not found")
-    await db.opportunities.update_one({"id": opp_id}, {"$set": {"stage": inp.stage}})
+    transition = {"from": opp.get("stage"), "to": inp.stage, "at": now_iso(),
+                  "actor": user["email"]}
+    await db.opportunities.update_one(
+        {"id": opp_id, "tenant_id": user["tenant_id"]},
+        {"$set": {"stage": inp.stage, "updated_at": now_iso()},
+         "$push": {"stage_history": transition,
+                   "history": crm_core.stage_history(user["email"], transition)}})
     et = "opportunity.closed_won" if inp.stage == "closed_won" else ("opportunity.closed_lost" if inp.stage == "closed_lost" else "opportunity.stage_changed")
     await record_event(et, "opportunity", opp_id, user["tenant_id"], user["email"], payload={"from": opp["stage"], "to": inp.stage})
     # auto-create workspace on won
@@ -3578,6 +3687,7 @@ async def cron_daily_digest(request: Request):
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
+crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
