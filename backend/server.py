@@ -39,6 +39,8 @@ import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import cron_ledger
 import crm_core
+import email_inbound
+import gmail_provider
 import second_chance as second_chance_service
 import security_gate as security_gate_service
 from work_queue import WorkQueue, run_worker_tick
@@ -136,6 +138,7 @@ async def lifespan(_: FastAPI):
         await db.cron_runs.create_index("run_id", unique=True)
         await cron_ledger.ensure_indexes(db)
         await crm_core.ensure_indexes(db)
+        await email_inbound.ensure_indexes(db)
         await WorkQueue(db).ensure_indexes()
         await nba_service.ensure_indexes(db)
         await second_chance_service.ensure_indexes(db)
@@ -146,6 +149,13 @@ async def lifespan(_: FastAPI):
         await recovery_case_service.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
+    try:
+        for channel in register_channel_providers():
+            logger.info("Registered outbound channel provider: %s", channel)
+    except Exception:
+        # A registration that fails leaves the registry empty for that channel, which
+        # refuses outbound rather than attempting it unconfigured. Fail closed, loudly.
+        logger.exception("Failed to register an outbound channel provider")
     try:
         await db.stripe_webhook_events.create_index("event_id", unique=True)
     except Exception as exc:
@@ -2275,6 +2285,10 @@ GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or (
 )
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
+    # Sending is a separate, narrower grant than full mailbox access: `gmail.send` can
+    # send mail and nothing else -- it cannot read, delete or modify the mailbox. It is
+    # requested here because an outbound channel that cannot send is not a channel.
+    "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
@@ -2446,6 +2460,178 @@ async def _google_access_token(tenant_id, force_refresh=False):
     await db.google_credentials.update_one({"tenant_id": tenant_id},
         {"$set": {"enc": enc_secret(creds), "updated_at": now_iso()}})
     return creds["access_token"]
+
+async def _google_connection(tenant_id: str) -> Optional[dict]:
+    """The tenant's Gmail connection record, or None.
+
+    The adapter reads scopes and status from here rather than assuming: a connection
+    that predates the send scope is read-only, and must be refused rather than
+    attempted.
+    """
+    return await db.integration_connections.find_one(
+        {"tenant_id": tenant_id, "provider": "gmail"}, {"_id": 0})
+
+
+async def _fetch_inbound_gmail(*, tenant_id: str, limit: int = 50) -> list[dict]:
+    """Recent inbound mail for one tenant, using that tenant's own Gmail credentials.
+
+    Bounded and newest-first. A poll is the honest transport here: Gmail push requires
+    a Pub/Sub topic nobody has configured, and a poll that runs every tick is a working
+    return path rather than a planned one.
+    """
+    token = await _google_access_token(tenant_id)
+    if not token:
+        raise RuntimeError("not_connected")
+    headers = {"Authorization": f"Bearer {token}"}
+    out: list[dict] = []
+    async with httpx.AsyncClient(timeout=25) as client:
+        listing = await client.get(f"{gmail_provider.GMAIL_API}/messages",
+                                   params={"q": "in:inbox newer_than:7d",
+                                           "maxResults": max(1, min(int(limit), 100))},
+                                   headers=headers)
+        if listing.status_code == 401:
+            token = await _google_access_token(tenant_id, force_refresh=True)
+            headers = {"Authorization": f"Bearer {token}"}
+            listing = await client.get(f"{gmail_provider.GMAIL_API}/messages",
+                                       params={"q": "in:inbox newer_than:7d",
+                                               "maxResults": max(1, min(int(limit), 100))},
+                                       headers=headers)
+        if listing.status_code != 200:
+            raise RuntimeError(f"gmail_list_failed:{listing.status_code}")
+        for stub in (listing.json().get("messages") or []):
+            detail = await client.get(
+                f"{gmail_provider.GMAIL_API}/messages/{stub['id']}",
+                params={"format": "metadata",
+                        "metadataHeaders": ["From", "To", "Cc", "Subject", "In-Reply-To",
+                                            "References", "Content-Type",
+                                            "X-Failed-Recipients"]},
+                headers=headers)
+            if detail.status_code == 200:
+                out.append(detail.json())
+    return out
+
+
+async def _on_inbound_reply(*, tenant_id, conversation, message, record, basis):
+    """What a reply changes outside the conversation itself.
+
+    A reply is the event a recovery case is waiting for, so it is recorded where the
+    people working the case will see it: on the contact's timeline, and as a domain
+    event. It deliberately does **not** decide the case's outcome -- a reply is
+    engagement, not agreement, and inferring one from the other is how a system starts
+    claiming results it did not earn.
+    """
+    contact_id = conversation.get("contact_id") or next(
+        (p.get("id") for p in (conversation.get("participants") or [])
+         if p.get("kind") == conversation_service.PARTICIPANT_CONTACT and p.get("id")), None)
+    if contact_id:
+        await db[crm_core.ACTIVITIES].insert_one({
+            "id": new_id("act"), "tenant_id": tenant_id, "type": "email",
+            "related_type": "contact", "related_id": contact_id,
+            "subject": record.get("subject"), "body": record.get("body"),
+            "occurred_at": record.get("received_at"), "duration_minutes": None,
+            "participants": [record.get("from_address")] if record.get("from_address") else [],
+            "outcome": "reply_received", "actor": record.get("from_address") or "inbound",
+            "direction": "inbound", "created_at": now_iso(),
+            "logged_by": f"provider:{record.get('provider')}",
+            "conversation_id": conversation["id"], "message_id": message["id"],
+        })
+    await record_event("communication_message.received", "communication_message",
+                       message["id"], tenant_id, record.get("from_address") or "inbound",
+                       workspace_id=conversation.get("workspace_id"),
+                       payload={"conversation_id": conversation["id"],
+                                "match_basis": basis,
+                                "contact_id": contact_id},
+                       source="provider")
+    if conversation.get("recovery_case_id"):
+        # Record engagement against the case. `replied_at` is a fact; whether the case
+        # succeeded is a separate decision made against evidence elsewhere.
+        await db[recovery_case_service.COLLECTION].update_one(
+            {"tenant_id": tenant_id, "id": conversation["recovery_case_id"]},
+            {"$set": {"last_reply_at": record.get("received_at")},
+             "$inc": {"reply_count": 1}})
+
+
+async def run_inbound_email_sweep(actor: str = "cron") -> dict:
+    """Poll every tenant with an active Gmail connection for inbound mail."""
+    connections = await db.integration_connections.find(
+        {"provider": "gmail", "status": "active"}, {"_id": 0, "tenant_id": 1}).to_list(500)
+    totals = {"tenants": 0, "replies": 0, "bounces": 0, "unmatched": 0,
+              "duplicates": 0, "errors": 0}
+    for connection in connections:
+        summary = await email_inbound.poll_tenant(
+            db, tenant_id=connection["tenant_id"],
+            fetch_messages=_fetch_inbound_gmail, on_reply=_on_inbound_reply)
+        totals["tenants"] += 1
+        for key in ("replies", "bounces", "unmatched", "duplicates", "errors"):
+            totals[key] += summary.get(key, 0)
+    return totals
+
+
+async def run_reconcile_unknown_sweep(actor: str = "cron") -> dict:
+    """Ask the provider about every message whose dispatch outcome was never observed.
+
+    This is the only path out of `outcome_unknown`, and it asks exactly one question:
+    does the provider hold this dispatch? A lookup that cannot be completed leaves the
+    message where it is, because "I could not check" must never be recorded as "it was
+    never sent".
+    """
+    stranded = await db[conversation_service.MESSAGES].find(
+        {"status": conversation_service.OUTCOME_UNKNOWN}, {"_id": 0}).to_list(200)
+    totals = {"examined": 0, "resolved_sent": 0, "resolved_failed": 0, "unresolved": 0}
+    for message in stranded:
+        totals["examined"] += 1
+        provider = conversation_service.REGISTRY.get(message.get("channel"))
+        locate = getattr(provider, "locate", None)
+        if not locate:
+            totals["unresolved"] += 1
+            continue
+        key = conversation_service.dispatch_key(message)
+        try:
+            found_id = await locate(tenant_id=message["tenant_id"], idempotency_key=key)
+        except conversation_service.DeliveryRejected as exc:
+            # The provider answered definitively that it cannot hold this message.
+            await conversation_service.reconcile_unknown(
+                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
+                found=False, detail={"lookup": str(exc)[:300]})
+            totals["resolved_failed"] += 1
+            continue
+        except Exception:
+            logger.warning("Could not reconcile message %s; leaving it unresolved",
+                           message["id"])
+            totals["unresolved"] += 1
+            continue
+        if found_id:
+            await conversation_service.reconcile_unknown(
+                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
+                found=True, provider_message_id=found_id,
+                detail={"rfc822_message_id": gmail_provider.message_id_for(
+                    message["tenant_id"], key)})
+            totals["resolved_sent"] += 1
+        else:
+            await conversation_service.reconcile_unknown(
+                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
+                found=False, detail={"lookup": "provider does not hold this dispatch"})
+            totals["resolved_failed"] += 1
+    return totals
+
+
+def register_channel_providers() -> list[str]:
+    """Register the outbound adapters this deployment is configured for.
+
+    Configuration, not optimism, decides. With no Google OAuth client the registry stays
+    empty and every outbound attempt refuses with `no_provider_registered`, which is the
+    correct answer for a deployment that cannot send. Registration is process-wide;
+    whether a *tenant* may send is decided per call, from that tenant's own connection.
+    """
+    registered: list[str] = []
+    if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+        conversation_service.REGISTRY.register(gmail_provider.GmailChannelProvider(
+            access_token=_google_access_token, connection=_google_connection))
+        registered.append("gmail")
+    else:
+        logger.info("No Google OAuth client configured; email sending stays disabled")
+    return registered
+
 
 # ---- Adapters (sync returns a normalized summary; bounded, idempotent upserts) ----
 
@@ -2733,6 +2919,114 @@ class StripeConnectInput(BaseModel):
     # syncs and payment intents run against that key instead of the shared STRIPE_API_KEY
     # env var, so two tenants never share one Stripe account by default.
     api_key: Optional[str] = None
+
+
+@api.post("/cron/inbound-email")
+async def cron_inbound_email(request: Request):
+    """Pull inbound mail back into the CRM for every connected tenant.
+
+    Receiving is not sending: nothing here passes the outbound preconditions, and
+    nothing here can dispatch a message.
+    """
+    run_id, entry_id = await _begin_cron(request, "inbound-email")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    asyncio.create_task(_run_cron_job(
+        "inbound-email", run_id, lambda: run_inbound_email_sweep(actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+@api.post("/cron/reconcile-unknown")
+async def cron_reconcile_unknown(request: Request):
+    """Resolve messages whose dispatch outcome was never observed.
+
+    The only path out of `outcome_unknown`, and it only ever asks the provider whether
+    it holds the dispatch. It never re-sends.
+    """
+    run_id, entry_id = await _begin_cron(request, "reconcile-unknown")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    asyncio.create_task(_run_cron_job(
+        "reconcile-unknown", run_id, lambda: run_reconcile_unknown_sweep(actor="cron"),
+        entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+@api.get("/inbound/unmatched")
+async def list_unmatched_inbound(status: str = "open", limit: int = 100,
+                                 user=Depends(get_current_user)):
+    """Inbound messages that could not be placed with evidence.
+
+    This queue existing is the point: a reply nobody could safely attribute is visible
+    work, not a silent mis-filing.
+    """
+    return {"items": await email_inbound.list_unmatched(
+        db, user["tenant_id"], status=status, limit=limit)}
+
+
+class AssignInboundInput(BaseModel):
+    conversation_id: str
+
+
+@api.post("/inbound/unmatched/{inbound_id}/assign")
+async def assign_unmatched_inbound(inbound_id: str, inp: AssignInboundInput,
+                                   user=Depends(get_current_user)):
+    try:
+        result = await email_inbound.assign_unmatched(
+            db, tenant_id=user["tenant_id"], inbound_id=inbound_id,
+            conversation_id=inp.conversation_id, actor=user["email"])
+    except (conversation_service.MessageNotFound,
+            conversation_service.ConversationNotFound):
+        raise HTTPException(status_code=404, detail="Not found")
+    await record_event("communication_message.manually_matched", "communication_message",
+                       result["message_id"], user["tenant_id"], user["email"],
+                       payload={"conversation_id": inp.conversation_id,
+                                "inbound_id": inbound_id})
+    return result
+
+
+@api.post("/messages/{message_id}/reconcile")
+async def reconcile_message(message_id: str, user=Depends(require_role("admin"))):
+    """Ask the provider whether it holds a message stranded in `outcome_unknown`.
+
+    Deliberately not a resend. The only thing an operator can do to such a message is
+    find out what actually happened to it.
+    """
+    message = await conversation_service.get_message(db, user["tenant_id"], message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.get("status") != conversation_service.OUTCOME_UNKNOWN:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only a message in '{conversation_service.OUTCOME_UNKNOWN}' can be "
+                   f"reconciled; this one is '{message.get('status')}'.")
+    provider = conversation_service.REGISTRY.get(message.get("channel"))
+    locate = getattr(provider, "locate", None)
+    if not locate:
+        raise HTTPException(status_code=409,
+                            detail="No provider is registered that can answer this lookup.")
+    key = conversation_service.dispatch_key(message)
+    try:
+        found_id = await locate(tenant_id=user["tenant_id"], idempotency_key=key)
+    except conversation_service.DeliveryRejected as exc:
+        found_id = None
+        lookup_detail = str(exc)[:300]
+    except Exception as exc:
+        # An inconclusive lookup leaves the message where it is. Recording "not found"
+        # here would license a resend of something that may already have arrived.
+        raise HTTPException(status_code=502,
+                            detail=f"The provider could not be asked: {str(exc)[:200]}")
+    else:
+        lookup_detail = "provider lookup completed"
+    reconciled = await conversation_service.reconcile_unknown(
+        db, tenant_id=user["tenant_id"], message_id=message_id, actor=user["email"],
+        found=bool(found_id), provider_message_id=found_id,
+        detail={"lookup": lookup_detail,
+                "rfc822_message_id": gmail_provider.message_id_for(user["tenant_id"], key)})
+    await record_event("communication_message.reconciled", "communication_message",
+                       message_id, user["tenant_id"], user["email"],
+                       payload={"found": bool(found_id), "status": reconciled["status"]})
+    return reconciled
 
 
 async def _authorize_cron_observer(request: Request) -> str:

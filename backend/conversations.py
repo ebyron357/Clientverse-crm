@@ -39,6 +39,7 @@ this model is follow-on work and is recorded as such in the canonical document.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol
@@ -210,6 +211,22 @@ async def ensure_indexes(db) -> None:
         unique=True,
         partialFilterExpression={"provider_message_id": {"$type": "string"}},
     )
+    # The on-the-wire id an inbound reply refers back to.
+    await db[MESSAGES].create_index(
+        [("tenant_id", 1), ("rfc822_message_id", 1)],
+        partialFilterExpression={"rfc822_message_id": {"$type": "string"}},
+    )
+
+
+def body_fingerprint(body: str) -> str:
+    """A stable fingerprint of the exact text a human approved.
+
+    An approval authorises specific words, not a message slot. Recording the fingerprint
+    when the approval is raised and re-checking it immediately before dispatch closes the
+    gap between "this message was approved" and "these words were approved" -- which is
+    the gap a rewrite between approval and send would otherwise walk through.
+    """
+    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
 
 
 def _is_duplicate_key(exc: Exception) -> bool:
@@ -613,7 +630,11 @@ async def request_approval(db, *, tenant_id: str, message_id: str, actor: str,
         summary=message["body"][:500],
         risk=risk,
         action={"type": "communication_message.send", "message_id": message["id"],
-                "conversation_id": conversation["id"], "channel": message["channel"]},
+                "conversation_id": conversation["id"], "channel": message["channel"],
+                # The approval authorises these exact words. `attempt_delivery` re-checks
+                # the fingerprint before it consumes the approval, so a body that changed
+                # after a human read it cannot ride that human's decision.
+                "body_sha256": body_fingerprint(message["body"])},
         subject_type="communication_message", subject_id=message["id"],
         workspace_id=conversation.get("workspace_id"),
         facts=[{"label": "Channel", "value": message["channel"],
@@ -740,6 +761,14 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
     if not approval_id:
         await refuse(REFUSAL_APPROVAL, "The message carries no approval request.")
 
+    approval = await approval_queue.get(db, tenant_id, approval_id)
+    approved_fingerprint = ((approval or {}).get("action") or {}).get("body_sha256")
+    if approved_fingerprint and approved_fingerprint != body_fingerprint(message["body"]):
+        # The words that were approved are not the words about to be sent.
+        await refuse(REFUSAL_APPROVAL,
+                     "The message body changed after it was approved; it must be "
+                     "re-approved before it can be sent.")
+
     # Every precondition above was just re-checked live and passed. The blocks recorded on
     # the approval when it was raised are a snapshot of conditions that have since changed,
     # so write the current answer back before consuming — otherwise a block that has been
@@ -796,6 +825,11 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
     sent = await _transition(db, tenant_id, sending, SENT, actor,
                              extra={"provider_message_id": result.provider_message_id,
                                     "provider_status": result.status,
+                                    # The id the message carried on the wire. A reply's
+                                    # In-Reply-To header names this, so it is what the
+                                    # inbound path matches on -- stored as a field of its
+                                    # own rather than buried in a history entry.
+                                    "rfc822_message_id": result.detail.get("rfc822_message_id"),
                                     "sent_at": _iso(_now())},
                              detail=result.detail)
     await _touch_conversation(db, tenant_id, conversation["id"], direction=OUTBOUND,
@@ -826,9 +860,11 @@ async def reconcile_unknown(db, *, tenant_id: str, message_id: str, actor: str,
             "Reconciling a message the provider holds requires its provider message id")
 
     if found:
-        return await _transition(db, tenant_id, message, SENT, actor,
-                                 extra={"provider_message_id": provider_message_id,
-                                        "sent_at": _iso(_now()), "error": None},
+        extra = {"provider_message_id": provider_message_id, "sent_at": _iso(_now()),
+                 "error": None}
+        if (detail or {}).get("rfc822_message_id"):
+            extra["rfc822_message_id"] = detail["rfc822_message_id"]
+        return await _transition(db, tenant_id, message, SENT, actor, extra=extra,
                                  detail={"reconciled": True, **(detail or {})})
     return await _transition(db, tenant_id, message, FAILED, actor,
                              extra={"error": "Provider confirmed it never accepted this message"},

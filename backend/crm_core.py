@@ -437,8 +437,11 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             {"tenant_id": tenant, "related_type": "contact", "related_id": contact_id},
             {"_id": 0}).sort("due_date", 1).to_list(100)
         conversations = await db.conversations.find(
-            {"tenant_id": tenant, "participants.contact_id": contact_id}, {"_id": 0}
-        ).sort("last_message_at", -1).to_list(25)
+            {"tenant_id": tenant,
+             "$or": [{"contact_id": contact_id},
+                     {"participants": {"$elemMatch": {"kind": "contact",
+                                                      "id": contact_id}}}]},
+            {"_id": 0}).sort("last_message_at", -1).to_list(25)
         return {"contact": contact, "company": company, "deals": deals, "tasks": tasks,
                 "conversations": conversations,
                 "timeline": await timeline_for(user, "contact", contact_id)}
