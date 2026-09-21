@@ -188,12 +188,28 @@ def test_the_message_that_goes_out_is_the_approved_text_verbatim():
     assert mail["Message-ID"].strip("<>").startswith("cv-")
 
 
+def test_the_internal_thread_key_is_never_sent_to_gmail_as_a_thread_id():
+    """`external_thread_id` is this system's own key and is often synthetic.
+
+    A recovery case's thread key looks like `recovery_case:rc_abc:email`. Handing that
+    to Gmail as a threadId would be rejected outright, so the adapter reads only the
+    provider's own thread id.
+    """
+    provider, log = make_provider(
+        get_responses=[FakeResponse(200, {"messages": []})],
+        post_responses=[FakeResponse(200, {"id": "gmail-123"})])
+    conversation = make_conversation(external_thread_id="recovery_case:rc_abc:email")
+    run(provider.send(message=make_message(), conversation=conversation,
+                      idempotency_key="k1"))
+    assert "threadId" not in log[1][2]
+
+
 def test_a_reply_threads_onto_the_message_it_answers():
     provider, log = make_provider(
         get_responses=[FakeResponse(200, {"messages": []})],
         post_responses=[FakeResponse(200, {"id": "gmail-123"})])
-    conversation = make_conversation(external_thread_id="thr-7",
-                                     external_last_message_id="prior@mail.test")
+    conversation = make_conversation(provider_thread_id="thr-7",
+                                     provider_last_message_id="prior@mail.test")
     run(provider.send(message=make_message(), conversation=conversation,
                       idempotency_key="k1"))
     payload = log[1][2]

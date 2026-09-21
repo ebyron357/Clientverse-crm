@@ -192,6 +192,8 @@ async def ensure_indexes(db) -> None:
     await db[CONVERSATIONS].create_index([("tenant_id", 1), ("status", 1), ("last_activity_at", -1)])
     await db[CONVERSATIONS].create_index([("tenant_id", 1), ("workspace_id", 1)])
     await db[CONVERSATIONS].create_index([("tenant_id", 1), ("contact_id", 1)])
+    await db[CONVERSATIONS].create_index([("tenant_id", 1), ("recovery_case_id", 1)])
+    await db[CONVERSATIONS].create_index([("tenant_id", 1), ("provider_thread_id", 1)])
     # One thread per external provider thread, so a provider adapter replaying a webhook
     # cannot fork a conversation in two.
     await db[CONVERSATIONS].create_index(
@@ -331,7 +333,10 @@ async def create_conversation(db, *, tenant_id: str, channel: str, actor: str,
                               contact_id: Optional[str] = None,
                               handled_by: str = HANDLED_BY_HUMAN,
                               assignee: Optional[str] = None,
-                              external_thread_id: Optional[str] = None) -> dict:
+                              external_thread_id: Optional[str] = None,
+                              recovery_case_id: Optional[str] = None,
+                              provider_thread_id: Optional[str] = None,
+                              provider_last_message_id: Optional[str] = None) -> dict:
     if channel not in CHANNELS:
         raise ConversationError(f"channel must be one of {CHANNELS}")
     if handled_by not in HANDLERS:
@@ -351,6 +356,13 @@ async def create_conversation(db, *, tenant_id: str, channel: str, actor: str,
         "workspace_id": workspace_id,
         "company_id": company_id,
         "contact_id": contact_id,
+        # Which recovery case this thread belongs to, when it belongs to one. The
+        # attribution ledger reads it to find what was actually sent on a case.
+        "recovery_case_id": recovery_case_id,
+        # Gmail's (or another provider's) own thread and last-message ids, learned from
+        # traffic. Distinct from `external_thread_id`, which is this system's key.
+        "provider_thread_id": provider_thread_id,
+        "provider_last_message_id": provider_last_message_id,
         "external_thread_id": external_thread_id,
         # Consent is per conversation because it is per counterparty and per channel.
         # It starts unknown: no record means no permission, never assumed permission.
@@ -834,6 +846,17 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
                              detail=result.detail)
     await _touch_conversation(db, tenant_id, conversation["id"], direction=OUTBOUND,
                               counted=True)
+    # Learn the provider's own thread from the first successful send, so later messages
+    # thread onto it and a reply can be matched on the provider's own assertion.
+    provider_thread = (result.detail or {}).get("thread_id")
+    updates = {}
+    if provider_thread and not conversation.get("provider_thread_id"):
+        updates["provider_thread_id"] = provider_thread
+    if sent.get("rfc822_message_id"):
+        updates["provider_last_message_id"] = sent["rfc822_message_id"]
+    if updates:
+        await db[CONVERSATIONS].update_one(
+            {"id": conversation["id"], "tenant_id": tenant_id}, {"$set": updates})
     return sent
 
 

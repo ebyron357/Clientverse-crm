@@ -143,7 +143,7 @@ def registry(gmail):
 def approved_message(db, body="Your quote from March is still open."):
     conversation = run(cv.create_conversation(
         db, tenant_id=TENANT, channel=cv.CHANNEL_EMAIL, actor="user@acme.test",
-        subject="Your quote", contact_id="ct_1",
+        subject="Your quote", contact_id="ct_1", recovery_case_id="rc_1",
         participants=[{"kind": cv.PARTICIPANT_CONTACT, "id": "ct_1",
                        "address": "buyer@client.test"}]))
     run(cv.record_consent(db, tenant_id=TENANT, conversation_id=conversation["id"],

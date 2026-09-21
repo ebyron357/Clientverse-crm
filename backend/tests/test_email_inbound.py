@@ -125,7 +125,7 @@ def test_an_ordinary_reply_is_not_mistaken_for_a_bounce():
 # ----------------------------------------------------------------------- matching
 
 def test_a_reply_on_a_tracked_provider_thread_matches_on_the_thread(db):
-    conversation = make_conversation(db, external_thread_id="thr-known")
+    conversation = make_conversation(db, provider_thread_id="thr-known")
     record = inbound.normalize(gmail_message(thread_id="thr-known"))
     match = run(inbound.match_conversation(db, TENANT, record))
     assert match["conversation"]["id"] == conversation["id"]
@@ -173,7 +173,7 @@ def test_an_address_shared_by_two_contacts_is_not_guessed_at(db):
 
 
 def test_matching_never_reaches_into_another_tenant(db):
-    make_conversation(db, tenant_id=OTHER_TENANT, external_thread_id="thr-other")
+    make_conversation(db, tenant_id=OTHER_TENANT, provider_thread_id="thr-other")
     record = inbound.normalize(gmail_message(thread_id="thr-other"))
     match = run(inbound.match_conversation(db, TENANT, record))
     assert match["conversation"] is None, (
@@ -194,7 +194,7 @@ def test_a_reply_header_from_another_tenants_message_does_not_match(db):
 # ----------------------------------------------------------------------- ingestion
 
 def test_a_matched_reply_becomes_an_inbound_message_on_its_conversation(db):
-    conversation = make_conversation(db, external_thread_id="thr-known")
+    conversation = make_conversation(db, provider_thread_id="thr-known")
     result = run(inbound.ingest(db, tenant_id=TENANT,
                                 record=inbound.normalize(gmail_message(thread_id="thr-known",
                                                                        snippet="Yes please"))))
@@ -207,7 +207,7 @@ def test_a_matched_reply_becomes_an_inbound_message_on_its_conversation(db):
 
 
 def test_a_reply_reopens_a_closed_conversation(db):
-    conversation = make_conversation(db, external_thread_id="thr-known")
+    conversation = make_conversation(db, provider_thread_id="thr-known")
     run(cv.set_status(db, tenant_id=TENANT, conversation_id=conversation["id"],
                       status=cv.STATUS_CLOSED, actor="user@example.com"))
     run(inbound.ingest(db, tenant_id=TENANT,
@@ -217,7 +217,7 @@ def test_a_reply_reopens_a_closed_conversation(db):
 
 
 def test_replaying_the_same_inbound_message_records_it_once(db):
-    make_conversation(db, external_thread_id="thr-known")
+    make_conversation(db, provider_thread_id="thr-known")
     message = gmail_message(message_id="gm-same", thread_id="thr-known")
     first = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(message)))
     second = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(message)))
@@ -233,7 +233,7 @@ def test_the_first_reply_teaches_the_conversation_its_provider_thread(db):
     run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(
         gmail_message(thread_id="thr-learned", in_reply_to="cv-known@clientverse.app"))))
     updated = run(cv.get_conversation(db, TENANT, conversation["id"]))
-    assert updated["external_thread_id"] == "thr-learned", (
+    assert updated["provider_thread_id"] == "thr-learned", (
         "later messages in the thread should then match on the strongest evidence")
 
 
@@ -292,7 +292,7 @@ def test_a_bounce_marks_the_message_it_refers_to_as_failed(db):
 
 
 def test_a_bounce_is_never_recorded_as_a_reply(db):
-    conversation = make_conversation(db, external_thread_id="thr-known")
+    conversation = make_conversation(db, provider_thread_id="thr-known")
     run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(
         gmail_message(thread_id="thr-known", sender="mailer-daemon@googlemail.com",
                       subject="Delivery Status Notification (Failure)"))))
@@ -316,7 +316,7 @@ def test_a_bounce_that_names_nothing_we_sent_is_parked_not_applied(db):
 # -------------------------------------------------------------------------- polling
 
 def test_a_poll_counts_what_it_did_and_keeps_going_past_a_bad_message(db):
-    make_conversation(db, external_thread_id="thr-known")
+    make_conversation(db, provider_thread_id="thr-known")
     sent_conversation = make_conversation(db)
     make_sent_message(db, sent_conversation, wire_id="cv-b@clientverse.app",
                       provider_message_id="gmail-out-2")

@@ -37,10 +37,12 @@ import next_best_action as nba_service
 import recovery_case as recovery_case_service
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
+import attribution as attribution_service
 import cron_ledger
 import crm_core
 import email_inbound
 import gmail_provider
+import recovery_proof
 import second_chance as second_chance_service
 import security_gate as security_gate_service
 from work_queue import WorkQueue, run_worker_tick
@@ -139,6 +141,7 @@ async def lifespan(_: FastAPI):
         await cron_ledger.ensure_indexes(db)
         await crm_core.ensure_indexes(db)
         await email_inbound.ensure_indexes(db)
+        await attribution_service.ensure_indexes(db)
         await WorkQueue(db).ensure_indexes()
         await nba_service.ensure_indexes(db)
         await second_chance_service.ensure_indexes(db)
@@ -2950,6 +2953,104 @@ async def cron_reconcile_unknown(request: Request):
         "reconcile-unknown", run_id, lambda: run_reconcile_unknown_sweep(actor="cron"),
         entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+class RecordOutcomeInput(BaseModel):
+    """What a caller may say about an outcome.
+
+    Conspicuously absent: `basis`, `evidence`, `claim` and any way to assert that a
+    message was sent. Those are derived by the ledger from records. A caller that could
+    supply them could manufacture recovered revenue out of nothing, which is the one
+    thing this surface must make impossible.
+    """
+    case_id: str
+    kind: str
+    record_id: str
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    occurred_at: Optional[str] = None
+    note: Optional[str] = None
+
+
+@api.post("/attribution/outcomes")
+async def record_attribution_outcome(inp: RecordOutcomeInput,
+                                     user=Depends(require_role("admin"))):
+    """Record an outcome and let the ledger decide what, if anything, may be claimed."""
+    try:
+        entry = await attribution_service.record_outcome(
+            db, tenant_id=user["tenant_id"], case_id=inp.case_id, kind=inp.kind,
+            record_id=inp.record_id, actor=user["email"], amount=inp.amount,
+            currency=inp.currency, occurred_at=inp.occurred_at, note=inp.note,
+            audit=record_event)
+    except (attribution_service.CaseNotFound, attribution_service.OutcomeNotFound):
+        raise HTTPException(status_code=404, detail="Not found")
+    except attribution_service.AttributionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await record_event("attribution.outcome_recorded", "recovery_case", inp.case_id,
+                       user["tenant_id"], user["email"],
+                       payload={"entry_id": entry["id"], "claim": entry["claim"],
+                                "basis": entry["basis"]})
+    return entry
+
+
+@api.get("/attribution/entries")
+async def list_attribution_entries(case_id: Optional[str] = None,
+                                   claim: Optional[str] = None,
+                                   basis: Optional[str] = None, limit: int = 100,
+                                   user=Depends(get_current_user)):
+    return {"entries": await attribution_service.list_entries(
+        db, user["tenant_id"], case_id=case_id, claim=claim, basis=basis, limit=limit)}
+
+
+@api.get("/attribution/totals")
+async def attribution_totals(user=Depends(get_current_user)):
+    return await attribution_service.totals(db, user["tenant_id"])
+
+
+class AttributionWindowInput(BaseModel):
+    days: int = Field(ge=1, le=365)
+
+
+@api.get("/attribution/window")
+async def get_attribution_window(user=Depends(get_current_user)):
+    return {"window_days": await attribution_service.attribution_window_days(
+        db, user["tenant_id"]),
+        "default_days": attribution_service.DEFAULT_ATTRIBUTION_WINDOW_DAYS}
+
+
+@api.put("/attribution/window")
+async def set_attribution_window(inp: AttributionWindowInput,
+                                 user=Depends(require_role("admin"))):
+    """How long after contact an outcome may still be credited to it.
+
+    Tenant configuration, deliberately not a per-call argument: a window a caller could
+    set per request is not a rule, it is a dial for making numbers larger.
+    """
+    result = await attribution_service.set_attribution_window(
+        db, tenant_id=user["tenant_id"], days=inp.days, actor=user["email"])
+    await record_event("attribution.window_configured", "tenant", user["tenant_id"],
+                       user["tenant_id"], user["email"], payload={"days": result["window_days"]})
+    return result
+
+
+@api.get("/proof/portfolio")
+async def proof_portfolio(user=Depends(get_current_user)):
+    """The buyer-facing recovery report."""
+    return await recovery_proof.portfolio(db, user["tenant_id"])
+
+
+@api.get("/proof/traceability")
+async def proof_traceability(user=Depends(get_current_user)):
+    """Where each figure on the portfolio view comes from."""
+    return await recovery_proof.traceability(db, user["tenant_id"])
+
+
+@api.get("/proof/cases/{case_id}")
+async def proof_case(case_id: str, user=Depends(get_current_user)):
+    proof = await recovery_proof.case_proof(db, user["tenant_id"], case_id)
+    if not proof:
+        raise HTTPException(status_code=404, detail="Not found")
+    return proof
 
 
 @api.get("/inbound/unmatched")

@@ -161,7 +161,9 @@ async def match_conversation(db, tenant_id: str, record: dict) -> dict:
     thread_id = record.get("thread_id")
     if thread_id:
         conversation = await db[conversation_service.CONVERSATIONS].find_one(
-            {"tenant_id": tenant_id, "external_thread_id": thread_id}, {"_id": 0})
+            {"tenant_id": tenant_id,
+             "$or": [{"provider_thread_id": thread_id},
+                     {"external_thread_id": thread_id}]}, {"_id": 0})
         if conversation:
             return {"conversation": conversation, "basis": MATCH_THREAD,
                     "reason": f"Provider thread {thread_id} is already tracked."}
@@ -267,18 +269,13 @@ async def ingest(db, *, tenant_id: str, record: dict,
         provider_message_id=provider_message_id, received_at=record.get("received_at"))
 
     if not message.get("deduplicated") and record.get("thread_id") and not conversation.get(
-            "external_thread_id"):
+            "provider_thread_id"):
         # Learn the provider thread from the first reply, so later messages in it match
-        # on the strongest evidence rather than the weakest.
-        try:
-            await db[conversation_service.CONVERSATIONS].update_one(
-                {"id": conversation["id"], "tenant_id": tenant_id},
-                {"$set": {"external_thread_id": record["thread_id"]}})
-        except Exception:
-            # A unique index collision here means another conversation already owns the
-            # thread; the message is still correctly recorded, so this is not fatal.
-            logger.warning("Could not attach thread %s to conversation %s",
-                           record["thread_id"], conversation["id"])
+        # on the strongest evidence rather than the weakest. This is the provider's own
+        # thread id, kept separate from this system's internal thread key.
+        await db[conversation_service.CONVERSATIONS].update_one(
+            {"id": conversation["id"], "tenant_id": tenant_id},
+            {"$set": {"provider_thread_id": record["thread_id"]}})
 
     if on_reply and not message.get("deduplicated"):
         await on_reply(tenant_id=tenant_id, conversation=conversation, message=message,

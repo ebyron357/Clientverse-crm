@@ -121,7 +121,7 @@ def build_mime(*, message: dict, conversation: dict, sender: Optional[str],
     mail["Date"] = format_datetime(datetime.now(timezone.utc))
     # A reply must thread, or the recipient sees an unrelated new mail and the
     # conversation this system is tracking is not the one they are having.
-    in_reply_to = conversation.get("external_last_message_id")
+    in_reply_to = conversation.get("provider_last_message_id")
     if in_reply_to:
         mail["In-Reply-To"] = f"<{in_reply_to}>"
         mail["References"] = f"<{in_reply_to}>"
@@ -231,8 +231,12 @@ class GmailChannelProvider:
         raw = build_mime(message=message, conversation=conversation, sender=mailbox,
                          recipient=recipient, message_id=rfc_message_id)
         payload: dict[str, Any] = {"raw": raw}
-        if conversation.get("external_thread_id"):
-            payload["threadId"] = conversation["external_thread_id"]
+        # `provider_thread_id` is Gmail's own thread id, learned from a previous send or
+        # reply. `external_thread_id` is this system's internal thread key and is often a
+        # synthetic value (a recovery case, for instance) -- sending that to Gmail as a
+        # threadId would be rejected outright.
+        if conversation.get("provider_thread_id"):
+            payload["threadId"] = conversation["provider_thread_id"]
 
         async with self._http_client() as client:
             response = await client.post(
