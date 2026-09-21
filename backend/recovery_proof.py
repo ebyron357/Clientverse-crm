@@ -54,7 +54,7 @@ def _public(doc: Optional[dict]) -> Optional[dict]:
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
-async def case_proof(db, tenant_id: str, case_id: str) -> Optional[dict]:
+async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
     """Everything behind one recovery case, with the records each claim rests on."""
     case = await db[recovery_case_service.COLLECTION].find_one(
         {"tenant_id": tenant_id, "id": case_id}, {"_id": 0})
@@ -175,7 +175,7 @@ async def case_proof(db, tenant_id: str, case_id: str) -> Optional[dict]:
     }
 
 
-async def portfolio(db, tenant_id: str) -> dict:
+async def portfolio(db: Any, tenant_id: str) -> dict:
     """The aggregate view, with the denominators that make the headline honest."""
     cases = await db[recovery_case_service.COLLECTION].find(
         {"tenant_id": tenant_id}, {"_id": 0}).to_list(20000)
@@ -280,7 +280,7 @@ async def portfolio(db, tenant_id: str) -> dict:
     }
 
 
-async def traceability(db, tenant_id: str) -> dict:
+async def traceability(db: Any, tenant_id: str) -> dict:
     """Where each portfolio figure comes from.
 
     Shipped as part of the API rather than kept in documentation, because a metric a

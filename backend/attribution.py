@@ -51,8 +51,9 @@ across currencies.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Optional
 
 import conversations as conversation_service
 import recovery_case as recovery_case_service
@@ -123,7 +124,7 @@ def _public(doc: Optional[dict]) -> Optional[dict]:
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
-async def ensure_indexes(db) -> None:
+async def ensure_indexes(db: Any) -> None:
     # One entry per outcome per case. Replaying the same confirmation -- a webhook
     # redelivered, a sweep run twice -- must not book the revenue twice.
     await db[COLLECTION].create_index(
@@ -134,7 +135,7 @@ async def ensure_indexes(db) -> None:
     await db[SETTINGS_COLLECTION].create_index("tenant_id", unique=True)
 
 
-async def attribution_window_days(db, tenant_id: str) -> int:
+async def attribution_window_days(db: Any, tenant_id: str) -> int:
     doc = await db[SETTINGS_COLLECTION].find_one({"tenant_id": tenant_id}, {"_id": 0})
     try:
         days = int((doc or {}).get("window_days") or DEFAULT_ATTRIBUTION_WINDOW_DAYS)
@@ -143,7 +144,7 @@ async def attribution_window_days(db, tenant_id: str) -> int:
     return max(1, min(days, 365))
 
 
-async def set_attribution_window(db, *, tenant_id: str, days: int, actor: str) -> dict:
+async def set_attribution_window(db: Any, *, tenant_id: str, days: int, actor: str) -> dict:
     days = max(1, min(int(days), 365))
     await db[SETTINGS_COLLECTION].update_one(
         {"tenant_id": tenant_id},
@@ -154,14 +155,14 @@ async def set_attribution_window(db, *, tenant_id: str, days: int, actor: str) -
 
 # ------------------------------------------------------------------ basis derivation
 
-async def _case_conversation_ids(db, tenant_id: str, case_id: str) -> list[str]:
+async def _case_conversation_ids(db: Any, tenant_id: str, case_id: str) -> list[str]:
     rows = await db[conversation_service.CONVERSATIONS].find(
         {"tenant_id": tenant_id, "recovery_case_id": case_id}, {"_id": 0, "id": 1}
     ).to_list(200)
     return [row["id"] for row in rows]
 
 
-async def derive_basis(db, *, tenant_id: str, case_id: str,
+async def derive_basis(db: Any, *, tenant_id: str, case_id: str,
                        occurred_at: str) -> dict:
     """Work out what, if anything, this system may claim for an outcome on this case.
 
@@ -211,7 +212,7 @@ async def derive_basis(db, *, tenant_id: str, case_id: str,
                       if m.get("direction") == conversation_service.OUTBOUND]
             reason = ("No message on this case ever reached the client"
                       + (f" (outbound messages are in state(s): "
-                         f"{', '.join(sorted(set(s for s in unsent if s)))})." if unsent
+                         f"{', '.join(sorted({s for s in unsent if s}))})." if unsent
                          else "; nothing outbound was ever created."))
         return {"basis": BASIS_NONE, "evidence": [], "reason": reason}
 
@@ -243,7 +244,7 @@ async def derive_basis(db, *, tenant_id: str, case_id: str,
 
 # ---------------------------------------------------------------- outcome resolution
 
-async def _resolve_outcome(db, tenant_id: str, *, kind: str, record_id: str,
+async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str,
                            amount: Optional[float], currency: Optional[str],
                            occurred_at: Optional[str]) -> dict:
     """Read the money out of the record, not out of the request.
@@ -312,7 +313,7 @@ async def _resolve_outcome(db, tenant_id: str, *, kind: str, record_id: str,
 
 # --------------------------------------------------------------------- the ledger
 
-async def record_outcome(db, *, tenant_id: str, case_id: str, kind: str,
+async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
                          record_id: str, actor: str,
                          amount: Optional[float] = None,
                          currency: Optional[str] = None,
@@ -394,12 +395,12 @@ async def record_outcome(db, *, tenant_id: str, case_id: str, kind: str,
     return {**entry, "deduplicated": False, "case_updated": False}
 
 
-async def get_entry(db, tenant_id: str, entry_id: str) -> Optional[dict]:
+async def get_entry(db: Any, tenant_id: str, entry_id: str) -> Optional[dict]:
     return _public(await db[COLLECTION].find_one(
         {"tenant_id": tenant_id, "id": entry_id}, {"_id": 0}))
 
 
-async def list_entries(db, tenant_id: str, *, case_id: Optional[str] = None,
+async def list_entries(db: Any, tenant_id: str, *, case_id: Optional[str] = None,
                        claim: Optional[str] = None, basis: Optional[str] = None,
                        limit: int = 100) -> list[dict]:
     query: dict[str, Any] = {"tenant_id": tenant_id}
@@ -409,11 +410,12 @@ async def list_entries(db, tenant_id: str, *, case_id: Optional[str] = None,
         query["claim"] = claim
     if basis:
         query["basis"] = basis
-    return await db[COLLECTION].find(query, {"_id": 0}).sort(
+    rows: list[dict] = await db[COLLECTION].find(query, {"_id": 0}).sort(
         "recorded_at", -1).to_list(max(1, min(int(limit or 100), 500)))
+    return rows
 
 
-async def totals(db, tenant_id: str) -> dict:
+async def totals(db: Any, tenant_id: str) -> dict:
     """What this system may claim, what it may not, and the difference between them.
 
     Every figure is grouped by currency and none is summed across currencies. The
@@ -448,7 +450,7 @@ async def totals(db, tenant_id: str) -> dict:
     }
 
 
-async def time_to_recovery(db, tenant_id: str) -> dict:
+async def time_to_recovery(db: Any, tenant_id: str) -> dict:
     """How long an attributed recovery took, measured from detection to the outcome.
 
     Reported only over entries that carry both dates. An average computed over cases

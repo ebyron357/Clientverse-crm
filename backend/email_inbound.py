@@ -43,8 +43,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import conversations as conversation_service
 
@@ -71,7 +72,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def ensure_indexes(db) -> None:
+async def ensure_indexes(db: Any) -> None:
     await db[UNMATCHED].create_index([("tenant_id", 1), ("provider", 1),
                                       ("provider_message_id", 1)], unique=True)
     await db[UNMATCHED].create_index([("tenant_id", 1), ("status", 1), ("received_at", -1)])
@@ -96,7 +97,7 @@ def normalize(gmail_message: dict) -> dict:
         except (TypeError, ValueError):
             received_at = None
 
-    def addresses(value: str) -> list[str]:
+    def addresses(value: Optional[str]) -> list[str]:
         return [match.lower() for match in EMAIL_RE.findall(value or "")]
 
     references = MESSAGE_ID_RE.findall(
@@ -107,7 +108,7 @@ def normalize(gmail_message: dict) -> dict:
         "provider_message_id": gmail_message.get("id"),
         "thread_id": gmail_message.get("threadId"),
         "subject": headers.get("subject") or "(no subject)",
-        "from_address": (addresses(headers.get("from")) or [None])[0],
+        "from_address": next(iter(addresses(headers.get("from"))), None),
         "to": addresses(headers.get("to")) + addresses(headers.get("cc")),
         "in_reply_to": [ref.strip().lower() for ref in references],
         "body": gmail_message.get("snippet") or "",
@@ -137,21 +138,22 @@ def is_bounce(record: dict) -> bool:
 
 # ---------------------------------------------------------------------- matching
 
-async def _sent_message_with_wire_id(db, tenant_id: str, reference: str) -> Optional[dict]:
+async def _sent_message_with_wire_id(db: Any, tenant_id: str, reference: str) -> Optional[dict]:
     """The outbound message this system sent under the given RFC 2822 Message-ID.
 
     Checked against the dedicated field first, and against the dispatch history second so
     messages sent before that field existed still match their own replies.
     """
-    found = await db[conversation_service.MESSAGES].find_one(
+    found: Optional[dict] = await db[conversation_service.MESSAGES].find_one(
         {"tenant_id": tenant_id, "rfc822_message_id": reference}, {"_id": 0})
     if found:
         return found
-    return await db[conversation_service.MESSAGES].find_one(
+    fallback: Optional[dict] = await db[conversation_service.MESSAGES].find_one(
         {"tenant_id": tenant_id, "history.detail.rfc822_message_id": reference}, {"_id": 0})
+    return fallback
 
 
-async def match_conversation(db, tenant_id: str, record: dict) -> dict:
+async def match_conversation(db: Any, tenant_id: str, record: dict) -> dict:
     """Find the conversation this inbound message belongs to.
 
     Returns `{"conversation": doc|None, "basis": <MATCH_*>, "reason": str}`. The basis is
@@ -211,7 +213,7 @@ async def match_conversation(db, tenant_id: str, record: dict) -> dict:
 
 # --------------------------------------------------------------------- ingestion
 
-async def record_unmatched(db, tenant_id: str, record: dict, reason: str) -> dict:
+async def record_unmatched(db: Any, tenant_id: str, record: dict, reason: str) -> dict:
     """Park a message that could not be safely placed.
 
     Unmatched is a queue, not a bin: it keeps the message, the reason it could not be
@@ -240,7 +242,7 @@ async def record_unmatched(db, tenant_id: str, record: dict, reason: str) -> dic
     return {**doc, "deduplicated": False}
 
 
-async def ingest(db, *, tenant_id: str, record: dict,
+async def ingest(db: Any, *, tenant_id: str, record: dict,
                  on_reply: Optional[Callable[..., Any]] = None) -> dict:
     """Record one inbound message against the CRM.
 
@@ -286,7 +288,7 @@ async def ingest(db, *, tenant_id: str, record: dict,
             "deduplicated": bool(message.get("deduplicated"))}
 
 
-async def _ingest_bounce(db, tenant_id: str, record: dict) -> dict:
+async def _ingest_bounce(db: Any, tenant_id: str, record: dict) -> dict:
     """Apply a delivery report to the outbound message it refers to.
 
     A bounce that cannot be tied to a specific message is parked rather than applied to
@@ -321,7 +323,7 @@ async def _ingest_bounce(db, tenant_id: str, record: dict) -> dict:
 
 # ------------------------------------------------------------------------- polling
 
-async def poll_tenant(db, *, tenant_id: str, fetch_messages: Callable[..., Any],
+async def poll_tenant(db: Any, *, tenant_id: str, fetch_messages: Callable[..., Any],
                       on_reply: Optional[Callable[..., Any]] = None,
                       limit: int = 50) -> dict:
     """Ingest recent inbound mail for one tenant.
@@ -331,8 +333,9 @@ async def poll_tenant(db, *, tenant_id: str, fetch_messages: Callable[..., Any],
     on one message do not abandon the rest: a single unparseable mail must not stop a
     reply from reaching the case that is waiting for it.
     """
-    summary = {"tenant_id": tenant_id, "fetched": 0, "replies": 0, "bounces": 0,
-               "unmatched": 0, "duplicates": 0, "errors": 0}
+    summary: dict[str, Any] = {"tenant_id": tenant_id, "fetched": 0, "replies": 0,
+                               "bounces": 0, "unmatched": 0, "duplicates": 0,
+                               "errors": 0}
     try:
         raw_messages = await fetch_messages(tenant_id=tenant_id, limit=limit)
     except Exception as exc:
@@ -362,16 +365,17 @@ async def poll_tenant(db, *, tenant_id: str, fetch_messages: Callable[..., Any],
     return summary
 
 
-async def list_unmatched(db, tenant_id: str, *, status: str = "open",
+async def list_unmatched(db: Any, tenant_id: str, *, status: str = "open",
                          limit: int = 100) -> list[dict]:
     query: dict[str, Any] = {"tenant_id": tenant_id}
     if status:
         query["status"] = status
-    return await db[UNMATCHED].find(query, {"_id": 0}).sort(
+    rows: list[dict] = await db[UNMATCHED].find(query, {"_id": 0}).sort(
         "received_at", -1).to_list(max(1, min(int(limit or 100), 500)))
+    return rows
 
 
-async def assign_unmatched(db, *, tenant_id: str, inbound_id: str, conversation_id: str,
+async def assign_unmatched(db: Any, *, tenant_id: str, inbound_id: str, conversation_id: str,
                            actor: str) -> dict:
     """Place a parked message by hand, on a person's judgement rather than a guess."""
     parked = await db[UNMATCHED].find_one(

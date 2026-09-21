@@ -26,7 +26,7 @@ os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("INTEGRATION_ENC_KEY", Fernet.generate_key().decode())
 os.environ.setdefault("WEBHOOK_CRON_SECRET", "cron-idempotency-test-secret-abc123")
 
-import server  # noqa: E402
+import server
 
 
 def run(coro):

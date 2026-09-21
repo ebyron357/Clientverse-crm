@@ -618,7 +618,7 @@ async def _transition(db, tenant_id: str, message: dict, target: str, actor: str
 async def request_approval(db, *, tenant_id: str, message_id: str, actor: str,
                            risk: str = approval_queue.RISK_MEDIUM,
                            expires_in_hours: Optional[int] = None,
-                           registry: Optional["ProviderRegistry"] = None) -> dict:
+                           registry: Optional[ProviderRegistry] = None) -> dict:
     """Raise the M-07 approval an outbound message needs before it can be dispatched.
 
     The blocks that would refuse dispatch are computed now and recorded on the request, so

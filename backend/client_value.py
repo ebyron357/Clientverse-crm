@@ -5,10 +5,10 @@ records, approvals, tasks, and in-app notices; it never sends Gmail, SMS, review
 payment-provider traffic without a separately certified connection.
 """
 
-from datetime import datetime, timezone
 import hashlib
 import secrets
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field, HttpUrl
@@ -48,7 +48,7 @@ class EstimateInput(BaseModel):
     workspace_id: str
     title: str = Field(min_length=2, max_length=200)
     currency: str = "USD"
-    lines: List[EstimateLine] = Field(default_factory=list)
+    lines: list[EstimateLine] = Field(default_factory=list)
     valid_until: Optional[str] = None
 
 

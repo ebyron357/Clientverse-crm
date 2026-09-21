@@ -292,7 +292,7 @@ def test_a_bounce_marks_the_message_it_refers_to_as_failed(db):
 
 
 def test_a_bounce_is_never_recorded_as_a_reply(db):
-    conversation = make_conversation(db, provider_thread_id="thr-known")
+    make_conversation(db, provider_thread_id="thr-known")
     run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(
         gmail_message(thread_id="thr-known", sender="mailer-daemon@googlemail.com",
                       subject="Delivery Status Notification (Failure)"))))

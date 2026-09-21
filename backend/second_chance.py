@@ -15,8 +15,9 @@ items only — no channel is activated until an approved provider exists (E-08/E
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Optional
 
 import recovery_case
 

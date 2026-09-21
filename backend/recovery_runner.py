@@ -31,7 +31,8 @@ authorisation in `approval_queue`, delivery in `conversations`.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any, Optional
 
 import approval_queue
 import conversations

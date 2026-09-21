@@ -21,7 +21,7 @@ if _MONGO_URL.startswith("mongomock://"):
     from mongomock_motor import AsyncMongoMockClient as _MockClient
 
     class _PatchedClient(_MockClient):
-        def __init__(self, *args, **kwargs):  # noqa: D107 - drops the URL, keeps the API
+        def __init__(self, *args, **kwargs):
             super().__init__()
 
     _motor.AsyncIOMotorClient = _PatchedClient

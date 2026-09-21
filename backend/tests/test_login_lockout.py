@@ -25,7 +25,7 @@ os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("INTEGRATION_ENC_KEY", Fernet.generate_key().decode())
 
-import server  # noqa: E402
+import server
 
 
 def run(coro):

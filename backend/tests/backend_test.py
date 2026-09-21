@@ -2,6 +2,7 @@
 import os
 import time
 import uuid
+
 import pytest
 import requests
 
@@ -129,7 +130,7 @@ class TestAI:
         if not os.environ.get("EMERGENT_LLM_KEY"):
             return False
         try:
-            import emergentintegrations  # noqa: F401
+            import emergentintegrations
             return True
         except ImportError:
             return False
@@ -181,7 +182,7 @@ class TestTenantIsolation:
         s, _ = new_tenant_user
         companies = s.get(f"{API}/companies").json()
         workspaces = s.get(f"{API}/workspaces").json()
-        events = s.get(f"{API}/events").json()
+        _events = s.get(f"{API}/events").json()
         # New tenant should NOT see admin's seeded demo companies
         names = [c.get("name", "") for c in companies]
         assert not any("Acme" in n or "Globex" in n or "Initech" in n for n in names), f"leaked: {names}"

@@ -25,8 +25,8 @@ os.environ.setdefault("DB_NAME", "clientverse_gmail_unit")
 os.environ.setdefault("JWT_SECRET", "gmail-provider-unit-jwt-secret-long-enough-12")
 os.environ.setdefault("INTEGRATION_ENC_KEY", Fernet.generate_key().decode())
 
-import conversations as cv  # noqa: E402
-import gmail_provider  # noqa: E402
+import conversations as cv
+import gmail_provider
 
 TENANT = "ten_gmail_a"
 ACTIVE_CONNECTION = {

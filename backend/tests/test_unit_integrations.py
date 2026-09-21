@@ -2,11 +2,11 @@
 Unit tests for integration normalizers, encryption, and OAuth logic.
 These run without MongoDB or network — pure function validation.
 """
+import base64
+import hashlib
 import os
 import sys
 import time
-import hashlib
-import base64
 
 # Ensure server module is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

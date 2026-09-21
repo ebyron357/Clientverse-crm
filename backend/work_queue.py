@@ -17,8 +17,9 @@ import asyncio
 import math
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Awaitable, Optional
+from typing import Any, Optional
 
 QUEUED = "queued"
 CLAIMED = "claimed"
@@ -548,7 +549,7 @@ class WorkQueue:
             projection={"_id": 0}, return_document=True)
 
     async def stats(self, *, tenant_id: str) -> dict:
-        counts = {state: 0 for state in STATES}
+        counts = dict.fromkeys(STATES, 0)
         pipeline = [{"$match": {"tenant_id": tenant_id}},
                     {"$group": {"_id": "$status", "count": {"$sum": 1}}}]
         async for row in self.collection.aggregate(pipeline):
@@ -599,7 +600,7 @@ class WorkQueue:
         return doc
 
 
-async def _keep_lease_alive(queue: "WorkQueue", item: dict, worker_id: str,
+async def _keep_lease_alive(queue: WorkQueue, item: dict, worker_id: str,
                             lease_seconds: int) -> None:
     """Renew a lease while its handler runs.
 

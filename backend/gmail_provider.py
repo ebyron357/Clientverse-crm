@@ -45,10 +45,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import format_datetime, formataddr
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -81,7 +82,7 @@ def message_id_for(tenant_id: str, idempotency_key: str) -> str:
     produces the same id and a different attempt never does. Hashed rather than
     concatenated so internal identifiers do not travel in a mail header.
     """
-    digest = hashlib.sha256(f"{tenant_id}:{idempotency_key}".encode("utf-8")).hexdigest()[:40]
+    digest = hashlib.sha256(f"{tenant_id}:{idempotency_key}".encode()).hexdigest()[:40]
     return f"cv-{digest}@{MESSAGE_ID_DOMAIN}"
 
 

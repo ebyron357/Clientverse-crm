@@ -39,6 +39,39 @@ jobs:
           REACT_APP_BACKEND_URL: http://localhost:8001
         run: yarn build
 
+  backend-static-analysis:
+    name: Backend lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install tooling
+        run: pip install ruff mypy pip-audit
+      # Lint is blocking across the whole backend. The rule set is calibrated to this
+      # codebase (see backend/pyproject.toml): what is enforced catches defects --
+      # undefined names, dead imports, mutable defaults, dangling background tasks --
+      # rather than restyling working code.
+      - name: Lint
+        working-directory: backend
+        run: ruff check .
+      # Types are a ratchet, not a cliff. The modules that pass cleanly today are
+      # blocking; the rest are reported so the number is visible and can only go down.
+      - name: Type check
+        run: python scripts/typecheck.py backend
+      # Dependency vulnerabilities. Blocking, because it passes today and a new
+      # advisory against a pinned dependency is something the owner needs to see on
+      # the build rather than in a report nobody reads.
+      - name: Dependency vulnerability scan
+        working-directory: backend
+        run: pip-audit -r requirements.txt --progress-spinner off
+      # Configuration that would only fail at boot is worth failing at build time.
+      - name: Validate workflow and deployment configuration
+        run: python scripts/validate_config.py
+
   backend:
     name: Backend API tests
     runs-on: ubuntu-latest

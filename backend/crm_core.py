@@ -31,9 +31,9 @@ import csv
 import io
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
-from fastapi import Depends, HTTPException, Query, Request, Response
+from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, EmailStr, Field
 
 # --------------------------------------------------------------------------- constants
@@ -449,7 +449,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
     @router.patch("/contacts/{contact_id}")
     async def update_contact(contact_id: str, inp: ContactPatch,
                              user=Depends(get_current_user)):
-        changes = {k: v for k, v in inp.model_dump(exclude_unset=True).items()}
+        changes = dict(inp.model_dump(exclude_unset=True))
         if "email" in changes and changes["email"] is not None:
             changes["email"] = str(changes["email"])
         await assert_exists(COMPANIES, changes.get("company_id"), user, "company_id")
@@ -878,7 +878,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         """One box, every record type a person is likely to be looking for."""
         tenant = tenant_of(user)
         limit = max(1, min(int(limit or 10), 50))
-        results: dict[str, list] = {}
+        results: dict[str, Any] = {}
         for collection, label in ((CONTACTS, "contacts"), (COMPANIES, "companies"),
                                   (DEALS, "deals"), (TASKS, "tasks")):
             query = {"tenant_id": tenant, **text_filter(collection, q),

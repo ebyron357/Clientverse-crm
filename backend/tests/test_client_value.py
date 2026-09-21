@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-
 BASE = os.environ.get("REACT_APP_BACKEND_URL") or "http://localhost:8001"
 API = f"{BASE}/api"
 ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@example.com"), "password": os.environ.get("ADMIN_PASSWORD", "AdminPass123!")}

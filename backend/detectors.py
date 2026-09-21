@@ -32,8 +32,9 @@ guessed would manufacture recovery opportunities out of ordinary business.
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Optional
 
 import conversations as conversation_service
 import recovery_case
@@ -105,7 +106,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse(value) -> Optional[datetime]:
+def _parse(value: Any) -> Optional[datetime]:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str) and value:
@@ -117,7 +118,7 @@ def _parse(value) -> Optional[datetime]:
     return None
 
 
-def _status(value) -> str:
+def _status(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
@@ -125,7 +126,7 @@ def _hours(delta: timedelta) -> int:
     return max(0, int(delta.total_seconds() // 3600))
 
 
-async def ensure_indexes(db) -> None:
+async def ensure_indexes(db: Any) -> None:
     await db[CALL_LOGS].create_index([("tenant_id", 1), ("occurred_at", -1)])
     await db[CALL_LOGS].create_index([("tenant_id", 1), ("external_id", 1)], unique=True,
                                      partialFilterExpression={"external_id": {"$type": "string"}})
@@ -139,7 +140,7 @@ async def ensure_indexes(db) -> None:
 
 # --------------------------------------------------------------- response lookups
 
-async def _responded_records(db, tenant_id: str, related_type: str,
+async def _responded_records(db: Any, tenant_id: str, related_type: str,
                              record_ids: list[str]) -> set[str]:
     """Which of these records somebody has since acted on.
 
@@ -167,7 +168,7 @@ async def _responded_records(db, tenant_id: str, related_type: str,
 
 # --------------------------------------------------------------------- the lanes
 
-async def detect_missed_calls(db, tenant_id: str, *,
+async def detect_missed_calls(db: Any, tenant_id: str, *,
                               grace_hours: int = MISSED_CALL_GRACE_HOURS) -> list[dict]:
     """An inbound call nobody answered, and nobody called back.
 
@@ -227,7 +228,7 @@ async def detect_missed_calls(db, tenant_id: str, *,
     return detections
 
 
-async def detect_web_enquiries(db, tenant_id: str, *,
+async def detect_web_enquiries(db: Any, tenant_id: str, *,
                                grace_hours: int = WEB_ENQUIRY_GRACE_HOURS) -> list[dict]:
     """A website enquiry nobody answered."""
     now = _now()
@@ -267,7 +268,7 @@ async def detect_web_enquiries(db, tenant_id: str, *,
     return detections
 
 
-async def _detect_open_offers(db, tenant_id: str, *, collection: str, detector_type: str,
+async def _detect_open_offers(db: Any, tenant_id: str, *, collection: str, detector_type: str,
                               grace_days: int, kinds: Optional[tuple] = None,
                               label: str = "offer") -> list[dict]:
     """A priced offer that went out and came back with nothing.
@@ -320,21 +321,21 @@ async def _detect_open_offers(db, tenant_id: str, *, collection: str, detector_t
     return detections
 
 
-async def detect_unanswered_quotes(db, tenant_id: str, *,
+async def detect_unanswered_quotes(db: Any, tenant_id: str, *,
                                    grace_days: int = QUOTE_GRACE_DAYS) -> list[dict]:
     return await _detect_open_offers(
         db, tenant_id, collection="documents", detector_type=TYPE_UNANSWERED_QUOTE,
         grace_days=grace_days, kinds=QUOTE_KINDS, label="quote")
 
 
-async def detect_unanswered_estimates(db, tenant_id: str, *,
+async def detect_unanswered_estimates(db: Any, tenant_id: str, *,
                                       grace_days: int = ESTIMATE_GRACE_DAYS) -> list[dict]:
     return await _detect_open_offers(
         db, tenant_id, collection="estimates", detector_type=TYPE_UNANSWERED_ESTIMATE,
         grace_days=grace_days, label="estimate")
 
 
-async def detect_no_response(db, tenant_id: str, *,
+async def detect_no_response(db: Any, tenant_id: str, *,
                              grace_days: int = NO_RESPONSE_GRACE_DAYS) -> list[dict]:
     """A message that reached the client and was never answered.
 
@@ -363,8 +364,9 @@ async def detect_no_response(db, tenant_id: str, *,
                                         conversation_service.DELIVERED)]
         if not sent:
             continue
-        last_sent = max((_parse(m.get("sent_at") or m.get("created_at")) for m in sent),
-                        default=None)
+        sent_times = [t for t in (_parse(m.get("sent_at") or m.get("created_at"))
+                                  for m in sent) if t]
+        last_sent = max(sent_times) if sent_times else None
         if not last_sent or last_sent > cutoff:
             continue
         replies_after = [m for m in messages
@@ -393,9 +395,8 @@ async def detect_no_response(db, tenant_id: str, *,
     return detections
 
 
-async def detect_cancelled_appointments(db, tenant_id: str) -> list[dict]:
+async def detect_cancelled_appointments(db: Any, tenant_id: str) -> list[dict]:
     """A booking the client cancelled and nobody rebooked."""
-    now = _now()
     appointments = await db.appointments.find(
         {"tenant_id": tenant_id}, {"_id": 0}).sort("start_at", -1).to_list(DETECTION_LIMIT)
     responded = await _responded_records(db, tenant_id, "appointment",
@@ -440,7 +441,7 @@ async def detect_cancelled_appointments(db, tenant_id: str) -> list[dict]:
     return detections
 
 
-async def detect_no_shows(db, tenant_id: str, *,
+async def detect_no_shows(db: Any, tenant_id: str, *,
                           grace_hours: int = NO_SHOW_GRACE_HOURS) -> list[dict]:
     """A booking whose time passed while it was still merely scheduled.
 
@@ -483,7 +484,7 @@ async def detect_no_shows(db, tenant_id: str, *,
     return detections
 
 
-async def detect_external_crm_events(db, tenant_id: str) -> list[dict]:
+async def detect_external_crm_events(db: Any, tenant_id: str) -> list[dict]:
     """Recoverable events another system told us about.
 
     An external event arrives with identifiers this CRM has not verified, so nothing here
@@ -559,7 +560,7 @@ def to_recovery_event(detection: dict) -> dict:
     )
 
 
-async def enqueue_detections(db, queue, detections: list[dict], *,
+async def enqueue_detections(db: Any, queue: Any, detections: list[dict], *,
                              actor: str = "recovery-detector",
                              audit: Optional[Callable[..., Awaitable[Any]]] = None
                              ) -> tuple[list[dict], list[dict]]:
@@ -627,7 +628,7 @@ LANES = (
 )
 
 
-async def run_detection(db, queue, tenant_id: str, *, actor: str = "recovery-detector",
+async def run_detection(db: Any, queue: Any, tenant_id: str, *, actor: str = "recovery-detector",
                         audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Run every lane for one tenant and report what each one found.
 
@@ -667,7 +668,7 @@ async def run_detection(db, queue, tenant_id: str, *, actor: str = "recovery-det
     }
 
 
-async def run_detection_all_tenants(db, queue, *, actor: str = "cron",
+async def run_detection_all_tenants(db: Any, queue: Any, *, actor: str = "cron",
                                     audit: Optional[Callable[..., Awaitable[Any]]] = None
                                     ) -> dict:
     tenant_ids = await db.tenants.distinct("tenant_id")

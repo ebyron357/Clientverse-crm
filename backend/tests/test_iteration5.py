@@ -5,8 +5,9 @@
 - Regression sanity after backend corruption fix
 """
 import os
-import uuid
 import time
+import uuid
+
 import pytest
 import requests
 
@@ -197,7 +198,7 @@ class TestWebhookPatterns:
             return any(d.get("webhook_id") == hook_id and d.get("event_type", "").startswith(event_type_prefix)
                        for d in deliv)
 
-        assert has_delivery(h_comm["id"], "commitment."), f"commitment.* hook missed commitment.created"
+        assert has_delivery(h_comm["id"], "commitment."), "commitment.* hook missed commitment.created"
         assert has_delivery(h_star["id"], "commitment."), "* hook missed commitment.created"
         assert not has_delivery(h_none["id"], "commitment."), "approval.* hook should NOT receive commitment.*"
 

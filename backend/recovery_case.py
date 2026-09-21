@@ -41,8 +41,9 @@ from __future__ import annotations
 import asyncio
 import math
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Optional
 
 COLLECTION = "recovery_cases"
 

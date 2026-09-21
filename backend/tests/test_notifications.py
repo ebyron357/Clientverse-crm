@@ -34,7 +34,7 @@ def test_alerts_generate_in_app_notifications():
     ws = requests.get(f"{API}/workspaces", headers=h, timeout=15).json()
     assert ws
     wid = ws[0]["id"]
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
     past = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
     c = requests.post(f"{API}/commitments", headers=h, json={
         "workspace_id": wid, "title": f"notif-breach-{uuid.uuid4().hex[:6]}",

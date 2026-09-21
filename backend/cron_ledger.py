@@ -57,7 +57,7 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
-async def ensure_indexes(db) -> None:
+async def ensure_indexes(db: Any) -> None:
     await db[COLLECTION].create_index([("job", 1), ("received_at", -1)])
     await db[COLLECTION].create_index([("status", 1), ("received_at", -1)])
     await db[COLLECTION].create_index("run_id")
@@ -71,7 +71,7 @@ async def ensure_indexes(db) -> None:
         pass
 
 
-async def record_request(db, *, job: str, run_id: Optional[str], status: str,
+async def record_request(db: Any, *, job: str, run_id: Optional[str], status: str,
                          source: Optional[str] = None,
                          detail: Optional[dict] = None) -> str:
     """Record that production received a scheduled request, and how it was answered.
@@ -104,7 +104,7 @@ async def record_request(db, *, job: str, run_id: Optional[str], status: str,
     return entry_id
 
 
-async def mark_started(db, entry_id: str) -> None:
+async def mark_started(db: Any, entry_id: str) -> None:
     try:
         await db[COLLECTION].update_one(
             {"id": entry_id},
@@ -113,7 +113,7 @@ async def mark_started(db, entry_id: str) -> None:
         pass
 
 
-async def mark_finished(db, entry_id: str, *, status: str,
+async def mark_finished(db: Any, entry_id: str, *, status: str,
                         result: Optional[Any] = None,
                         error: Optional[str] = None) -> None:
     try:
@@ -141,7 +141,7 @@ def _summarise(result: Any) -> Any:
     if isinstance(result, (int, float, str, bool)):
         return result
     if isinstance(result, dict):
-        out = {}
+        out: dict[str, Any] = {}
         for key, value in list(result.items())[:25]:
             if isinstance(value, (int, float, str, bool)) or value is None:
                 out[str(key)] = value
@@ -157,7 +157,7 @@ def _summarise(result: Any) -> Any:
     return str(result)[:200]
 
 
-async def list_runs(db, *, job: Optional[str] = None, status: Optional[str] = None,
+async def list_runs(db: Any, *, job: Optional[str] = None, status: Optional[str] = None,
                     limit: int = 50) -> list[dict]:
     query: dict[str, Any] = {}
     if job:
@@ -166,10 +166,11 @@ async def list_runs(db, *, job: Optional[str] = None, status: Optional[str] = No
         query["status"] = status
     limit = max(1, min(int(limit or 50), 500))
     cursor = db[COLLECTION].find(query, {"_id": 0, "expires_at": 0}).sort("received_at", -1)
-    return await cursor.to_list(limit)
+    rows: list[dict] = await cursor.to_list(limit)
+    return rows
 
 
-async def health(db, *, window_minutes: int = 120) -> dict:
+async def health(db: Any, *, window_minutes: int = 120) -> dict:
     """What an operator actually needs to know: has production been called at all, and
     did the calls do anything.
 

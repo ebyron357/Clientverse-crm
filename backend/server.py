@@ -1,52 +1,54 @@
-import os
-import uuid
-import jwt
-import bcrypt
-import logging
-import requests
 import asyncio
-import time
-import hmac
-import hashlib
-import secrets
-import json as _json
 import base64
+import hashlib
+import hmac
+import json as _json
+import logging
+import os
+import secrets
+import time
+import uuid
 from contextlib import asynccontextmanager
-from urllib.parse import urlencode
-from fastapi.responses import RedirectResponse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional
+from urllib.parse import urlencode
 
+import bcrypt
+import jwt
+import requests
 from dotenv import load_dotenv
+from fastapi.responses import RedirectResponse
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query
-from fastapi.staticfiles import StaticFiles
-from starlette.middleware.cors import CORSMiddleware
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field, EmailStr
 from cryptography.fernet import Fernet
-from client_value import register_client_value_routes
-from operations_routes import register_operations_routes
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.staticfiles import StaticFiles
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, EmailStr, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.cors import CORSMiddleware
+
 import approval_queue as approval_service
-import conversations as conversation_service
-import next_best_action as nba_service
-import recovery_case as recovery_case_service
-import recovery_runner as recovery_runner_service
-import recovery_strategy as recovery_service
 import attribution as attribution_service
+import conversations as conversation_service
+import crm_core
 import cron_ledger
 import detectors
-import crm_core
 import email_inbound
 import gmail_provider
+import next_best_action as nba_service
+import recovery_case as recovery_case_service
 import recovery_intake
 import recovery_proof
+import recovery_runner as recovery_runner_service
+import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
+from client_value import register_client_value_routes
+from operations_routes import register_operations_routes
 from work_queue import WorkQueue, run_worker_tick
 
 logging.basicConfig(level=logging.INFO)
@@ -242,6 +244,21 @@ def set_auth_cookie(response: Response, token: str):
         path="/",
     )
 
+# Every scheduled endpoint hands its work to a background task and returns 2xx
+# immediately. `asyncio.create_task` on its own keeps only a weak reference, so a task
+# nobody holds can be garbage-collected mid-flight -- the sweep simply stops, with no
+# error anywhere. Holding a strong reference until it finishes is the documented fix.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def spawn_background(coro) -> asyncio.Task:
+    """Start a fire-and-forget task that cannot be collected while it runs."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
 async def record_event(event_type: str, resource_type: str, resource_id: str,
                        tenant_id: str, actor: str, workspace_id: Optional[str] = None,
                        payload: Optional[dict] = None, source: str = "system",
@@ -256,7 +273,7 @@ async def record_event(event_type: str, resource_type: str, resource_id: str,
     await db.domain_events.insert_one(ev)
     clean = {k: v for k, v in ev.items() if k != "_id"}
     try:
-        asyncio.create_task(dispatch_webhooks_for_event(clean))
+        spawn_background(dispatch_webhooks_for_event(clean))
     except Exception:
         pass
     if workspace_id and event_type in HEALTH_AFFECTING:
@@ -835,7 +852,7 @@ class OppInput(BaseModel):
     owner: Optional[str] = None
     currency: str = "USD"
     expected_close_date: Optional[str] = None
-    contact_ids: List[str] = []
+    contact_ids: list[str] = []
 
 @api.get("/opportunities")
 async def list_opps(
@@ -1341,7 +1358,7 @@ async def ai_generate(inp: AIInput, user=Depends(get_current_user)):
     }
     await db.ai_runs.insert_one({"id": run_id, "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id,
                                  "created_at": now_iso(), **result})
-    return {k: v for k, v in result.items()}
+    return dict(result)
 
 # ----------------------------- seed -----------------------------
 
@@ -1771,7 +1788,7 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
         }
         await db.mcp_tool_invocations.insert_one(dict(record))
         return record
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await fail(504, "Tool execution timed out", tool["level"])
     except Exception as e:
         await fail(502, f"Tool execution error: {e}", tool["level"])
@@ -1899,12 +1916,12 @@ async def dispatch_webhooks_for_event(ev: dict):
                     "webhook_name": wh.get("name"), "event_type": ev["event_type"], "event_id": ev.get("id"),
                     "payload": {"event": ev}, "status": "pending", "attempts": [], "dlq": False, "created_at": now_iso()}
         await db.webhook_deliveries.insert_one(dict(delivery))
-        asyncio.create_task(_do_delivery(delivery, wh))
+        spawn_background(_do_delivery(delivery, wh))
 
 class WebhookInput(BaseModel):
     name: str
     url: str
-    events: List[str] = []
+    events: list[str] = []
 
 class WebhookPatch(BaseModel):
     enabled: Optional[bool] = None
@@ -1982,7 +1999,7 @@ async def webhook_sink(request: Request):
     return {"received": True}
 
 class PreviewInput(BaseModel):
-    patterns: List[str] = []
+    patterns: list[str] = []
 
 @api.post("/webhooks/match-preview")
 async def webhook_match_preview(inp: PreviewInput, user=Depends(get_current_user)):
@@ -2022,7 +2039,7 @@ class OutcomeInput(BaseModel):
     current_value: float = 0
     unit: Optional[str] = None
     status: str = "on_track"
-    linked_commitment_ids: List[str] = []
+    linked_commitment_ids: list[str] = []
 
 class OutcomePatch(BaseModel):
     current_value: Optional[float] = None
@@ -2086,7 +2103,7 @@ async def cron_commitment_risk(request: Request):
     run_id, entry_id = await _begin_cron(request, "commitment-risk")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "commitment-risk", run_id,
         lambda: evaluate_commitment_risk(tenant_id=None, actor="cron"), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
@@ -2199,7 +2216,7 @@ async def cron_work_queue(request: Request):
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     # Each tick gets a distinct worker identity so lease-ownership checks can tell a
     # stale tick apart from the one that replaced it.
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "work-queue", run_id,
         lambda: run_worker_tick(work_queue, WORK_QUEUE_HANDLERS,
                                 worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE), entry_id))
@@ -2218,7 +2235,7 @@ async def cron_detect_recovery(request: Request):
     run_id, entry_id = await _begin_cron(request, "detect-recovery")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "detect-recovery", run_id,
         lambda: detectors.run_detection_all_tenants(db, work_queue, actor="cron",
                                                     audit=record_event), entry_id))
@@ -2231,7 +2248,7 @@ async def cron_second_chance(request: Request):
     run_id, entry_id = await _begin_cron(request, "second-chance")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron"), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
@@ -2242,7 +2259,7 @@ async def cron_next_best_actions(request: Request):
     run_id, entry_id = await _begin_cron(request, "next-best-actions")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron"), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
@@ -2257,7 +2274,7 @@ async def cron_recovery_strategies(request: Request):
     run_id, entry_id = await _begin_cron(request, "recovery-strategies")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "recovery-strategies", run_id,
         lambda: recovery_service.compose_all_tenants(db, work_queue, actor="cron"), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
@@ -2274,7 +2291,7 @@ async def cron_recovery_runner(request: Request):
     run_id, entry_id = await _begin_cron(request, "recovery-runner")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "recovery-runner", run_id,
         lambda: recovery_runner_service.run_ready_cases_all_tenants(
             db, work_queue, actor="cron", audit=record_event), entry_id))
@@ -2287,14 +2304,13 @@ async def cron_approval_expiry(request: Request):
     run_id, entry_id = await _begin_cron(request, "approval-expiry")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "approval-expiry", run_id, lambda: approval_service.expire_due(db), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
 #  LIVE INTEGRATIONS V1 — providers, secure credential storage, sync engine
 # ============================================================================
-import json as _json
 import httpx
 import stripe as _stripe
 
@@ -2340,7 +2356,7 @@ SENSITIVE_CONN_FIELDS = {
     "_id", "enc", "oauth_state", "code_verifier", "access_token", "refresh_token",
     "client_secret", "api_key", "webhook_secret",
 }
-SAFE_CONN_FIELDS = {field: 0 for field in SENSITIVE_CONN_FIELDS}
+SAFE_CONN_FIELDS = dict.fromkeys(SENSITIVE_CONN_FIELDS, 0)
 
 def _public_conn(c: dict) -> dict:
     return {k: v for k, v in c.items() if k not in SENSITIVE_CONN_FIELDS}
@@ -2459,7 +2475,7 @@ async def _stripe_api_key(tenant_id):
     return os.environ.get("STRIPE_API_KEY")
 
 async def _google_access_token(tenant_id, force_refresh=False):
-    creds, doc = (await _google_creds(tenant_id)) or (None, None)
+    creds, _doc = (await _google_creds(tenant_id)) or (None, None)
     if not creds:
         return None
     exp = creds.get("expires_at", 0)
@@ -2662,7 +2678,7 @@ def register_channel_providers() -> list[str]:
 # ---- Adapters (sync returns a normalized summary; bounded, idempotent upserts) ----
 
 async def _upsert_comm(tenant_id, rec, contacts, actor_provider="gmail"):
-    matched = [contacts[e] for e in ([rec.get("from_email")] + rec.get("to", [])) if e and e in contacts]
+    matched = [contacts[e] for e in [rec.get("from_email"), *rec.get("to", [])] if e and e in contacts]
     contact_ids = list({m["id"] for m in matched})
     if not contact_ids:
         return False
@@ -2957,7 +2973,7 @@ async def cron_inbound_email(request: Request):
     run_id, entry_id = await _begin_cron(request, "inbound-email")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "inbound-email", run_id, lambda: run_inbound_email_sweep(actor="cron"), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
@@ -2972,7 +2988,7 @@ async def cron_reconcile_unknown(request: Request):
     run_id, entry_id = await _begin_cron(request, "reconcile-unknown")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "reconcile-unknown", run_id, lambda: run_reconcile_unknown_sweep(actor="cron"),
         entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
@@ -3248,7 +3264,7 @@ async def create_stripe_payment_intent(
     invoice = await db.invoices.find_one({"id": invoice_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    amount = int(round(float(invoice.get("total") or 0) * 100))
+    amount = round(float(invoice.get("total") or 0) * 100)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Invoice total must be greater than zero")
     _stripe.api_key = key
@@ -3406,7 +3422,7 @@ async def stripe_webhook(request: Request):
             amount_matches = True
             currency_matches = True
             if payment_status == "paid" and intent_matches:
-                expected_amount = int(round(float(invoice.get("total") or 0) * 100))
+                expected_amount = round(float(invoice.get("total") or 0) * 100)
                 expected_currency = (invoice.get("currency") or "usd").lower()
                 amount_matches = obj.get("amount_received") == expected_amount
                 currency_matches = str(obj.get("currency") or "").lower() == expected_currency
@@ -3521,7 +3537,7 @@ async def cron_integration_sync(request: Request):
                 await evaluate_alerts(c["tenant_id"])
             except Exception:
                 pass
-    asyncio.create_task(_run_cron_job("integration-sync", run_id, _sweep, entry_id))
+    spawn_background(_run_cron_job("integration-sync", run_id, _sweep, entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
@@ -4098,7 +4114,7 @@ async def cron_daily_digest(request: Request):
                     await deliver_digest(tid, local.strftime("%Y-%m-%d"))
             except Exception:
                 pass
-    asyncio.create_task(_run_cron_job("daily-digest", run_id, _sweep, entry_id))
+    spawn_background(_run_cron_job("daily-digest", run_id, _sweep, entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
