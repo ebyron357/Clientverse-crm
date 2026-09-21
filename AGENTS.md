@@ -1,5 +1,27 @@
 # ClientVerse CRM — Agent Memory
 
+## Session state (2026-09-21, branch `claude/trusting-brahmagupta-lj26xf`)
+
+- **The scheduler has never made a production request.** Proven three ways: the
+  workflow log (`BASE_URL:`/`CRON_SECRET:` empty), 1,622 green no-op runs, and
+  Railway's HTTP log containing no `/api/cron/*` request at all. The two GitHub
+  secrets are still unset and **cannot be set from an agent session** — the proxy
+  refuses the Actions secrets API with 403. Owner action.
+- **Production is unreachable from agent sessions.** Egress policy answers 403 to
+  CONNECT for `clientverse-crm-production-production.up.railway.app`. Do not spend
+  time retrying it; verify through CI and hand production checks to the owner.
+  Railway's MCP tools *do* work and are the way to read deployment state and logs.
+- Deployed head is `main@730b1b3` (deployment `4b5f7f84-…`, 2026-09-16). This branch
+  is not deployed.
+- **Run the suite locally with `MONGO_URL=mongomock://local`** where no mongod is
+  reachable (`backend/requirements-dev.txt`). 675 of 695 pass; the 16 failures are
+  driver fidelity, not defects. CI against mongo:7 is the gate.
+- New gates: `ruff check .` (blocking), `scripts/typecheck.py` (ratcheting — a module
+  joins the blocking set by being clean), `pip-audit`, `scripts/validate_config.py`,
+  and `scripts/crm_release_smoke.mjs` (82 assertions, release gate in CI).
+- Handoff and status: `docs/OWNER_HANDOFF.md`, `docs/ACTIVATION_REPORT.md`.
+
+
 ## Closeout state (2026-09-01, production LIVE)
 
 - **Production is live and verified.** Railway deployment `d9af2985-30e4-4fb8-b030-ac8b1446db89` (commit `ca30587` = main) SUCCESS at 2026-09-01T22:44Z; `/api/health` → 200 `{"service":"ClientVerse","version":"v1","status":"ok","database":"up"}`; SPA 200; `scripts/proof_of_life.mjs` exit 0 (all gates incl. cross-tenant 404); smoke records fully cleaned (0 references); evidence `docs/evidence/production-smoke-20260901.json`.
