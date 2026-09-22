@@ -23,3 +23,77 @@
 - `seed()` reads `ADMIN_EMAIL`/`ADMIN_PASSWORD` at every boot and re-syncs the admin password hash — rotating = set new value + redeploy.
 - Public URL probes return 404 while no healthy deployment exists (expected; not a routing problem).
 - Do not commit/push unless the owner explicitly asks; post state to Issue #10 instead.
+
+## Jev QC verification gate (mandatory before claiming completion)
+
+**Rule: no agent may report a task VERIFIED COMPLETE until the Jev QC gate has returned
+`qc_status: VERIFIED_COMPLETE` for that task.** The gate is the production n8n *Jev QC
+Central Verification Gate*, which relays to TypeSafe Jev and returns the decision.
+Never call TypeSafe directly, never request or store a TypeSafe API key, and never stand
+up a second Jev service or modify the production n8n workflow.
+
+```
+Claude Code → n8n Jev QC Central Gate → TypeSafe Jev → QC decision → Claude Code
+```
+
+### Invocation
+
+```bash
+node scripts/jev_qc.mjs <payload.json>     # or: yarn qc <payload.json>
+node scripts/jev_qc.mjs -                  # payload on stdin
+```
+
+Configuration (endpoint is configuration, **not** a secret):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JEV_QC_WEBHOOK_URL` | `https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate` | Gate endpoint |
+| `JEV_QC_TIMEOUT_MS` | `120000` | Request timeout |
+| `JEV_QC_EVIDENCE_PATH` | unset | Writes the full request/verdict record to this path |
+
+### Payload
+
+```json
+{
+  "task_id": "unique task identifier",
+  "task": "description of work performed",
+  "worker": "Claude Code",
+  "worker_claim": "Task complete.",
+  "completion_requirements": ["requirement 1", "requirement 2"],
+  "evidence": {
+    "implementation": "...", "tests": "...", "build": "...",
+    "deployment": "...", "verification": "..."
+  }
+}
+```
+
+`worker` and `worker_claim` default as shown. Use concrete evidence only — commit SHA,
+changed files, test command + result, build command + result, deployment evidence, URL,
+PR number, validation output, logs.
+
+**Evidence rule: never fabricate evidence.** Any evidence field left absent or blank is
+submitted verbatim as `"No evidence supplied."` so Jev scores the real gap. Do not invent
+artifacts to force a pass.
+
+### Verdicts and exit codes
+
+| `qc_status` | Exit | Agent must report |
+| --- | --- | --- |
+| `VERIFIED_COMPLETE` | 0 | `QC VERIFIED COMPLETE`, including the Jev result |
+| `INCOMPLETE` | 1 | `QC INCOMPLETE` + the unsupported requirements — **not** verified complete |
+| `NEEDS_HUMAN_REVIEW` | 2 | `QC NEEDS HUMAN REVIEW` + the reason — **not** verified complete |
+| (gate error) | 3 | `QC GATE ERROR — FAIL CLOSED` — **not** verified complete |
+
+**Fail closed.** Exit 3 covers an unreachable gate, timeout, non-2xx response, invalid
+JSON, a response carrying no `qc_status`, and any unrecognized status. Only an explicit
+`VERIFIED_COMPLETE` permits a completion claim.
+
+The gate's execution identifier is reported as **`n8n_execution_id`** and is passed
+through verbatim — do not rename it or assume `execution_id`.
+
+### Network requirement
+
+The gate host `bwa357.app.n8n.cloud` must be reachable from the session's egress policy.
+Sandboxed sessions whose network policy does not allow it get a CONNECT 403, which the
+script surfaces as a fail-closed `QC GATE ERROR`; allowlist the host (or run from a
+session that can reach it) rather than skipping the gate.
