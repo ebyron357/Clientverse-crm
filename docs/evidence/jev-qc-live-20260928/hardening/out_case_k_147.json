@@ -1,0 +1,77 @@
+{
+  "submitted_at": "2026-09-28T17:52:23.248Z",
+  "webhook_host": "bwa357.app.n8n.cloud",
+  "auth_header_sent": true,
+  "request": {
+    "task_id": "clientverse-jev-gate-hardened-client-20260928",
+    "task": "Harden scripts/jev_qc.mjs after the PR #30 security review: require JEV_QC_WEBHOOK_URL from the environment (no committed default), send an optional X-Jev-QC-Token header from JEV_QC_WEBHOOK_TOKEN, and write only the webhook host to evidence records.",
+    "worker": "Claude Code",
+    "worker_claim": "Task complete.",
+    "completion_requirements": [
+      "The script no longer contains a hard-coded webhook URL",
+      "With JEV_QC_WEBHOOK_URL unset the script fails closed with exit 3 and makes no request",
+      "With JEV_QC_WEBHOOK_URL and JEV_QC_WEBHOOK_TOKEN set, the request reaches the live gate and a decision is returned",
+      "Evidence records contain the webhook host but not the full webhook URL or the token"
+    ],
+    "evidence": {
+      "implementation": "scripts/jev_qc.mjs blob 6abb854e74b6609b896c72969daf746694364221 on branch claude/affectionate-dijkstra-8p64qa (PR ebyron357/Clientverse-crm#30). DEFAULT_WEBHOOK_URL constant removed; webhookUrl = process.env.JEV_QC_WEBHOOK_URL (no fallback); header X-Jev-QC-Token added only when JEV_QC_WEBHOOK_TOKEN is set; record field webhook_url replaced by webhook_host and auth_header_sent.",
+      "tests": "node --check exit 0. Run with JEV_QC_WEBHOOK_URL unset: exit 3, banner 'QC GATE ERROR — FAIL CLOSED', gate_error 'JEV_QC_WEBHOOK_URL is not set', webhook_host null. Run with JEV_QC_WEBHOOK_URL='not a url': exit 3, gate_error 'JEV_QC_WEBHOOK_URL is not a valid URL'. This submission is the live run with both variables set.",
+      "build": "No build step: zero-dependency Node ESM script.",
+      "deployment": "Not applicable: a client script; the n8n workflow was not modified.",
+      "verification": "This payload is delivered by the modified script itself with JEV_QC_WEBHOOK_TOKEN set; the returned record is checked for webhook_host, auth_header_sent true, and absence of the full URL path and token value."
+    }
+  },
+  "verdict": "NEEDS_HUMAN_REVIEW",
+  "verified_complete": false,
+  "n8n_execution_id": "147",
+  "gate_error": null,
+  "gate_response": {
+    "task_id": "clientverse-jev-gate-hardened-client-20260928",
+    "worker": "Claude Code",
+    "project_type": null,
+    "work_type": null,
+    "phase_id": null,
+    "qc_status": "NEEDS_HUMAN_REVIEW",
+    "reason": "MIXED_OR_UNCERTAIN_RESULTS",
+    "requirements": [
+      {
+        "requirement": "The script no longer contains a hard-coded webhook URL",
+        "question_id": "requirement_001",
+        "probability": 0.87,
+        "result": "UNCERTAIN"
+      },
+      {
+        "requirement": "With JEV_QC_WEBHOOK_URL unset the script fails closed with exit 3 and makes no request",
+        "question_id": "requirement_002",
+        "probability": 0.84,
+        "result": "UNCERTAIN"
+      },
+      {
+        "requirement": "With JEV_QC_WEBHOOK_URL and JEV_QC_WEBHOOK_TOKEN set, the request reaches the live gate and a decision is returned",
+        "question_id": "requirement_003",
+        "probability": 0.54,
+        "result": "UNCERTAIN"
+      },
+      {
+        "requirement": "Evidence records contain the webhook host but not the full webhook URL or the token",
+        "question_id": "requirement_004",
+        "probability": 0.76,
+        "result": "UNCERTAIN"
+      }
+    ],
+    "thresholds": {
+      "verified": 0.9,
+      "incomplete": 0.25
+    },
+    "qc_engine": "TypeSafe Jev",
+    "submitted_at": "2026-09-28T17:52:22.892Z",
+    "evidence_submitted": {
+      "implementation": "scripts/jev_qc.mjs blob 6abb854e74b6609b896c72969daf746694364221 on branch claude/affectionate-dijkstra-8p64qa (PR ebyron357/Clientverse-crm#30). DEFAULT_WEBHOOK_URL constant removed; webhookUrl = process.env.JEV_QC_WEBHOOK_URL (no fallback); header X-Jev-QC-Token added only when JEV_QC_WEBHOOK_TOKEN is set; record field webhook_url replaced by webhook_host and auth_header_sent.",
+      "tests": "node --check exit 0. Run with JEV_QC_WEBHOOK_URL unset: exit 3, banner 'QC GATE ERROR — FAIL CLOSED', gate_error 'JEV_QC_WEBHOOK_URL is not set', webhook_host null. Run with JEV_QC_WEBHOOK_URL='not a url': exit 3, gate_error 'JEV_QC_WEBHOOK_URL is not a valid URL'. This submission is the live run with both variables set.",
+      "build": "No build step: zero-dependency Node ESM script.",
+      "deployment": "Not applicable: a client script; the n8n workflow was not modified.",
+      "verification": "This payload is delivered by the modified script itself with JEV_QC_WEBHOOK_TOKEN set; the returned record is checked for webhook_host, auth_header_sent true, and absence of the full URL path and token value."
+    },
+    "n8n_execution_id": "147"
+  }
+}

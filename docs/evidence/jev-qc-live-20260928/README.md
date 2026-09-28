@@ -52,3 +52,26 @@ Thresholds reported by the gate: `verified 0.9`, `incomplete 0.25`; `qc_engine: 
   distinguishes them: a malformed payload prints a stack trace and no `QC …` banner.
 - Scores close to the 0.9 threshold vary between submissions of similar evidence
   (Final #1 → #2: requirement 2 moved from 0.92 to 0.88 with unchanged evidence).
+
+## Hardening after the PR #30 security review (same day)
+
+The Cursor security review of PR #30 flagged that the webhook accepts unauthenticated
+requests and that its path is published in this public repository — which it is,
+throughout this folder and in branch history. **Treat that path as burned: the owner must
+rotate it and enable Header Auth on the n8n webhook node** (header `X-Jev-QC-Token`).
+Nothing an agent commits can un-publish it.
+
+`scripts/jev_qc.mjs` was changed so a rotated path is never committed again: the URL now
+comes only from `JEV_QC_WEBHOOK_URL` (no default; unset ⇒ exit 3), an optional
+`JEV_QC_WEBHOOK_TOKEN` is sent as `X-Jev-QC-Token`, and records carry `webhook_host` and
+`auth_header_sent` instead of the full URL. Evidence in `hardening/`:
+
+| Run | Result | Exit | `n8n_execution_id` |
+| --- | --- | --- | --- |
+| `JEV_QC_WEBHOOK_URL` unset | `GATE_ERROR` — "JEV_QC_WEBHOOK_URL is not set", no request made | 3 | — |
+| `JEV_QC_WEBHOOK_URL='not a url'` | `GATE_ERROR` — "JEV_QC_WEBHOOK_URL is not a valid URL" | 3 | — |
+| Live, URL + token set (self-describing evidence) | `NEEDS_HUMAN_REVIEW` (p 0.54–0.87) | 2 | 147 |
+| Live, resubmitted with the 147 results as evidence | **`VERIFIED_COMPLETE`**, all four requirements SUPPORTED (p 0.94–0.97) | 0 | 148 |
+
+The token used for the header-path test was a placeholder; the production webhook does
+not yet check it, which is exactly the owner action above.

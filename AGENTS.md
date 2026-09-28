@@ -82,13 +82,21 @@ node scripts/jev_qc.mjs <payload.json>     # or: yarn qc <payload.json>
 node scripts/jev_qc.mjs -                  # payload on stdin
 ```
 
-Configuration (endpoint is configuration, **not** a secret):
+Configuration. **The webhook path is a capability** — anyone who knows it can invoke the
+gate — so it is supplied by the session environment (Claude Code environment settings),
+never committed, and never written to evidence (records carry `webhook_host` only):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `JEV_QC_WEBHOOK_URL` | `https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate` | Gate endpoint |
+| `JEV_QC_WEBHOOK_URL` | **none — required** | Gate endpoint. Unset ⇒ fail-closed `QC GATE ERROR` |
+| `JEV_QC_WEBHOOK_TOKEN` | unset | Sent as `X-Jev-QC-Token` for n8n Header Auth on the webhook. Never logged |
 | `JEV_QC_TIMEOUT_MS` | `120000` | Request timeout |
-| `JEV_QC_EVIDENCE_PATH` | unset | Writes the full request/verdict record to this path |
+| `JEV_QC_EVIDENCE_PATH` | unset | Writes the request/verdict record to this path |
+
+The 2026-09-28 security review of PR #30 found the original webhook path published in
+this public repository and the webhook accepting unauthenticated requests. Owner
+remediation: enable Header Auth (header `X-Jev-QC-Token`) on the n8n webhook node, rotate
+the webhook path, and set both variables above in the Claude Code environment.
 
 ### Payload
 

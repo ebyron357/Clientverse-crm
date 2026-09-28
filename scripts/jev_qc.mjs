@@ -12,11 +12,16 @@
 // Exit codes: 0 VERIFIED_COMPLETE, 1 INCOMPLETE, 2 NEEDS_HUMAN_REVIEW, 3 gate error.
 // The gate fails CLOSED: anything that is not an explicit VERIFIED_COMPLETE means the
 // work must NOT be reported as verified complete.
+//
+// The webhook path is a capability — whoever knows it can invoke the gate — so neither it
+// nor the optional Header Auth token is committed or written to evidence. Both come from
+// the environment: JEV_QC_WEBHOOK_URL (required) and JEV_QC_WEBHOOK_TOKEN (sent as the
+// X-Jev-QC-Token header when set).
 
 import fs from 'node:fs'
 import path from 'node:path'
 
-const DEFAULT_WEBHOOK_URL = 'https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate'
+const AUTH_HEADER = 'X-Jev-QC-Token'
 const NO_EVIDENCE = 'No evidence supplied.'
 const EVIDENCE_FIELDS = ['implementation', 'tests', 'build', 'deployment', 'verification']
 const KNOWN_STATUSES = ['VERIFIED_COMPLETE', 'INCOMPLETE', 'NEEDS_HUMAN_REVIEW']
@@ -28,8 +33,8 @@ const BANNERS = {
   GATE_ERROR: 'QC GATE ERROR — FAIL CLOSED',
 }
 
-// The endpoint is configuration, not a secret: it may be overridden per environment.
-const webhookUrl = (process.env.JEV_QC_WEBHOOK_URL || DEFAULT_WEBHOOK_URL).trim()
+const webhookUrl = (process.env.JEV_QC_WEBHOOK_URL || '').trim()
+const webhookToken = (process.env.JEV_QC_WEBHOOK_TOKEN || '').trim()
 const timeoutMs = Number(process.env.JEV_QC_TIMEOUT_MS || 120000)
 const evidencePath = process.env.JEV_QC_EVIDENCE_PATH
 
@@ -73,9 +78,11 @@ async function submit(payload) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json' }
+    if (webhookToken) headers[AUTH_HEADER] = webhookToken
     const response = await fetch(webhookUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal,
     })
@@ -147,17 +154,33 @@ function interpret(result) {
 
 const payload = normalize(JSON.parse(readSource(process.argv[2])))
 
-let outcome
-try {
-  outcome = interpret(await submit(payload))
-} catch (error) {
-  const reason = error.name === 'AbortError' ? `gate did not respond within ${timeoutMs}ms` : `gate unreachable: ${error.message}`
-  outcome = { status: 'GATE_ERROR', gate_error: reason }
+function hostOf(url) {
+  try {
+    return new URL(url).host
+  } catch {
+    return null
+  }
 }
 
+let outcome
+if (!webhookUrl) {
+  outcome = { status: 'GATE_ERROR', gate_error: 'JEV_QC_WEBHOOK_URL is not set' }
+} else if (!hostOf(webhookUrl)) {
+  outcome = { status: 'GATE_ERROR', gate_error: 'JEV_QC_WEBHOOK_URL is not a valid URL' }
+} else {
+  try {
+    outcome = interpret(await submit(payload))
+  } catch (error) {
+    const reason = error.name === 'AbortError' ? `gate did not respond within ${timeoutMs}ms` : `gate unreachable: ${error.message}`
+    outcome = { status: 'GATE_ERROR', gate_error: reason }
+  }
+}
+
+// Host only: the full URL is the capability and must not land in committed evidence.
 const record = {
   submitted_at: new Date().toISOString(),
-  webhook_url: webhookUrl,
+  webhook_host: hostOf(webhookUrl),
+  auth_header_sent: Boolean(webhookToken),
   request: payload,
   verdict: outcome.status,
   verified_complete: outcome.status === 'VERIFIED_COMPLETE',
