@@ -1,5 +1,22 @@
 # ClientVerse CRM — Agent Memory
 
+## Session state (2026-09-28)
+
+- **Deployed head is `main@c9f5a6e`** (the recovery-engine merge), Railway deployment
+  `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, SUCCESS 2026-09-28T05:25Z; boot log shows
+  `Registered outbound channel provider: gmail` → `Application startup complete` →
+  `/api/health` 200. The 2026-09-21 notes below that say `730b1b3` is deployed are stale.
+- **GitHub Actions has run nothing since 2026-09-27T22:35Z.** Every job on every
+  branch (CI and Scheduled jobs) completes as `failure` in 2–4 s with `runner_id: 0`
+  and no log, starting mid-schedule on an unchanged commit. That is an account-level
+  runner/billing condition, not a code failure — do not "fix" code for it. Until the
+  owner restores Actions, CI is not a usable gate: run the gates locally (below).
+- **Jev QC gate is live and verified** — `docs/evidence/jev-qc-live-20260928/`
+  (`VERIFIED_COMPLETE`, `n8n_execution_id` 146). The gate section at the end of this
+  file is mandatory.
+- Password change/recovery (Issue #10, 2026-09-27 update, local commit `b8b8b4c`) is
+  **not on GitHub and not in `main`**. Do not rebuild it; the owner must push it.
+
 ## Session state (2026-09-21, branch `claude/trusting-brahmagupta-lj26xf`)
 
 - **The scheduler has never made a production request.** Proven three ways: the
