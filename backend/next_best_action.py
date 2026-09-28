@@ -419,7 +419,7 @@ async def set_state(db, tenant_id: str, recommendation_id: str, *, state: str, a
 
 
 async def summary(db, tenant_id: str) -> dict:
-    counts = {state: 0 for state in STATES}
+    counts = dict.fromkeys(STATES, 0)
     pipeline = [{"$match": {"tenant_id": tenant_id}},
                 {"$group": {"_id": "$state", "count": {"$sum": 1}}}]
     async for row in db[COLLECTION].aggregate(pipeline):

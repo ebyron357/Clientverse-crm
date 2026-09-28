@@ -24,6 +24,7 @@ import ClientOps from "@/pages/ClientOps";
 import FieldOps from "@/pages/FieldOps";
 import ClientPortal from "@/pages/ClientPortal";
 import ModuleStatus from "@/pages/ModuleStatus";
+import RecoveryProof from "@/pages/RecoveryProof";
 import { CLIENTVERSE_MODULES, MODULE_STATES } from "@/platform/modules";
 
 function AuthCallback() {
@@ -80,6 +81,7 @@ function AppRouter() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/audit" element={<Audit />} />
         <Route path="/client-ops" element={<ClientOps />} />
+        <Route path="/proof" element={<RecoveryProof />} />
         <Route path="/field" element={<FieldOps />} />
         {CLIENTVERSE_MODULES.filter((module) => module.state !== MODULE_STATES.AVAILABLE).map((module) => <Route key={module.id} path={module.route} element={<ModuleStatus moduleId={module.id} />} />)}
       </Route>

@@ -1,5 +1,5 @@
 import {
-  Activity, BarChart3, Bell, BookOpenCheck, Boxes, BriefcaseBusiness, CalendarDays,
+  Activity, BadgeCheck, BarChart3, Bell, BookOpenCheck, Boxes, BriefcaseBusiness, CalendarDays,
   CircleDollarSign, ClipboardCheck, FileInput, GitBranch, Handshake, Headphones,
   Inbox, LayoutDashboard, Mail, MessageSquareText, Phone, Settings, ShieldCheck,
   Sparkles, Terminal, Users, Workflow,
@@ -29,6 +29,7 @@ export const CLIENTVERSE_MODULES = [
   { id: "approvals", group: "Automation", label: "Approvals", description: "Human governance for consequential actions", route: "/operations?tab=approvals", icon: ClipboardCheck, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/approval-queue", actions: ["view", "request", "approve", "reject", "cancel"] },
   { id: "revenue", group: "Revenue", label: "Revenue Operations", description: "Forecasting, billing, and revenue intelligence", route: "/revenue", icon: BarChart3, state: MODULE_STATES.CONTRACT_PENDING, contract: "Revenue ledger and forecast services", actions: [] },
   { id: "support", group: "Support", label: "Support", description: "Cases, SLAs, and resolution context", route: "/support", icon: Headphones, state: MODULE_STATES.CONTRACT_PENDING, contract: "Case and SLA services", actions: [] },
+  { id: "recovery-proof", group: "Revenue", label: "Recovery Proof", description: "What was recovered, and the records that say so — potential and confirmed reported separately", route: "/proof", icon: BadgeCheck, state: MODULE_STATES.AVAILABLE, contract: "GET /api/proof/portfolio | GET /api/proof/cases/{id} | GET /api/attribution/totals", actions: ["view", "drill-down"] },
   { id: "reporting", group: "Intelligence", label: "Reporting", description: "Explainable operating performance", route: "/intelligence/reporting", icon: BarChart3, state: MODULE_STATES.CONTRACT_PENDING, contract: "Metric and report services", actions: [] },
   { id: "relationship-intelligence", group: "Intelligence", label: "Relationship Intelligence", description: "Scoring, ranking, and explainable recommendations", route: "/intelligence/relationships", icon: Sparkles, state: MODULE_STATES.CONTRACT_PENDING, contract: "Recommendation service v1", actions: [] },
   { id: "migration", group: "Platform", label: "Migration", description: "Governed imports and reconciliation", route: "/platform/migration", icon: FileInput, state: MODULE_STATES.CONTRACT_PENDING, contract: "Import job and reconciliation services", actions: [] },

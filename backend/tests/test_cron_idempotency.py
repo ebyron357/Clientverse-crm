@@ -26,7 +26,7 @@ os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("INTEGRATION_ENC_KEY", Fernet.generate_key().decode())
 os.environ.setdefault("WEBHOOK_CRON_SECRET", "cron-idempotency-test-secret-abc123")
 
-import server  # noqa: E402
+import server
 
 
 def run(coro):
@@ -96,7 +96,9 @@ def test_cron_commitment_risk_endpoint_rejects_duplicate_webhook_id():
     second = run(server.cron_commitment_risk(FakeRequest(headers)))
 
     assert first["accepted"] is True and not first.get("duplicate")
-    assert second == {"accepted": True, "duplicate": True}
+    # The duplicate response now echoes the delivery id it suppressed, so a scheduler
+    # can tie the suppression back to the run that caused it.
+    assert second == {"accepted": True, "duplicate": True, "run_id": run_id}
 
 
 def test_cron_daily_digest_endpoint_rejects_duplicate_webhook_id():
@@ -108,4 +110,6 @@ def test_cron_daily_digest_endpoint_rejects_duplicate_webhook_id():
     second = run(server.cron_daily_digest(FakeRequest(headers)))
 
     assert first["accepted"] is True and not first.get("duplicate")
-    assert second == {"accepted": True, "duplicate": True}
+    # The duplicate response now echoes the delivery id it suppressed, so a scheduler
+    # can tie the suppression back to the run that caused it.
+    assert second == {"accepted": True, "duplicate": True, "run_id": run_id}

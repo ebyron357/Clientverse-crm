@@ -1,0 +1,122 @@
+# Backend engineering gates.
+#
+# The suite was the only automated check on this code: no linter, no type checker, no
+# import hygiene. That is why a dead import or an unreachable branch could sit in
+# `server.py` indefinitely -- nothing was looking.
+#
+# The configuration below is deliberately calibrated to *this* codebase rather than to
+# a style guide. Rules that would demand a large mechanical rewrite are off, because a
+# gate that requires a thousand-line diff before it can be turned on never gets turned
+# on. What is enforced is the set of rules that catch real defects: undefined names,
+# unused imports and variables, mutable default arguments, shadowed builtins in
+# signatures, comparisons that are always true.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["tests/__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes: undefined names, unused imports, unused variables
+    "E9",   # syntax and IO errors
+    "B",    # bugbear: mutable defaults, unused loop variables, silent except
+    "I",    # import sorting
+    "UP",   # outdated syntax that has a modern equivalent
+    "C4",   # comprehension correctness
+    "RUF",  # ruff's own correctness rules
+]
+ignore = [
+    # E501 is not in `select`, but stating the intent here is worth more than the line
+    # it costs: long lines in this codebase are almost all data literals and URLs, and
+    # reflowing them would churn every file for no defect caught.
+    "E501",
+    # `raise ... from err` inside an except block. Worth doing, but mechanical across
+    # an existing codebase and it catches nothing; revisit once the gate is bedded in.
+    "B904",
+    # Ruff wants `X | None`; the codebase consistently uses Optional[X] and mixing the
+    # two reads worse than either.
+    "UP007", "UP045",
+    # `datetime.UTC` for `timezone.utc`. A rename across 104 sites that catches no
+    # defect; the codebase is consistent as it stands.
+    "UP017",
+    # B008 flags a function call in a default argument. FastAPI's entire
+    # dependency-injection idiom is exactly that -- `user=Depends(require_role("admin"))`
+    # -- so in this codebase the rule reports the framework's documented usage and
+    # nothing else. The rest of bugbear (mutable defaults, loop-variable capture,
+    # silent except) stays on.
+    "B008",
+    # Prose in docstrings uses typographic dashes deliberately.
+    "RUF002",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test modules set environment variables before importing the application, so their
+# imports genuinely cannot come first.
+"tests/*" = [
+    "E402", "F401",
+    # Tests unpack tuples for readability and often assert on only one half. Renaming
+    # 28 of those to `_name` would be churn that catches nothing.
+    "RUF059",
+    # A test fixture holding a mutable class default is contained to that test.
+    "RUF012",
+    # Stylistic only, and a test that spells a lookup out longhand often reads better
+    # than the terser form ruff prefers.
+    "RUF015", "C408", "C416",
+]
+# The application does the same: dotenv has to load before the modules that read it.
+"server.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["approval_queue", "attribution", "client_value", "conversations",
+                     "crm_core", "cron_ledger", "detectors", "email_inbound",
+                     "gmail_provider", "next_best_action", "operations_routes",
+                     "recovery_case", "recovery_intake", "recovery_proof",
+                     "recovery_runner", "recovery_strategy", "second_chance",
+                     "security_gate", "server", "work_queue"]
+
+[tool.mypy]
+python_version = "3.11"
+# Incremental on purpose. The application predates any type checking, so demanding
+# annotations everywhere would mean either a very large refactor or a very long
+# ignore list -- and both defeat the point. What is checked here is the class of
+# mistake that does not need annotations to find: a call with the wrong arity, an
+# attribute that does not exist, a name that is not defined, an unreachable branch.
+warn_unused_configs = true
+warn_redundant_casts = true
+# Off: almost every "unreachable" finding here traces back to the driver typing
+# above rather than to dead code, and a check that cries wolf is a check people
+# learn to skip.
+warn_unreachable = false
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
+# Deliberately off for now; see above.
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+# Motor ships annotations that mypy reads as "every collection method returns None",
+# which turns every `await db.x.find_one(...)` in this codebase into two false
+# positives -- 134 of them, drowning out anything real. Treating the driver as
+# untyped is the accurate description: its annotations are incomplete, not wrong
+# about our code.
+module = ["motor.*", "mongomock_motor.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The typed surface. These modules pass cleanly today and CI blocks on them, so the
+# checked set only ever grows: a module joins this list when it is clean, and nothing
+# can make it dirty again without failing the build. The rest of the backend is
+# checked in a reporting pass that does not block, because bringing the pre-existing
+# Optional-narrowing findings to zero is a refactor, not a gate. The route modules
+# (`crm_core`, `recovery_intake`, `client_value`, `operations_routes`) are out of the
+# blocking set for a different reason: they are dozens of FastAPI closures whose
+# signatures FastAPI itself reads, and annotating every one buys nothing a route test
+# does not already catch.
+module = ["attribution", "cron_ledger", "detectors", "email_inbound",
+          "gmail_provider", "recovery_proof"]
+disallow_incomplete_defs = true
+warn_return_any = true

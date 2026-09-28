@@ -2,8 +2,8 @@
 
 import os
 import sys
-from unittest.mock import AsyncMock
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from cryptography.fernet import Fernet
 
@@ -17,8 +17,9 @@ os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("INTEGRATION_ENC_KEY", Fernet.generate_key().decode())
 
-import server  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
+
+import server
 
 
 def _reset_motor_client():

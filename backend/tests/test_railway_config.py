@@ -14,7 +14,6 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet
 
-
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 BASE_ENV = {

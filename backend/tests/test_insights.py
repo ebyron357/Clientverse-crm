@@ -86,7 +86,7 @@ def test_timeline_tenant_isolation():
 def test_alert_creation_dedupe_and_lifecycle():
     h = _h(_tok(ADMIN))
     # Seed a unique breach so this test owns its alert row (xdist-safe).
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
     ws = requests.get(f"{API}/workspaces", headers=h, timeout=15).json()
     assert ws
     past = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()

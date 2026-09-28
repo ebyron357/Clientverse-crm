@@ -5,6 +5,7 @@
 """
 import os
 import uuid
+
 import pytest
 import requests
 
@@ -73,7 +74,7 @@ class TestUndoWindowConfig:
 
     def test_non_admin_forbidden(self, user_client, admin_client, workspace_id):
         # non-admin from other tenant -> 404 (isolation); use own workspace instead
-        r = user_client.get(f"{BASE_URL}/api/workspaces")
+        _r = user_client.get(f"{BASE_URL}/api/workspaces")
         # user has no workspaces since fresh; attempt patch on admin's workspace should be 404 or 403
         r2 = user_client.patch(f"{BASE_URL}/api/workspaces/{workspace_id}/undo-window", json={"minutes": 10})
         assert r2.status_code in (403, 404), r2.text

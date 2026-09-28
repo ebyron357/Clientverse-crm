@@ -31,7 +31,8 @@ authorisation in `approval_queue`, delivery in `conversations`.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any, Optional
 
 import approval_queue
 import conversations
@@ -117,7 +118,8 @@ async def _conversation_for_case(db, tenant_id: str, case: dict, channel: str,
         company_id=case.get("company_id"),
         contact_id=case.get("contact_id"),
         handled_by=conversations.HANDLED_BY_AGENT,
-        external_thread_id=external_thread_id)
+        external_thread_id=external_thread_id,
+        recovery_case_id=case["id"])
 
 
 def _draft_body(case: dict, step: dict) -> str:

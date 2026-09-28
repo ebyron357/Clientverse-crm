@@ -17,7 +17,7 @@ layer.
 
 import os
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -205,7 +205,7 @@ def test_mcp_invocation_cannot_be_undone_by_another_tenant():
 
 
 def test_invoice_payment_intent_cannot_be_created_by_another_tenant():
-    a = _fixture()
+    _a = _fixture()
     b = _h(_register())
     # No invoice endpoint creates one directly in this flow; the exact tenant-scoped 404
     # is proven precisely (with Stripe configuration controlled) in

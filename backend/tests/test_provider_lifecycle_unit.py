@@ -16,7 +16,6 @@ from urllib.parse import parse_qs, urlparse
 from cryptography.fernet import Fernet
 from pymongo.errors import DuplicateKeyError
 
-
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 os.environ["APP_ENV"] = "test"
@@ -27,7 +26,7 @@ os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("INTEGRATION_ENC_KEY", Fernet.generate_key().decode())
 
-import server  # noqa: E402
+import server
 
 
 class FakeResponse:
@@ -891,7 +890,8 @@ def test_stripe_webhook_succeeded_amount_and_currency_must_match(monkeypatch):
                 },
             }},
         }
-        monkeypatch.setattr(server._stripe.Webhook, "construct_event", lambda *_args, **_kwargs: deepcopy(event))
+        monkeypatch.setattr(server._stripe.Webhook, "construct_event",
+                            lambda *_args, _event=event, **_kwargs: deepcopy(_event))
         request = FakeRequest(b"signed-payload", {"Stripe-Signature": "t=1,v1=valid"})
 
         result = run(server.stripe_webhook(request))

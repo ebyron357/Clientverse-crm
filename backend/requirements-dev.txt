@@ -1,0 +1,10 @@
+# Test-only dependencies.
+#
+# The behavioural suite is written against a real MongoDB and CI runs it that way
+# (see .github/workflows/ci.yml, which starts a mongo:7 service). Some environments
+# cannot reach a mongod at all; setting MONGO_URL to `mongomock://local` makes the
+# application and the suite run against an in-process substitute instead. That is a
+# development convenience, not the release gate: unique-index enforcement and any test
+# that writes through its own client and reads back over HTTP need the real thing.
+-r requirements.txt
+mongomock-motor>=0.0.29

@@ -453,6 +453,44 @@ def test_only_an_unknown_outcome_can_be_reconciled(db, registry):
                                  actor="adapter", found=False))
 
 
+def test_an_approval_binds_the_exact_words_that_were_approved(db, registry):
+    """A body rewritten after a human read it cannot ride that human's decision."""
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    provider = RecordingProvider()
+    registry.register(provider)
+    message = approved_message(db, conversation["id"])
+
+    approval = run(aq.get(db, TENANT, message["approval_id"]))
+    assert approval["action"]["body_sha256"] == cv.body_fingerprint(message["body"])
+
+    # Rewrite the body behind the approval's back.
+    run(db[cv.MESSAGES].update_one({"id": message["id"], "tenant_id": TENANT},
+                                   {"$set": {"body": "Wire the money to this account."}}))
+
+    with pytest.raises(cv.DeliveryRefused) as exc:
+        run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                                actor="worker-1", registry=registry))
+    assert exc.value.reason == cv.REFUSAL_APPROVAL
+    assert "changed after it was approved" in exc.value.detail
+    assert provider.sent == [], "the rewritten text must never reach the provider"
+
+    # And the approval survives the refusal, so re-approving the new text is possible.
+    assert run(aq.get(db, TENANT, message["approval_id"]))["status"] == aq.APPROVED
+
+
+def test_an_unchanged_body_passes_the_fingerprint_check(db, registry):
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    registry.register(RecordingProvider())
+    message = approved_message(db, conversation["id"])
+    sent = run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                                   actor="worker-1", registry=registry))
+    assert sent["status"] == cv.SENT
+
+
 def test_the_provider_receives_an_idempotency_key(db, registry):
     """The message's own key protects local creation; the provider needs its own."""
     conversation = make_conversation(db)
@@ -527,8 +565,15 @@ def test_a_replayed_inbound_delivery_does_not_duplicate(db):
 
 # ------------------------------------------------------------------- registry
 
-def test_the_application_registry_is_empty(db):
-    """The honest state: no provider adapter has been built or certified."""
+def test_the_module_registry_is_empty_until_an_application_registers_into_it(db):
+    """Importing the communications layer must not make a deployment able to send.
+
+    An adapter now exists, but registering it is the application's decision and is
+    driven by configuration (see `server.register_channel_providers`). A deployment
+    with no provider credentials therefore still refuses every outbound attempt with
+    `no_provider_registered`, which is the correct answer for a system that cannot
+    send.
+    """
     assert all(entry["registered"] is False for entry in cv.REGISTRY.describe())
 
 

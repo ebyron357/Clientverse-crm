@@ -1,51 +1,71 @@
-import os
-import uuid
-import jwt
-import bcrypt
-import logging
-import requests
 import asyncio
-import time
-import hmac
-import hashlib
-import secrets
-import json as _json
 import base64
+import hashlib
+import hmac
+import json as _json
+import logging
+import os
+import secrets
+import time
+import uuid
 from contextlib import asynccontextmanager
-from urllib.parse import urlencode
-from fastapi.responses import RedirectResponse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional
+from urllib.parse import urlencode
 
+import bcrypt
+import jwt
+import requests
 from dotenv import load_dotenv
+from fastapi.responses import RedirectResponse
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query
-from fastapi.staticfiles import StaticFiles
-from starlette.middleware.cors import CORSMiddleware
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field, EmailStr
 from cryptography.fernet import Fernet
-from client_value import register_client_value_routes
-from operations_routes import register_operations_routes
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.staticfiles import StaticFiles
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, EmailStr, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.cors import CORSMiddleware
+
 import approval_queue as approval_service
+import attribution as attribution_service
 import conversations as conversation_service
+import crm_core
+import cron_ledger
+import detectors
+import email_inbound
+import gmail_provider
 import next_best_action as nba_service
 import recovery_case as recovery_case_service
+import recovery_intake
+import recovery_proof
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
+from client_value import register_client_value_routes
+from operations_routes import register_operations_routes
 from work_queue import WorkQueue, run_worker_tick
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clientverse")
 
 mongo_url = os.environ['MONGO_URL']
-mclient = AsyncIOMotorClient(mongo_url)
+if mongo_url.startswith("mongomock://"):
+    # Local/CI fallback for environments where no MongoDB server can be reached.
+    # `mongomock://` is not a scheme any real deployment can use, so production
+    # cannot silently land here. Kept narrow on purpose: it swaps the driver and
+    # nothing else, so the same application code and the same behavioural suite
+    # run against it.
+    from mongomock_motor import AsyncMongoMockClient  # type: ignore[import-not-found]
+
+    mclient = AsyncMongoMockClient()
+else:
+    mclient = AsyncIOMotorClient(mongo_url)
 db = mclient[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
@@ -122,6 +142,12 @@ async def lifespan(_: FastAPI):
         await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
         await db.login_lockouts.create_index("email", unique=True)
         await db.cron_runs.create_index("run_id", unique=True)
+        await cron_ledger.ensure_indexes(db)
+        await crm_core.ensure_indexes(db)
+        await email_inbound.ensure_indexes(db)
+        await attribution_service.ensure_indexes(db)
+        await detectors.ensure_indexes(db)
+        await recovery_intake.ensure_indexes(db)
         await WorkQueue(db).ensure_indexes()
         await nba_service.ensure_indexes(db)
         await second_chance_service.ensure_indexes(db)
@@ -132,6 +158,13 @@ async def lifespan(_: FastAPI):
         await recovery_case_service.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
+    try:
+        for channel in register_channel_providers():
+            logger.info("Registered outbound channel provider: %s", channel)
+    except Exception:
+        # A registration that fails leaves the registry empty for that channel, which
+        # refuses outbound rather than attempting it unconfigured. Fail closed, loudly.
+        logger.exception("Failed to register an outbound channel provider")
     try:
         await db.stripe_webhook_events.create_index("event_id", unique=True)
     except Exception as exc:
@@ -151,9 +184,13 @@ CONTENT_SECURITY_POLICY = "; ".join([
     # The compiled SPA ships one small inline bootstrap script (public/index.html); CRA's
     # own build output is otherwise all same-origin bundles.
     "script-src 'self' 'unsafe-inline'",
-    # Google Fonts stylesheet + the SPA's own inline styles.
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    # Web-font stylesheets + the SPA's own inline styles. Fontshare is here because
+    # `frontend/src/index.css` imports the display and body typefaces from it; without
+    # it the policy silently blocked both stylesheets in production and the whole
+    # application fell back to system fonts. Found by loading the built SPA and
+    # reading the console, which is the only place that failure was visible.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://api.fontshare.com",
+    "font-src 'self' https://fonts.gstatic.com https://cdn.fontshare.com",
     "img-src 'self' data: blob:",
     "connect-src 'self'",
     "frame-ancestors 'self'",
@@ -211,6 +248,21 @@ def set_auth_cookie(response: Response, token: str):
         path="/",
     )
 
+# Every scheduled endpoint hands its work to a background task and returns 2xx
+# immediately. `asyncio.create_task` on its own keeps only a weak reference, so a task
+# nobody holds can be garbage-collected mid-flight -- the sweep simply stops, with no
+# error anywhere. Holding a strong reference until it finishes is the documented fix.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def spawn_background(coro) -> asyncio.Task:
+    """Start a fire-and-forget task that cannot be collected while it runs."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
 async def record_event(event_type: str, resource_type: str, resource_id: str,
                        tenant_id: str, actor: str, workspace_id: Optional[str] = None,
                        payload: Optional[dict] = None, source: str = "system",
@@ -225,7 +277,7 @@ async def record_event(event_type: str, resource_type: str, resource_id: str,
     await db.domain_events.insert_one(ev)
     clean = {k: v for k, v in ev.items() if k != "_id"}
     try:
-        asyncio.create_task(dispatch_webhooks_for_event(clean))
+        spawn_background(dispatch_webhooks_for_event(clean))
     except Exception:
         pass
     if workspace_id and event_type in HEALTH_AFFECTING:
@@ -713,12 +765,34 @@ class CompanyInput(BaseModel):
     tier: Optional[str] = "standard"
 
 @api.get("/companies")
-async def list_companies(user=Depends(get_current_user)):
-    return await gen_list("companies", user)
+async def list_companies(
+    q: Optional[str] = None,
+    owner: Optional[str] = None,
+    industry: Optional[str] = None,
+    tier: Optional[str] = None,
+    include_archived: bool = False,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    """List companies, with the search, filtering and sorting a directory needs.
+
+    Still returns a bare array: the SPA and the existing integrations read it that way,
+    and breaking that to add query parameters would be a gratuitous incompatibility.
+    """
+    filters = {k: v for k, v in (("owner", owner), ("industry", industry), ("tier", tier))
+               if v}
+    return await crm_core.query_records(
+        db, crm_core.COMPANIES, user["tenant_id"], q=q, filters=filters, sort=sort,
+        order=order, limit=limit, offset=offset, include_archived=include_archived)
 
 @api.post("/companies")
 async def create_company(inp: CompanyInput, user=Depends(get_current_user)):
     doc = {"id": new_id("co"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
+           "updated_at": now_iso(), "archived_at": None, "owner": user["email"],
+           "history": [crm_core.created_history(user["email"])],
            **inp.model_dump()}
     await db.companies.insert_one(doc)
     await record_event("company.created", "company", doc["id"], user["tenant_id"], user["email"], payload={"name": inp.name})
@@ -733,13 +807,39 @@ class ContactInput(BaseModel):
     sentiment: Optional[str] = "neutral"
 
 @api.get("/contacts")
-async def list_contacts(company_id: Optional[str] = None, user=Depends(get_current_user)):
-    extra = {"company_id": company_id} if company_id else None
-    return await gen_list("contacts", user, extra)
+async def list_contacts(
+    company_id: Optional[str] = None,
+    q: Optional[str] = None,
+    owner: Optional[str] = None,
+    include_archived: bool = False,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    filters = {k: v for k, v in (("company_id", company_id), ("owner", owner)) if v}
+    return await crm_core.query_records(
+        db, crm_core.CONTACTS, user["tenant_id"], q=q, filters=filters, sort=sort,
+        order=order, limit=limit, offset=offset, include_archived=include_archived)
 
 @api.post("/contacts")
 async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
-    doc = {"id": new_id("ct"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
+    payload = inp.model_dump()
+    if payload.get("email") is not None:
+        payload["email"] = str(payload["email"])
+    if payload.get("company_id"):
+        known = await db.companies.find_one(
+            {"id": payload["company_id"], "tenant_id": user["tenant_id"]}, {"_id": 1})
+        if not known:
+            # A contact pointed at another tenant's company would quietly join two
+            # tenants' data together.
+            raise HTTPException(status_code=422, detail="Unknown company_id")
+    doc = {"id": new_id("ct"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
+           "updated_at": now_iso(), "archived_at": None, "owner": user["email"],
+           "phone": None, "title": None,
+           "history": [crm_core.created_history(user["email"])],
+           **payload}
     await db.contacts.insert_one(doc)
     await record_event("contact.created", "contact", doc["id"], user["tenant_id"], user["email"], payload={"name": inp.name})
     return {k: v for k, v in doc.items() if k != "_id"}
@@ -754,14 +854,64 @@ class OppInput(BaseModel):
     value: float = 0
     stage: str = "lead"
     owner: Optional[str] = None
+    currency: str = "USD"
+    expected_close_date: Optional[str] = None
+    contact_ids: list[str] = []
 
 @api.get("/opportunities")
-async def list_opps(user=Depends(get_current_user)):
-    return await gen_list("opportunities", user)
+async def list_opps(
+    q: Optional[str] = None,
+    stage: Optional[str] = None,
+    owner: Optional[str] = None,
+    company_id: Optional[str] = None,
+    include_archived: bool = False,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    filters = {k: v for k, v in (("stage", stage), ("owner", owner),
+                                 ("company_id", company_id)) if v}
+    return await crm_core.query_records(
+        db, crm_core.DEALS, user["tenant_id"], q=q, filters=filters, sort=sort,
+        order=order, limit=limit, offset=offset, include_archived=include_archived)
 
 @api.post("/opportunities")
 async def create_opp(inp: OppInput, user=Depends(get_current_user)):
-    doc = {"id": new_id("opp"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
+    payload = inp.model_dump()
+    stages = await crm_core.stage_keys(db, user["tenant_id"])
+    if payload["stage"] not in stages:
+        raise HTTPException(status_code=422,
+                            detail=f"stage must be one of {', '.join(stages)}")
+    if payload.get("company_id"):
+        known = await db.companies.find_one(
+            {"id": payload["company_id"], "tenant_id": user["tenant_id"]}, {"_id": 1})
+        if not known:
+            raise HTTPException(status_code=422, detail="Unknown company_id")
+    contact_ids = list(dict.fromkeys(payload.get("contact_ids") or []))[:100]
+    if contact_ids:
+        visible = await db.contacts.find(
+            {"tenant_id": user["tenant_id"], "id": {"$in": contact_ids}},
+            {"_id": 0, "id": 1}).to_list(100)
+        unknown = [cid for cid in contact_ids if cid not in {c["id"] for c in visible}]
+        if unknown:
+            raise HTTPException(status_code=422,
+                                detail=f"Unknown contact_id(s): {', '.join(unknown[:5])}")
+    payload["contact_ids"] = contact_ids
+    payload["expected_close_date"] = crm_core.parse_date(
+        payload.get("expected_close_date"), "expected_close_date")
+    doc = {"id": new_id("opp"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
+           "updated_at": now_iso(), "archived_at": None,
+           "history": [crm_core.created_history(user["email"])],
+           # A deal's stage history is kept on the deal itself. `domain_events` answers
+           # "what happened in this organisation"; this answers "how did this deal get
+           # here", and the two are not interchangeable.
+           "stage_history": [{"from": None, "to": payload["stage"], "at": now_iso(),
+                              "actor": user["email"]}],
+           **payload}
+    if not doc.get("owner"):
+        doc["owner"] = user["email"]
     await db.opportunities.insert_one(doc)
     await record_event("opportunity.created", "opportunity", doc["id"], user["tenant_id"], user["email"], payload={"name": inp.name, "value": inp.value})
     return {k: v for k, v in doc.items() if k != "_id"}
@@ -771,12 +921,21 @@ class StageInput(BaseModel):
 
 @api.patch("/opportunities/{opp_id}/stage")
 async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user)):
-    if inp.stage not in STAGES:
+    # Validated against this tenant's configured pipeline, not a module constant, so a
+    # tenant that added a stage can actually move deals into it.
+    stages = await crm_core.stage_keys(db, user["tenant_id"])
+    if inp.stage not in stages:
         raise HTTPException(status_code=400, detail="Invalid stage")
     opp = await db.opportunities.find_one({"id": opp_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not opp:
         raise HTTPException(status_code=404, detail="Not found")
-    await db.opportunities.update_one({"id": opp_id}, {"$set": {"stage": inp.stage}})
+    transition = {"from": opp.get("stage"), "to": inp.stage, "at": now_iso(),
+                  "actor": user["email"]}
+    await db.opportunities.update_one(
+        {"id": opp_id, "tenant_id": user["tenant_id"]},
+        {"$set": {"stage": inp.stage, "updated_at": now_iso()},
+         "$push": {"stage_history": transition,
+                   "history": crm_core.stage_history(user["email"], transition)}})
     et = "opportunity.closed_won" if inp.stage == "closed_won" else ("opportunity.closed_lost" if inp.stage == "closed_lost" else "opportunity.stage_changed")
     await record_event(et, "opportunity", opp_id, user["tenant_id"], user["email"], payload={"from": opp["stage"], "to": inp.stage})
     # auto-create workspace on won
@@ -1203,7 +1362,7 @@ async def ai_generate(inp: AIInput, user=Depends(get_current_user)):
     }
     await db.ai_runs.insert_one({"id": run_id, "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id,
                                  "created_at": now_iso(), **result})
-    return {k: v for k, v in result.items()}
+    return dict(result)
 
 # ----------------------------- seed -----------------------------
 
@@ -1633,7 +1792,7 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
         }
         await db.mcp_tool_invocations.insert_one(dict(record))
         return record
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await fail(504, "Tool execution timed out", tool["level"])
     except Exception as e:
         await fail(502, f"Tool execution error: {e}", tool["level"])
@@ -1761,12 +1920,12 @@ async def dispatch_webhooks_for_event(ev: dict):
                     "webhook_name": wh.get("name"), "event_type": ev["event_type"], "event_id": ev.get("id"),
                     "payload": {"event": ev}, "status": "pending", "attempts": [], "dlq": False, "created_at": now_iso()}
         await db.webhook_deliveries.insert_one(dict(delivery))
-        asyncio.create_task(_do_delivery(delivery, wh))
+        spawn_background(_do_delivery(delivery, wh))
 
 class WebhookInput(BaseModel):
     name: str
     url: str
-    events: List[str] = []
+    events: list[str] = []
 
 class WebhookPatch(BaseModel):
     enabled: Optional[bool] = None
@@ -1844,7 +2003,7 @@ async def webhook_sink(request: Request):
     return {"received": True}
 
 class PreviewInput(BaseModel):
-    patterns: List[str] = []
+    patterns: list[str] = []
 
 @api.post("/webhooks/match-preview")
 async def webhook_match_preview(inp: PreviewInput, user=Depends(get_current_user)):
@@ -1884,7 +2043,7 @@ class OutcomeInput(BaseModel):
     current_value: float = 0
     unit: Optional[str] = None
     status: str = "on_track"
-    linked_commitment_ids: List[str] = []
+    linked_commitment_ids: list[str] = []
 
 class OutcomePatch(BaseModel):
     current_value: Optional[float] = None
@@ -1945,16 +2104,13 @@ async def _claim_cron_run(job: str, run_id: str) -> bool:
 @api.post("/cron/commitment-risk")
 async def cron_commitment_risk(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
-    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else ""
-    if not secret or not token or not hmac.compare_digest(token, secret):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("commitment-risk", run_id):
-        return {"accepted": True, "duplicate": True}
-    asyncio.create_task(evaluate_commitment_risk(tenant_id=None, actor="cron"))
-    return {"accepted": True, "run_id": run_id}
+    run_id, entry_id = await _begin_cron(request, "commitment-risk")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
+        "commitment-risk", run_id,
+        lambda: evaluate_commitment_risk(tenant_id=None, actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 async def _release_cron_run(job: str, run_id: str) -> None:
@@ -1964,6 +2120,10 @@ async def _release_cron_run(job: str, run_id: str) -> None:
     id stays claimed and a redelivery is treated as a duplicate, silently losing the
     work. Releasing on failure keeps the idempotency guard (a concurrent duplicate is
     still suppressed) without turning a crash into lost work.
+
+    The claim row is transient by design, which is why the evidence of what happened
+    lives in `cron_ledger` instead: releasing the claim must not erase the record that
+    the job ran and failed.
     """
     try:
         await db.cron_runs.delete_one({"run_id": run_id, "job": job})
@@ -1971,20 +2131,80 @@ async def _release_cron_run(job: str, run_id: str) -> None:
         logger.exception("Failed to release a cron run claim")
 
 
-async def _run_cron_job(job: str, run_id: str, coro_factory):
+async def _run_cron_job(job: str, run_id: str, coro_factory, entry_id: Optional[str] = None):
+    if entry_id:
+        await cron_ledger.mark_started(db, entry_id)
     try:
-        return await coro_factory()
-    except Exception:
+        result = await coro_factory()
+    except Exception as exc:
         logger.exception("Scheduled job '%s' failed", job)
+        if entry_id:
+            await cron_ledger.mark_finished(db, entry_id, status=cron_ledger.FAILED,
+                                            error=f"{type(exc).__name__}: {exc}"[:500])
         await _release_cron_run(job, run_id)
         raise
+    if entry_id:
+        await cron_ledger.mark_finished(db, entry_id, status=cron_ledger.SUCCEEDED,
+                                        result=result)
+    return result
+
+
+def _cron_token(request: Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    return auth[7:] if auth.startswith("Bearer ") else ""
+
+
+def _cron_secret_matches(request: Request) -> bool:
+    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
+    token = _cron_token(request)
+    return bool(secret and token and hmac.compare_digest(token, secret))
+
+
+def _cron_source(request: Request) -> str:
+    """A non-secret hint about who called, so a ledger entry is attributable."""
+    agent = (request.headers.get("User-Agent") or "unknown")[:120]
+    delivery = (request.headers.get("X-Webhook-Id") or "")[:120]
+    return f"{agent} delivery={delivery}" if delivery else agent
+
+
+async def _authorize_cron_observed(request: Request, job: str) -> None:
+    """Authorize a scheduled request and record the attempt either way.
+
+    A rejected call is recorded because an unset or mismatched shared secret is
+    otherwise indistinguishable from a scheduler that never fired at all, and those
+    two have completely different fixes. The token itself is never stored.
+    """
+    if _cron_secret_matches(request):
+        return
+    await cron_ledger.record_request(
+        db, job=job, run_id=request.headers.get("X-Webhook-Id"),
+        status=cron_ledger.UNAUTHORIZED, source=_cron_source(request),
+        detail={"reason": "shared secret missing or does not match"})
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def _begin_cron(request: Request, job: str):
+    """Authorize, deduplicate and record one scheduled request.
+
+    Returns `(run_id, entry_id)` when the caller should do the work, or `(run_id, None)`
+    when this delivery was already claimed. Every outcome leaves a ledger entry, so the
+    chain from "a request reached production" to "the job recorded a result" can be read
+    back from production rather than inferred from the scheduler's own logs.
+    """
+    await _authorize_cron_observed(request, job)
+    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
+    source = _cron_source(request)
+    if not await _claim_cron_run(job, run_id):
+        await cron_ledger.record_request(db, job=job, run_id=run_id,
+                                         status=cron_ledger.DUPLICATE, source=source)
+        return run_id, None
+    entry_id = await cron_ledger.record_request(db, job=job, run_id=run_id,
+                                                status=cron_ledger.ACCEPTED, source=source)
+    return run_id, entry_id
 
 
 def _authorize_cron(request: Request) -> None:
-    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else ""
-    if not secret or not token or not hmac.compare_digest(token, secret):
+    if not _cron_secret_matches(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -1995,41 +2215,57 @@ async def cron_work_queue(request: Request):
     Recovers leases abandoned by crashed workers, then claims and processes due items.
     Idempotent per delivery id, like every other cron endpoint.
     """
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("work-queue", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "work-queue")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
     # Each tick gets a distinct worker identity so lease-ownership checks can tell a
     # stale tick apart from the one that replaced it.
-    asyncio.create_task(_run_cron_job(
+    spawn_background(_run_cron_job(
         "work-queue", run_id,
         lambda: run_worker_tick(work_queue, WORK_QUEUE_HANDLERS,
-                                worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE)))
-    return {"accepted": True, "run_id": run_id}
+                                worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+@api.post("/cron/detect-recovery")
+async def cron_detect_recovery(request: Request):
+    """Run every remaining detector family across every tenant.
+
+    Detection creates internal work: a Recovery Case and a durable work item. It sends
+    nothing, and it does not reach the controlled execution path directly -- strategy
+    composition, approval and the runner still stand between a detection and anything
+    a client would notice.
+    """
+    run_id, entry_id = await _begin_cron(request, "detect-recovery")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
+        "detect-recovery", run_id,
+        lambda: detectors.run_detection_all_tenants(db, work_queue, actor="cron",
+                                                    audit=record_event), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/second-chance")
 async def cron_second_chance(request: Request):
     """Second Chance detection sweep across every tenant."""
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("second-chance", run_id):
-        return {"accepted": True, "duplicate": True}
-    asyncio.create_task(_run_cron_job(
-        "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron")))
-    return {"accepted": True, "run_id": run_id}
+    run_id, entry_id = await _begin_cron(request, "second-chance")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
+        "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/next-best-actions")
 async def cron_next_best_actions(request: Request):
     """Recompute Next Best Action recommendations for every tenant."""
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("next-best-actions", run_id):
-        return {"accepted": True, "duplicate": True}
-    asyncio.create_task(_run_cron_job(
-        "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron")))
-    return {"accepted": True, "run_id": run_id}
+    run_id, entry_id = await _begin_cron(request, "next-best-actions")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
+        "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/recovery-strategies")
@@ -2039,14 +2275,13 @@ async def cron_recovery_strategies(request: Request):
     Composition only. Nothing here sends, calls, or writes to a third party: each
     strategy is raised as an approval request carrying whatever blocks it.
     """
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("recovery-strategies", run_id):
-        return {"accepted": True, "duplicate": True}
-    asyncio.create_task(_run_cron_job(
+    run_id, entry_id = await _begin_cron(request, "recovery-strategies")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
         "recovery-strategies", run_id,
-        lambda: recovery_service.compose_all_tenants(db, work_queue, actor="cron")))
-    return {"accepted": True, "run_id": run_id}
+        lambda: recovery_service.compose_all_tenants(db, work_queue, actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/recovery-runner")
@@ -2057,32 +2292,29 @@ async def cron_recovery_runner(request: Request):
     backoff rather than stalling the sweep. Nothing outbound is sent: with no provider
     registered, each outbound step is drafted and refused at the boundary.
     """
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("recovery-runner", run_id):
-        return {"accepted": True, "duplicate": True}
-    asyncio.create_task(_run_cron_job(
+    run_id, entry_id = await _begin_cron(request, "recovery-runner")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
         "recovery-runner", run_id,
         lambda: recovery_runner_service.run_ready_cases_all_tenants(
-            db, work_queue, actor="cron", audit=record_event)))
-    return {"accepted": True, "run_id": run_id}
+            db, work_queue, actor="cron", audit=record_event), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 @api.post("/cron/approval-expiry")
 async def cron_approval_expiry(request: Request):
     """Lapse approval requests nobody decided, so a stale request can never authorise."""
-    _authorize_cron(request)
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("approval-expiry", run_id):
-        return {"accepted": True, "duplicate": True}
-    asyncio.create_task(_run_cron_job(
-        "approval-expiry", run_id, lambda: approval_service.expire_due(db)))
-    return {"accepted": True, "run_id": run_id}
+    run_id, entry_id = await _begin_cron(request, "approval-expiry")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
+        "approval-expiry", run_id, lambda: approval_service.expire_due(db), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
 #  LIVE INTEGRATIONS V1 — providers, secure credential storage, sync engine
 # ============================================================================
-import json as _json
 import httpx
 import stripe as _stripe
 
@@ -2099,6 +2331,10 @@ GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or (
 )
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
+    # Sending is a separate, narrower grant than full mailbox access: `gmail.send` can
+    # send mail and nothing else -- it cannot read, delete or modify the mailbox. It is
+    # requested here because an outbound channel that cannot send is not a channel.
+    "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
@@ -2124,7 +2360,7 @@ SENSITIVE_CONN_FIELDS = {
     "_id", "enc", "oauth_state", "code_verifier", "access_token", "refresh_token",
     "client_secret", "api_key", "webhook_secret",
 }
-SAFE_CONN_FIELDS = {field: 0 for field in SENSITIVE_CONN_FIELDS}
+SAFE_CONN_FIELDS = dict.fromkeys(SENSITIVE_CONN_FIELDS, 0)
 
 def _public_conn(c: dict) -> dict:
     return {k: v for k, v in c.items() if k not in SENSITIVE_CONN_FIELDS}
@@ -2243,7 +2479,7 @@ async def _stripe_api_key(tenant_id):
     return os.environ.get("STRIPE_API_KEY")
 
 async def _google_access_token(tenant_id, force_refresh=False):
-    creds, doc = (await _google_creds(tenant_id)) or (None, None)
+    creds, _doc = (await _google_creds(tenant_id)) or (None, None)
     if not creds:
         return None
     exp = creds.get("expires_at", 0)
@@ -2271,10 +2507,182 @@ async def _google_access_token(tenant_id, force_refresh=False):
         {"$set": {"enc": enc_secret(creds), "updated_at": now_iso()}})
     return creds["access_token"]
 
+async def _google_connection(tenant_id: str) -> Optional[dict]:
+    """The tenant's Gmail connection record, or None.
+
+    The adapter reads scopes and status from here rather than assuming: a connection
+    that predates the send scope is read-only, and must be refused rather than
+    attempted.
+    """
+    return await db.integration_connections.find_one(
+        {"tenant_id": tenant_id, "provider": "gmail"}, {"_id": 0})
+
+
+async def _fetch_inbound_gmail(*, tenant_id: str, limit: int = 50) -> list[dict]:
+    """Recent inbound mail for one tenant, using that tenant's own Gmail credentials.
+
+    Bounded and newest-first. A poll is the honest transport here: Gmail push requires
+    a Pub/Sub topic nobody has configured, and a poll that runs every tick is a working
+    return path rather than a planned one.
+    """
+    token = await _google_access_token(tenant_id)
+    if not token:
+        raise RuntimeError("not_connected")
+    headers = {"Authorization": f"Bearer {token}"}
+    out: list[dict] = []
+    async with httpx.AsyncClient(timeout=25) as client:
+        listing = await client.get(f"{gmail_provider.GMAIL_API}/messages",
+                                   params={"q": "in:inbox newer_than:7d",
+                                           "maxResults": max(1, min(int(limit), 100))},
+                                   headers=headers)
+        if listing.status_code == 401:
+            token = await _google_access_token(tenant_id, force_refresh=True)
+            headers = {"Authorization": f"Bearer {token}"}
+            listing = await client.get(f"{gmail_provider.GMAIL_API}/messages",
+                                       params={"q": "in:inbox newer_than:7d",
+                                               "maxResults": max(1, min(int(limit), 100))},
+                                       headers=headers)
+        if listing.status_code != 200:
+            raise RuntimeError(f"gmail_list_failed:{listing.status_code}")
+        for stub in (listing.json().get("messages") or []):
+            detail = await client.get(
+                f"{gmail_provider.GMAIL_API}/messages/{stub['id']}",
+                params={"format": "metadata",
+                        "metadataHeaders": ["From", "To", "Cc", "Subject", "In-Reply-To",
+                                            "References", "Content-Type",
+                                            "X-Failed-Recipients"]},
+                headers=headers)
+            if detail.status_code == 200:
+                out.append(detail.json())
+    return out
+
+
+async def _on_inbound_reply(*, tenant_id, conversation, message, record, basis):
+    """What a reply changes outside the conversation itself.
+
+    A reply is the event a recovery case is waiting for, so it is recorded where the
+    people working the case will see it: on the contact's timeline, and as a domain
+    event. It deliberately does **not** decide the case's outcome -- a reply is
+    engagement, not agreement, and inferring one from the other is how a system starts
+    claiming results it did not earn.
+    """
+    contact_id = conversation.get("contact_id") or next(
+        (p.get("id") for p in (conversation.get("participants") or [])
+         if p.get("kind") == conversation_service.PARTICIPANT_CONTACT and p.get("id")), None)
+    if contact_id:
+        await db[crm_core.ACTIVITIES].insert_one({
+            "id": new_id("act"), "tenant_id": tenant_id, "type": "email",
+            "related_type": "contact", "related_id": contact_id,
+            "subject": record.get("subject"), "body": record.get("body"),
+            "occurred_at": record.get("received_at"), "duration_minutes": None,
+            "participants": [record.get("from_address")] if record.get("from_address") else [],
+            "outcome": "reply_received", "actor": record.get("from_address") or "inbound",
+            "direction": "inbound", "created_at": now_iso(),
+            "logged_by": f"provider:{record.get('provider')}",
+            "conversation_id": conversation["id"], "message_id": message["id"],
+        })
+    await record_event("communication_message.received", "communication_message",
+                       message["id"], tenant_id, record.get("from_address") or "inbound",
+                       workspace_id=conversation.get("workspace_id"),
+                       payload={"conversation_id": conversation["id"],
+                                "match_basis": basis,
+                                "contact_id": contact_id},
+                       source="provider")
+    if conversation.get("recovery_case_id"):
+        # Record engagement against the case. `replied_at` is a fact; whether the case
+        # succeeded is a separate decision made against evidence elsewhere.
+        await db[recovery_case_service.COLLECTION].update_one(
+            {"tenant_id": tenant_id, "id": conversation["recovery_case_id"]},
+            {"$set": {"last_reply_at": record.get("received_at")},
+             "$inc": {"reply_count": 1}})
+
+
+async def run_inbound_email_sweep(actor: str = "cron") -> dict:
+    """Poll every tenant with an active Gmail connection for inbound mail."""
+    connections = await db.integration_connections.find(
+        {"provider": "gmail", "status": "active"}, {"_id": 0, "tenant_id": 1}).to_list(500)
+    totals = {"tenants": 0, "replies": 0, "bounces": 0, "unmatched": 0,
+              "duplicates": 0, "errors": 0}
+    for connection in connections:
+        summary = await email_inbound.poll_tenant(
+            db, tenant_id=connection["tenant_id"],
+            fetch_messages=_fetch_inbound_gmail, on_reply=_on_inbound_reply)
+        totals["tenants"] += 1
+        for key in ("replies", "bounces", "unmatched", "duplicates", "errors"):
+            totals[key] += summary.get(key, 0)
+    return totals
+
+
+async def run_reconcile_unknown_sweep(actor: str = "cron") -> dict:
+    """Ask the provider about every message whose dispatch outcome was never observed.
+
+    This is the only path out of `outcome_unknown`, and it asks exactly one question:
+    does the provider hold this dispatch? A lookup that cannot be completed leaves the
+    message where it is, because "I could not check" must never be recorded as "it was
+    never sent".
+    """
+    stranded = await db[conversation_service.MESSAGES].find(
+        {"status": conversation_service.OUTCOME_UNKNOWN}, {"_id": 0}).to_list(200)
+    totals = {"examined": 0, "resolved_sent": 0, "resolved_failed": 0, "unresolved": 0}
+    for message in stranded:
+        totals["examined"] += 1
+        provider = conversation_service.REGISTRY.get(message.get("channel"))
+        locate = getattr(provider, "locate", None)
+        if not locate:
+            totals["unresolved"] += 1
+            continue
+        key = conversation_service.dispatch_key(message)
+        try:
+            found_id = await locate(tenant_id=message["tenant_id"], idempotency_key=key)
+        except conversation_service.DeliveryRejected as exc:
+            # The provider answered definitively that it cannot hold this message.
+            await conversation_service.reconcile_unknown(
+                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
+                found=False, detail={"lookup": str(exc)[:300]})
+            totals["resolved_failed"] += 1
+            continue
+        except Exception:
+            logger.warning("Could not reconcile message %s; leaving it unresolved",
+                           message["id"])
+            totals["unresolved"] += 1
+            continue
+        if found_id:
+            await conversation_service.reconcile_unknown(
+                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
+                found=True, provider_message_id=found_id,
+                detail={"rfc822_message_id": gmail_provider.message_id_for(
+                    message["tenant_id"], key)})
+            totals["resolved_sent"] += 1
+        else:
+            await conversation_service.reconcile_unknown(
+                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
+                found=False, detail={"lookup": "provider does not hold this dispatch"})
+            totals["resolved_failed"] += 1
+    return totals
+
+
+def register_channel_providers() -> list[str]:
+    """Register the outbound adapters this deployment is configured for.
+
+    Configuration, not optimism, decides. With no Google OAuth client the registry stays
+    empty and every outbound attempt refuses with `no_provider_registered`, which is the
+    correct answer for a deployment that cannot send. Registration is process-wide;
+    whether a *tenant* may send is decided per call, from that tenant's own connection.
+    """
+    registered: list[str] = []
+    if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+        conversation_service.REGISTRY.register(gmail_provider.GmailChannelProvider(
+            access_token=_google_access_token, connection=_google_connection))
+        registered.append("gmail")
+    else:
+        logger.info("No Google OAuth client configured; email sending stays disabled")
+    return registered
+
+
 # ---- Adapters (sync returns a normalized summary; bounded, idempotent upserts) ----
 
 async def _upsert_comm(tenant_id, rec, contacts, actor_provider="gmail"):
-    matched = [contacts[e] for e in ([rec.get("from_email")] + rec.get("to", [])) if e and e in contacts]
+    matched = [contacts[e] for e in [rec.get("from_email"), *rec.get("to", [])] if e and e in contacts]
     contact_ids = list({m["id"] for m in matched})
     if not contact_ids:
         return False
@@ -2559,6 +2967,255 @@ class StripeConnectInput(BaseModel):
     api_key: Optional[str] = None
 
 
+@api.post("/cron/inbound-email")
+async def cron_inbound_email(request: Request):
+    """Pull inbound mail back into the CRM for every connected tenant.
+
+    Receiving is not sending: nothing here passes the outbound preconditions, and
+    nothing here can dispatch a message.
+    """
+    run_id, entry_id = await _begin_cron(request, "inbound-email")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
+        "inbound-email", run_id, lambda: run_inbound_email_sweep(actor="cron"), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+@api.post("/cron/reconcile-unknown")
+async def cron_reconcile_unknown(request: Request):
+    """Resolve messages whose dispatch outcome was never observed.
+
+    The only path out of `outcome_unknown`, and it only ever asks the provider whether
+    it holds the dispatch. It never re-sends.
+    """
+    run_id, entry_id = await _begin_cron(request, "reconcile-unknown")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
+        "reconcile-unknown", run_id, lambda: run_reconcile_unknown_sweep(actor="cron"),
+        entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+class RecordOutcomeInput(BaseModel):
+    """What a caller may say about an outcome.
+
+    Conspicuously absent: `basis`, `evidence`, `claim` and any way to assert that a
+    message was sent. Those are derived by the ledger from records. A caller that could
+    supply them could manufacture recovered revenue out of nothing, which is the one
+    thing this surface must make impossible.
+    """
+    case_id: str
+    kind: str
+    record_id: str
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    occurred_at: Optional[str] = None
+    note: Optional[str] = None
+
+
+@api.post("/attribution/outcomes")
+async def record_attribution_outcome(inp: RecordOutcomeInput,
+                                     user=Depends(require_role("admin"))):
+    """Record an outcome and let the ledger decide what, if anything, may be claimed."""
+    try:
+        entry = await attribution_service.record_outcome(
+            db, tenant_id=user["tenant_id"], case_id=inp.case_id, kind=inp.kind,
+            record_id=inp.record_id, actor=user["email"], amount=inp.amount,
+            currency=inp.currency, occurred_at=inp.occurred_at, note=inp.note,
+            audit=record_event)
+    except (attribution_service.CaseNotFound, attribution_service.OutcomeNotFound):
+        raise HTTPException(status_code=404, detail="Not found")
+    except attribution_service.AttributionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await record_event("attribution.outcome_recorded", "recovery_case", inp.case_id,
+                       user["tenant_id"], user["email"],
+                       payload={"entry_id": entry["id"], "claim": entry["claim"],
+                                "basis": entry["basis"]})
+    return entry
+
+
+@api.get("/attribution/entries")
+async def list_attribution_entries(case_id: Optional[str] = None,
+                                   claim: Optional[str] = None,
+                                   basis: Optional[str] = None, limit: int = 100,
+                                   user=Depends(get_current_user)):
+    return {"entries": await attribution_service.list_entries(
+        db, user["tenant_id"], case_id=case_id, claim=claim, basis=basis, limit=limit)}
+
+
+@api.get("/attribution/totals")
+async def attribution_totals(user=Depends(get_current_user)):
+    return await attribution_service.totals(db, user["tenant_id"])
+
+
+class AttributionWindowInput(BaseModel):
+    days: int = Field(ge=1, le=365)
+
+
+@api.get("/attribution/window")
+async def get_attribution_window(user=Depends(get_current_user)):
+    return {"window_days": await attribution_service.attribution_window_days(
+        db, user["tenant_id"]),
+        "default_days": attribution_service.DEFAULT_ATTRIBUTION_WINDOW_DAYS}
+
+
+@api.put("/attribution/window")
+async def set_attribution_window(inp: AttributionWindowInput,
+                                 user=Depends(require_role("admin"))):
+    """How long after contact an outcome may still be credited to it.
+
+    Tenant configuration, deliberately not a per-call argument: a window a caller could
+    set per request is not a rule, it is a dial for making numbers larger.
+    """
+    result = await attribution_service.set_attribution_window(
+        db, tenant_id=user["tenant_id"], days=inp.days, actor=user["email"])
+    await record_event("attribution.window_configured", "tenant", user["tenant_id"],
+                       user["tenant_id"], user["email"], payload={"days": result["window_days"]})
+    return result
+
+
+@api.get("/proof/portfolio")
+async def proof_portfolio(user=Depends(get_current_user)):
+    """The buyer-facing recovery report."""
+    return await recovery_proof.portfolio(db, user["tenant_id"])
+
+
+@api.get("/proof/traceability")
+async def proof_traceability(user=Depends(get_current_user)):
+    """Where each figure on the portfolio view comes from."""
+    return await recovery_proof.traceability(db, user["tenant_id"])
+
+
+@api.get("/proof/cases/{case_id}")
+async def proof_case(case_id: str, user=Depends(get_current_user)):
+    proof = await recovery_proof.case_proof(db, user["tenant_id"], case_id)
+    if not proof:
+        raise HTTPException(status_code=404, detail="Not found")
+    return proof
+
+
+@api.get("/inbound/unmatched")
+async def list_unmatched_inbound(status: str = "open", limit: int = 100,
+                                 user=Depends(get_current_user)):
+    """Inbound messages that could not be placed with evidence.
+
+    This queue existing is the point: a reply nobody could safely attribute is visible
+    work, not a silent mis-filing.
+    """
+    return {"items": await email_inbound.list_unmatched(
+        db, user["tenant_id"], status=status, limit=limit)}
+
+
+class AssignInboundInput(BaseModel):
+    conversation_id: str
+
+
+@api.post("/inbound/unmatched/{inbound_id}/assign")
+async def assign_unmatched_inbound(inbound_id: str, inp: AssignInboundInput,
+                                   user=Depends(get_current_user)):
+    try:
+        result = await email_inbound.assign_unmatched(
+            db, tenant_id=user["tenant_id"], inbound_id=inbound_id,
+            conversation_id=inp.conversation_id, actor=user["email"])
+    except (conversation_service.MessageNotFound,
+            conversation_service.ConversationNotFound):
+        raise HTTPException(status_code=404, detail="Not found")
+    await record_event("communication_message.manually_matched", "communication_message",
+                       result["message_id"], user["tenant_id"], user["email"],
+                       payload={"conversation_id": inp.conversation_id,
+                                "inbound_id": inbound_id})
+    return result
+
+
+@api.post("/messages/{message_id}/reconcile")
+async def reconcile_message(message_id: str, user=Depends(require_role("admin"))):
+    """Ask the provider whether it holds a message stranded in `outcome_unknown`.
+
+    Deliberately not a resend. The only thing an operator can do to such a message is
+    find out what actually happened to it.
+    """
+    message = await conversation_service.get_message(db, user["tenant_id"], message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.get("status") != conversation_service.OUTCOME_UNKNOWN:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only a message in '{conversation_service.OUTCOME_UNKNOWN}' can be "
+                   f"reconciled; this one is '{message.get('status')}'.")
+    provider = conversation_service.REGISTRY.get(message.get("channel"))
+    locate = getattr(provider, "locate", None)
+    if not locate:
+        raise HTTPException(status_code=409,
+                            detail="No provider is registered that can answer this lookup.")
+    key = conversation_service.dispatch_key(message)
+    try:
+        found_id = await locate(tenant_id=user["tenant_id"], idempotency_key=key)
+    except conversation_service.DeliveryRejected as exc:
+        found_id = None
+        lookup_detail = str(exc)[:300]
+    except Exception as exc:
+        # An inconclusive lookup leaves the message where it is. Recording "not found"
+        # here would license a resend of something that may already have arrived.
+        raise HTTPException(status_code=502,
+                            detail=f"The provider could not be asked: {str(exc)[:200]}")
+    else:
+        lookup_detail = "provider lookup completed"
+    reconciled = await conversation_service.reconcile_unknown(
+        db, tenant_id=user["tenant_id"], message_id=message_id, actor=user["email"],
+        found=bool(found_id), provider_message_id=found_id,
+        detail={"lookup": lookup_detail,
+                "rfc822_message_id": gmail_provider.message_id_for(user["tenant_id"], key)})
+    await record_event("communication_message.reconciled", "communication_message",
+                       message_id, user["tenant_id"], user["email"],
+                       payload={"found": bool(found_id), "status": reconciled["status"]})
+    return reconciled
+
+
+async def _authorize_cron_observer(request: Request) -> str:
+    """Let either the scheduler or a tenant admin read the scheduled-execution ledger.
+
+    The scheduler needs it so a workflow run can verify that production actually
+    recorded the request it just made, rather than trusting its own exit code. An admin
+    needs it because "is the recovery engine running at all?" is an operational
+    question, not a debugging one.
+    """
+    if _cron_secret_matches(request):
+        return "scheduler"
+    user = await get_current_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
+    return user["email"]
+
+
+@api.get("/cron/runs")
+async def cron_runs(request: Request, job: Optional[str] = None,
+                    status: Optional[str] = None, limit: int = 50):
+    """Append-only evidence of every scheduled request production received.
+
+    Each entry carries the whole chain for one delivery: when the request arrived and
+    from where (`received_at`, `source`), whether it was authenticated and claimed
+    (`status`), when the job started and finished (`started_at`, `finished_at`,
+    `duration_ms`), and what it returned or raised (`result`, `error`).
+    """
+    await _authorize_cron_observer(request)
+    return {"runs": await cron_ledger.list_runs(db, job=job, status=status, limit=limit)}
+
+
+@api.get("/cron/health")
+async def cron_health(request: Request, window_minutes: int = 120):
+    """Whether production is actually receiving scheduled traffic.
+
+    `receiving_scheduled_traffic: false` with a scheduler configured is the failure this
+    subsystem was previously blind to: a workflow that reports success every tick while
+    never making a request. A scheduler is expected to fail its own run on this.
+    """
+    await _authorize_cron_observer(request)
+    return await cron_ledger.health(db, window_minutes=window_minutes)
+
+
+
 @api.post("/integrations/stripe/connect")
 async def stripe_connect(inp: Optional[StripeConnectInput] = None, user=Depends(require_role("admin"))):
     tenant_key = (inp.api_key.strip() if inp and inp.api_key else None) or None
@@ -2611,7 +3268,7 @@ async def create_stripe_payment_intent(
     invoice = await db.invoices.find_one({"id": invoice_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    amount = int(round(float(invoice.get("total") or 0) * 100))
+    amount = round(float(invoice.get("total") or 0) * 100)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Invoice total must be greater than zero")
     _stripe.api_key = key
@@ -2769,7 +3426,7 @@ async def stripe_webhook(request: Request):
             amount_matches = True
             currency_matches = True
             if payment_status == "paid" and intent_matches:
-                expected_amount = int(round(float(invoice.get("total") or 0) * 100))
+                expected_amount = round(float(invoice.get("total") or 0) * 100)
                 expected_currency = (invoice.get("currency") or "usd").lower()
                 amount_matches = obj.get("amount_received") == expected_amount
                 currency_matches = str(obj.get("currency") or "").lower() == expected_currency
@@ -2872,14 +3529,9 @@ async def workspace_activity(ws_id: str, user=Depends(get_current_user)):
 @api.post("/cron/integration-sync")
 async def cron_integration_sync(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
-    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else ""
-    if not secret or not token or not hmac.compare_digest(token, secret):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("integration-sync", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "integration-sync")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
 
     async def _sweep():
         actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
@@ -2889,8 +3541,8 @@ async def cron_integration_sync(request: Request):
                 await evaluate_alerts(c["tenant_id"])
             except Exception:
                 pass
-    asyncio.create_task(_sweep())
-    return {"accepted": True, "run_id": run_id}
+    spawn_background(_run_cron_job("integration-sync", run_id, _sweep, entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
 #  INTEGRATION INSIGHTS — unified timeline, alert engine, connection health
@@ -3447,14 +4099,9 @@ async def alerts_escalate(user=Depends(require_role("admin"))):
 @api.post("/cron/daily-digest")
 async def cron_daily_digest(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
-    secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else ""
-    if not secret or not token or not hmac.compare_digest(token, secret):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    run_id = request.headers.get("X-Webhook-Id") or new_id("cron")
-    if not await _claim_cron_run("daily-digest", run_id):
-        return {"accepted": True, "duplicate": True}
+    run_id, entry_id = await _begin_cron(request, "daily-digest")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
 
     async def _sweep():
         for t in await db.tenants.find({}, {"_id": 0, "tenant_id": 1}).to_list(500):
@@ -3471,13 +4118,15 @@ async def cron_daily_digest(request: Request):
                     await deliver_digest(tid, local.strftime("%Y-%m-%d"))
             except Exception:
                 pass
-    asyncio.create_task(_sweep())
-    return {"accepted": True, "run_id": run_id}
+    spawn_background(_run_cron_job("daily-digest", run_id, _sweep, entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
+crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:

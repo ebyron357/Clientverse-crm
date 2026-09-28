@@ -23,7 +23,7 @@ import recovery_runner
 import recovery_strategy
 import second_chance
 import security_gate
-from work_queue import WorkQueue, WorkQueueError, InvalidTransition
+from work_queue import InvalidTransition, WorkQueue, WorkQueueError
 
 
 class WorkItemResolution(BaseModel):
