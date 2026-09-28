@@ -5,7 +5,7 @@
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
 **Repository:** `ebyron357/Clientverse-crm`
 **Baseline commit at issue:** `main@3f14347610e5ca6cd8521c74f4420d3b2c08a9e8` (PR #24 merged 2026-09-15T18:19Z)
-**Current `main` at this revision:** `main@c9f5a6e` (recovery-engine activation merge, 2026-09-28; **deployed** — §3.2). Earlier heads: `730b1b3` (PR #28), `e8d5678` (PR #27), `3150530` (PR #26)
+**Running application code at this revision:** `main@c9f5a6e` (recovery-engine activation merge, 2026-09-28; **deployed** — §3.2); later `main` commits are docs/tooling only. Earlier heads: `730b1b3` (PR #28), `e8d5678` (PR #27), `3150530` (PR #26)
 
 ---
 
@@ -135,7 +135,7 @@ The module registry is the **contract of record** for which surfaces exist and w
 - A fresh Railway health probe returned HTTP 200 `status=ok`, `database=up` on 2026-09-15 (recorded in Issue #10), but **the runtime SHA is not exposed by the current production deployment**. `git_sha` on `/api/health` is merged in code at `3706c7a`; production has not been redeployed onto a head containing it.
 - **Production is not reachable from the current execution environment.** The session egress policy rejects both `clientverse-crm-production-production.up.railway.app:443` and `backboard.railway.com:443` with HTTP 403 at CONNECT. Deployment, production health verification, production smoke, and the two-company production isolation smoke therefore carry status `BLOCKED — TECHNICAL` for any agent running under this policy; they are not owner blockers and require no owner action other than running them from an environment that can reach Railway. Nothing in this document reports production behaviour that was not observed.
 
-- **`main@c9f5a6e` is `DEPLOYED`** (Railway deployment `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, SUCCESS 2026-09-28T05:25Z). The deploy log reads `Registered outbound channel provider: gmail` → `Application startup complete` → `GET /api/health 200` from Railway's healthcheck. This head contains `3706c7a`, so `/api/health` now exposes `git_sha` and runtime-SHA parity can be checked. It is **not `LIVE VERIFIED`**: no authenticated production smoke has run against it, and on 2026-09-28 the production host still refused CONNECT from the agent environment with 403.
+- **`main@c9f5a6e` is `DEPLOYED`** (Railway deployment `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, SUCCESS 2026-09-28T05:25Z). PR #30 (`c931b4e`, no change under `backend/`, `frontend/`, `Dockerfile` or `railway.json`) redeployed the same application code as `84c89214-0c38-4cdf-b38c-9a3d1ee59d6c` (SUCCESS 2026-09-28T18:05Z, identical boot log), after which `1f809799` is REMOVED. Each `main` commit redeploys, so the live deployment id is read from Railway, not from this document. The deploy log reads `Registered outbound channel provider: gmail` → `Application startup complete` → `GET /api/health 200` from Railway's healthcheck. This head contains `3706c7a`, so `/api/health` now exposes `git_sha` and runtime-SHA parity can be checked. It is **not `LIVE VERIFIED`**: no authenticated production smoke has run against it, and on 2026-09-28 the production host still refused CONNECT from the agent environment with 403.
 - Railway's HTTP log for that deployment shows **no inbound request of any kind** after the boot healthcheck (read 2026-09-28). The scheduler is therefore still not calling production (O-03, O-16).
 
 ### 3.3 Completion claims corrected by this document
@@ -159,7 +159,7 @@ The module registry is the **contract of record** for which surfaces exist and w
 | #26 | Durable work queue, Second Chance detection, Next Best Action service, and the dual security gate | closed, merged | Squash-merged into `main` at `3150530` on 2026-09-15. The capabilities it carries are `MERGED`; none is `DEPLOYED`. |
 | #27 | Approval queue (M-07), recovery strategy composer (E-20), and the Conversation / CommunicationMessage foundation | closed, merged | Squash-merged into `main` at `e8d5678` on 2026-09-16. Fifteen review findings across two reviewers; twelve were real and fixed on the branch. The capabilities it carries are `MERGED`; none is `DEPLOYED`. |
 | #28 | Recovery Case foundation and recovery runner | closed, merged | Squash-merged into `main` at `730b1b3` on 2026-09-16. |
-| #30 | Jev QC gate + live verification evidence, and the deployed-state record | open at this revision | Documentation and standalone agent tooling (`scripts/jev_qc.mjs`); no runtime change. |
+| #30 | Jev QC gate + live verification evidence, and the deployed-state record | closed, merged | Merged into `main` at `c931b4e` on 2026-09-28. Documentation and standalone agent tooling (`scripts/jev_qc.mjs`); no runtime change. |
 | Workforce PR #9 | AI-WOS v2 canonical operating contract + implementation register | **open (draft)** | Governs the agent-workforce repository, not the CRM. Do not merge as part of CRM work. |
 
 ---
@@ -171,7 +171,7 @@ The module registry is the **contract of record** for which surfaces exist and w
 
 **Completion rule:** only `LIVE VERIFIED` counts as fully complete. Research, repo selection, a written prompt, local code, an open PR, or passing unit tests never qualify.
 
-**Every `DEPLOYED` status below refers to `main@c9f5a6e`** (Railway `1f809799-…`, 2026-09-28). None is `LIVE VERIFIED` — see §3.2.
+**Every `DEPLOYED` status below refers to the application code of `main@c9f5a6e`** (first live as Railway `1f809799-…`, 2026-09-28; running unchanged in every later docs-only redeploy). None is `LIVE VERIFIED` — see §3.2.
 
 ### 4.A Core CRM — implemented and merged
 

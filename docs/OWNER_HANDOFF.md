@@ -2,7 +2,7 @@
 
 **Prepared:** 2026-09-21 · **Release state updated:** 2026-09-28
 **Branch this describes:** `claude/trusting-brahmagupta-lj26xf` — **merged to `main` as `c9f5a6e`**
-**Currently deployed:** `main@c9f5a6e` — this branch **is** now in production (see §1)
+**Running application code:** `main@c9f5a6e` — this branch **is** now in production (see §1)
 
 > **2026-09-28 update — read before §1.** The owner merged this branch and Railway
 > deployed it: deployment `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, commit
@@ -10,6 +10,11 @@
 > reads `Registered outbound channel provider: gmail` → `Application startup complete`
 > → `GET /api/health 200`. **§8.2 is therefore done.** Where §1 below says the work is
 > not in production, that was true on 2026-09-21 and is no longer.
+>
+> Every later `main` commit so far has been docs or agent tooling only and redeploys the
+> same application code: PR #30 (`c931b4e`) did so as deployment `84c89214-…`, SUCCESS
+> 2026-09-28T18:05Z, `1f809799` then REMOVED. The live deployment id therefore changes with
+> each merge — read it from Railway, and `git_sha` from `/api/health`.
 >
 > One new blocker sits in front of §8.1: **GitHub Actions has executed nothing since
 > 2026-09-27T22:35Z.** Every job — CI on `main`, CI on pull requests, and every

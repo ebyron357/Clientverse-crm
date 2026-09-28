@@ -2,10 +2,14 @@
 
 ## Session state (2026-09-28)
 
-- **Deployed head is `main@c9f5a6e`** (the recovery-engine merge), Railway deployment
-  `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, SUCCESS 2026-09-28T05:25Z; boot log shows
-  `Registered outbound channel provider: gmail` → `Application startup complete` →
-  `/api/health` 200. The 2026-09-21 notes below that say `730b1b3` is deployed are stale.
+- **Running application code is `main@c9f5a6e`** (the recovery-engine merge). Railway
+  deployment `1f809799-a4a2-4dc9-9e38-8d19ba1b282d` put it live 2026-09-28T05:25Z; PR #30
+  (`c931b4e`, docs and agent tooling only — no change under `backend/`, `frontend/`,
+  `Dockerfile`, `railway.json`) redeployed the same code as `84c89214-…` at 18:05Z. Every
+  `main` commit redeploys, so **read the live deployment id from Railway, not from docs**;
+  `/api/health` reports its `git_sha`. Boot log each time: `Registered outbound channel
+  provider: gmail` → `Application startup complete` → `/api/health` 200. The 2026-09-21
+  notes below that say `730b1b3` is deployed are stale.
 - **GitHub Actions has run nothing since 2026-09-27T22:35Z.** Every job on every
   branch (CI and Scheduled jobs) completes as `failure` in 2–4 s with `runner_id: 0`
   and no log, starting mid-schedule on an unchanged commit. That is an account-level
