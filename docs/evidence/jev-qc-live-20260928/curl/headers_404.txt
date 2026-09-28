@@ -1,0 +1,18 @@
+HTTP/1.1 200 Connection Established
+
+HTTP/2 404 
+date: Mon, 28 Sep 2026 16:42:03 GMT
+content-type: application/json; charset=utf-8
+content-length: 378
+cf-ray: a42432fc4c2f31bb-IAD
+cf-cache-status: DYNAMIC
+etag: W/"17a-y/NrmdCr4NRGSbSNzERlpl23QmE"
+server: cloudflare
+strict-transport-security: max-age=15552000; includeSubDomains
+vary: Accept-Encoding, Accept-Encoding
+referrer-policy: same-origin
+x-content-type-options: nosniff
+x-frame-options: SAMEORIGIN
+report-to: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=FtVdHTutRKqlp5Ip%2BtfZnExPXos1zMowlaNWqqO129qJkEBH1j9rriZOkP2ijwQ%2FBRtMNvXSpV7RSyiQvzOe26OhuV%2Bbk3Fd9G6XNlcVHdgKDFHhzGzEbrJ%2FBaSG3LS6ZpQjNh32"}]}
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+

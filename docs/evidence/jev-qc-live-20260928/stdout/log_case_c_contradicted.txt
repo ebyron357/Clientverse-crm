@@ -1,0 +1,70 @@
+QC INCOMPLETE
+{
+  "submitted_at": "2026-09-28T16:39:42.072Z",
+  "webhook_url": "https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate",
+  "request": {
+    "task_id": "clientverse-jev-gate-live-C-contradicted-20260928",
+    "task": "Add a backend unit test suite for the recovery runner and make it pass in CI.",
+    "worker": "Claude Code",
+    "worker_claim": "Task complete. All tests pass.",
+    "completion_requirements": [
+      "backend/tests/test_recovery_runner.py exists and is committed",
+      "cd backend && python -m pytest tests/test_recovery_runner.py -q exits 0",
+      "CI workflow ci.yml is green on the pushed commit"
+    ],
+    "evidence": {
+      "implementation": "No commit was made. git status shows backend/tests/test_recovery_runner.py as untracked.",
+      "tests": "cd backend && python -m pytest tests/test_recovery_runner.py -q -> 3 failed, 1 passed in 0.84s (exit 1). FAILED test_recovery_runner.py::test_claims_case - AssertionError.",
+      "build": "Not run.",
+      "deployment": "Nothing pushed.",
+      "verification": "CI has not run because no commit was pushed."
+    }
+  },
+  "verdict": "INCOMPLETE",
+  "verified_complete": false,
+  "n8n_execution_id": "140",
+  "gate_error": null,
+  "gate_response": {
+    "task_id": "clientverse-jev-gate-live-C-contradicted-20260928",
+    "worker": "Claude Code",
+    "project_type": null,
+    "work_type": null,
+    "phase_id": null,
+    "qc_status": "INCOMPLETE",
+    "reason": null,
+    "requirements": [
+      {
+        "requirement": "backend/tests/test_recovery_runner.py exists and is committed",
+        "question_id": "requirement_001",
+        "probability": 0.02,
+        "result": "NOT_SUPPORTED"
+      },
+      {
+        "requirement": "cd backend && python -m pytest tests/test_recovery_runner.py -q exits 0",
+        "question_id": "requirement_002",
+        "probability": 0.02,
+        "result": "NOT_SUPPORTED"
+      },
+      {
+        "requirement": "CI workflow ci.yml is green on the pushed commit",
+        "question_id": "requirement_003",
+        "probability": 0.01,
+        "result": "NOT_SUPPORTED"
+      }
+    ],
+    "thresholds": {
+      "verified": 0.9,
+      "incomplete": 0.25
+    },
+    "qc_engine": "TypeSafe Jev",
+    "submitted_at": "2026-09-28T16:39:41.658Z",
+    "evidence_submitted": {
+      "implementation": "No commit was made. git status shows backend/tests/test_recovery_runner.py as untracked.",
+      "tests": "cd backend && python -m pytest tests/test_recovery_runner.py -q -> 3 failed, 1 passed in 0.84s (exit 1). FAILED test_recovery_runner.py::test_claims_case - AssertionError.",
+      "build": "Not run.",
+      "deployment": "Nothing pushed.",
+      "verification": "CI has not run because no commit was pushed."
+    },
+    "n8n_execution_id": "140"
+  }
+}

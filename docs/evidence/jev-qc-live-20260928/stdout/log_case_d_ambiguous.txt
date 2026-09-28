@@ -1,0 +1,70 @@
+QC INCOMPLETE
+{
+  "submitted_at": "2026-09-28T16:39:42.740Z",
+  "webhook_url": "https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate",
+  "request": {
+    "task_id": "clientverse-jev-gate-live-D-ambiguous-20260928",
+    "task": "Harden the Stripe webhook handler against replayed events.",
+    "worker": "Claude Code",
+    "worker_claim": "Task complete.",
+    "completion_requirements": [
+      "Replayed Stripe events with a previously seen event id are rejected without side effects",
+      "A regression test covers the replay case",
+      "The change is deployed to production"
+    ],
+    "evidence": {
+      "implementation": "Edited the webhook handler to look at event ids.",
+      "tests": "Ran some tests locally; they looked fine.",
+      "build": "No evidence supplied.",
+      "deployment": "Should go out with the next deploy.",
+      "verification": "No evidence supplied."
+    }
+  },
+  "verdict": "INCOMPLETE",
+  "verified_complete": false,
+  "n8n_execution_id": "141",
+  "gate_error": null,
+  "gate_response": {
+    "task_id": "clientverse-jev-gate-live-D-ambiguous-20260928",
+    "worker": "Claude Code",
+    "project_type": null,
+    "work_type": null,
+    "phase_id": null,
+    "qc_status": "INCOMPLETE",
+    "reason": null,
+    "requirements": [
+      {
+        "requirement": "Replayed Stripe events with a previously seen event id are rejected without side effects",
+        "question_id": "requirement_001",
+        "probability": 0.05,
+        "result": "NOT_SUPPORTED"
+      },
+      {
+        "requirement": "A regression test covers the replay case",
+        "question_id": "requirement_002",
+        "probability": 0.08,
+        "result": "NOT_SUPPORTED"
+      },
+      {
+        "requirement": "The change is deployed to production",
+        "question_id": "requirement_003",
+        "probability": 0.03,
+        "result": "NOT_SUPPORTED"
+      }
+    ],
+    "thresholds": {
+      "verified": 0.9,
+      "incomplete": 0.25
+    },
+    "qc_engine": "TypeSafe Jev",
+    "submitted_at": "2026-09-28T16:39:42.420Z",
+    "evidence_submitted": {
+      "implementation": "Edited the webhook handler to look at event ids.",
+      "tests": "Ran some tests locally; they looked fine.",
+      "build": "No evidence supplied.",
+      "deployment": "Should go out with the next deploy.",
+      "verification": "No evidence supplied."
+    },
+    "n8n_execution_id": "141"
+  }
+}
