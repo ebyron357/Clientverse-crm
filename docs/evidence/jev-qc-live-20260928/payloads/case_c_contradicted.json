@@ -1,0 +1,18 @@
+{
+  "task_id": "clientverse-jev-gate-live-C-contradicted-20260928",
+  "task": "Add a backend unit test suite for the recovery runner and make it pass in CI.",
+  "worker": "Claude Code",
+  "worker_claim": "Task complete. All tests pass.",
+  "completion_requirements": [
+    "backend/tests/test_recovery_runner.py exists and is committed",
+    "cd backend && python -m pytest tests/test_recovery_runner.py -q exits 0",
+    "CI workflow ci.yml is green on the pushed commit"
+  ],
+  "evidence": {
+    "implementation": "No commit was made. git status shows backend/tests/test_recovery_runner.py as untracked.",
+    "tests": "cd backend && python -m pytest tests/test_recovery_runner.py -q -> 3 failed, 1 passed in 0.84s (exit 1). FAILED test_recovery_runner.py::test_claims_case - AssertionError.",
+    "build": "Not run.",
+    "deployment": "Nothing pushed.",
+    "verification": "CI has not run because no commit was pushed."
+  }
+}

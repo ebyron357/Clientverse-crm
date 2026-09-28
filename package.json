@@ -8,6 +8,7 @@
     "build": "yarn --cwd frontend build",
     "lint": "yarn --cwd frontend lint",
     "test:frontend": "yarn --cwd frontend test --watchAll=false",
-    "test:backend": "cd backend && python -m pytest tests/ -q"
+    "test:backend": "cd backend && python -m pytest tests/ -q",
+    "qc": "node scripts/jev_qc.mjs"
   }
 }

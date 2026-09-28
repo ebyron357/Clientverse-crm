@@ -1,0 +1,90 @@
+{
+  "submitted_at": "2026-09-28T16:41:43.775Z",
+  "webhook_url": "https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate",
+  "request": {
+    "task_id": "clientverse-jev-production-gate-live-verification-20260928",
+    "task": "Run the existing Jev QC production gate (scripts/jev_qc.mjs, commit e9820b7, repo ebyron357/Clientverse-crm) against the real live n8n endpoint https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate, with controlled success and failure cases, and capture the real returned evidence.",
+    "worker": "Claude Code",
+    "worker_claim": "Task complete: the unmodified gate reached live n8n, returned VERIFIED_COMPLETE for the evidenced success case, INCOMPLETE for every under-evidenced case, and failed closed on every transport error.",
+    "completion_requirements": [
+      "The gate implementation under test is the unmodified scripts/jev_qc.mjs from commit e9820b7",
+      "Requests reach the live n8n endpoint and n8n assigns an n8n_execution_id to each",
+      "A controlled success case returns qc_status VERIFIED_COMPLETE and the script exits 0",
+      "Controlled failure cases (no evidence, contradicted evidence, vague evidence) return qc_status INCOMPLETE and the script exits 1",
+      "Transport failures (HTTP 404, unreachable host, timeout) fail closed with GATE_ERROR and exit 3",
+      "n8n_execution_id is passed through verbatim from the gate response"
+    ],
+    "evidence": {
+      "implementation": "Script extracted with git show e9820b7:scripts/jev_qc.mjs. git rev-parse e9820b7:scripts/jev_qc.mjs = 8563efd929c0c819e802441e4d8cfc6936c5dcc0; git hash-object of the file executed = 8563efd929c0c819e802441e4d8cfc6936c5dcc0 (identical). No code or config changes; run on Node v22.22.2 with the default JEV_QC_WEBHOOK_URL.",
+      "tests": "Live runs on 2026-09-28 against https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate: Case A (fully evidenced) -> VERIFIED_COMPLETE, exit 0, n8n_execution_id 137, requirement probabilities 0.93/0.97/0.95 all SUPPORTED. Case B (no evidence; all five fields sent as 'No evidence supplied.') -> INCOMPLETE, exit 1, id 139, p 0.03/0.02/0.02. Case C (evidence shows 3 failed tests, nothing committed) -> INCOMPLETE, exit 1, id 140, p 0.02/0.02/0.01. Case D (vague evidence) -> INCOMPLETE, exit 1, id 141. Case E (partially inspected failures) -> INCOMPLETE, exit 1, id 142. Case J (one requirement supported p=0.93, one not p=0.08) -> INCOMPLETE, exit 1, id 143. Case F (JEV_QC_WEBHOOK_URL=.../jev-qc-central-gate-does-not-exist) -> GATE_ERROR 'gate returned HTTP 404', exit 3. Case G (host jev-gate.invalid) -> GATE_ERROR 'gate unreachable: fetch failed', exit 3. Case H (JEV_QC_TIMEOUT_MS=1) -> GATE_ERROR 'gate did not respond within 1ms', exit 3.",
+      "build": "No build step: zero-dependency Node ESM script. node --check on the executed file exits 0.",
+      "deployment": "Not applicable: nothing was deployed and the production n8n workflow was not modified. The gate under test is the already-deployed n8n webhook.",
+      "verification": "Independent curl POST of the Case A payload to the same URL: HTTP/2 200, server: cloudflare, cf-ray a4242ef53c4d3e81-IAD, content-type application/json, body qc_status VERIFIED_COMPLETE, qc_engine 'TypeSafe Jev', n8n_execution_id 138. Execution ids 137-143 increased by one per submission across script and curl clients, showing each request created a new n8n execution. The script record's n8n_execution_id equals the gate_response.n8n_execution_id string in every live case (e.g. '137' == '137'). First submission of this task (n8n_execution_id 144) returned NEEDS_HUMAN_REVIEW with requirement_006 UNCERTAIN p=0.89; added direct check for it: a script loaded all 7 live evidence records written via JEV_QC_EVIDENCE_PATH (executions 137, 139, 140, 141, 142, 143, 144) and compared record.n8n_execution_id with record.gate_response.n8n_execution_id. Result: 7/7 identical in value AND type (str '137'=='137', '139'=='139', '140'=='140', '141'=='141', '142'=='142', '143'=='143', '144'=='144'); no record or gate response contains a renamed 'execution_id' key; output line 'ALL IDENTICAL: True | records checked: 7'. Code path (jev_qc.mjs lines 110, 117, 145, 164): findExecutionId returns decision.n8n_execution_id unmodified and the record stores it under the same key n8n_execution_id, with null only when the gate supplied none (Case F HTTP 404 -> null)."
+    }
+  },
+  "verdict": "NEEDS_HUMAN_REVIEW",
+  "verified_complete": false,
+  "n8n_execution_id": "145",
+  "gate_error": null,
+  "gate_response": {
+    "task_id": "clientverse-jev-production-gate-live-verification-20260928",
+    "worker": "Claude Code",
+    "project_type": null,
+    "work_type": null,
+    "phase_id": null,
+    "qc_status": "NEEDS_HUMAN_REVIEW",
+    "reason": "MIXED_OR_UNCERTAIN_RESULTS",
+    "requirements": [
+      {
+        "requirement": "The gate implementation under test is the unmodified scripts/jev_qc.mjs from commit e9820b7",
+        "question_id": "requirement_001",
+        "probability": 0.96,
+        "result": "SUPPORTED"
+      },
+      {
+        "requirement": "Requests reach the live n8n endpoint and n8n assigns an n8n_execution_id to each",
+        "question_id": "requirement_002",
+        "probability": 0.88,
+        "result": "UNCERTAIN"
+      },
+      {
+        "requirement": "A controlled success case returns qc_status VERIFIED_COMPLETE and the script exits 0",
+        "question_id": "requirement_003",
+        "probability": 0.97,
+        "result": "SUPPORTED"
+      },
+      {
+        "requirement": "Controlled failure cases (no evidence, contradicted evidence, vague evidence) return qc_status INCOMPLETE and the script exits 1",
+        "question_id": "requirement_004",
+        "probability": 0.93,
+        "result": "SUPPORTED"
+      },
+      {
+        "requirement": "Transport failures (HTTP 404, unreachable host, timeout) fail closed with GATE_ERROR and exit 3",
+        "question_id": "requirement_005",
+        "probability": 0.94,
+        "result": "SUPPORTED"
+      },
+      {
+        "requirement": "n8n_execution_id is passed through verbatim from the gate response",
+        "question_id": "requirement_006",
+        "probability": 0.93,
+        "result": "SUPPORTED"
+      }
+    ],
+    "thresholds": {
+      "verified": 0.9,
+      "incomplete": 0.25
+    },
+    "qc_engine": "TypeSafe Jev",
+    "submitted_at": "2026-09-28T16:41:43.422Z",
+    "evidence_submitted": {
+      "implementation": "Script extracted with git show e9820b7:scripts/jev_qc.mjs. git rev-parse e9820b7:scripts/jev_qc.mjs = 8563efd929c0c819e802441e4d8cfc6936c5dcc0; git hash-object of the file executed = 8563efd929c0c819e802441e4d8cfc6936c5dcc0 (identical). No code or config changes; run on Node v22.22.2 with the default JEV_QC_WEBHOOK_URL.",
+      "tests": "Live runs on 2026-09-28 against https://bwa357.app.n8n.cloud/webhook/jev-qc-central-gate: Case A (fully evidenced) -> VERIFIED_COMPLETE, exit 0, n8n_execution_id 137, requirement probabilities 0.93/0.97/0.95 all SUPPORTED. Case B (no evidence; all five fields sent as 'No evidence supplied.') -> INCOMPLETE, exit 1, id 139, p 0.03/0.02/0.02. Case C (evidence shows 3 failed tests, nothing committed) -> INCOMPLETE, exit 1, id 140, p 0.02/0.02/0.01. Case D (vague evidence) -> INCOMPLETE, exit 1, id 141. Case E (partially inspected failures) -> INCOMPLETE, exit 1, id 142. Case J (one requirement supported p=0.93, one not p=0.08) -> INCOMPLETE, exit 1, id 143. Case F (JEV_QC_WEBHOOK_URL=.../jev-qc-central-gate-does-not-exist) -> GATE_ERROR 'gate returned HTTP 404', exit 3. Case G (host jev-gate.invalid) -> GATE_ERROR 'gate unreachable: fetch failed', exit 3. Case H (JEV_QC_TIMEOUT_MS=1) -> GATE_ERROR 'gate did not respond within 1ms', exit 3.",
+      "build": "No build step: zero-dependency Node ESM script. node --check on the executed file exits 0.",
+      "deployment": "Not applicable: nothing was deployed and the production n8n workflow was not modified. The gate under test is the already-deployed n8n webhook.",
+      "verification": "Independent curl POST of the Case A payload to the same URL: HTTP/2 200, server: cloudflare, cf-ray a4242ef53c4d3e81-IAD, content-type application/json, body qc_status VERIFIED_COMPLETE, qc_engine 'TypeSafe Jev', n8n_execution_id 138. Execution ids 137-143 increased by one per submission across script and curl clients, showing each request created a new n8n execution. The script record's n8n_execution_id equals the gate_response.n8n_execution_id string in every live case (e.g. '137' == '137'). First submission of this task (n8n_execution_id 144) returned NEEDS_HUMAN_REVIEW with requirement_006 UNCERTAIN p=0.89; added direct check for it: a script loaded all 7 live evidence records written via JEV_QC_EVIDENCE_PATH (executions 137, 139, 140, 141, 142, 143, 144) and compared record.n8n_execution_id with record.gate_response.n8n_execution_id. Result: 7/7 identical in value AND type (str '137'=='137', '139'=='139', '140'=='140', '141'=='141', '142'=='142', '143'=='143', '144'=='144'); no record or gate response contains a renamed 'execution_id' key; output line 'ALL IDENTICAL: True | records checked: 7'. Code path (jev_qc.mjs lines 110, 117, 145, 164): findExecutionId returns decision.n8n_execution_id unmodified and the record stores it under the same key n8n_execution_id, with null only when the gate supplied none (Case F HTTP 404 -> null)."
+    },
+    "n8n_execution_id": "145"
+  }
+}

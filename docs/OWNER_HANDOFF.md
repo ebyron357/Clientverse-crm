@@ -1,8 +1,25 @@
 # ClientVerse — Owner Handoff
 
-**Prepared:** 2026-09-21
-**Branch this describes:** `claude/trusting-brahmagupta-lj26xf`
-**Currently deployed:** `main@730b1b3` (this branch is **not** deployed — see §1)
+**Prepared:** 2026-09-21 · **Release state updated:** 2026-09-28
+**Branch this describes:** `claude/trusting-brahmagupta-lj26xf` — **merged to `main` as `c9f5a6e`**
+**Currently deployed:** `main@c9f5a6e` — this branch **is** now in production (see §1)
+
+> **2026-09-28 update — read before §1.** The owner merged this branch and Railway
+> deployed it: deployment `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, commit
+> `c9f5a6ec27e14682d49c055a57477e78b80231ef`, SUCCESS at 2026-09-28T05:25Z. Its boot log
+> reads `Registered outbound channel provider: gmail` → `Application startup complete`
+> → `GET /api/health 200`. **§8.2 is therefore done.** Where §1 below says the work is
+> not in production, that was true on 2026-09-21 and is no longer.
+>
+> One new blocker sits in front of §8.1: **GitHub Actions has executed nothing since
+> 2026-09-27T22:35Z.** Every job — CI on `main`, CI on pull requests, and every
+> *Scheduled jobs* run — fails in 2–4 seconds with no runner assigned (`runner_id: 0`)
+> and no log. It began between two scheduled runs of the same unchanged commit
+> (`730b1b3`: green at 22:28Z, failed at 22:35Z), so it is not caused by any code
+> change. That is the signature of an account-level Actions condition (billing,
+> spending limit, or Actions disabled). Until it is cleared, setting the §8.1 secrets
+> will not start the scheduler, and CI cannot gate a merge. Check GitHub → Settings →
+> Billing and plans → *Actions*, and the repository's Settings → Actions → General.
 
 This document is what the owner needs to take the system over. It states what is
 running, what is not, what only the owner can do, and how to verify each claim rather

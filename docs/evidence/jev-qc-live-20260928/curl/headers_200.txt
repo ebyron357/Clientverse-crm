@@ -1,0 +1,18 @@
+HTTP/1.1 200 Connection Established
+
+HTTP/2 200 
+date: Mon, 28 Sep 2026 16:39:19 GMT
+content-type: application/json; charset=utf-8
+cf-ray: a4242ef53c4d3e81-IAD
+cf-cache-status: DYNAMIC
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+etag: W/"7d7-j7WbWaacpZqCalbuKnNlINNmpOo"
+server: cloudflare
+strict-transport-security: max-age=15552000; includeSubDomains
+vary: Accept-Encoding, Accept-Encoding
+content-security-policy: sandbox allow-downloads allow-forms allow-modals allow-orientation-lock allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-scripts allow-top-navigation-by-user-activation allow-top-navigation-to-custom-protocols
+referrer-policy: same-origin
+x-content-type-options: nosniff
+x-frame-options: SAMEORIGIN
+report-to: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=1yLun76a5s231aEH%2FrqRtwGZiOI7U5wEGC52BpSlOSIC2aEt44HFhkp9kBsHqBKeglNwNPTgvpIk0gjKJxe5qCiMW1Aghk%2Bk2IyCc7KBxrlryOUEY%2FHrQmoBvUOSEaG2iTYFwfwy"}]}
+
