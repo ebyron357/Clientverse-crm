@@ -140,6 +140,19 @@ PLAYBOOKS = {
 }
 
 
+async def stamp_paid_at(db, *, tenant_id: str, invoice_id: str, at: str) -> None:
+    """Record when an invoice was first paid, once.
+
+    Attribution dates a payment by this field. It is written only while unset, so moving
+    the invoice away from paid and back -- or re-saving it as paid -- cannot re-date a
+    payment from before any outreach to after it.
+    """
+    await db.invoices.update_one(
+        {"id": invoice_id, "tenant_id": tenant_id, "paid_at": None,
+         "$or": [{"status": "paid"}, {"payment_status": "paid"}]},
+        {"$set": {"paid_at": at}})
+
+
 def register_client_value_routes(router, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role):
     """Attach client-value routes to the existing API router with injected app helpers."""
 
@@ -341,6 +354,8 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         result = await db.invoices.update_one({"id": invoice_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": inp.status, "updated_at": now_iso()}})
         if not result.matched_count:
             raise HTTPException(status_code=404, detail="Invoice not found")
+        if inp.status == "paid":
+            await stamp_paid_at(db, tenant_id=user["tenant_id"], invoice_id=invoice_id, at=now_iso())
         return {"ok": True, "status": inp.status}
 
     @router.get("/referrals")

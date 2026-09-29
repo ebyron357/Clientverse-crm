@@ -280,6 +280,7 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
     async def raise_approval_request(inp: ApprovalRequestInput,
                                      user=Depends(get_current_user)):
         try:
+            approval_queue.assert_not_reserved(inp.kind, inp.subject_type)
             request = await approval_queue.request(
                 db, tenant_id=user["tenant_id"], title=inp.title, kind=inp.kind,
                 actor=user["email"], requester_kind=approval_queue.REQUESTER_HUMAN,
@@ -327,6 +328,14 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
     @router.post("/approval-queue/{approval_id}/cancel")
     async def cancel_approval_request(approval_id: str, inp: ApprovalCancelInput,
                                       user=Depends(get_current_user)):
+        existing = await approval_queue.get(db, user["tenant_id"], approval_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Approval request not found")
+        if user.get("role") != "admin" and existing.get("requested_by") != user["email"]:
+            # Cancelling someone else's request is deciding it: it runs the same
+            # follow-through as a rejection. Members may withdraw only their own.
+            raise HTTPException(status_code=403,
+                                detail="Only the requester or an admin can cancel this request")
         try:
             request = await approval_queue.cancel(
                 db, tenant_id=user["tenant_id"], approval_id=approval_id,

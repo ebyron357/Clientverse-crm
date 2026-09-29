@@ -482,7 +482,11 @@ def test_stripe_payment_intent_success_is_test_only_tenant_scoped_and_idempotent
         "clientverse_invoice_id": "inv_1",
     }
     assert calls[0]["idempotency_key"] == calls[1]["idempotency_key"]
-    assert all(update[0] == {"id": "inv_1", "tenant_id": "ten_a"} for update in invoices.updated)
+    assert all(update[0]["id"] == "inv_1" and update[0]["tenant_id"] == "ten_a"
+               for update in invoices.updated)
+    # The first payment is dated once, and only while no payment date is recorded.
+    stamps = [u for u in invoices.updated if "paid_at" in u[1].get("$set", {})]
+    assert stamps and all(u[0]["paid_at"] is None for u in stamps)
     assert events[-1][0][0] == "invoice.payment_intent_created"
 
 
@@ -621,7 +625,11 @@ def test_stripe_webhook_is_idempotent_and_tenant_scoped(monkeypatch):
         "duplicate": True,
         "event_type": "payment_intent.succeeded",
     }
-    assert len(invoices.updated) == 1
+    # The payment update, then the one-time payment date that attribution relies on.
+    assert len(invoices.updated) == 2
+    stamp_filter, stamp = invoices.updated[1][0], invoices.updated[1][1]
+    assert stamp_filter["id"] == "inv_1" and stamp_filter["tenant_id"] == "ten_a"
+    assert stamp_filter["paid_at"] is None and "paid_at" in stamp["$set"]
     assert invoices.updated[0][0]["id"] == "inv_1"
     assert invoices.updated[0][0]["tenant_id"] == "ten_a"
     assert invoices.updated[0][0]["stripe_payment_intent_id"] == "pi_test_1"

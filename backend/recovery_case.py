@@ -575,6 +575,7 @@ async def record_contact(db, *, tenant_id: str, case_id: str, kind: str,
 
 async def confirm_recovery(db, *, tenant_id: str, case_id: str, amount: float,
                            evidence: dict, actor: str = "system",
+                           currency: Optional[str] = None,
                            audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Record revenue actually recovered, with the evidence that says so.
 
@@ -583,6 +584,9 @@ async def confirm_recovery(db, *, tenant_id: str, case_id: str, amount: float,
     point at.
     """
     amount = _amount(amount, "Confirmed amount")
+    # The money's own currency. A EUR payment on a case estimated in USD is EUR 8,000,
+    # not USD 8,000; without this the case, its summary and its proof relabel it.
+    confirmed_currency = (str(currency).strip().upper() if currency else None)
     if not evidence:
         raise RecoveryCaseError(
             "Confirming recovered revenue requires evidence of the recovery")
@@ -592,8 +596,10 @@ async def confirm_recovery(db, *, tenant_id: str, case_id: str, amount: float,
     # retry could not repair it.
     return await _transition(
         db, tenant_id=tenant_id, case_id=case_id, state=RECOVERED, actor=actor,
-        detail={"confirmed_value": amount}, audit=audit,
-        extra_set={"confirmed_value": amount, "confirmed_value_evidence": evidence})
+        detail={"confirmed_value": amount, "confirmed_currency": confirmed_currency},
+        audit=audit,
+        extra_set={"confirmed_value": amount, "confirmed_value_evidence": evidence,
+                   "confirmed_currency": confirmed_currency})
 
 
 async def summary(db, tenant_id: str) -> dict:
@@ -625,7 +631,8 @@ async def summary(db, tenant_id: str) -> dict:
     confirmed_by_currency: dict[str, float] = {}
     async for row in db[COLLECTION].aggregate([
         {"$match": {"tenant_id": tenant_id, "confirmed_value": {"$type": "number"}}},
-        {"$group": {"_id": "$currency", "total": {"$sum": "$confirmed_value"}}},
+        {"$group": {"_id": {"$ifNull": ["$confirmed_currency", "$currency"]},
+                    "total": {"$sum": "$confirmed_value"}}},
     ]):
         confirmed_by_currency[row["_id"] or DEFAULT_CURRENCY] = row["total"]
 

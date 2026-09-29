@@ -439,3 +439,16 @@ def test_export_only_contains_the_callers_own_rows(tenant, other):
     response = other.raw("GET", "/export/contacts")
     assert response.status_code == 200
     assert tenant.contact_id not in response.text
+
+
+def test_moving_a_deal_to_the_stage_it_is_in_is_not_a_move(tenant):
+    """A repeated closed_won used to add a fresh win to the history, re-dating a win from
+    months ago to today for attribution, and re-firing the won side effects."""
+    current = tenant.get(f"/opportunities/{tenant.deal_id}")["stage"]
+    current_key = current["key"] if isinstance(current, dict) else current
+    before = len(tenant.get(f"/opportunities/{tenant.deal_id}")["stage_history"])
+    again = tenant.raw("PATCH", f"/opportunities/{tenant.deal_id}/stage",
+                       json={"stage": current_key})
+    assert again.status_code == 409
+    after = tenant.get(f"/opportunities/{tenant.deal_id}")["stage_history"]
+    assert len(after) == before

@@ -138,6 +138,9 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
             "potential_value": case.get("potential_value"),
             "potential_value_basis": (case.get("evidence") or {}).get("value_basis"),
             "confirmed_recovered_value": case.get("confirmed_value"),
+            # The confirmed money's own currency, which can differ from the estimate's.
+            "confirmed_currency": (case.get("confirmed_currency") or case.get("currency")
+                                   or recovery_case_service.DEFAULT_CURRENCY),
             "confirmed_recovered_value_evidence": case.get("confirmed_value_evidence"),
             "note": ("Potential value is what this opportunity might be worth. Confirmed "
                      "recovered value is money a record says arrived. They are different "

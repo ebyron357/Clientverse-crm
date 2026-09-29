@@ -81,6 +81,14 @@ OUTCOME_DEAL_WON = "deal_won"
 OUTCOME_OPERATOR_CONFIRMED = "operator_confirmed"
 OUTCOME_KINDS = (OUTCOME_INVOICE_PAID, OUTCOME_DEAL_WON, OUTCOME_OPERATOR_CONFIRMED)
 
+# Outcomes backed by a CRM record, and where that record lives. One invoice is one
+# payment and one deal is one win: each may be booked once in a tenant's ledger, on one
+# case, under one kind -- never once per case that happened to touch the client.
+RECORD_BACKED = {OUTCOME_INVOICE_PAID: "invoices", OUTCOME_DEAL_WON: "opportunities"}
+
+# How far past the present an operator may date an outcome: clock skew, not the future.
+FUTURE_TOLERANCE = timedelta(minutes=5)
+
 # How long after contact an outcome may still be attributed to it. A deal that closes a
 # year after one email is not a recovery this system performed, and a window is the
 # honest way to say so. Tenant-configurable; not caller-configurable.
@@ -98,6 +106,10 @@ class OutcomeNotFound(AttributionError):
 
 class CaseNotFound(AttributionError):
     pass
+
+
+class RecordAlreadyBooked(AttributionError):
+    """This invoice or deal is already in the ledger, on another case or kind."""
 
 
 def _now() -> datetime:
@@ -130,6 +142,12 @@ async def ensure_indexes(db: Any) -> None:
     await db[COLLECTION].create_index(
         [("tenant_id", 1), ("case_id", 1), ("outcome.kind", 1), ("outcome.record_id", 1)],
         unique=True)
+    # And one entry per invoice or deal across the whole tenant. Partial, so entries
+    # written before this field existed do not stop the index being built.
+    await db[COLLECTION].create_index(
+        [("tenant_id", 1), ("booked_record", 1)], unique=True,
+        partialFilterExpression={"booked_record": {"$type": "string"}},
+        name="one_entry_per_record")
     await db[COLLECTION].create_index([("tenant_id", 1), ("claim", 1), ("recorded_at", -1)])
     await db[COLLECTION].create_index([("tenant_id", 1), ("basis", 1)])
     await db[SETTINGS_COLLECTION].create_index("tenant_id", unique=True)
@@ -267,12 +285,20 @@ async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str
             raise AttributionError(
                 f"Invoice {record_id} is '{paid or 'unknown'}', not paid; an unpaid "
                 "invoice is not recovered revenue.")
+        # The date the payment was recorded, set once when the invoice first became
+        # paid. Not `updated_at`: any later edit resets that to today, which would date a
+        # payment from last year after this week's outreach.
+        if not _parse(invoice.get("paid_at")):
+            raise AttributionError(
+                f"Invoice {record_id} is paid but carries no payment date, so nothing can "
+                "say whether it was paid before or after outreach. Record it as an "
+                "operator confirmation with the date the money arrived.")
         return {"kind": kind, "record_id": record_id, "collection": "invoices",
                 "amount": float(invoice.get("total") or invoice.get("amount") or 0),
                 "currency": (invoice.get("currency") or recovery_case_service.DEFAULT_CURRENCY).upper(),
-                "occurred_at": (invoice.get("paid_at") or invoice.get("updated_at")
-                                or invoice.get("created_at") or _iso()),
-                "amount_source": "invoice record"}
+                "occurred_at": invoice["paid_at"],
+                "amount_source": "invoice record",
+                "record": invoice}
 
     if kind == OUTCOME_DEAL_WON:
         deal = await db.opportunities.find_one({"tenant_id": tenant_id, "id": record_id},
@@ -283,19 +309,33 @@ async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str
             raise AttributionError(
                 f"Deal {record_id} is in stage '{deal.get('stage')}', not closed_won; "
                 "an open deal is pipeline, not revenue.")
-        closed_at = None
-        for transition in reversed(deal.get("stage_history") or []):
-            if transition.get("to") == "closed_won":
-                closed_at = transition.get("at")
-                break
+        # The first time the deal was won. A later move back into closed_won -- or a
+        # repeated one -- must not re-date a win that happened before any outreach.
+        won_at = sorted(
+            parsed for parsed in (_parse(t.get("at")) for t in (deal.get("stage_history") or [])
+                                  if t.get("to") == "closed_won") if parsed)
+        if not won_at:
+            raise AttributionError(
+                f"Deal {record_id} is closed_won but its history does not say when it was "
+                "won (an imported deal, say), so nothing can say whether it was won before "
+                "or after outreach. Record it as an operator confirmation with the date.")
         return {"kind": kind, "record_id": record_id, "collection": "opportunities",
                 "amount": float(deal.get("value") or 0),
                 "currency": (deal.get("currency") or recovery_case_service.DEFAULT_CURRENCY).upper(),
-                "occurred_at": closed_at or deal.get("updated_at") or deal.get("created_at")
-                or _iso(),
-                "amount_source": "deal record"}
+                "occurred_at": _iso(won_at[0]),
+                "amount_source": "deal record",
+                "record": deal}
 
     # Operator confirmation.
+    for collection, record_kind in (("invoices", OUTCOME_INVOICE_PAID),
+                                    ("opportunities", OUTCOME_DEAL_WON)):
+        if await db[collection].find_one({"tenant_id": tenant_id, "id": record_id},
+                                         {"_id": 1}):
+            # The record exists, so its own amount and date are the evidence. Restating
+            # them by hand would also book the same money a second time.
+            raise AttributionError(
+                f"{record_id} is a CRM record; record it as '{record_kind}' so its own "
+                "amount and date are used.")
     if amount is None:
         raise AttributionError("An operator confirmation must state the amount recovered")
     try:
@@ -304,11 +344,84 @@ async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str
         raise AttributionError("Amount must be a number")
     if value <= 0:
         raise AttributionError("A recovered amount must be greater than zero")
+    code = (currency or recovery_case_service.DEFAULT_CURRENCY).strip().upper()
+    if len(code) != 3 or not code.isalpha():
+        raise AttributionError("Currency must be a three-letter code, such as USD")
+    when = _now()
+    if occurred_at:
+        stated = _parse(occurred_at)
+        if not stated:
+            raise AttributionError("occurred_at must be an ISO-8601 date")
+        if stated > _now() + FUTURE_TOLERANCE:
+            # A future date would sit after every message ever sent and could never be
+            # contradicted by one.
+            raise AttributionError("An outcome cannot be dated in the future")
+        when = stated
     return {"kind": kind, "record_id": record_id, "collection": None,
             "amount": value,
-            "currency": (currency or recovery_case_service.DEFAULT_CURRENCY).upper(),
-            "occurred_at": occurred_at or _iso(),
+            "currency": code,
+            "occurred_at": _iso(when),
             "amount_source": "operator statement"}
+
+
+def _source_record_id(case: dict) -> Optional[str]:
+    """The record a detector opened this case for (`kind:record_id`), if any."""
+    source_event_id = str(case.get("source_event_id") or "")
+    return source_event_id.split(":", 1)[1] if ":" in source_event_id else None
+
+
+async def _record_link(db: Any, tenant_id: str, case: dict, collection: str,
+                       record: dict) -> dict:
+    """Does this invoice or deal belong to the client this case is about?
+
+    A paid invoice is only evidence for the case it relates to. Without this check any
+    payment in the tenant could be booked against whichever case had the best outreach.
+    Returns how the record links, `anchored: False` when the case names no CRM record at
+    all (so there is nothing to check against), or `linked: False` when it names some and
+    the record matches none of them.
+    """
+    anchors = {field: case.get(field) for field in
+               ("opportunity_id", "company_id", "workspace_id", "contact_id")}
+    source_id = _source_record_id(case)
+    if not any(anchors.values()) and not source_id:
+        return {"linked": False, "anchored": False,
+                "detail": "The case names no CRM record, so this link rests on the "
+                          "recorder's word."}
+
+    record_id = record.get("id")
+    company_ids = {record.get("company_id")} - {None}
+    opportunity_ids = {record.get("opportunity_id"), record_id if collection == "opportunities"
+                       else None} - {None}
+    workspace = None
+    if record.get("workspace_id"):
+        workspace = await db.workspaces.find_one(
+            {"tenant_id": tenant_id, "id": record["workspace_id"]}, {"_id": 0})
+    if workspace:
+        company_ids |= {workspace.get("company_id")} - {None}
+        opportunity_ids |= {workspace.get("opportunity_id")} - {None}
+    contact_ids = ({record.get("contact_id")} | set(record.get("contact_ids") or [])) - {None}
+
+    case_company = anchors["company_id"]
+    if not case_company and anchors["contact_id"]:
+        contact = await db.contacts.find_one(
+            {"tenant_id": tenant_id, "id": anchors["contact_id"]}, {"_id": 0, "company_id": 1})
+        case_company = (contact or {}).get("company_id")
+
+    checks = (
+        ("the record the case was opened for", source_id and source_id == record_id),
+        ("the case's deal", anchors["opportunity_id"]
+         and anchors["opportunity_id"] in opportunity_ids),
+        ("the case's workspace", anchors["workspace_id"]
+         and anchors["workspace_id"] == record.get("workspace_id")),
+        ("the case's company", case_company and case_company in company_ids),
+        ("the case's contact", anchors["contact_id"] and anchors["contact_id"] in contact_ids),
+    )
+    for via, matched in checks:
+        if matched:
+            return {"linked": True, "anchored": True, "via": via}
+    return {"linked": False, "anchored": True,
+            "detail": "The record belongs to none of the deal, company, workspace or "
+                      "contact this case is about."}
 
 
 # --------------------------------------------------------------------- the ledger
@@ -336,6 +449,14 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
     outcome = await _resolve_outcome(db, tenant_id, kind=kind, record_id=record_id,
                                      amount=amount, currency=currency,
                                      occurred_at=occurred_at)
+    record = outcome.pop("record", None)
+    record_link = None
+    if record is not None:
+        record_link = await _record_link(db, tenant_id, case, outcome["collection"], record)
+        if record_link["anchored"] and not record_link["linked"]:
+            raise AttributionError(
+                f"{record_id} does not belong to this case's client: "
+                + record_link["detail"])
     derived = await derive_basis(db, tenant_id=tenant_id, case_id=case_id,
                                  occurred_at=outcome["occurred_at"])
     attributed = derived["basis"] != BASIS_NONE
@@ -358,7 +479,12 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
         "recorded_by": actor,
         "recorded_at": _iso(),
         "attribution_window_days": await attribution_window_days(db, tenant_id),
+        # How the invoice or deal was tied to this case. Unverified when the case names
+        # no CRM record to check it against, and said so rather than hidden.
+        "record_link": record_link,
     }
+    if outcome["collection"]:
+        entry["booked_record"] = f"{outcome['collection']}:{record_id}"
     try:
         await db[COLLECTION].insert_one(dict(entry))
     except Exception as exc:
@@ -368,6 +494,13 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
                  "outcome.record_id": record_id}, {"_id": 0})
             if existing:
                 return {**existing, "deduplicated": True}
+            booked = await db[COLLECTION].find_one(
+                {"tenant_id": tenant_id, "booked_record": entry.get("booked_record")},
+                {"_id": 0, "case_id": 1, "id": 1})
+            if booked:
+                raise RecordAlreadyBooked(
+                    f"{record_id} is already in the ledger (entry {booked['id']}, case "
+                    f"{booked['case_id']}); one payment or win is booked once.") from exc
         raise
 
     if attributed:
@@ -376,6 +509,7 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
         try:
             await recovery_case_service.confirm_recovery(
                 db, tenant_id=tenant_id, case_id=case_id, amount=outcome["amount"],
+                currency=outcome["currency"],
                 evidence={"attribution_entry_id": entry["id"], "basis": derived["basis"],
                           "outcome": outcome, "records": derived["evidence"]},
                 actor=actor, audit=audit)

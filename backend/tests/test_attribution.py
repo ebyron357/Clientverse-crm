@@ -582,3 +582,147 @@ def test_the_attribution_window_is_tenant_configuration_not_a_call_argument(db):
         record_id=paid_invoice(db, days_ago=1)["id"], actor="ops@acme.test"))
     assert inside["claim"] == attribution.CLAIM_ATTRIBUTED
     assert inside["attribution_window_days"] == 365
+
+
+# ------------------------------------------------------ second review: the same money
+
+def _contacted_case(db, **kwargs):
+    case = make_case(db, **kwargs)
+    conversation = make_conversation(db, case, tenant_id=kwargs.get("tenant_id", TENANT))
+    outbound(db, conversation, status=cv.SENT, days_ago=10,
+             tenant_id=kwargs.get("tenant_id", TENANT))
+    return case
+
+
+def test_one_invoice_cannot_be_booked_on_two_cases(db):
+    """It used to book once per case, and again under operator_confirmed: 3x the money."""
+    first_case, second_case = _contacted_case(db), _contacted_case(db)
+    invoice = paid_invoice(db, total=5000.0)
+    run(attribution.record_outcome(
+        db, tenant_id=TENANT, case_id=first_case["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=invoice["id"], actor="ops"))
+    with pytest.raises(attribution.RecordAlreadyBooked):
+        run(attribution.record_outcome(
+            db, tenant_id=TENANT, case_id=second_case["id"],
+            kind=attribution.OUTCOME_INVOICE_PAID, record_id=invoice["id"], actor="ops"))
+    with pytest.raises(attribution.AttributionError, match="is a CRM record"):
+        run(attribution.record_outcome(
+            db, tenant_id=TENANT, case_id=first_case["id"],
+            kind=attribution.OUTCOME_OPERATOR_CONFIRMED, record_id=invoice["id"],
+            actor="ops", amount=5000.0, occurred_at=iso(1)))
+    totals = run(attribution.totals(db, TENANT))
+    assert totals["attributed_recovered_value_by_currency"] == {"USD": 5000.0}
+
+
+def test_an_invoice_for_another_client_cannot_be_booked_on_this_case(db):
+    run(db.workspaces.insert_many([
+        {"id": "ws_this", "tenant_id": TENANT, "company_id": "co_this"},
+        {"id": "ws_other", "tenant_id": TENANT, "company_id": "co_other"}]))
+    case = _contacted_case(db)
+    run(db[rc.COLLECTION].update_one({"id": case["id"]},
+                                     {"$set": {"company_id": "co_this"}}))
+    elsewhere = paid_invoice(db)
+    run(db.invoices.update_one({"id": elsewhere["id"]}, {"$set": {"workspace_id": "ws_other"}}))
+    with pytest.raises(attribution.AttributionError, match="does not belong"):
+        run(attribution.record_outcome(
+            db, tenant_id=TENANT, case_id=case["id"],
+            kind=attribution.OUTCOME_INVOICE_PAID, record_id=elsewhere["id"], actor="ops"))
+
+    theirs = paid_invoice(db)
+    run(db.invoices.update_one({"id": theirs["id"]}, {"$set": {"workspace_id": "ws_this"}}))
+    entry = run(attribution.record_outcome(
+        db, tenant_id=TENANT, case_id=case["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=theirs["id"], actor="ops"))
+    assert entry["record_link"]["linked"] is True
+    assert entry["record_link"]["via"] == "the case's company"
+
+
+def test_a_case_naming_no_crm_record_says_its_link_is_unverified(db):
+    case = _contacted_case(db)
+    entry = run(attribution.record_outcome(
+        db, tenant_id=TENANT, case_id=case["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+        actor="ops"))
+    assert entry["record_link"] == {
+        "linked": False, "anchored": False,
+        "detail": "The case names no CRM record, so this link rests on the recorder's word."}
+
+
+# ------------------------------------------------ second review: dates a caller can move
+
+def test_an_invoice_with_no_payment_date_is_not_dated_by_its_last_edit(db):
+    """`updated_at` resets on any edit, which dated a year-old payment to today."""
+    case = _contacted_case(db)
+    invoice = paid_invoice(db)
+    run(db.invoices.update_one({"id": invoice["id"]},
+                               {"$unset": {"paid_at": ""}, "$set": {"updated_at": iso(0)}}))
+    with pytest.raises(attribution.AttributionError, match="no payment date"):
+        run(attribution.record_outcome(
+            db, tenant_id=TENANT, case_id=case["id"],
+            kind=attribution.OUTCOME_INVOICE_PAID, record_id=invoice["id"], actor="ops"))
+
+
+def test_the_first_payment_date_sticks(db):
+    from client_value import stamp_paid_at
+
+    invoice = paid_invoice(db)
+    first = invoice["paid_at"]
+    run(stamp_paid_at(db, tenant_id=TENANT, invoice_id=invoice["id"], at=iso(0)))
+    assert run(db.invoices.find_one({"id": invoice["id"]}))["paid_at"] == first
+    unpaid = {"id": "inv_unpaid", "tenant_id": TENANT, "status": "issued"}
+    run(db.invoices.insert_one(dict(unpaid)))
+    run(stamp_paid_at(db, tenant_id=TENANT, invoice_id="inv_unpaid", at=iso(0)))
+    assert "paid_at" not in run(db.invoices.find_one({"id": "inv_unpaid"}))
+
+
+def test_a_deal_is_dated_by_its_first_win_not_its_latest(db):
+    """Moving a deal won 200 days ago back into closed_won dated the win to today."""
+    case = _contacted_case(db)
+    deal = {"id": f"opp_{uuid.uuid4().hex[:8]}", "tenant_id": TENANT, "value": 9000.0,
+            "currency": "USD", "stage": "closed_won",
+            "stage_history": [{"from": "proposal", "to": "closed_won", "at": iso(200)},
+                              {"from": "closed_won", "to": "negotiation", "at": iso(2)},
+                              {"from": "negotiation", "to": "closed_won", "at": iso(1)}]}
+    run(db.opportunities.insert_one(dict(deal)))
+    entry = run(attribution.record_outcome(
+        db, tenant_id=TENANT, case_id=case["id"], kind=attribution.OUTCOME_DEAL_WON,
+        record_id=deal["id"], actor="ops"))
+    assert entry["claim"] == attribution.CLAIM_UNATTRIBUTED
+    assert entry["outcome"]["occurred_at"][:10] == iso(200)[:10]
+
+
+def test_a_deal_with_no_recorded_win_is_not_dated_by_its_last_edit(db):
+    case = _contacted_case(db)
+    deal = {"id": f"opp_{uuid.uuid4().hex[:8]}", "tenant_id": TENANT, "value": 9000.0,
+            "currency": "USD", "stage": "closed_won", "updated_at": iso(0)}
+    run(db.opportunities.insert_one(dict(deal)))
+    with pytest.raises(attribution.AttributionError, match="does not say when it was"):
+        run(attribution.record_outcome(
+            db, tenant_id=TENANT, case_id=case["id"], kind=attribution.OUTCOME_DEAL_WON,
+            record_id=deal["id"], actor="ops"))
+
+
+def test_an_operator_cannot_date_an_outcome_in_the_future(db):
+    case = _contacted_case(db)
+    future = (datetime.now(timezone.utc) + timedelta(days=60)).isoformat()
+    with pytest.raises(attribution.AttributionError, match="future"):
+        run(attribution.record_outcome(
+            db, tenant_id=TENANT, case_id=case["id"],
+            kind=attribution.OUTCOME_OPERATOR_CONFIRMED, record_id="bank-ref-9",
+            actor="ops", amount=100.0, occurred_at=future))
+
+
+# ------------------------------------------------------ second review: currency labels
+
+def test_a_recovery_keeps_the_currency_the_money_arrived_in(db):
+    case = _contacted_case(db)
+    engage(db, case)
+    invoice = paid_invoice(db, total=8000.0, currency="EUR")
+    run(attribution.record_outcome(
+        db, tenant_id=TENANT, case_id=case["id"], kind=attribution.OUTCOME_INVOICE_PAID,
+        record_id=invoice["id"], actor="ops"))
+    recovered = run(rc.get_case(db, TENANT, case["id"]))
+    assert recovered["confirmed_value"] == 8000.0
+    assert recovered["confirmed_currency"] == "EUR" and recovered["currency"] == "USD"
+    summary = run(rc.summary(db, TENANT))
+    assert summary["confirmed_recovered_value_by_currency"] == {"EUR": 8000.0}

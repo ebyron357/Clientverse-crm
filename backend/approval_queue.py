@@ -66,6 +66,23 @@ REQUESTER_HUMAN = "human"
 REQUESTER_SYSTEM = "system"
 REQUESTER_KINDS = (REQUESTER_AGENT, REQUESTER_HUMAN, REQUESTER_SYSTEM)
 
+# Kinds and subjects whose decisions move something else: an MCP write executes, a
+# recovery plan is approved or withdrawn, a message is released or refused. Only the
+# code that owns those records may raise requests for them. A person raising one by hand
+# could name any message or plan as its subject and then cancel the request, and the
+# cancellation would withdraw the real one's subject.
+RESERVED_KINDS = ("mcp_write", "recovery_strategy", "communication_message")
+RESERVED_SUBJECT_TYPES = ("mcp_pending_action", "recovery_strategy", "communication_message")
+
+
+def assert_not_reserved(kind: Optional[str], subject_type: Optional[str]) -> None:
+    """Refuse a hand-raised request that claims a system kind or subject."""
+    if kind in RESERVED_KINDS:
+        raise ApprovalError(f"Requests of kind '{kind}' are raised by the system only")
+    if subject_type in RESERVED_SUBJECT_TYPES:
+        raise ApprovalError(
+            f"Requests about a '{subject_type}' are raised by the system only")
+
 DEFAULT_EXPIRY_HOURS = int(os.environ.get("APPROVAL_DEFAULT_EXPIRY_HOURS", str(7 * 24)))
 MAX_EXPIRY_HOURS = int(os.environ.get("APPROVAL_MAX_EXPIRY_HOURS", str(90 * 24)))
 

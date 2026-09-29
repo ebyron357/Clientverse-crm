@@ -53,7 +53,7 @@ import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
-from client_value import register_client_value_routes
+from client_value import register_client_value_routes, stamp_paid_at
 from operations_routes import register_operations_routes
 from work_queue import WorkQueue, run_worker_tick
 
@@ -963,6 +963,10 @@ async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user
     opp = await db.opportunities.find_one({"id": opp_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not opp:
         raise HTTPException(status_code=404, detail="Not found")
+    if opp.get("stage") == inp.stage:
+        # Not a move. Recording it would add a fresh "won" to the history of a deal won
+        # months ago, and re-fire the won event and its side effects.
+        raise HTTPException(status_code=409, detail=f"The deal is already in stage '{inp.stage}'")
     transition = {"from": opp.get("stage"), "to": inp.stage, "at": now_iso(),
                   "actor": user["email"]}
     await db.opportunities.update_one(
@@ -1143,6 +1147,7 @@ async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
     """
     await assert_workspace(user, inp.workspace_id)
     try:
+        approval_service.assert_not_reserved(inp.kind, None)
         doc = await approval_service.request(
             db, tenant_id=user["tenant_id"], title=inp.title, kind=inp.kind,
             actor=user["email"], requester_kind=approval_service.REQUESTER_HUMAN,
@@ -3219,6 +3224,8 @@ async def record_attribution_outcome(inp: RecordOutcomeInput,
             audit=record_event)
     except (attribution_service.CaseNotFound, attribution_service.OutcomeNotFound):
         raise HTTPException(status_code=404, detail="Not found")
+    except attribution_service.RecordAlreadyBooked as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except attribution_service.AttributionError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     await record_event("attribution.outcome_recorded", "recovery_case", inp.case_id,
@@ -3573,6 +3580,8 @@ async def create_stripe_payment_intent(
             }
         },
     )
+    if payment_status == "paid":
+        await stamp_paid_at(db, tenant_id=user["tenant_id"], invoice_id=invoice_id, at=now_iso())
     await record_event(
         "invoice.payment_intent_created",
         "invoice",
@@ -3709,6 +3718,9 @@ async def stripe_webhook(request: Request):
                     invoice_filter, {"$set": update}
                 )
                 handled = bool(result.matched_count)
+                if handled and payment_status == "paid":
+                    await stamp_paid_at(db, tenant_id=tenant_id, invoice_id=invoice_id,
+                                        at=now_iso())
             if handled:
                 event_to_record = (
                     f"invoice.{event_type.split('.')[-1]}",
@@ -4420,7 +4432,27 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
     # rides on the bound action. Read both so historical records still execute.
     pending_action_id = (approval.get("pending_action_id")
                          or (approval.get("action") or {}).get("pending_action_id"))
-    if approval.get("kind") == "mcp_write" and pending_action_id:
+
+    async def _is_own_subject(collection: str, record_id: str) -> bool:
+        """A decision moves its subject only if the subject names this approval.
+
+        Anything else is a request that points at a record it does not govern -- raised
+        before the reserved kinds existed, or superseded by a newer request -- and
+        deciding or cancelling it must leave that record alone.
+        """
+        subject = await db[collection].find_one({"id": record_id, "tenant_id": tenant_id},
+                                                {"_id": 0, "approval_id": 1})
+        if not subject:
+            return False
+        bound = subject.get("approval_id")
+        if bound != approval["id"]:
+            logger.warning("Approval %s does not govern %s %s (bound to %s); left unchanged",
+                           approval["id"], collection, record_id, bound)
+            return False
+        return True
+
+    if approval.get("kind") == "mcp_write" and pending_action_id \
+            and await _is_own_subject("mcp_pending_actions", pending_action_id):
         if status == "approved":
             # Claim the approval before executing. Without this the write ran while its
             # approval stayed `pending`, so the single-use guarantee was never recorded and
@@ -4436,12 +4468,15 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
                     raise HTTPException(status_code=409, detail=str(exc))
             result["execution"] = await execute_pending_mcp(pending_action_id, user)
         else:
-            await db.mcp_pending_actions.update_one({"id": pending_action_id},
-                                                    {"$set": {"status": "rejected"}})
-            await db.mcp_tool_invocations.update_one({"approval_id": approval["id"]},
-                                                     {"$set": {"status": "rejected"}})
+            await db.mcp_pending_actions.update_one(
+                {"id": pending_action_id, "tenant_id": tenant_id},
+                {"$set": {"status": "rejected"}})
+            await db.mcp_tool_invocations.update_one(
+                {"approval_id": approval["id"], "tenant_id": tenant_id},
+                {"$set": {"status": "rejected"}})
 
-    if subject_type == "recovery_strategy" and subject_id:
+    if subject_type == "recovery_strategy" and subject_id \
+            and await _is_own_subject(recovery_service.COLLECTION, subject_id):
         strategy_state = {
             approval_service.APPROVED: recovery_service.STATE_APPROVED,
             approval_service.REJECTED: recovery_service.STATE_REJECTED,
@@ -4454,7 +4489,8 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
             except recovery_service.RecoveryStrategyError:
                 logger.warning("Could not sync recovery strategy %s after a decision", subject_id)
 
-    if subject_type == "communication_message" and subject_id:
+    if subject_type == "communication_message" and subject_id \
+            and await _is_own_subject(conversation_service.MESSAGES, subject_id):
         try:
             if status == approval_service.APPROVED:
                 # `mark_approved` re-reads the approval rather than trusting this call, so

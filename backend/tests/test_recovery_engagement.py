@@ -340,7 +340,7 @@ def test_a_recovery_can_run_from_approval_to_confirmed_revenue(db, registry):
     paid_at = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
     run(db.invoices.insert_one({"tenant_id": TENANT, "id": "inv_1", "total": 12500.0,
                                 "currency": "USD", "status": "paid",
-                                "paid_at": paid_at}))
+                                "workspace_id": "ws_1", "paid_at": paid_at}))
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"], kind=attribution.OUTCOME_INVOICE_PAID,
         record_id="inv_1", actor="admin@example.com"))
