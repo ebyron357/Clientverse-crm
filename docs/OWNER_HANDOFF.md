@@ -330,6 +330,12 @@ Pick a real recovery case, or create a conversation to an address you control:
 2. Draft the message, request approval, approve it.
 3. `POST /api/messages/{id}/send`.
 
+With `claude/vibrant-hypatia-6aabmc` merged, steps 1 and 3 are in the product:
+Operations → Conversations → open the thread → **Record consent** (a basis is required
+for `granted`), and a **Send** button on the approved message. Send appears only when a
+provider for that channel is registered, and a refusal is shown with its named reason.
+For a recovery case, the runner drafts step 2 for you and raises the approval.
+
 **Verify:** the message reaches `sent`, carries a `provider_message_id` and an
 `rfc822_message_id`, and the mail actually arrives. Then **send it again** — the
 adapter asks Gmail whether it already holds that dispatch and must return the same

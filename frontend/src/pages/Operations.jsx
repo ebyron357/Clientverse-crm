@@ -21,8 +21,9 @@ import { ClipboardCheck, Clock, Inbox, ListChecks, Lock, MessagesSquare, Refresh
  * capability is live when it is not: the security-gate panel reports scanner
  * configuration honestly rather than presenting the pipeline as operational, and a
  * recovery step whose channel is unauthorised is shown as blocked with the reason,
- * never as an action the operator can take. The conversations panel says plainly that no
- * delivery provider is registered rather than presenting a send button that would fail.
+ * never as an action the operator can take. The conversations panel offers Send only on an
+ * approved message whose channel has a registered provider, and shows the named refusal
+ * when a precondition stops it; with no provider registered it says so instead.
  */
 
 const STATUS_TONE = {
@@ -632,6 +633,7 @@ function ConversationsPanel({ isAdmin }) {
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [consent, setConsent] = useState({ state: "granted", basis: "" });
 
   const load = useCallback(async () => {
     setError(null);
@@ -673,12 +675,39 @@ function ConversationsPanel({ isAdmin }) {
     } finally { setBusy(false); }
   };
 
+  const recordConsent = async () => {
+    await act("consent", { state: consent.state, basis: consent.basis || null },
+              `Consent recorded as ${consent.state}`);
+    setConsent({ state: "granted", basis: "" });
+  };
+
+  // Delivery goes through the server's choke point, which re-checks channel authority,
+  // consent and the approval before anything leaves; a refusal comes back with its reason.
+  const send = async (message) => {
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/messages/${message.id}/send`);
+      toast.success(data.status === "sent" ? "Sent" : `Delivery outcome: ${data.status.replace(/_/g, " ")}`);
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      toast.error(detail?.reason
+        ? `Not sent — ${detail.reason.replace(/_/g, " ")}: ${detail.detail}`
+        : formatErr(detail) || "The message could not be sent");
+    } finally {
+      setBusy(false);
+      await open(selected);
+      await load();
+    }
+  };
+
   if (threads === null) return <SurfaceLoading rows={3} testid="conversations-loading" />;
   if (error) return <SurfaceError title="Conversations unavailable" description={error}
                                   onRetry={load} testid="conversations-error" />;
 
   const providers = summary?.providers || [];
   const registered = providers.filter((p) => p.registered);
+  const canSend = (message) => message.direction === "outbound" && message.status === "approved"
+    && (message.channel === "internal" || registered.some((p) => p.channel === message.channel));
 
   return (
     <div data-testid="conversations-panel">
@@ -699,9 +728,10 @@ function ConversationsPanel({ isAdmin }) {
             No delivery provider is registered
           </div>
           <p className="mt-2 text-[11px] leading-5 text-amber-900">
-            Conversations, drafts, consent and handoff all work. Nothing can be sent: no channel
-            adapter has been built or certified, so every outbound attempt is refused and the
-            refusal names the precondition that stopped it.
+            Conversations, drafts, consent and handoff all work. Nothing can be sent from this
+            deployment: no channel adapter is registered. Email sends through Gmail once the
+            deployment has a Google OAuth client and the workspace has granted the send
+            permission; until then every outbound attempt is refused with its reason.
           </p>
         </div>
       ) : null}
@@ -779,12 +809,40 @@ function ConversationsPanel({ isAdmin }) {
                             onClick={() => act("status", { status: "closed" }, "Closed")}
                             data-testid="conversation-close">Close</Button>
                   ) : null}
-                  {isAdmin && selected.consent?.state !== "granted" ? (
-                    <span className="self-center text-[11px] text-slate-400">
-                      Consent is recorded by an administrator with a stated basis.
-                    </span>
-                  ) : null}
                 </div>
+
+                {isAdmin ? (
+                  <div className="mt-3 rounded-lg border border-slate-200 p-3" data-testid="consent-form">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                      Record consent
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-end gap-2">
+                      <div className="text-[11px] text-slate-500">
+                        <label htmlFor="consent-state">State</label>
+                        <select id="consent-state" data-testid="consent-state"
+                                className="mt-1 block h-8 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                                value={consent.state}
+                                onChange={(e) => setConsent({ ...consent, state: e.target.value })}>
+                          <option value="granted">granted</option>
+                          <option value="denied">denied</option>
+                          <option value="withdrawn">withdrawn</option>
+                        </select>
+                      </div>
+                      <div className="min-w-[14rem] flex-1 text-[11px] text-slate-500">
+                        <label htmlFor="consent-basis">
+                          Basis{consent.state === "granted" ? " (required)" : ""}
+                        </label>
+                        <Input id="consent-basis" data-testid="consent-basis" className="mt-1 h-8 text-xs"
+                               placeholder="e.g. Client asked us to follow up by email on 12 Sept"
+                               value={consent.basis}
+                               onChange={(e) => setConsent({ ...consent, basis: e.target.value })} />
+                      </div>
+                      <Button size="sm" variant="outline" className="h-8 text-xs" data-testid="consent-save"
+                              disabled={busy || (consent.state === "granted" && !consent.basis.trim())}
+                              onClick={recordConsent}>Record</Button>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
                   {(selected.messages || []).length === 0 ? (
@@ -810,6 +868,15 @@ function ConversationsPanel({ isAdmin }) {
                           <p className="mt-1 text-[11px] leading-5 text-amber-700">
                             {message.blocked_detail}
                           </p>
+                        ) : null}
+                        {message.direction === "outbound" && message.to_address ? (
+                          <p className="mt-1 text-[11px] text-slate-400">to {message.to_address}</p>
+                        ) : null}
+                        {canSend(message) ? (
+                          <Button size="sm" className="mt-2 h-7 cv-action-primary text-xs" disabled={busy}
+                                  onClick={() => send(message)} data-testid="message-send">
+                            Send
+                          </Button>
                         ) : null}
                       </div>
                     ))
