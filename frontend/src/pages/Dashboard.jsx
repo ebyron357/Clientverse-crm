@@ -70,7 +70,8 @@ export default function Dashboard() {
       items.push({ rank: 2, icon: CircleAlert, title: `Resolve ${openAlerts.length} open risk signal${openAlerts.length === 1 ? "" : "s"}`, body: "Acknowledge the signal and assign follow-through in Action Center.", source: "Open operational alerts require a human decision", to: "/notifications", tone: "red" });
     }
     const integrationList = Array.isArray(system.integrations) ? system.integrations : (system.integrations?.providers || []);
-    const degraded = integrationList.filter((integration) => ["degraded", "expired", "error"].includes(integration.status));
+    const degraded = integrationList.filter((integration) => ["degraded", "expired", "error"].includes(integration.status)
+      || (integration.status === "active" && (integration.consecutive_failures || 0) >= 3));
     if (degraded.length) items.push({ rank: 3, icon: CircleAlert, title: `Restore ${degraded.length} provider connection${degraded.length === 1 ? "" : "s"}`, body: "Reconnect or investigate before relationship context becomes stale.", source: "Provider health is degraded, expired, or in error", to: "/registries", tone: "red" });
     if ((data.open_opportunities || 0) > 0) items.push({ rank: 4, icon: TrendingUp, title: `Advance ${data.open_opportunities} open opportunit${data.open_opportunities === 1 ? "y" : "ies"}`, body: "Move staged deals forward or close stale opportunities.", source: "Open pipeline opportunities", to: "/pipeline", tone: "cyan" });
     const atRiskHealth = (data.portfolio || []).filter((row) => row.health?.band && row.health.band !== "healthy").slice(0, 1);

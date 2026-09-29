@@ -117,6 +117,18 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def _no_gmail_watermark(monkeypatch):
+    """The Gmail read watermark lives on the connection; these tests have no database."""
+    async def none(_tenant_id):
+        return None
+
+    async def ignore(_tenant_id, _newest):
+        return None
+
+    monkeypatch.setattr(server, "_gmail_synced_through", none)
+    monkeypatch.setattr(server, "_advance_gmail_watermark", ignore)
+
+
 def test_google_connect_builds_pkce_readonly_authorization(monkeypatch):
     oauth_states = CaptureCollection()
     monkeypatch.setattr(server, "db", SimpleNamespace(oauth_states=oauth_states))
@@ -146,10 +158,9 @@ def test_google_connect_builds_pkce_readonly_authorization(monkeypatch):
     assert oauth_states.inserted[0]["tenant_id"] == "ten_a"
     assert oauth_states.inserted[0]["state"] == query["state"][0]
     assert oauth_states.inserted[0]["code_verifier"]
-    assert {(provider, fields["status"]) for _, provider, fields in statuses} == {
-        ("gmail", "connecting"),
-        ("google_calendar", "connecting"),
-    }
+    # Status is left alone until the callback succeeds: a cancelled consent used to leave
+    # both connections stuck in `connecting`.
+    assert statuses == []
 
 
 def test_google_refresh_preserves_refresh_token_and_updates_scopes(monkeypatch):
@@ -231,6 +242,7 @@ def test_gmail_401_forces_refresh_then_syncs_with_new_token(monkeypatch):
     monkeypatch.setattr(server, "_google_access_token", fake_access_token)
     monkeypatch.setattr(server, "_contacts_by_email", fake_contacts)
     monkeypatch.setattr(server, "_upsert_comm", fake_upsert)
+    _no_gmail_watermark(monkeypatch)
     monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
 
     result = run(server.sync_gmail("ten_a", "admin@example.com"))
@@ -316,7 +328,10 @@ def test_run_sync_retries_rate_limit_then_completes(monkeypatch):
     assert attempts["count"] == 2
     assert logs.inserted[0]["attempts"] == 2
     assert logs.inserted[0]["status"] == "completed"
-    assert state_updates[-1][2]["status"] == "active"
+    # Written only while the connection still holds the grant the sync ran on.
+    query, update, _ = connections.updated[-1]
+    assert query["status"] == {"$in": list(server.SYNC_LIVE_STATUSES)}
+    assert update["$set"]["status"] == "active" and update["$set"]["sync_status"] == "ok"
     assert events[-1][0][0] == "integration.sync_completed"
 
 
@@ -350,7 +365,9 @@ def test_run_sync_token_failure_stops_retry_and_marks_expired(monkeypatch):
     assert result == {"status": "failed", "error": "token_refresh_failed:401"}
     assert attempts["count"] == 1
     assert logs.inserted[0]["attempts"] == 1
-    assert state_updates[-1][2]["status"] == "expired"
+    query, update, _ = connections.updated[-1]
+    assert query["status"] == {"$in": list(server.SYNC_LIVE_STATUSES)}
+    assert update["$set"]["status"] == "expired"
 
 
 def test_google_callback_reconnect_preserves_existing_refresh_token(monkeypatch):
@@ -1011,6 +1028,7 @@ def test_gmail_revoked_credentials_remain_unauthorized_after_refresh(monkeypatch
     client = FakeAsyncClient(get_responses=[FakeResponse(401), FakeResponse(401)])
     monkeypatch.setattr(server, "_google_access_token", fake_access_token)
     monkeypatch.setattr(server, "_contacts_by_email", fake_contacts)
+    _no_gmail_watermark(monkeypatch)
     monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
 
     try:

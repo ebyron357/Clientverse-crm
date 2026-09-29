@@ -2654,10 +2654,21 @@ async def _contacts_by_email(tenant_id):
     return {(r.get("email") or "").lower(): r for r in rows if r.get("email")}
 
 async def _workspace_for_company(tenant_id, company_id):
+    """The workspace a company's synced mail and meetings belong to: its current one.
+
+    Every won deal opens a workspace, so a returning client has several. `find_one` picked
+    whichever came first in natural order, so mail landed on an archived first phase while
+    the live one reported "no matched client email". The newest open workspace wins.
+    """
     if not company_id:
         return None
-    ws = await db.workspaces.find_one({"tenant_id": tenant_id, "company_id": company_id}, {"_id": 0, "id": 1})
-    return ws["id"] if ws else None
+    for criteria in ({"status": {"$ne": "archived"}}, {}):
+        ws = await db.workspaces.find_one(
+            {"tenant_id": tenant_id, "company_id": company_id, **criteria}, {"_id": 0, "id": 1},
+            sort=[("created_at", -1)])
+        if ws:
+            return ws["id"]
+    return None
 
 # ---- Pure normalizers (unit-testable, no network) ----
 
@@ -3054,46 +3065,87 @@ async def _upsert_comm(tenant_id, rec, contacts, actor_provider="gmail"):
         {"$set": doc, "$setOnInsert": {"id": new_id("comm")}}, upsert=True)
     return True
 
+GMAIL_LIST_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+# Messages one sync reads at most. Pages are followed until then; a mailbox busier than
+# this between two syncs reports `truncated` rather than silently reading the newest 25.
+GMAIL_SYNC_MAX_MESSAGES = int(os.environ.get("GMAIL_SYNC_MAX_MESSAGES", "200"))
+
+
+async def _google_get(client, tenant_id, auth, url, params):
+    """GET with one forced token refresh on a 401. `auth` carries the current token."""
+    response = await client.get(url, params=params, headers={"Authorization": f"Bearer {auth['token']}"})
+    if response.status_code == 401:
+        auth["token"] = await _google_access_token(tenant_id, force_refresh=True)
+        response = await client.get(url, params=params,
+                                    headers={"Authorization": f"Bearer {auth['token']}"})
+    if response.status_code == 401:
+        raise RuntimeError("token_refresh_failed:unauthorized")
+    if response.status_code == 429:
+        raise RuntimeError("rate_limited")
+    return response
+
+
+async def _gmail_synced_through(tenant_id):
+    """Epoch seconds of the newest message a complete Gmail read has covered, if any."""
+    conn = await db.integration_connections.find_one(
+        {"tenant_id": tenant_id, "provider": "gmail"}, {"_id": 0, "gmail_synced_through": 1})
+    return (conn or {}).get("gmail_synced_through")
+
+
+async def _advance_gmail_watermark(tenant_id, newest):
+    await db.integration_connections.update_one(
+        {"tenant_id": tenant_id, "provider": "gmail"}, {"$max": {"gmail_synced_through": newest}})
+
+
 async def sync_gmail(tenant_id, actor):
     token = await _google_access_token(tenant_id)
     if not token:
         raise RuntimeError("not_connected")
     contacts = await _contacts_by_email(tenant_id)
-    headers = {"Authorization": f"Bearer {token}"}
+    through = await _gmail_synced_through(tenant_id)
+    params = {"maxResults": 100}
+    if through:
+        # A day of overlap: storing a message twice is an idempotent upsert, missing one is not.
+        params["q"] = f"after:{int(through) - 86400}"
+    auth = {"token": token}
     matched = 0
+    ids: list[str] = []
+    page_token = None
     async with httpx.AsyncClient(timeout=25) as client:
-        lst = await client.get("https://gmail.googleapis.com/gmail/v1/users/me/messages",
-                               params={"maxResults": 25}, headers=headers)
-        if lst.status_code == 401:
-            token = await _google_access_token(tenant_id, force_refresh=True)
-            headers = {"Authorization": f"Bearer {token}"}
-            lst = await client.get("https://gmail.googleapis.com/gmail/v1/users/me/messages",
-                                   params={"maxResults": 25}, headers=headers)
-        if lst.status_code == 401:
-            raise RuntimeError("token_refresh_failed:unauthorized")
-        if lst.status_code == 429:
-            raise RuntimeError("rate_limited")
-        lst.raise_for_status()
-        messages = (lst.json().get("messages") or [])[:25]
-        for m in messages:
-            gm = await client.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}",
-                                  params={"format": "metadata", "metadataHeaders": ["From", "To", "Cc", "Subject"]},
-                                  headers=headers)
-            if gm.status_code == 401:
-                token = await _google_access_token(tenant_id, force_refresh=True)
-                headers = {"Authorization": f"Bearer {token}"}
-                gm = await client.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}",
-                                      params={"format": "metadata", "metadataHeaders": ["From", "To", "Cc", "Subject"]},
-                                      headers=headers)
-            if gm.status_code == 401:
-                raise RuntimeError("token_refresh_failed:unauthorized")
-            if gm.status_code == 429:
-                raise RuntimeError("rate_limited")
+        while True:
+            lst = await _google_get(client, tenant_id, auth, GMAIL_LIST_URL,
+                                    {**params, **({"pageToken": page_token} if page_token else {})})
+            lst.raise_for_status()
+            body = lst.json()
+            ids += [m["id"] for m in body.get("messages") or [] if m.get("id")]
+            page_token = body.get("nextPageToken")
+            if not page_token or len(ids) >= GMAIL_SYNC_MAX_MESSAGES:
+                break
+        complete = not page_token and len(ids) <= GMAIL_SYNC_MAX_MESSAGES
+        ids = ids[:GMAIL_SYNC_MAX_MESSAGES]
+        newest = None
+        for message_id in ids:
+            gm = await _google_get(client, tenant_id, auth, f"{GMAIL_LIST_URL}/{message_id}",
+                                   {"format": "metadata",
+                                    "metadataHeaders": ["From", "To", "Cc", "Subject"]})
             if gm.status_code != 200:
                 continue
-            if await _upsert_comm(tenant_id, normalize_gmail_message(gm.json()), contacts, "gmail"):
+            payload = gm.json()
+            try:
+                stamp = int(payload.get("internalDate") or 0) // 1000
+            except (TypeError, ValueError):
+                stamp = 0
+            if stamp:
+                newest = max(newest or 0, stamp)
+            if await _upsert_comm(tenant_id, normalize_gmail_message(payload), contacts, "gmail"):
                 matched += 1
-    return {"scanned": len(messages), "matched": matched}
+    if complete and newest:
+        # Advanced only after a complete read, so a truncated one is read again next time.
+        await _advance_gmail_watermark(tenant_id, newest)
+    summary = {"scanned": len(ids), "matched": matched}
+    if not complete:
+        summary["truncated"] = True
+    return summary
 
 async def sync_calendar(tenant_id, actor):
     token = await _google_access_token(tenant_id)
@@ -3105,13 +3157,15 @@ async def sync_calendar(tenant_id, actor):
     now = datetime.now(timezone.utc).isoformat()
     async with httpx.AsyncClient(timeout=25) as client:
         r = await client.get("https://www.googleapis.com/calendar/v3/calendars/primary/events",
-                             params={"timeMin": now, "maxResults": 25, "singleEvents": "true", "orderBy": "startTime"},
+                             params={"timeMin": now, "maxResults": 25, "singleEvents": "true", "orderBy": "startTime",
+                                     "showDeleted": "true"},
                              headers=headers)
         if r.status_code == 401:
             token = await _google_access_token(tenant_id, force_refresh=True)
             headers = {"Authorization": f"Bearer {token}"}
             r = await client.get("https://www.googleapis.com/calendar/v3/calendars/primary/events",
-                                 params={"timeMin": now, "maxResults": 25, "singleEvents": "true", "orderBy": "startTime"},
+                                 params={"timeMin": now, "maxResults": 25, "singleEvents": "true", "orderBy": "startTime",
+                                         "showDeleted": "true"},
                                  headers=headers)
         if r.status_code == 401:
             raise RuntimeError("token_refresh_failed:unauthorized")
@@ -3121,6 +3175,13 @@ async def sync_calendar(tenant_id, actor):
         events = (r.json().get("items") or [])[:25]
         for ev in events:
             rec = normalize_calendar_event(ev)
+            if rec.get("status") == "cancelled":
+                # Cancelled in Google: mark the meeting we hold, so it stops showing as
+                # upcoming. A cancelled instance carries no attendees to match on.
+                await db.crm_meetings.update_one(
+                    {"tenant_id": tenant_id, "external_id": rec["external_id"]},
+                    {"$set": {"status": "cancelled", "synced_at": now_iso()}})
+                continue
             emails = rec["attendees"] + ([rec["organizer"]] if rec["organizer"] else [])
             mm = [contacts[e] for e in emails if e in contacts]
             if not mm:
@@ -3197,11 +3258,31 @@ async def sync_stripe(tenant_id, actor):
 
 SYNC_FUNCS = {"gmail": sync_gmail, "google_calendar": sync_calendar, "stripe": sync_stripe}
 
+# Statuses a sync may find a connection in and leave live. `degraded` and `connecting`
+# are only ever left behind by code from before sync health had fields of its own.
+SYNC_LIVE_STATUSES = ("active", "degraded", "connecting")
+
+
 async def run_sync(tenant_id, provider, actor):
+    """Read a provider's data into the CRM.
+
+    Sync health is recorded in its own fields (`sync_status`, `consecutive_failures`,
+    `last_error`). It used to be written into `status` -- `connecting` for the length of
+    every sync, `degraded` after any failed read -- and `status` is what decides whether a
+    mailbox may send, so a Gmail 503 on a read switched outbound email off and refused
+    sends a person had approved. Only a failed grant (`expired`) changes `status` now.
+
+    The outcome is written only while the connection still holds the grant the sync ran
+    on, so a disconnect or reconnect that happens during the sync is not overwritten.
+    """
     conn = await db.integration_connections.find_one({"tenant_id": tenant_id, "provider": provider}, {"_id": 0})
     if not conn or conn["status"] in ("disconnected", "revoked"):
         raise HTTPException(status_code=400, detail="Provider is not connected")
-    await set_conn(tenant_id, provider, status="connecting")
+    here = {"tenant_id": tenant_id, "provider": provider}
+    held = {**here, "status": {"$in": list(SYNC_LIVE_STATUSES)},
+            "credential_version": conn.get("credential_version")}
+    await db.integration_connections.update_one(
+        here, {"$set": {"sync_status": "running", "sync_started_at": now_iso()}})
     await record_event("integration.sync_started", "integration", provider, tenant_id, actor, payload={"provider": provider})
     log = {"id": new_id("synclog"), "tenant_id": tenant_id, "provider": provider, "started_at": now_iso(),
            "actor": actor, "attempts": 0, "status": "running", "result": None, "error": None}
@@ -3212,8 +3293,13 @@ async def run_sync(tenant_id, provider, actor):
             summary = await SYNC_FUNCS[provider](tenant_id, actor)
             log.update({"status": "completed", "result": summary, "finished_at": now_iso()})
             await db.integration_sync_logs.insert_one(dict(log))
-            await set_conn(tenant_id, provider, status="active", last_sync_at=now_iso(),
-                           last_success_at=now_iso(), last_error=None)
+            health = {"sync_status": "ok", "consecutive_failures": 0, "last_sync_at": now_iso(),
+                      "last_success_at": now_iso(), "last_error": None}
+            updated = await db.integration_connections.update_one(
+                held, {"$set": {**health, "status": "active"}})
+            if not updated.matched_count:
+                # Disconnected or reconnected meanwhile: record the read, not a status.
+                await db.integration_connections.update_one(here, {"$set": health})
             await record_event("integration.sync_completed", "integration", provider, tenant_id, actor, payload=summary)
             return {**summary, "status": "completed"}
         except HTTPException:
@@ -3228,8 +3314,12 @@ async def run_sync(tenant_id, provider, actor):
             await asyncio.sleep(min(0.5 * attempt, 2))
     log.update({"status": "failed", "error": last_err, "finished_at": now_iso()})
     await db.integration_sync_logs.insert_one(dict(log))
-    status = "expired" if last_err and "token_refresh_failed" in last_err else "degraded"
-    await set_conn(tenant_id, provider, status=status, last_sync_at=now_iso(), last_error=last_err)
+    await db.integration_connections.update_one(
+        here, {"$set": {"sync_status": "failed", "last_sync_at": now_iso(), "last_error": last_err},
+               "$inc": {"consecutive_failures": 1}})
+    if last_err and "token_refresh_failed" in last_err:
+        # The grant itself failed: that does take the connection offline.
+        await db.integration_connections.update_one(held, {"$set": {"status": "expired"}})
     await record_event("integration.sync_failed", "integration", provider, tenant_id, actor,
                        payload={"provider": provider, "error": last_err})
     return {"status": "failed", "error": last_err}
@@ -3274,14 +3364,30 @@ async def google_connect(response: Response, user=Depends(require_role("admin"))
         "code_verifier": verifier, "created_at": now_iso(),
         "binding_hash": hashlib.sha256(binding.encode()).hexdigest(),
         "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()})
-    for p in ("gmail", "google_calendar"):
-        await set_conn(user["tenant_id"], p, status="connecting")
+    # The connections' status is left alone until the callback succeeds. Setting it to
+    # `connecting` here stranded both when the person cancelled the consent screen: no
+    # callback ever reset them, and the sync sweep only picks up live connections.
     params = {"client_id": GOOGLE_CLIENT_ID, "redirect_uri": GOOGLE_REDIRECT_URI, "response_type": "code",
               "scope": " ".join(GOOGLE_SCOPES), "access_type": "offline", "prompt": "consent",
               "include_granted_scopes": "true", "state": state,
               "code_challenge": challenge, "code_challenge_method": "S256"}
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
     return {"authorization_url": url}
+
+async def _consent_failed(tenant_id, reason):
+    """Record a failed Google consent without disturbing a connection that still works.
+
+    A failed re-consent is not a failed grant: a mailbox that was connected stays
+    connected on the grant it already has. Only one with no live grant shows `error`.
+    """
+    for p in ("gmail", "google_calendar"):
+        await db.integration_connections.update_one(
+            {"tenant_id": tenant_id, "provider": p}, {"$set": {"last_error": reason}})
+        await db.integration_connections.update_one(
+            {"tenant_id": tenant_id, "provider": p,
+             "status": {"$in": ["disconnected", "connecting", "error"]}},
+            {"$set": {"status": "error"}})
+
 
 @api.get("/integrations/google/callback")
 async def google_callback(request: Request, state: str = Query(None), code: str = Query(None),
@@ -3312,8 +3418,7 @@ async def google_callback(request: Request, state: str = Query(None), code: str 
             "grant_type": "authorization_code", "redirect_uri": GOOGLE_REDIRECT_URI,
             "code_verifier": st["code_verifier"]})
         if tr.status_code != 200:
-            for p in ("gmail", "google_calendar"):
-                await set_conn(tenant_id, p, status="error", last_error="token_exchange_failed")
+            await _consent_failed(tenant_id, "token_exchange_failed")
             return RedirectResponse(url=f"{dest}&oauth=error")
         tok = tr.json()
         ui = await client.get("https://www.googleapis.com/oauth2/v2/userinfo",
@@ -3323,13 +3428,14 @@ async def google_callback(request: Request, state: str = Query(None), code: str 
         # One mailbox, one tenant. Two tenants polling the same inbox would each try to
         # place the other's client mail, and a sender-address match could attach tenant
         # A's client reply to tenant B's conversation.
+        # Any connection still holding the mailbox counts, not only a healthy one: a
+        # degraded or expired connection resumes at its next successful sync or reconnect.
         other = await db.integration_connections.find_one(
-            {"provider": "gmail", "status": "active", "account_identity": email,
-             "tenant_id": {"$ne": tenant_id}}, {"_id": 0, "tenant_id": 1})
+            {"provider": "gmail", "status": {"$nin": ["disconnected", "revoked"]},
+             "account_identity": email, "tenant_id": {"$ne": tenant_id}},
+            {"_id": 0, "tenant_id": 1})
         if other:
-            for p in ("gmail", "google_calendar"):
-                await set_conn(tenant_id, p, status="error",
-                               last_error="account_connected_to_another_workspace")
+            await _consent_failed(tenant_id, "account_connected_to_another_workspace")
             await record_event("integration.connection_refused", "integration", "gmail",
                                tenant_id, actor,
                                payload={"reason": "account_connected_to_another_workspace"})
@@ -3960,16 +4066,25 @@ async def stripe_webhook(request: Request):
 async def disconnect_provider(provider: str, user=Depends(require_role("admin"))):
     if provider not in PROVIDERS:
         raise HTTPException(status_code=404, detail="Unknown provider")
+    grant_revoked = False
     if provider in ("gmail", "google_calendar"):
-        creds = await db.google_credentials.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0})
-        if creds:
-            try:
-                tok = dec_secret(creds["enc"]).get("refresh_token") or dec_secret(creds["enc"]).get("access_token")
-                async with httpx.AsyncClient(timeout=10) as client:
-                    await client.post("https://oauth2.googleapis.com/revoke", params={"token": tok})
-            except Exception:
-                pass
-        if not await db.integration_connections.find_one({"tenant_id": user["tenant_id"], "provider": ("google_calendar" if provider == "gmail" else "gmail"), "status": "active"}):
+        # Gmail and Calendar share one Google grant. Revoking it while the other still
+        # uses it left that one showing connected on a grant Google had withdrawn, so its
+        # syncs and approved sends would fail. The grant goes when its last user does.
+        sibling = "google_calendar" if provider == "gmail" else "gmail"
+        still_used = await db.integration_connections.find_one(
+            {"tenant_id": user["tenant_id"], "provider": sibling,
+             "status": {"$in": list(SYNC_LIVE_STATUSES)}}, {"_id": 0, "provider": 1})
+        if not still_used:
+            creds = await db.google_credentials.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0})
+            if creds:
+                try:
+                    tok = dec_secret(creds["enc"]).get("refresh_token") or dec_secret(creds["enc"]).get("access_token")
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        await client.post("https://oauth2.googleapis.com/revoke", params={"token": tok})
+                    grant_revoked = True
+                except Exception:
+                    pass
             await db.google_credentials.delete_one({"tenant_id": user["tenant_id"]})
     if provider == "stripe":
         try:
@@ -3978,7 +4093,8 @@ async def disconnect_provider(provider: str, user=Depends(require_role("admin"))
             pass
     await set_conn(user["tenant_id"], provider, status="disconnected", account_identity=None, scopes=[],
                    revoked_at=now_iso())
-    await record_event("integration.disconnected", "integration", provider, user["tenant_id"], user["email"], payload={"provider": provider})
+    await record_event("integration.disconnected", "integration", provider, user["tenant_id"], user["email"],
+                       payload={"provider": provider, "grant_revoked": grant_revoked})
     return {"ok": True}
 
 @api.post("/integrations/{provider}/sync")
@@ -3991,13 +4107,41 @@ async def sync_provider(provider: str, user=Depends(require_role("admin"))):
 async def integration_sync_logs(user=Depends(require_role("admin"))):
     return await db.integration_sync_logs.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("started_at", -1).to_list(50)
 
+def _meeting_start(meeting):
+    raw = str(meeting.get("start") or "")
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def _meetings_for_workspace(tenant_id, ws_id, *, limit=500):
+    """A workspace's meetings split into upcoming (soonest first) and past (latest first).
+
+    Sorting the stored start strings ascending put the oldest meetings first and called
+    them upcoming, and a meeting cancelled in Google stayed on the list. Starts are parsed
+    (they carry their own offsets), cancelled meetings are left out.
+    """
+    rows = await db.crm_meetings.find(
+        {"tenant_id": tenant_id, "workspace_id": ws_id, "status": {"$ne": "cancelled"}},
+        {"_id": 0}).sort("start", -1).to_list(limit)
+    now = datetime.now(timezone.utc)
+    dated = [(m, _meeting_start(m)) for m in rows]
+    upcoming = sorted((pair for pair in dated if pair[1] and pair[1] >= now), key=lambda p: p[1])
+    past = sorted((pair for pair in dated if pair[1] and pair[1] < now), key=lambda p: p[1],
+                  reverse=True)
+    return {"upcoming": [m for m, _ in upcoming], "past": [m for m, _ in past]}
+
+
 @api.get("/integrations/workspaces/{ws_id}/activity")
 async def workspace_activity(ws_id: str, user=Depends(get_current_user)):
     ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
     comms = await _workspace_email(user["tenant_id"], ws, limit=25)
-    meetings = await db.crm_meetings.find({"tenant_id": user["tenant_id"], "workspace_id": ws_id}, {"_id": 0}).sort("start", 1).to_list(25)
+    split = await _meetings_for_workspace(user["tenant_id"], ws_id)
+    meetings = (split["upcoming"] + split["past"])[:25]
     billing = await db.crm_billing.find({"tenant_id": user["tenant_id"], "workspace_id": ws_id}, {"_id": 0}).sort("ts", -1).to_list(50)
     conns = await db.integration_connections.find({"tenant_id": user["tenant_id"]}, SAFE_CONN_FIELDS).to_list(50)
     return {"communications": comms, "meetings": meetings, "billing": billing, "connections": conns}
@@ -4012,8 +4156,10 @@ async def cron_integration_sync(request: Request):
     async def _sweep():
         # Least recently synced first, so a sweep that stops at 200 moves on next time
         # instead of re-syncing the same connections while later tenants never sync.
+        # `connecting` is included so a connection an abandoned consent left there is
+        # healed by its next successful read rather than never swept again.
         actives = await db.integration_connections.find(
-            {"status": {"$in": ["active", "degraded"]}}, {"_id": 0}
+            {"status": {"$in": list(SYNC_LIVE_STATUSES)}}, {"_id": 0}
         ).sort("last_sync_at", 1).to_list(200)
         for c in actives:
             try:
@@ -4236,10 +4382,14 @@ async def evaluate_alerts(tenant_id):
                                                f"{c['provider']} has not synced in {int(age)}h", ref)
             else:
                 await _resolve_alerts(tenant_id, "integration_stale", ref)
-            fails = await db.integration_sync_logs.count_documents({"tenant_id": tenant_id, "provider": c["provider"], "status": "failed"})
+            # Failures in a row since the last success, not every failure ever logged: a
+            # connection that failed three times last spring and has synced since is fine.
+            fails = int(c.get("consecutive_failures") or 0)
             if fails >= SYNC_FAIL_THRESHOLD:
                 created += await _upsert_alert(tenant_id, None, "sync_failures", "warning", "integration",
-                                               f"{c['provider']} sync failed {fails} time(s)", ref)
+                                               f"{c['provider']} sync failed {fails} time(s) in a row", ref)
+            else:
+                await _resolve_alerts(tenant_id, "sync_failures", ref)
             for st in ("degraded", "expired", "revoked", "error"):
                 await _resolve_alerts(tenant_id, f"integration_{st}", ref)
     dlq = await db.webhook_deliveries.count_documents({"tenant_id": tenant_id, "status": "dead"})
@@ -4314,10 +4464,15 @@ async def integration_health(user=Depends(require_role("admin"))):
     out = []
     for c in conns:
         age = _age_hours(c.get("last_success_at"))
-        fails = await db.integration_sync_logs.count_documents({"tenant_id": user["tenant_id"], "provider": c["provider"], "status": "failed"})
+        fails = await db.integration_sync_logs.count_documents(
+            {"tenant_id": user["tenant_id"], "provider": c["provider"], "status": "failed",
+             "started_at": {"$gte": (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()}})
         out.append({**c, "sync_age_hours": round(age, 1) if age is not None else None,
                     "stale": c["status"] == "active" and age is not None and age > STALE_SYNC_HOURS,
-                    "reconnect_required": c["status"] in ("expired", "revoked", "error"), "failure_count": fails})
+                    "reconnect_required": c["status"] in ("expired", "revoked", "error"),
+                    # Failed syncs in the last seven days, and in a row since the last success.
+                    "failure_count": fails,
+                    "consecutive_failures": int(c.get("consecutive_failures") or 0)})
     return {"providers": out}
 
 @api.get("/workspaces/{ws_id}/health-signals")
@@ -4349,8 +4504,7 @@ async def workspace_health_signals(ws_id: str, user=Depends(get_current_user)):
         if age is None or age > 24 * 14:
             signals.append({"signal": "Stale client communication", "severity": "warning", "impact": -5, "type": "inference",
                             "detail": "No recent email in 14+ days" if latest else "No matched client email", "source_ref": "gmail:workspace", "freshness": (latest or {}).get("ts")})
-    up = await db.crm_meetings.find({"tenant_id": tid, "workspace_id": ws_id}, {"_id": 0}).sort("start", 1).to_list(5)
-    for m in up:
+    for m in (await _meetings_for_workspace(tid, ws_id))["upcoming"][:5]:
         signals.append({"signal": "Upcoming client meeting", "severity": "info", "impact": 0, "type": "fact",
                         "detail": m.get("title"), "source_ref": f"meeting:{m['id']}", "freshness": m.get("start")})
     crit = await db.alerts.count_documents({"tenant_id": tid, "workspace_id": ws_id, "severity": "critical", "status": {"$in": ["open", "acknowledged"]}})
@@ -4531,6 +4685,8 @@ async def build_digest(tenant_id):
     alerts = await db.alerts.find({**scoped, "status": {"$in": ["open", "acknowledged"]}}, {"_id": 0, "id": 1, "type": 1, "severity": 1, "summary": 1}).to_list(200)
     conns = await db.integration_connections.find(scoped, {"_id": 0}).to_list(50)
     integ_fail = [{"provider": c["provider"], "status": c["status"]} for c in conns if c["status"] in ("degraded", "expired", "revoked", "error")]
+    integ_fail += [{"provider": c["provider"], "status": "sync_failing"} for c in conns
+                   if c["status"] == "active" and int(c.get("consecutive_failures") or 0) >= SYNC_FAIL_THRESHOLD]
     meetings = await db.crm_meetings.find(scoped, {"_id": 0, "id": 1, "title": 1, "start": 1}).sort("start", 1).to_list(10)
     goals = await db.outcome_goals.find(scoped, {"_id": 0, "id": 1, "title": 1, "current_value": 1, "target": 1}).to_list(50) if "outcome_goals" in await db.list_collection_names() else []
     return {"generated_at": now_iso(),

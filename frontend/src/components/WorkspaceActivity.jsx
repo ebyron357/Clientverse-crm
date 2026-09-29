@@ -33,7 +33,10 @@ export default function WorkspaceActivity({ workspaceId }) {
   if (!data) return <SurfaceLoading rows={2} testid="activity-loading" />;
 
   const anyActive = (data.connections || []).some((c) => c.status === "active");
-  const failing = (data.connections || []).filter((c) => ["degraded", "expired", "revoked", "error"].includes(c.status));
+  // Sync health is kept apart from the connection status: a live grant whose reads keep
+  // failing still means data has stopped arriving.
+  const failing = (data.connections || []).filter((c) => ["degraded", "expired", "revoked", "error"].includes(c.status)
+    || (c.status === "active" && (c.consecutive_failures || 0) >= 3));
   const { communications = [], meetings = [], billing = [] } = data;
 
   const allDisconnected = (data.connections || []).every((c) => c.status === "disconnected");
@@ -61,7 +64,7 @@ export default function WorkspaceActivity({ workspaceId }) {
       )}
       {failing.length > 0 && (
         <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-2" data-testid="activity-sync-warning">
-          <AlertTriangle className="w-3.5 h-3.5" />Some connections need attention: {failing.map((f) => `${PROVIDER_LABEL[f.provider]} (${f.status === "expired" || f.status === "revoked" ? "needs auth" : f.status})`).join(", ")}
+          <AlertTriangle className="w-3.5 h-3.5" />Some connections need attention: {failing.map((f) => `${PROVIDER_LABEL[f.provider]} (${f.status === "expired" || f.status === "revoked" ? "needs auth" : f.status === "active" ? "sync failing" : f.status})`).join(", ")}
         </div>
       )}
 

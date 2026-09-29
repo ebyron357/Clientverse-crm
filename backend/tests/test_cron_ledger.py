@@ -73,6 +73,23 @@ async def _entries_for(run_id):
         {"run_id": run_id}, {"_id": 0}).sort("received_at", 1).to_list(20)
 
 
+async def _finished_entries_for(run_id, timeout=20.0):
+    """The run's entries once its background job has finished.
+
+    A fixed sleep raced the job: the sweep's length depends on how many tenants the shared
+    test database holds, which grows with the suite.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        entries = await _entries_for(run_id)
+        if entries and all(e.get("status") in (cron_ledger.SUCCEEDED, cron_ledger.FAILED)
+                           for e in entries):
+            return entries
+        if asyncio.get_running_loop().time() > deadline:
+            return entries
+        await asyncio.sleep(0.05)
+
+
 # --------------------------------------------------------------------------- accepted
 
 def test_an_authenticated_request_records_the_whole_chain():
@@ -83,8 +100,7 @@ def test_an_authenticated_request_records_the_whole_chain():
         response = await server.cron_second_chance(FakeRequest(_headers(run_id)))
         # The endpoint hands the work to a background task; let it finish so the
         # 'executed' and 'result recorded' stages are real and not raced.
-        await asyncio.sleep(0.4)
-        return response, await _entries_for(run_id)
+        return response, await _finished_entries_for(run_id)
 
     response, entries = run(scenario())
 

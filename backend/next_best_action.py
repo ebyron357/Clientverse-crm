@@ -224,14 +224,24 @@ async def _from_work_queue(db, tenant_id: str) -> list[dict]:
     return out
 
 
+SYNC_FAILURES_TO_REPAIR = 3
+
+
 async def _from_integrations(db, tenant_id: str) -> list[dict]:
     out = []
     connections = await db.integration_connections.find(
-        {"tenant_id": tenant_id, "status": {"$in": ["degraded", "expired", "revoked", "error"]}},
-        {"_id": 0, "provider": 1, "status": 1, "last_sync_at": 1, "id": 1},
+        {"tenant_id": tenant_id,
+         "$or": [{"status": {"$in": ["degraded", "expired", "revoked", "error"]}},
+                 # A live grant whose reads keep failing: sync health is recorded apart
+                 # from the connection status, and data has stopped arriving all the same.
+                 {"status": "active", "consecutive_failures": {"$gte": SYNC_FAILURES_TO_REPAIR}}]},
+        {"_id": 0, "provider": 1, "status": 1, "last_sync_at": 1, "id": 1,
+         "consecutive_failures": 1},
     ).to_list(50)
     for conn in connections:
         status = conn.get("status")
+        if status == "active":
+            status = "failing to sync"
         out.append(_recommendation(
             tenant_id=tenant_id,
             action_type=ACTION_REPAIR_INTEGRATION,
