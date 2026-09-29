@@ -4646,17 +4646,51 @@ async def get_notification_preferences(user=Depends(get_current_user)):
 class PrefsInput(BaseModel):
     prefs: dict
 
+
+def _clean_prefs(raw: dict) -> dict:
+    """Notification preferences with values the sweeps can act on, or a 422.
+
+    Keys were filtered but values were not: an escalation delay of 0 minutes (escalate
+    every sweep), a level of 10,000, or an unknown timezone were all stored as given.
+    """
+    prefs = _pick(raw)
+    for key in ("critical", "commitments", "billing", "integrations", "daily_digest"):
+        if key in prefs and not isinstance(prefs[key], bool):
+            raise HTTPException(status_code=422, detail=f"{key} must be true or false")
+    if "channels" in prefs:
+        channels = prefs["channels"]
+        if not isinstance(channels, dict) or any(
+                k not in ("email", "in_app") or not isinstance(v, bool) for k, v in channels.items()):
+            raise HTTPException(status_code=422, detail="channels must map email/in_app to true or false")
+    if "digest_time" in prefs:
+        try:
+            hour, minute = (int(part) for part in str(prefs["digest_time"]).split(":"))
+            assert 0 <= hour < 24 and 0 <= minute < 60
+        except Exception:
+            raise HTTPException(status_code=422, detail="digest_time must be HH:MM")
+    if "timezone" in prefs:
+        try:
+            ZoneInfo(str(prefs["timezone"]))
+        except Exception:
+            raise HTTPException(status_code=422, detail="timezone must be an IANA name such as Europe/London")
+    for key, low, high in (("escalation_minutes", 5, 7 * 24 * 60), ("escalation_max_level", 0, 5)):
+        if key in prefs:
+            value = prefs[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise HTTPException(status_code=422, detail=f"{key} must be a whole number from {low} to {high}")
+    return prefs
+
 @api.put("/notifications/preferences/me")
 async def set_my_preferences(inp: PrefsInput, user=Depends(get_current_user)):
     await db.notification_prefs.update_one({"tenant_id": user["tenant_id"], "user_id": user["user_id"]},
-        {"$set": {"tenant_id": user["tenant_id"], "user_id": user["user_id"], **_pick(inp.prefs), "updated_at": now_iso(), "updated_by": user["email"]}}, upsert=True)
+        {"$set": {"tenant_id": user["tenant_id"], "user_id": user["user_id"], **_clean_prefs(inp.prefs), "updated_at": now_iso(), "updated_by": user["email"]}}, upsert=True)
     await record_event("notification.pref_changed", "prefs", user["user_id"], user["tenant_id"], user["email"], payload={"scope": "user"})
     return {"ok": True, "effective": await get_prefs(user["tenant_id"], user["user_id"])}
 
 @api.put("/notifications/preferences/tenant")
 async def set_tenant_preferences(inp: PrefsInput, user=Depends(require_role("admin"))):
     await db.notification_prefs.update_one({"tenant_id": user["tenant_id"], "user_id": None},
-        {"$set": {"tenant_id": user["tenant_id"], "user_id": None, **_pick(inp.prefs), "updated_at": now_iso(), "updated_by": user["email"]}}, upsert=True)
+        {"$set": {"tenant_id": user["tenant_id"], "user_id": None, **_clean_prefs(inp.prefs), "updated_at": now_iso(), "updated_by": user["email"]}}, upsert=True)
     await record_event("notification.pref_changed", "prefs", user["tenant_id"], user["tenant_id"], user["email"], payload={"scope": "tenant"})
     return {"ok": True, "tenant_default": await get_prefs(user["tenant_id"])}
 

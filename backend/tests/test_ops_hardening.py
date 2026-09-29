@@ -280,3 +280,17 @@ def test_an_idempotency_key_is_bound_to_its_tool():
     assert second.get("tool") == "list_open_commitments"
     assert not second.get("idempotent_replay")
 
+
+
+def test_notification_preferences_must_be_values_the_sweeps_can_use():
+    headers = _tenant()
+    for bad in ({"escalation_minutes": 0}, {"escalation_max_level": 10000},
+                {"timezone": "Mars/Olympus"}, {"digest_time": "99:00"},
+                {"channels": {"email": "yes"}}, {"daily_digest": "sometimes"}):
+        response = requests.put(f"{API}/notifications/preferences/tenant", headers=headers,
+                                json={"prefs": bad}, timeout=30)
+        assert response.status_code == 422, (bad, response.status_code)
+    ok = requests.put(f"{API}/notifications/preferences/tenant", headers=headers, timeout=30,
+                      json={"prefs": {"escalation_minutes": 30, "timezone": "Europe/London",
+                                      "digest_time": "07:30"}})
+    assert ok.status_code == 200
