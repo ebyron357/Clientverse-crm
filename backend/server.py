@@ -446,6 +446,8 @@ class LoginInput(BaseModel):
 
 LOGIN_LOCKOUT_THRESHOLD = int(os.environ.get("LOGIN_LOCKOUT_THRESHOLD", "5"))
 LOGIN_LOCKOUT_MINUTES = int(os.environ.get("LOGIN_LOCKOUT_MINUTES", "15"))
+# Successive lockouts double, up to 2**6 x 15 min = 16 hours.
+LOGIN_LOCKOUT_MAX_DOUBLINGS = 6
 _INVALID_CREDENTIALS_DETAIL = "Invalid email or password"
 
 def _parse_dt(value) -> Optional[datetime]:
@@ -468,26 +470,46 @@ async def _reserve_login_attempt(email: str) -> bool:
     """
     now = datetime.now(timezone.utc)
     window_start = (now - timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+    # The record exists before anything counts on it. An equality-only upsert: two
+    # first-ever attempts (a double-click) land on one record, where a conditional upsert
+    # let one of them lose on the unique index and be refused without its password
+    # being checked.
+    try:
+        await db.login_lockouts.update_one(
+            {"email": email},
+            {"$setOnInsert": {"email": email, "failed_count": 0, "locked_until": None,
+                              "lock_count": 0}},
+            upsert=True)
+    except Exception as exc:
+        if not (getattr(exc, "code", None) == 11000 or "E11000" in str(exc)):
+            raise
     await db.login_lockouts.update_one(
         {"email": email, "$or": [
             {"locked_until": {"$type": "string", "$lt": now.isoformat()}},
             {"locked_until": None, "last_failure_at": {"$lt": window_start}}]},
         {"$set": {"failed_count": 0, "locked_until": None}})
-    try:
-        record = await db.login_lockouts.find_one_and_update(
-            {"email": email, "locked_until": None,
-             "failed_count": {"$not": {"$gte": LOGIN_LOCKOUT_THRESHOLD}}},
-            {"$inc": {"failed_count": 1}, "$set": {"last_failure_at": now.isoformat()}},
-            upsert=True, return_document=True)
-    except Exception as exc:
-        if getattr(exc, "code", None) == 11000 or "E11000" in str(exc):
-            # The record exists but is locked or spent: the upsert found no match.
-            return False
-        raise
-    if record and record.get("failed_count", 0) >= LOGIN_LOCKOUT_THRESHOLD:
+    # A day without failures forgets earlier lockouts.
+    await db.login_lockouts.update_one(
+        {"email": email, "locked_until": None, "lock_count": {"$gt": 0},
+         "last_failure_at": {"$lt": (now - timedelta(days=1)).isoformat()}},
+        {"$set": {"lock_count": 0}})
+    record = await db.login_lockouts.find_one_and_update(
+        {"email": email, "locked_until": None,
+         "failed_count": {"$not": {"$gte": LOGIN_LOCKOUT_THRESHOLD}}},
+        {"$inc": {"failed_count": 1}, "$set": {"last_failure_at": now.isoformat()}},
+        return_document=True)
+    if not record:
+        return False  # locked, or this window's attempts are spent
+    if record.get("failed_count", 0) >= LOGIN_LOCKOUT_THRESHOLD:
+        # Each successive lock is twice as long, up to a cap, so clearing an expired
+        # lock (a typo after one must not re-lock) does not also reset a guesser to
+        # five attempts every fifteen minutes indefinitely.
+        doublings = min(int(record.get("lock_count") or 0), LOGIN_LOCKOUT_MAX_DOUBLINGS)
+        minutes = LOGIN_LOCKOUT_MINUTES * (2 ** doublings)
         await db.login_lockouts.update_one(
             {"email": email, "locked_until": None},
-            {"$set": {"locked_until": (now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()}})
+            {"$set": {"locked_until": (now + timedelta(minutes=minutes)).isoformat()},
+             "$inc": {"lock_count": 1}})
     return True
 
 
@@ -512,7 +534,8 @@ async def _record_login_failure(email: str):
 async def _reset_login_failures(email: str):
     await db.login_lockouts.update_one(
         {"email": email},
-        {"$set": {"failed_count": 0, "locked_until": None}, "$setOnInsert": {"email": email}},
+        {"$set": {"failed_count": 0, "locked_until": None, "lock_count": 0},
+         "$setOnInsert": {"email": email}},
         upsert=True,
     )
 
@@ -1443,7 +1466,7 @@ async def dashboard(user=Depends(get_current_user)):
     for s in osnaps:
         trend_map.setdefault(s["outcome_id"], []).append(s["pct"])
     def gpct(g):
-        return min(100, round((g.get("current_value", 0) / g["target_value"]) * 100)) if g.get("target_value") else None
+        return outcome_pct(g.get("current_value"), g.get("target_value"))
     ws_rollup = []
     for ws in workspaces:
         gs = [g for g in outcomes if g.get("workspace_id") == ws["id"]]
@@ -1891,6 +1914,22 @@ class InvokeInput(BaseModel):
     args: dict = {}
     idempotency_key: Optional[str] = None
 
+async def _mcp_approval_is_live(tenant, invocation) -> bool:
+    """Whether a pending MCP write's approval can still be decided; closes it if not."""
+    approval = await approval_service.get(db, tenant, invocation.get("approval_id") or "")
+    status = (approval or {}).get("status")
+    if status in (approval_service.REQUESTED, approval_service.APPROVED):
+        return True
+    closed = f"approval_{status or 'missing'}"
+    await db.mcp_tool_invocations.update_one(
+        {"id": invocation["id"], "tenant_id": tenant, "status": "pending_approval"},
+        {"$set": {"status": closed}})
+    await db.mcp_pending_actions.update_one(
+        {"approval_id": invocation.get("approval_id"), "tenant_id": tenant,
+         "status": "pending_approval"}, {"$set": {"status": closed}})
+    return False
+
+
 @api.post("/mcp/invoke")
 async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
     tenant = user["tenant_id"]
@@ -1950,6 +1989,11 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
         prior = await db.mcp_tool_invocations.find_one(
             {"tenant_id": tenant, "idempotency_key": inp.idempotency_key, "tool": inp.tool,
              "status": {"$in": ["success", "pending_approval"]}}, {"_id": 0})
+        if prior and prior.get("status") == "pending_approval" and \
+                not await _mcp_approval_is_live(tenant, prior):
+            # Its approval lapsed or was withdrawn: replaying it would hand back a dead
+            # approval forever. The request is asked again below.
+            prior = None
         if prior:
             return {**prior, "idempotent_replay": True}
 
@@ -2258,10 +2302,27 @@ async def record_health_snapshot(tenant_id: str, workspace_id: str):
                                           "score": h["score"], "band": h["band"], "at": now_iso()})
     return h
 
+def outcome_pct(current, target) -> Optional[int]:
+    """Progress toward an outcome's target, capped at 100, or None if it has none.
+
+    None as well when it cannot be computed as a finite number: a target of 1e-320 made
+    the ratio overflow and `round()` raise, which took the whole tenant's dashboard
+    down, and a legacy NaN did the same.
+    """
+    try:
+        current, target = float(current or 0), float(target)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(current) and math.isfinite(target)) or abs(target) < 1e-9:
+        return None
+    ratio = current / target * 100
+    return min(100, round(ratio)) if math.isfinite(ratio) else None
+
+
 async def snapshot_outcome(o):
-    if not o.get("target_value"):
+    pct = outcome_pct(o.get("current_value"), o.get("target_value"))
+    if pct is None:
         return
-    pct = min(100, round((o.get("current_value", 0) / o["target_value"]) * 100))
     await db.outcome_snapshots.insert_one({"id": new_id("os"), "tenant_id": o["tenant_id"], "outcome_id": o["id"], "pct": pct, "at": now_iso()})
 
 class OutcomeInput(BaseModel):
@@ -2580,8 +2641,41 @@ async def run_approval_expiry_sweep() -> dict:
     expired = await approval_service.expire_due(db)
     plans = await recovery_service.release_lapsed(db)
     messages = await conversation_service.release_lapsed_approvals(db)
+    others = await _release_lapsed_subjects()
     return {**expired, "plans_released": plans["released"],
-            "messages_released": messages["released"]}
+            "messages_released": messages["released"], **others}
+
+
+async def _release_lapsed_subjects(limit: int = 500) -> dict:
+    """Release the documents and MCP writes whose approval lapsed undecided.
+
+    A decision (approve, reject, withdraw) reaches them through the decision hook; a
+    lapse never did, so a document stayed `pending_approval` with nothing left to decide.
+    """
+    lapsed = await db[approval_service.COLLECTION].find(
+        {"status": approval_service.EXPIRED, "lapse_handled_at": None,
+         "subject_type": {"$in": ["client_document", "mcp_pending_action"]}},
+        {"_id": 0, "id": 1, "tenant_id": 1, "subject_type": 1, "subject_id": 1}).to_list(limit)
+    documents = writes = 0
+    for approval in lapsed:
+        scope = {"tenant_id": approval["tenant_id"], "id": approval.get("subject_id")}
+        if approval["subject_type"] == "client_document":
+            result = await db.client_documents.update_one(
+                {**scope, "status": "pending_approval"},
+                {"$set": {"status": "draft", "updated_at": now_iso(),
+                          "decided_by": "approval-expiry"}})
+            documents += result.modified_count
+        else:
+            result = await db.mcp_pending_actions.update_one(
+                {**scope, "status": "pending_approval"}, {"$set": {"status": "approval_expired"}})
+            await db.mcp_tool_invocations.update_one(
+                {"tenant_id": approval["tenant_id"], "approval_id": approval["id"],
+                 "status": "pending_approval"}, {"$set": {"status": "approval_expired"}})
+            writes += result.modified_count
+        await db[approval_service.COLLECTION].update_one(
+            {"id": approval["id"], "tenant_id": approval["tenant_id"]},
+            {"$set": {"lapse_handled_at": now_iso()}})
+    return {"documents_released": documents, "mcp_writes_released": writes}
 
 # ============================================================================
 #  LIVE INTEGRATIONS V1 — providers, secure credential storage, sync engine
@@ -3517,6 +3611,9 @@ class RecordOutcomeInput(BaseModel):
     currency: Optional[str] = None
     occurred_at: Optional[str] = None
     note: Optional[str] = None
+    # A person's statement that an invoice in a won deal's workspace is separate work,
+    # recorded on the entry with their name. It is a statement, not evidence.
+    separate_engagement: bool = False
 
 
 @api.post("/attribution/outcomes")
@@ -3528,7 +3625,7 @@ async def record_attribution_outcome(inp: RecordOutcomeInput,
             db, tenant_id=user["tenant_id"], case_id=inp.case_id, kind=inp.kind,
             record_id=inp.record_id, actor=user["email"], amount=inp.amount,
             currency=inp.currency, occurred_at=inp.occurred_at, note=inp.note,
-            audit=record_event)
+            separate_engagement=inp.separate_engagement, audit=record_event)
     except (attribution_service.CaseNotFound, attribution_service.OutcomeNotFound):
         raise HTTPException(status_code=404, detail="Not found")
     except attribution_service.RecordAlreadyBooked as exc:

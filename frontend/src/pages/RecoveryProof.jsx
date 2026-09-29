@@ -149,7 +149,8 @@ function LinkCase({ caseId, links, onLinked }) {
 
 function RecordOutcome({ caseId, sourceRecord, onRecorded }) {
   const defaultDeal = sourceRecord?.collection === "opportunities" ? sourceRecord.id : "";
-  const [form, setForm] = useState({ kind: "invoice_paid", record_id: "", amount: "", currency: "USD", note: "" });
+  const [form, setForm] = useState({ kind: "invoice_paid", record_id: "", amount: "", currency: "USD", note: "",
+                                     separate_engagement: false });
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const kind = OUTCOME_KINDS.find((option) => option.value === form.kind);
@@ -164,6 +165,7 @@ function RecordOutcome({ caseId, sourceRecord, onRecorded }) {
         body.amount = Number(form.amount);
         body.currency = form.currency || "USD";
       }
+      if (form.kind === "invoice_paid" && form.separate_engagement) body.separate_engagement = true;
       const { data } = await api.post("/attribution/outcomes", body);
       setResult(data);
       toast.success(data.claim === "attributed" ? "Outcome recorded and attributed" : "Outcome recorded — not attributed");
@@ -210,6 +212,14 @@ function RecordOutcome({ caseId, sourceRecord, onRecorded }) {
                      value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value.toUpperCase() })} />
             </div>
           </>
+        ) : null}
+        {form.kind === "invoice_paid" ? (
+          <label className="flex h-9 items-center gap-1.5 text-[11px] text-gray-500"
+                 title="An invoice in a won deal's workspace is treated as that deal's money unless you say it pays for separate work. Your name is recorded with this statement.">
+            <input type="checkbox" data-testid="outcome-separate" checked={form.separate_engagement}
+                   onChange={(e) => setForm({ ...form, separate_engagement: e.target.checked })} />
+            Separate work from the won deal
+          </label>
         ) : null}
         <div className="min-w-[12rem] flex-1 text-[11px] text-gray-500">
           <label htmlFor="outcome-note">Note (optional)</label>

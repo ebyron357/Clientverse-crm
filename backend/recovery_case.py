@@ -549,9 +549,12 @@ async def link_crm_records(db, *, tenant_id: str, case_id: str, actor: str,
                            for field, company in sorted(companies.items()))
         raise LinkConflict(f"These links name different clients ({detail}); a case is about "
                            "one client.")
+    # Compare-and-set on every reference the one-client check read, not only the ones
+    # being written: linking contact A and company B concurrently each saw the other
+    # field empty, and both landed.
     criteria: dict[str, Any] = {"id": case_id, "tenant_id": tenant_id}
-    for field in new:
-        criteria[field] = None
+    for field in REFERENCE_COLLECTIONS:
+        criteria[field] = case.get(field)
     updated = await db[COLLECTION].find_one_and_update(
         criteria,
         {"$set": {**new, "updated_at": _iso(_now())},
@@ -753,7 +756,10 @@ async def summary(db, tenant_id: str) -> dict:
 
     confirmed_by_currency: dict[str, float] = {}
     async for row in db[COLLECTION].aggregate([
-        {"$match": {"tenant_id": tenant_id, "confirmed_value": {"$type": "number"}}},
+        # A confirmation the ledger later found to be money another entry had already
+        # booked is kept on the case as history but not summed, as in the ledger.
+        {"$match": {"tenant_id": tenant_id, "confirmed_value": {"$type": "number"},
+                    "confirmed_value_duplicate_of": None}},
         {"$group": {"_id": {"$ifNull": ["$confirmed_currency", "$currency"]},
                     "total": {"$sum": "$confirmed_value"}}},
     ]):

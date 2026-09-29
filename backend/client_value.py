@@ -53,7 +53,9 @@ class RecordStatusInput(BaseModel):
 
 class EstimateLine(BaseModel):
     label: str = Field(min_length=1, max_length=160)
-    quantity: float = Field(default=1, gt=0, le=1_000_000, allow_inf_nan=False)
+    # Usage-priced lines run to millions of units (2.5M impressions at 0.004). The line
+    # and estimate totals are bounded by MAX_MONEY, which is what matters.
+    quantity: float = Field(default=1, gt=0, le=1_000_000_000_000, allow_inf_nan=False)
     unit_price: float = Field(default=0, ge=0, le=MAX_MONEY, allow_inf_nan=False)
 
 
@@ -177,8 +179,8 @@ PLAYBOOKS = {
 
 
 async def ensure_indexes(db) -> None:
-    """One invoice per estimate. Its own try: a deployment that already holds duplicates
-    from before this index must still boot, and says why the index is missing."""
+    """One live invoice per estimate. Its own try: a deployment that already holds
+    duplicates from before this index must still boot, and says why it is missing."""
     # Appointment times as real instants, so the conflict check can be a range query.
     await db.appointments.create_index([("tenant_id", 1), ("owner", 1), ("start_ts", 1)])
     await backfill_appointment_instants(db)
@@ -192,15 +194,25 @@ async def ensure_indexes(db) -> None:
     await db.playbook_applications.create_index(
         [("tenant_id", 1), ("application_key", 1)], unique=True,
         partialFilterExpression={"application_key": {"$type": "string"}})
+    # Keyed on `active_estimate_id`, which a void clears: keyed on `estimate_id`, a
+    # voided invoice blocked invoicing its estimate ever again.
+    try:
+        await db.invoices.drop_index("one_invoice_per_estimate")
+    except Exception:
+        pass  # never built, or already dropped
+    await db.invoices.update_many(
+        {"estimate_id": {"$type": "string"}, "status": {"$ne": "void"},
+         "active_estimate_id": {"$exists": False}},
+        [{"$set": {"active_estimate_id": "$estimate_id"}}])
     try:
         await db.invoices.create_index(
-            [("tenant_id", 1), ("estimate_id", 1)], unique=True,
-            partialFilterExpression={"estimate_id": {"$type": "string"}},
-            name="one_invoice_per_estimate")
+            [("tenant_id", 1), ("active_estimate_id", 1)], unique=True,
+            partialFilterExpression={"active_estimate_id": {"$type": "string"}},
+            name="one_live_invoice_per_estimate")
     except Exception:
         logging.getLogger("clientverse").exception(
-            "Could not create the one-invoice-per-estimate index; duplicate invoices for "
-            "one estimate already exist and must be voided before it can be built")
+            "Could not create the one-live-invoice-per-estimate index; several live "
+            "invoices for one estimate already exist and all but one must be voided")
 
 
 def appointment_instant(value) -> Optional[datetime]:
@@ -503,10 +515,12 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
             raise HTTPException(status_code=404, detail="Estimate not found")
         if estimate.get("status") not in ("approved", "sent"):
             raise HTTPException(status_code=400, detail="Only sent or approved estimates can be converted")
-        existing = await db.invoices.find_one({"tenant_id": user["tenant_id"], "estimate_id": estimate_id}, {"_id": 0})
+        live = {"tenant_id": user["tenant_id"], "estimate_id": estimate_id, "status": {"$ne": "void"}}
+        existing = await db.invoices.find_one(live, {"_id": 0})
         if existing:
             return {"invoice": clean(existing), "duplicate": True}
         invoice = {"id": new_id("inv"), "tenant_id": user["tenant_id"], "workspace_id": estimate["workspace_id"], "estimate_id": estimate_id,
+                   "active_estimate_id": estimate_id,
                    "title": estimate["title"], "currency": estimate["currency"], "lines": estimate["lines"], "total": estimate["total"],
                    "status": "draft", "payment_status": "requires_stripe_configuration", "created_at": now_iso()}
         try:
@@ -516,8 +530,7 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
             # one invoice exist for the estimate, and the loser returns that one.
             if getattr(exc, "code", None) != 11000 and "E11000" not in str(exc):
                 raise
-            winner = await db.invoices.find_one(
-                {"tenant_id": user["tenant_id"], "estimate_id": estimate_id}, {"_id": 0})
+            winner = await db.invoices.find_one(live, {"_id": 0})
             return {"invoice": clean(winner or invoice), "duplicate": True}
         await record_event("invoice.created", "invoice", invoice["id"], user["tenant_id"], user["email"], workspace_id=invoice["workspace_id"], payload={"estimate_id": estimate_id, "total": invoice["total"]})
         return {"invoice": clean(invoice), "duplicate": False, "provider_note": "Invoice created locally. Payment collection is unavailable until Stripe lifecycle certification passes."}
@@ -538,21 +551,52 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         invoice = await db.invoices.find_one({"id": invoice_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
         if not invoice:
             raise HTTPException(status_code=404, detail="Invoice not found")
-        _check_move("invoice", INVOICE_TRANSITIONS, invoice.get("status"), inp.status)
-        update = {"status": inp.status, "updated_at": now_iso()}
+        unset: dict = {}
+        if invoice.get("status") == "paid" and inp.status == "issued":
+            update = await manual_payment_correction(user, invoice)
+            unset = {"paid_at": ""}
+        else:
+            _check_move("invoice", INVOICE_TRANSITIONS, invoice.get("status"), inp.status)
+            update = {"status": inp.status, "updated_at": now_iso()}
         if inp.status == "paid" and invoice.get("payment_status") != "paid":
             # Recorded by a person, so the payment status says so rather than keeping a
             # provider state ("requires_stripe_configuration") that contradicts it.
-            update.update({"payment_status": "paid", "payment_source": "manual"})
+            update.update({"payment_status": "paid", "payment_source": "manual",
+                           "payment_status_before_manual": invoice.get("payment_status")})
+        if inp.status == "void":
+            # Frees the estimate to be invoiced again.
+            unset["active_estimate_id"] = ""
         result = await db.invoices.update_one(
             {"id": invoice_id, "tenant_id": user["tenant_id"], "status": invoice.get("status")},
-            {"$set": update})
+            {"$set": update, **({"$unset": unset} if unset else {})})
         if not result.matched_count:
             raise HTTPException(status_code=409, detail="The invoice changed; reload it")
         if inp.status == "paid":
             await stamp_paid_at(db, tenant_id=user["tenant_id"], invoice_id=invoice_id,
                                 at=now_iso(), previously_paid=was_paid(invoice))
         return {"ok": True, "status": inp.status}
+
+    async def manual_payment_correction(user, invoice):
+        """Undo a payment a person recorded by mistake: paid -> issued.
+
+        Only a manual payment (a provider's is the provider's record, not ours to undo),
+        and only while the attribution ledger has not booked it -- un-paying a booked
+        invoice would leave recovered revenue claimed on money that never arrived.
+        """
+        if invoice.get("payment_source") != "manual":
+            raise HTTPException(status_code=409,
+                                detail="Only a payment recorded by hand can be corrected here")
+        booked = await db.attribution_entries.find_one(
+            {"tenant_id": user["tenant_id"], "booked_record": f"invoices:{invoice['id']}",
+             "duplicate_of": None}, {"_id": 0, "id": 1})
+        if booked:
+            raise HTTPException(status_code=409,
+                                detail="This payment is booked in the attribution ledger; it "
+                                       "cannot be undone here")
+        return {"status": "issued", "updated_at": now_iso(),
+                "payment_status": invoice.get("payment_status_before_manual") or "unpaid",
+                "payment_source": None, "payment_corrected_by": user["email"],
+                "payment_corrected_at": now_iso()}
 
     @router.get("/referrals")
     async def list_referrals(user=Depends(get_current_user)):

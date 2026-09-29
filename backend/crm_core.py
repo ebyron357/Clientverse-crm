@@ -1061,7 +1061,6 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                     errors.append({"row": index,
                                    "error": f"unknown stage '{row['stage']}'"})
                     continue
-                row.setdefault("stage", valid_stages[0])
                 if row.get("value"):
                     try:
                         row["value"] = finite_money(row["value"], "value")
@@ -1105,6 +1104,10 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                     {"$set": {**row, "updated_at": now_iso()}, "$push": push})
                 updated += 1
                 continue
+            if entity == "deals":
+                # The default stage is for a new deal only. Applied to an update it
+                # moved a won deal back to the first stage whenever a row omitted it.
+                row.setdefault("stage", valid_stages[0])
             doc = {"id": new_id(prefix), "tenant_id": tenant, "created_at": now_iso(),
                    "updated_at": now_iso(), "archived_at": None,
                    "history": [_history_entry("imported", user["email"], {"row": index})],

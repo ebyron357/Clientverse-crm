@@ -50,9 +50,11 @@ across currencies.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -143,13 +145,28 @@ def _public(doc: Optional[dict]) -> Optional[dict]:
 COUNTED: dict[str, Any] = {"duplicate_of": None}
 
 
-def booking_key(collection: Optional[str], kind: str, record_id: str) -> str:
-    """What makes two ledger entries the same money, tenant-wide."""
+def booking_key(collection: Optional[str], kind: str, record_id: str, *,
+                scope: Optional[str] = None) -> str:
+    """What makes two ledger entries the same money, tenant-wide.
+
+    An invoice or a deal is one record, so its id is enough. An operator confirmation
+    names its own free-text reference -- "cash", "wire 0412" -- which is only unique for
+    one client: two clients can both have paid in "cash". So it is scoped to the client
+    the case is about (`operator_scope`), and one reference is one payment per client.
+    """
     if collection:
         return f"{collection}:{record_id}"
-    # An operator confirmation names its own reference (a bank transfer, a cheque). The
-    # same reference booked on two cases is the same payment booked twice.
-    return f"operator:{str(record_id).strip().lower()}"
+    return f"operator:{scope or '-'}:{str(record_id).strip().lower()}"
+
+
+def operator_scope(case: Optional[dict], case_id: str) -> str:
+    """The client an operator reference is unique within: the case's company, contact or
+    workspace, else the case itself."""
+    case = case or {}
+    for field in ("company_id", "contact_id", "workspace_id"):
+        if case.get(field):
+            return f"{field}={case[field]}"
+    return f"case={case_id}"
 
 
 async def backfill_booking_keys(db: Any) -> int:
@@ -164,13 +181,25 @@ async def backfill_booking_keys(db: Any) -> int:
             {"booked_record": {"$exists": False}, "duplicate_of": None},
             {"_id": 0}).sort("recorded_at", 1):
         outcome = entry.get("outcome") or {}
+        scope = None
+        if not outcome.get("collection"):
+            case = await db[recovery_case_service.COLLECTION].find_one(
+                {"tenant_id": entry["tenant_id"], "id": entry.get("case_id")}, {"_id": 0})
+            scope = operator_scope(case, entry.get("case_id") or "")
         key = booking_key(outcome.get("collection"), outcome.get("kind") or "",
-                          outcome.get("record_id") or "")
+                          outcome.get("record_id") or "", scope=scope)
         holder = await db[COLLECTION].find_one(
             {"tenant_id": entry["tenant_id"], "booked_record": key}, {"_id": 0, "id": 1})
         update = ({"duplicate_of": holder["id"]} if holder else {"booked_record": key})
         await db[COLLECTION].update_one({"id": entry["id"], "tenant_id": entry["tenant_id"]},
                                         {"$set": update})
+        if holder:
+            # The case this entry confirmed must stop counting the money too, or the
+            # ledger and the case summary report different recovered totals.
+            await db[recovery_case_service.COLLECTION].update_one(
+                {"tenant_id": entry["tenant_id"], "id": entry.get("case_id"),
+                 "confirmed_value_evidence.attribution_entry_id": entry["id"]},
+                {"$set": {"confirmed_value_duplicate_of": holder["id"]}})
         marked += 1
     return marked
 
@@ -358,9 +387,18 @@ async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str
         history = deal.get("stage_history") or []
         # The first time the deal was won. A later move back into a won stage -- or a
         # repeated one -- must not re-date a win that happened before any outreach.
+        # A move made by a CSV import is dated by the import, not by the win: the file
+        # says the deal is won, not when. It counts as an undated win.
         won_at = sorted(
             parsed for parsed in (_parse(t.get("at")) for t in history
-                                  if t.get("to") in won_stages) if parsed)
+                                  if t.get("to") in won_stages and t.get("via") != "import")
+            if parsed)
+        imported_won = sorted(
+            parsed for parsed in (_parse(t.get("at")) for t in history
+                                  if t.get("to") in won_stages and t.get("via") == "import")
+            if parsed)
+        if imported_won and (not won_at or imported_won[0] <= won_at[0]):
+            won_at = []
         # Leaving a won stage before any recorded move into one means the deal was won
         # earlier, undated (imported won, say): moving it out and back must not date
         # that old win to today.
@@ -525,8 +563,14 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
                          currency: Optional[str] = None,
                          occurred_at: Optional[str] = None,
                          note: Optional[str] = None,
+                         separate_engagement: bool = False,
                          audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Record that something happened, and derive what -- if anything -- may be claimed.
+
+    `separate_engagement` is a person's statement that an invoice in a won deal's
+    workspace pays for separate work, not for the deal itself. Without it such an invoice
+    is refused as the same money; with it, it is booked and the statement is recorded on
+    the entry with that person's name.
 
     The caller contributes an outcome and a case. It does not contribute the basis, the
     evidence, or the decision about whether a claim is permitted. When no outreach
@@ -534,6 +578,62 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
     -- because an outcome this system did not cause is a real fact worth keeping, and
     hiding it would make the attributed figures look better than they are.
     """
+    async with _booking_lock(db, tenant_id):
+        return await _record_outcome_locked(
+            db, tenant_id=tenant_id, case_id=case_id, kind=kind, record_id=record_id,
+            actor=actor, amount=amount, currency=currency, occurred_at=occurred_at,
+            note=note, separate_engagement=separate_engagement, audit=audit)
+
+
+LOCKS_COLLECTION = "attribution_locks"
+LOCK_SECONDS = 30
+
+
+@asynccontextmanager
+async def _booking_lock(db: Any, tenant_id: str) -> AsyncIterator[None]:
+    """One booking at a time per tenant.
+
+    Whether a deal and an invoice are the same money is decided by reading what is
+    already booked, and two bookings racing each read nothing and both counted: a USD
+    10,000 engagement booked as its deal and its invoice at once showed USD 20,000.
+    Bookings are rare and short, so serialising them per tenant costs nothing. A lock a
+    crashed worker left behind expires after LOCK_SECONDS.
+    """
+    key = f"booking:{tenant_id}"
+    token = uuid.uuid4().hex
+    deadline = _now() + timedelta(seconds=10)
+    while True:
+        now = _now()
+        try:
+            await db[LOCKS_COLLECTION].insert_one(
+                {"_id": key, "token": token,
+                 "expires_at": _iso(now + timedelta(seconds=LOCK_SECONDS))})
+            break
+        except Exception as exc:
+            if not (getattr(exc, "code", None) == 11000 or "E11000" in str(exc)):
+                raise
+        # Held. Take it over only if it has expired, conditionally, so two waiters
+        # cannot both take it.
+        taken = await db[LOCKS_COLLECTION].find_one_and_update(
+            {"_id": key, "expires_at": {"$lt": _iso(now)}},
+            {"$set": {"token": token, "expires_at": _iso(now + timedelta(seconds=LOCK_SECONDS))}})
+        if taken:
+            break
+        if _now() > deadline:
+            raise AttributionError("Another outcome is being recorded for this tenant; "
+                                   "try again in a moment.")
+        await asyncio.sleep(0.02)
+    try:
+        yield
+    finally:
+        await db[LOCKS_COLLECTION].delete_one({"_id": key, "token": token})
+
+
+async def _record_outcome_locked(db: Any, *, tenant_id: str, case_id: str, kind: str,
+                                 record_id: str, actor: str, amount: Optional[float],
+                                 currency: Optional[str], occurred_at: Optional[str],
+                                 note: Optional[str], separate_engagement: bool,
+                                 audit: Optional[Callable[..., Awaitable[Any]]]) -> dict:
     case = await db[recovery_case_service.COLLECTION].find_one(
         {"tenant_id": tenant_id, "id": case_id}, {"_id": 0})
     if not case:
@@ -551,11 +651,12 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
                 f"{record_id} does not belong to this case's client: "
                 + record_link["detail"])
         related = await _related_booking(db, tenant_id, outcome["collection"], record)
-        if related:
+        if related and not separate_engagement:
             raise RecordAlreadyBooked(
                 f"{record_id} is the same engagement's money as {related['booked_record']}, "
                 f"already in the ledger (entry {related['id']}, case {related['case_id']}); "
-                "a deal and the invoice that pays it are one recovery, booked once.")
+                "a deal and the invoice that pays it are one recovery, booked once. If this "
+                "invoice pays for separate work, record it as a separate engagement.")
     derived = await derive_basis(db, tenant_id=tenant_id, case_id=case_id,
                                  occurred_at=outcome["occurred_at"])
     attributed = derived["basis"] != BASIS_NONE
@@ -581,8 +682,11 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
         # How the invoice or deal was tied to this case. Unverified when the case names
         # no CRM record to check it against, and said so rather than hidden.
         "record_link": record_link,
+        "separate_engagement": ({"asserted_by": actor, "at": _iso()}
+                                if separate_engagement else None),
     }
-    entry["booked_record"] = booking_key(outcome["collection"], kind, record_id)
+    entry["booked_record"] = booking_key(outcome["collection"], kind, record_id,
+                                         scope=operator_scope(case, case_id))
     try:
         await db[COLLECTION].insert_one(dict(entry))
     except Exception as exc:

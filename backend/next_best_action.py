@@ -16,6 +16,7 @@ Deliberate constraints:
 from __future__ import annotations
 
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -105,11 +106,42 @@ async def ensure_indexes(db) -> None:
 
 # ------------------------------------------------------------------ rules
 
+# Rules that read more rows than RULE_QUERY_CAP in the current generation run. Set by
+# `_read_capped`; a rule that did cannot say its other conditions cleared.
+_TRUNCATED: ContextVar[Optional[set]] = ContextVar("nba_truncated", default=None)
+
+
+async def _read_capped(cursor, rule: str) -> list[dict]:
+    """A rule's rows, at most RULE_QUERY_CAP, noting when there were more.
+
+    The guard used to count the recommendations a rule produced, not the rows it read: a
+    rule that read its cap of not-yet-due tasks produced nothing, looked complete, and the
+    retirement pass closed a recommendation for an overdue task it never reached.
+    """
+    rows = await cursor.to_list(RULE_QUERY_CAP + 1)
+    if len(rows) > RULE_QUERY_CAP:
+        marks = _TRUNCATED.get()
+        if marks is not None:
+            marks.add(rule)
+        rows = rows[:RULE_QUERY_CAP]
+    return rows
+
+
+# Records with a due date sort first, soonest (most overdue) first.
+_DUE_FIRST = [("due_date", 1), ("due_at", 1)]
+_HAS_DUE = {"$or": [{"due_date": {"$nin": [None, ""]}}, {"due_at": {"$nin": [None, ""]}}]}
+
+
 async def _from_commitments(db, tenant_id: str) -> list[dict]:
     out = []
-    commitments = await db.commitments.find(
-        {"tenant_id": tenant_id, "status": {"$in": ["breached", "at_risk", "open"]}}, {"_id": 0}
-    ).to_list(RULE_QUERY_CAP)
+    # Breached and at-risk commitments always qualify; open ones only when overdue, so
+    # they are read due-first.
+    commitments = await _read_capped(db.commitments.find(
+        {"tenant_id": tenant_id, "status": {"$in": ["breached", "at_risk"]}}, {"_id": 0}),
+        "_from_commitments")
+    commitments += await _read_capped(db.commitments.find(
+        {"tenant_id": tenant_id, "status": "open", **_HAS_DUE}, {"_id": 0}).sort(_DUE_FIRST),
+        "_from_commitments")
     now = _now()
     for cmt in commitments:
         status = str(cmt.get("status") or "").lower()
@@ -142,9 +174,8 @@ async def _from_commitments(db, tenant_id: str) -> list[dict]:
 
 async def _from_approvals(db, tenant_id: str) -> list[dict]:
     out = []
-    approvals = await db.approvals.find(
-        {"tenant_id": tenant_id, "status": "requested"}, {"_id": 0}
-    ).to_list(RULE_QUERY_CAP)
+    approvals = await _read_capped(db.approvals.find(
+        {"tenant_id": tenant_id, "status": "requested"}, {"_id": 0}), "_from_approvals")
     for apr in approvals:
         out.append(_recommendation(
             tenant_id=tenant_id,
@@ -163,10 +194,11 @@ async def _from_approvals(db, tenant_id: str) -> list[dict]:
 async def _from_tasks(db, tenant_id: str) -> list[dict]:
     out = []
     now = _now()
-    tasks = await db.tasks.find(
-        {"tenant_id": tenant_id, "status": {"$nin": ["done", "complete", "completed", "cancelled"]}},
+    tasks = await _read_capped(db.tasks.find(
+        {"tenant_id": tenant_id, "status": {"$nin": ["done", "complete", "completed", "cancelled"]},
+         **_HAS_DUE},
         {"_id": 0},
-    ).to_list(RULE_QUERY_CAP)
+    ).sort(_DUE_FIRST), "_from_tasks")
     for task in tasks:
         due = _parse(task.get("due_date") or task.get("due_at"))
         if due is None or due >= now:
@@ -191,12 +223,12 @@ async def _from_tasks(db, tenant_id: str) -> list[dict]:
 async def _from_work_queue(db, tenant_id: str) -> list[dict]:
     """Second Chance detections become recommendations, keeping one queue of truth."""
     out = []
-    items = await db.work_queue.find(
+    items = await _read_capped(db.work_queue.find(
         {"tenant_id": tenant_id, "queue": "second_chance",
          "status": {"$in": ["queued", "claimed", "processing", "retry_scheduled", "completed"]},
          "resolved_at": None},
         {"_id": 0},
-    ).to_list(RULE_QUERY_CAP)
+    ), "_from_work_queue")
     for item in items:
         payload = item.get("payload") or {}
         if item.get("type") == "second_chance.stalled_lead":
@@ -264,7 +296,8 @@ async def _from_client_health(db, tenant_id: str) -> list[dict]:
     meant this rule could never fire for a real unhealthy workspace.
     """
     out = []
-    workspaces = await db.workspaces.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(RULE_QUERY_CAP)
+    workspaces = await _read_capped(db.workspaces.find({"tenant_id": tenant_id}, {"_id": 0}),
+                                    "_from_client_health")
     for ws in workspaces:
         snapshot = await db.health_snapshots.find_one(
             {"tenant_id": tenant_id, "workspace_id": ws.get("id")},
@@ -307,18 +340,18 @@ async def generate(db, tenant_id: str, *, actor: str = "system") -> dict:
     """
     candidates: list[dict] = []
     failed_rules: list[str] = []
-    truncated_rules: list[str] = []
+    marks: set[str] = set()
+    token = _TRUNCATED.set(marks)
     for rule in RULES:
         try:
-            produced = await rule(db, tenant_id)
-            if len(produced) >= RULE_QUERY_CAP:
-                truncated_rules.append(rule.__name__)
-            candidates.extend(produced)
+            candidates.extend(await rule(db, tenant_id))
         except Exception as exc:
             # A single failing rule must not void the whole queue — and, critically,
             # must not let the retirement pass below conclude that the conditions it
             # would have reported have cleared.
             failed_rules.append(f"{rule.__name__}: {str(exc)[:200]}")
+    _TRUNCATED.reset(token)
+    truncated_rules = sorted(marks)
 
     seen: dict[str, dict] = {}
     for candidate in candidates:

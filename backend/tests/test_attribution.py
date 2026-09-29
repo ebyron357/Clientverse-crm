@@ -789,7 +789,12 @@ def test_a_deal_and_the_invoice_that_pays_it_are_booked_once(db):
 
 
 def test_one_operator_confirmed_payment_is_booked_once(db):
+    """One reference is one payment for one client (see test_ledger_hardening for two
+    clients who both paid in "cash")."""
     first, second = _contacted_case(db), _contacted_case(db)
+    for case in (first, second):
+        run(db[rc.COLLECTION].update_one({"id": case["id"]},
+                                         {"$set": {"company_id": "co_same"}}))
     run(attribution.record_outcome(db, tenant_id=TENANT, case_id=first["id"],
                                    kind=attribution.OUTCOME_OPERATOR_CONFIRMED,
                                    record_id="WIRE-2026-001", actor="ops", amount=8000.0,
