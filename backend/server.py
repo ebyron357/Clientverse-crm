@@ -1733,6 +1733,19 @@ async def execute_pending_mcp(pending_id, user):
         return {"status": "skipped"}
     inv_id = p["invocation_id"]
     tool = MCP_TOOLS.get(p["tool"])
+    # The kill switch and allowlist are checked when the write runs, not only when it
+    # was requested: approving a write queued before the switch was thrown must not run
+    # it past the switch.
+    server_state = await get_mcp_server(user["tenant_id"])
+    if server_state.get("kill_switch") or p["tool"] not in server_state.get("allowlist", []):
+        reason = ("MCP server is disabled by kill switch" if server_state.get("kill_switch")
+                  else "Tool not in tenant allowlist")
+        await db.mcp_pending_actions.update_one(
+            {"id": pending_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": "blocked"}})
+        await db.mcp_tool_invocations.update_one(
+            {"id": inv_id, "tenant_id": user["tenant_id"]},
+            {"$set": {"status": "blocked", "error": reason}})
+        return {"status": "blocked", "error": reason}
     if tool and tool.get("external"):
         # The gate is re-checked at execution, not only when the write was requested: a
         # component revoked, re-scanned or expired while this waited for approval must
@@ -2301,7 +2314,9 @@ def _cron_token(request: Request) -> str:
 def _cron_secret_matches(request: Request) -> bool:
     secret = os.environ.get("WEBHOOK_CRON_SECRET", "")
     token = _cron_token(request)
-    return bool(secret and token and hmac.compare_digest(token, secret))
+    # As bytes: `compare_digest` raises on non-ASCII text, which made a crafted header a 500.
+    return bool(secret and token and hmac.compare_digest(token.encode("utf-8"),
+                                                         secret.encode("utf-8")))
 
 
 def _cron_source(request: Request) -> str:
@@ -2320,9 +2335,8 @@ async def _authorize_cron_observed(request: Request, job: str) -> None:
     """
     if _cron_secret_matches(request):
         return
-    await cron_ledger.record_request(
-        db, job=job, run_id=request.headers.get("X-Webhook-Id"),
-        status=cron_ledger.UNAUTHORIZED, source=_cron_source(request),
+    await cron_ledger.record_rejection(
+        db, job=job, source=_cron_source(request),
         detail={"reason": "shared secret missing or does not match"})
     raise HTTPException(status_code=401, detail="Unauthorized")
 

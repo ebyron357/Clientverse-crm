@@ -194,8 +194,27 @@ def test_a_scheduler_calling_with_the_wrong_secret_is_named_as_such():
     rows = [_entry("work-queue", cron_ledger.SUCCEEDED, NOW - timedelta(hours=3)),
             _entry("work-queue", cron_ledger.UNAUTHORIZED, NOW - timedelta(minutes=2))]
     verdict = cron_schedule.evaluate_job(FIVE, rows, NOW)
-    assert verdict["status"] == cron_schedule.REJECTED
-    assert cron_schedule.OVERDUE in verdict["problems"]
+    # Overdue is the status -- a refused call proves nothing about the scheduler, since
+    # anyone can send one -- and the refusals are named beside it.
+    assert verdict["status"] == cron_schedule.OVERDUE
+    assert cron_schedule.REJECTED in verdict["problems"]
+
+
+def test_a_strangers_refused_calls_cannot_hide_a_stopped_scheduler():
+    rows = [_entry("work-queue", cron_ledger.SUCCEEDED, NOW - timedelta(hours=2)),
+            _entry("work-queue", cron_ledger.UNAUTHORIZED, NOW - timedelta(minutes=1))]
+    verdict = cron_schedule.evaluate_job(FIVE, rows, NOW)
+    assert verdict["status"] == cron_schedule.OVERDUE and verdict["missed_ticks"] > 0
+
+
+def test_a_run_cut_off_by_a_redeploy_is_history_once_a_later_run_finishes():
+    rows = [_entry("work-queue", cron_ledger.RUNNING, NOW - timedelta(days=20)),
+            _entry("work-queue", cron_ledger.SUCCEEDED, NOW - timedelta(minutes=2))]
+    verdict = cron_schedule.evaluate_job(FIVE, rows, NOW)
+    assert verdict["status"] == cron_schedule.ON_SCHEDULE, verdict["problems"]
+    still_open = [_entry("work-queue", cron_ledger.SUCCEEDED, NOW - timedelta(hours=1)),
+                  _entry("work-queue", cron_ledger.RUNNING, NOW - timedelta(minutes=50))]
+    assert cron_schedule.STALLED in cron_schedule.evaluate_job(FIVE, still_open, NOW)["problems"]
 
 
 def test_rejections_followed_by_accepted_calls_are_history_not_a_problem():
@@ -278,7 +297,8 @@ def test_real_ledger_entries_drive_the_verdicts():
     assert verdicts["recovery-runner"]["status"] == cron_schedule.OVERDUE
     assert verdicts["recovery-runner"]["missed_ticks"] >= 25
     assert verdicts["commitment-risk"]["status"] == cron_schedule.FAILING
-    assert verdicts["inbound-email"]["status"] == cron_schedule.REJECTED
+    assert verdicts["inbound-email"]["status"] == cron_schedule.NEVER_RUN
+    assert cron_schedule.REJECTED in verdicts["inbound-email"]["problems"]
     assert evaluation["undeclared_jobs_in_ledger"] == ["not-a-declared-job"]
 
     schedule = health["schedule"]

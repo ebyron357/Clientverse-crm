@@ -43,7 +43,10 @@ STALLED = "stalled"          # a run was accepted or started and never reached a
 FAILING = "failing"          # the latest run that finished raised
 ON_SCHEDULE = "on_schedule"
 
-SEVERITY = (REJECTED, NEVER_RUN, OVERDUE, STALLED, FAILING, ON_SCHEDULE)
+# `rejected` comes last among the problems: anyone can send a refused request, so it
+# must never hide the scheduler's own state (overdue, never run). It still appears in
+# `problems`, and with nothing worse it is the status -- the case of a wrong secret.
+SEVERITY = (NEVER_RUN, OVERDUE, STALLED, FAILING, REJECTED, ON_SCHEDULE)
 
 # How long an accepted request may wait for its background task to start. Starting is
 # immediate in-process, so anything this old was lost (typically to a redeploy).
@@ -220,9 +223,16 @@ def evaluate_job(job: ScheduledJob, entries: Iterable[dict], now: datetime) -> d
         missed_ticks = len(missed)
         first_missed_at = missed[0] if missed else None
 
+    # An open row older than a run that has since finished was superseded -- typically
+    # cut off by a redeploy before it could record its end. It is history, not a stall;
+    # counting it kept a healthy job "stalled" for the whole retention window.
+    superseded_before = _parse((last_finished or {}).get("received_at"))
     stalled: list[dict] = []
     for row in rows:
         status = row.get("status")
+        received = _parse(row.get("received_at"))
+        if superseded_before and received and received < superseded_before:
+            continue
         if status == cron_ledger.RUNNING:
             started = _parse(row.get("started_at")) or _parse(row.get("received_at"))
             if started and now - started > timedelta(minutes=job.max_runtime_minutes):
@@ -332,7 +342,11 @@ def summary(evaluation: dict) -> dict:
         "overdue": by_status.get(OVERDUE, []),
         "stalled": by_status.get(STALLED, []),
         "failing": by_status.get(FAILING, []),
-        "rejected": by_status.get(REJECTED, []),
+        # Every job with refused calls since its last accepted one, whatever its status:
+        # a wrong secret usually also leaves the job overdue or never run, and both facts
+        # belong in the headline.
+        "rejected": sorted(job["job"] for job in evaluation.get("jobs") or []
+                           if REJECTED in (job.get("problems") or [])),
         "never_run": by_status.get(NEVER_RUN, []),
     }
 

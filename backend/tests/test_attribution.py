@@ -762,3 +762,75 @@ def test_linking_a_case_turns_an_unverified_link_into_a_checked_one(db):
         run(attribution.record_outcome(
             db, tenant_id=TENANT, case_id=case["id"],
             kind=attribution.OUTCOME_INVOICE_PAID, record_id=elsewhere["id"], actor="ops"))
+
+
+# ------------------------------------------------------ third review round
+
+def test_a_deal_and_the_invoice_that_pays_it_are_booked_once(db):
+    """Both were attributed: a USD 10,000 deal and its invoice read as USD 20,000."""
+    run(db.workspaces.insert_one({"id": "ws_deal", "tenant_id": TENANT,
+                                  "opportunity_id": "opp_pair", "company_id": "co_pair"}))
+    deal = {"id": "opp_pair", "tenant_id": TENANT, "value": 10000.0, "currency": "USD",
+            "stage": "closed_won", "company_id": "co_pair",
+            "stage_history": [{"from": "proposal", "to": "closed_won", "at": iso(2)}]}
+    run(db.opportunities.insert_one(dict(deal)))
+    case = _contacted_case(db)
+    run(attribution.record_outcome(db, tenant_id=TENANT, case_id=case["id"],
+                                   kind=attribution.OUTCOME_DEAL_WON, record_id="opp_pair",
+                                   actor="ops"))
+    invoice = paid_invoice(db, total=10000.0)
+    run(db.invoices.update_one({"id": invoice["id"]}, {"$set": {"workspace_id": "ws_deal"}}))
+    with pytest.raises(attribution.RecordAlreadyBooked, match="booked once"):
+        run(attribution.record_outcome(db, tenant_id=TENANT, case_id=case["id"],
+                                       kind=attribution.OUTCOME_INVOICE_PAID,
+                                       record_id=invoice["id"], actor="ops"))
+    totals = run(attribution.totals(db, TENANT))
+    assert totals["attributed_recovered_value_by_currency"] == {"USD": 10000.0}
+
+
+def test_one_operator_confirmed_payment_is_booked_once(db):
+    first, second = _contacted_case(db), _contacted_case(db)
+    run(attribution.record_outcome(db, tenant_id=TENANT, case_id=first["id"],
+                                   kind=attribution.OUTCOME_OPERATOR_CONFIRMED,
+                                   record_id="WIRE-2026-001", actor="ops", amount=8000.0,
+                                   occurred_at=iso(1)))
+    with pytest.raises(attribution.RecordAlreadyBooked):
+        run(attribution.record_outcome(db, tenant_id=TENANT, case_id=second["id"],
+                                       kind=attribution.OUTCOME_OPERATOR_CONFIRMED,
+                                       record_id=" wire-2026-001 ", actor="ops",
+                                       amount=8000.0, occurred_at=iso(1)))
+
+
+def test_entries_written_before_booking_keys_are_backfilled_and_duplicates_not_summed(db):
+    """The deployed ledger wrote entries without `booked_record`, so the uniqueness did
+    not cover them and one invoice could be booked again."""
+    for n, case_id in enumerate(("rc_old_a", "rc_old_b")):
+        run(db[attribution.COLLECTION].insert_one({
+            "id": f"attr_old_{n}", "tenant_id": TENANT, "case_id": case_id,
+            "claim": attribution.CLAIM_ATTRIBUTED, "currency": "USD",
+            "outcome": {"kind": attribution.OUTCOME_INVOICE_PAID, "record_id": "inv_old",
+                        "collection": "invoices", "amount": 6000.0},
+            "recorded_at": iso(10 - n)}))
+    assert run(attribution.totals(db, TENANT))["attributed_recovered_value_by_currency"] == {
+        "USD": 12000.0}
+    run(attribution.ensure_indexes(db))
+    rows = {row["id"]: row for row in run(db[attribution.COLLECTION].find({}).to_list(10))}
+    assert rows["attr_old_0"]["booked_record"] == "invoices:inv_old"
+    assert rows["attr_old_1"]["duplicate_of"] == "attr_old_0"
+    assert run(attribution.totals(db, TENANT))["attributed_recovered_value_by_currency"] == {
+        "USD": 6000.0}
+
+
+def test_a_deal_moved_out_of_won_and_back_is_not_dated_today(db):
+    """An imported deal, already won with no dated win, was made attributable by moving
+    it to proposal and back."""
+    case = _contacted_case(db)
+    deal = {"id": "opp_bounce", "tenant_id": TENANT, "value": 20000.0, "currency": "USD",
+            "stage": "closed_won",
+            "stage_history": [{"from": "closed_won", "to": "proposal", "at": iso(1)},
+                              {"from": "proposal", "to": "closed_won", "at": iso(0)}]}
+    run(db.opportunities.insert_one(dict(deal)))
+    with pytest.raises(attribution.AttributionError, match="does not say when it was"):
+        run(attribution.record_outcome(db, tenant_id=TENANT, case_id=case["id"],
+                                       kind=attribution.OUTCOME_DEAL_WON,
+                                       record_id="opp_bounce", actor="ops"))

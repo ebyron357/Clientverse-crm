@@ -347,3 +347,66 @@ def test_the_follow_up_api_is_authenticated_validated_and_tenant_scoped():
 
     ran = requests.post(f"{base}/api/recovery-followups/run", headers=a, timeout=30)
     assert ran.status_code == 200 and ran.json()["sent"] == 0
+
+
+# ------------------------------------------------------------------ third review round
+
+def test_a_reply_before_a_late_confirmed_send_still_stops_follow_ups(db, registry):
+    """A message confirmed `sent` only on reconciliation carries a later timestamp than
+    the reply it drew; the reply was ignored and a follow-up drafted to someone who
+    had already answered."""
+    case, conversation_id = contacted_case(db, registry, days_ago=4)
+    first = run(cv.list_messages(db, TENANT, conversation_id))[0]
+    six_days = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat()
+    five_days = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    run(db[cv.MESSAGES].update_one({"id": first["id"]}, {"$set": {"created_at": six_days}}))
+    run(cv.record_inbound(db, tenant_id=TENANT, conversation_id=conversation_id,
+                          body="Yes please.", from_address=CLIENT_EMAIL, provider="gmail",
+                          provider_message_id="gmail-early-reply", received_at=five_days))
+    assert verdict_for(db, case["id"])["status"] == fu.REPLIED
+    assert run(fu.run_for_tenant(db, TENANT))["drafted"] == []
+
+
+def test_follow_ups_stop_once_an_outcome_is_recorded(db, registry):
+    case, _ = contacted_case(db, registry, days_ago=4)
+    run(db["attribution_entries"].insert_one({
+        "id": "attr_x", "tenant_id": TENANT, "case_id": case["id"], "claim": "unattributed"}))
+    assert verdict_for(db, case["id"])["status"] == fu.OUTCOME_RECORDED
+
+
+def test_a_persons_message_cannot_take_the_follow_ups_key(db, registry):
+    case, conversation_id = contacted_case(db, registry, days_ago=4)
+    other = run(cv.create_conversation(
+        db, tenant_id=TENANT, channel=cv.CHANNEL_EMAIL, actor="member@example.com",
+        subject="Elsewhere", participants=[{"kind": cv.PARTICIPANT_CONTACT, "id": "x",
+                                            "address": "someone-else@x.test"}]))
+    squat = run(cv.draft_message(
+        db, tenant_id=TENANT, conversation_id=other["id"], body="member text",
+        actor="member@example.com", idempotency_key=fu.followup_key(case["id"], 1)))
+    summary = run(fu.run_for_tenant(db, TENANT))
+    assert summary["by_status"].get(fu.KEY_CONFLICT) == 1 and summary["drafted"] == []
+    assert run(cv.get_message(db, TENANT, squat["id"]))["status"] == cv.DRAFT
+
+
+def test_the_draft_api_refuses_a_system_key():
+    import pydantic
+
+    import operations_routes
+
+    with pytest.raises(pydantic.ValidationError):
+        operations_routes.MessageDraftInput(body="x", idempotency_key="recovery:rc_1:followup:1")
+    assert operations_routes.MessageDraftInput(body="x", idempotency_key="mine-1")
+
+
+def test_each_sweep_moves_on_to_cases_it_has_not_checked(db, registry):
+    """Ordering by `updated_at` re-read the same oldest cases every run; with more
+    finished cases than the limit, a due one was never reached."""
+    first, _ = contacted_case(db, registry, days_ago=4)
+    second, _ = contacted_case(db, registry, days_ago=4)
+    run(db[rc.COLLECTION].update_one({"id": first["id"]},
+                                     {"$set": {"updated_at": "2000-01-01T00:00:00+00:00"}}))
+    run(fu.run_for_tenant(db, TENANT, limit=1))
+    run(fu.run_for_tenant(db, TENANT, limit=1))
+    drafted_for = {m["idempotency_key"] for m in run(db[cv.MESSAGES].find(
+        {"tenant_id": TENANT, "idempotency_key": {"$regex": ":followup:"}}).to_list(20))}
+    assert drafted_for == {fu.followup_key(first["id"], 1), fu.followup_key(second["id"], 1)}

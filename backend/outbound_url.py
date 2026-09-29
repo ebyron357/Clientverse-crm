@@ -55,10 +55,37 @@ def _parts(url: str) -> tuple[SplitResult, str, int]:
     return parsed, host, port
 
 
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")
+IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
+IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> Optional[ipaddress.IPv4Address]:
+    """The IPv4 address an IPv6 form carries, where it carries one.
+
+    `is_global` judges the IPv6 wrapper, not what it wraps: NAT64 `64:ff9b::a9fe:a9fe`
+    reaches 169.254.169.254 on a network with a NAT64 gateway, and still reads global.
+    """
+    if ip.ipv4_mapped:
+        return ip.ipv4_mapped
+    if ip.sixtofour:
+        return ip.sixtofour
+    if ip.teredo:
+        return ip.teredo[1]
+    if ip in NAT64 or ip in IPV4_TRANSLATED or ip in IPV4_COMPATIBLE:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return None
+
+
 def _is_public(address: str) -> bool:
     ip = ipaddress.ip_address(address.split("%", 1)[0])
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip in NAT64_LOCAL or ip.is_site_local:
+            return False
+        embedded = _embedded_ipv4(ip)
+        if embedded is not None:
+            return embedded.is_global and not embedded.is_multicast
     return ip.is_global and not ip.is_multicast
 
 

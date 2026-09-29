@@ -104,6 +104,31 @@ async def record_request(db: Any, *, job: str, run_id: Optional[str], status: st
     return entry_id
 
 
+async def record_rejection(db: Any, *, job: str, source: Optional[str] = None,
+                           detail: Optional[dict] = None) -> None:
+    """Count a refused (secret missing or wrong) request, one row per job per hour.
+
+    Anyone can send one. A row per request let a stranger push the scheduler's real
+    entries out of every bounded listing -- including the one the scheduler's own
+    "was this run recorded" check reads -- so refusals are aggregated instead. The fact
+    that refusals are happening, and when the latest was, stays visible.
+    """
+    now = _now()
+    bucket = now.strftime("%Y-%m-%dT%H")
+    try:
+        await db[COLLECTION].update_one(
+            {"job": job, "status": UNAUTHORIZED, "bucket": bucket},
+            {"$inc": {"count": 1},
+             "$set": {"received_at": _iso(now), "source": source, "detail": detail or {}},
+             "$setOnInsert": {"id": f"cronlog_{uuid.uuid4().hex[:16]}", "run_id": None,
+                              "started_at": None, "finished_at": None, "duration_ms": None,
+                              "result": None, "error": None,
+                              "expires_at": now + timedelta(days=RETENTION_DAYS)}},
+            upsert=True)
+    except Exception:
+        pass
+
+
 async def mark_started(db: Any, entry_id: str) -> None:
     try:
         await db[COLLECTION].update_one(

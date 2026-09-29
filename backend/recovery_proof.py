@@ -390,6 +390,11 @@ async def breakdown(db: Any, tenant_id: str, *, by: str = "lane",
         {"_id": 0, "id": 1, "source": 1, "state": 1, "potential_value": 1, "currency": 1,
          "plan_reference": 1, "confirmed_value": 1, "created_at": 1,
          "updated_at": 1}).to_list(20000)
+    # A case the ledger credited is not one that "ended without recovery", even when it
+    # was closed before the outcome arrived and so never reached `recovered`.
+    credited = set(await db[attribution.COLLECTION].distinct(
+        "case_id", {"tenant_id": tenant_id, "claim": attribution.CLAIM_ATTRIBUTED,
+                    **attribution.COUNTED}))
     plan_ids = [case["plan_reference"] for case in cases if case.get("plan_reference")]
     lanes: dict[str, str] = {}
     if plan_ids:
@@ -431,12 +436,12 @@ async def breakdown(db: Any, tenant_id: str, *, by: str = "lane",
         if state in recovery_case_service.OPEN_STATES:
             _add(target["open_potential_value_by_currency"], currency, potential)
         elif state in (recovery_case_service.CLOSED, recovery_case_service.FAILED) and \
-                case.get("confirmed_value") is None:
+                case.get("confirmed_value") is None and case.get("id") not in credited:
             ended = row(case_key(case, "updated_at"))
             _add(ended["ended_without_recovery_potential_by_currency"], currency, potential)
 
     entries = await db[attribution.COLLECTION].find(
-        {"tenant_id": tenant_id}, {"_id": 0}).to_list(10000)
+        {"tenant_id": tenant_id, **attribution.COUNTED}, {"_id": 0}).to_list(10000)
     for entry in entries:
         case = by_case.get(entry.get("case_id")) or {}
         outcome = entry.get("outcome") or {}

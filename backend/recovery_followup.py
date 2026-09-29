@@ -72,6 +72,12 @@ LIMIT_REACHED = "limit_reached"
 DISABLED = "followups_disabled"
 CASE_NOT_ACTIVE = "case_not_active"
 NO_CONTACT_YET = "no_contact_yet"
+OUTCOME_RECORDED = "outcome_recorded"
+KEY_CONFLICT = "followup_key_conflict"
+
+# The ledger collection, named here rather than imported: attribution imports this
+# module's neighbours, and the follow-up only needs to know whether an outcome exists.
+ATTRIBUTION_COLLECTION = "attribution_entries"
 
 ACTIVE_CASE_STATES = (recovery_case.EXECUTING, recovery_case.ENGAGED)
 REACHED_STATES = (conversations.SENT, conversations.DELIVERED)
@@ -195,6 +201,15 @@ async def assess_case(db: Any, tenant_id: str, case: dict, policy: dict,
         return _verdict(case, CONSENT_NOT_GRANTED,
                         f"Consent on this thread is '{consent}', not granted.", **extra)
 
+    if await db[ATTRIBUTION_COLLECTION].find_one({"tenant_id": tenant_id,
+                                                  "case_id": case["id"]}, {"_id": 1}):
+        # Money arrived (credited to outreach or not): chasing "no reply" is over.
+        return _verdict(case, OUTCOME_RECORDED,
+                        "An outcome is recorded on this case; follow-ups stop.", **extra)
+    if case.get("reply_count") or case.get("last_reply_at"):
+        return _verdict(case, REPLIED,
+                        "The case has recorded a reply from the client.", **extra)
+
     messages = await conversations.list_messages(db, tenant_id, conversation["id"])
     reached = [m for m in messages if m.get("direction") == conversations.OUTBOUND
                and m.get("status") in REACHED_STATES and _reached_at(m)]
@@ -202,20 +217,26 @@ async def assess_case(db: Any, tenant_id: str, case: dict, policy: dict,
         return _verdict(case, NO_CONTACT_YET,
                         "Nothing on this case has reached the client yet.", **extra)
     reached.sort(key=lambda m: _reached_at(m) or now)
-    first_contact = _reached_at(reached[0])
     last = reached[-1]
     last_contact = _reached_at(last)
     extra["last_contact_at"] = _iso(last_contact) if last_contact else None
+    # A reply counts from when our first message was created, not from when its delivery
+    # was confirmed: a message recorded `sent` only after reconciliation, or with a late
+    # receipt, carries a later timestamp than the reply it drew.
+    first_attempt = min((_parse(m.get("created_at")) or _reached_at(m) or now) for m in reached)
 
     replies = [m for m in messages if m.get("direction") == conversations.INBOUND
-               and (_parse(m.get("created_at")) or now) >= (first_contact or now)]
+               and (_parse(m.get("created_at")) or now) >= first_attempt]
     if replies:
         return _verdict(case, REPLIED,
                         "The client replied; a person should take it from here.",
                         reply_message_id=replies[-1]["id"], **extra)
 
     prefix = _followup_prefix(case["id"])
-    followups = [m for m in messages if str(m.get("idempotency_key") or "").startswith(prefix)]
+    # Only the automation's own drafts on this thread: a person's message carrying the
+    # same key is not a follow-up, and must not count toward (or block) the sequence.
+    followups = [m for m in messages if str(m.get("idempotency_key") or "").startswith(prefix)
+                 and m.get("author_kind") == approval_queue.REQUESTER_AGENT]
     extra["followups_drafted"] = len(followups)
     pending = [m for m in followups if m.get("status") in UNFINISHED_STATES]
     if pending:
@@ -266,6 +287,10 @@ def _draft_body(case: dict, verdict: dict) -> str:
     return "\n".join(lines)
 
 
+class FollowupKeyConflict(Exception):
+    """The follow-up's key already names a message that is not this follow-up."""
+
+
 async def draft_followup(db: Any, tenant_id: str, case: dict, verdict: dict, *,
                          actor: str = "recovery-followup",
                          audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
@@ -282,6 +307,13 @@ async def draft_followup(db: Any, tenant_id: str, case: dict, verdict: dict, *,
         subject=subject if subject.lower().startswith("re:") else f"Re: {subject}",
         to_address=verdict.get("to_address"), idempotency_key=key,
         requester_kind=approval_queue.REQUESTER_AGENT)
+    if message.get("conversation_id") != verdict["conversation_id"] or \
+            message.get("author_kind") != approval_queue.REQUESTER_AGENT:
+        # The key was taken by someone else's message (another thread, or a person's
+        # draft). Adopting it would raise that text for approval under this name.
+        raise FollowupKeyConflict(
+            f"Key {key} already belongs to message {message.get('id')}, which is not this "
+            "case's follow-up")
     if message.get("status") == conversations.DRAFT:
         message = await conversations.request_approval(
             db, tenant_id=tenant_id, message_id=message["id"], actor=actor)
@@ -297,9 +329,13 @@ async def draft_followup(db: Any, tenant_id: str, case: dict, verdict: dict, *,
 # ------------------------------------------------------------------------ sweeps
 
 async def _active_cases(db: Any, tenant_id: str, limit: int) -> list[dict]:
+    # Least recently checked first, so each sweep moves on. Ordering by `updated_at`
+    # re-read the same oldest cases every run -- drafting does not touch the case -- and
+    # a tenant with more finished cases than the limit never reached a due one.
     rows: list[dict] = await db[recovery_case.COLLECTION].find(
         {"tenant_id": tenant_id, "state": {"$in": list(ACTIVE_CASE_STATES)}},
-        {"_id": 0}).sort("updated_at", 1).to_list(max(1, int(limit)))
+        {"_id": 0}).sort([("followup_checked_at", 1), ("updated_at", 1)]).to_list(
+            max(1, int(limit)))
     return rows
 
 
@@ -326,6 +362,9 @@ async def run_for_tenant(db: Any, tenant_id: str, *, actor: str = "recovery-foll
     by_status: dict[str, int] = {}
     for case in await _active_cases(db, tenant_id, limit):
         verdict = await assess_case(db, tenant_id, case, policy, now)
+        await db[recovery_case.COLLECTION].update_one(
+            {"id": case["id"], "tenant_id": tenant_id},
+            {"$set": {"followup_checked_at": _iso(_now())}})
         status = verdict["status"]
         if status == DUE:
             try:
@@ -335,6 +374,10 @@ async def run_for_tenant(db: Any, tenant_id: str, *, actor: str = "recovery-foll
                                 "approval_id": message.get("approval_id"),
                                 "sequence": verdict["sequence"]})
                 status = DRAFTED
+            except FollowupKeyConflict as exc:
+                logger.warning("Follow-up key conflict on case %s: %s", case["id"], exc)
+                errors.append({"case_id": case["id"], "error": str(exc)[:300]})
+                status = KEY_CONFLICT
             except Exception as exc:  # one case must not stop the sweep
                 logger.exception("Could not draft a follow-up for case %s", case["id"])
                 errors.append({"case_id": case["id"], "error": str(exc)[:300]})

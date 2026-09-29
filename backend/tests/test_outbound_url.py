@@ -24,6 +24,12 @@ import outbound_url
     "http://172.16.0.1/",
     "http://[::1]/",
     "http://[::ffff:127.0.0.1]/",
+    "http://[64:ff9b::a9fe:a9fe]/",       # NAT64 -> 169.254.169.254
+    "http://[64:ff9b::a00:1]/",           # NAT64 -> 10.0.0.1
+    "http://[::7f00:1]/",                 # IPv4-compatible -> 127.0.0.1
+    "http://[::ffff:0:a9fe:a9fe]/",       # IPv4-translated -> 169.254.169.254
+    "http://[2002:a9fe:a9fe::1]/",        # 6to4 -> 169.254.169.254
+    "http://[fec0::1]/",                  # deprecated site-local
     "http://0.0.0.0/",
     "http://100.64.0.1/",
     "http://metadata.google.internal/",

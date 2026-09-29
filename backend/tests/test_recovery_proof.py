@@ -392,3 +392,20 @@ def test_every_breakdown_figure_names_where_it_comes_from(db):
                 "breakdown.open_potential_value_by_currency",
                 "breakdown.ended_without_recovery_potential_by_currency"):
         assert key in trace
+
+
+def test_a_closed_case_credited_by_the_ledger_is_not_ended_without_recovery(db):
+    """An outcome recorded after the case was closed stays attributed, but the case
+    cannot move to recovered -- it was reported both recovered and not."""
+    case = make_case(db, potential=5000.0)
+    conversation = conversation_for(db, case)
+    message(db, conversation, direction=cv.OUTBOUND, status=cv.SENT, days_ago=10)
+    run(rc.set_state(db, tenant_id=TENANT, case_id=case["id"], state=rc.CLOSED))
+    invoice = paid_invoice(db, total=5000.0)
+    entry = run(attribution.record_outcome(db, tenant_id=TENANT, case_id=case["id"],
+                                           kind=attribution.OUTCOME_INVOICE_PAID,
+                                           record_id=invoice["id"], actor="ops"))
+    assert entry["claim"] == attribution.CLAIM_ATTRIBUTED
+    row = run(recovery_proof.breakdown(db, TENANT, by="source"))["rows"][0]
+    assert row["attributed_recovered_value_by_currency"] == {"USD": 5000.0}
+    assert row["ended_without_recovery_potential_by_currency"] == {}

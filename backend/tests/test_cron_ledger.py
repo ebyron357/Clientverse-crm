@@ -155,11 +155,40 @@ def test_a_rejected_request_is_recorded_so_a_wrong_secret_is_not_silence():
         assert excinfo.value.status_code == 401
         return await _entries_for(run_id)
 
-    entries = run(scenario())
-    assert len(entries) == 1
-    assert entries[0]["status"] == cron_ledger.UNAUTHORIZED
-    assert entries[0]["started_at"] is None, "a rejected request must never run the job"
-    assert "not-the-secret" not in repr(entries[0])
+    run(scenario())
+    rows = run(_db(lambda: server.db[cron_ledger.COLLECTION].find(
+        {"job": "second-chance", "status": cron_ledger.UNAUTHORIZED},
+        {"_id": 0}).to_list(10)))
+    assert 1 <= len(rows) <= 2 and rows[0]["count"] >= 1
+    assert rows[0]["started_at"] is None, "a rejected request must never run the job"
+    assert "not-the-secret" not in repr(rows[0])
+
+
+def test_a_flood_of_refused_calls_is_one_row_not_thousands():
+    """Anyone can send a refused call. One row each let a stranger push the scheduler's
+    real entries out of every bounded listing of the ledger."""
+    async def scenario():
+        for _ in range(25):
+            with pytest.raises(HTTPException):
+                await server.cron_second_chance(FakeRequest(_headers(_new_run_id(),
+                                                                     secret="wrong")))
+        return await server.db[cron_ledger.COLLECTION].find(
+            {"job": "second-chance", "status": cron_ledger.UNAUTHORIZED},
+            {"_id": 0}).to_list(50)
+
+    rows = run(scenario())
+    # One row per job per hour (two if the run straddled the hour).
+    assert len(rows) <= 2 and sum(row["count"] for row in rows) >= 25
+
+
+def test_a_non_ascii_bearer_token_is_refused_not_a_server_error():
+    async def scenario():
+        with pytest.raises(HTTPException) as refused:
+            await server.cron_second_chance(FakeRequest({
+                "Authorization": "Bearer caf\u00e9", "X-Webhook-Id": _new_run_id()}))
+        return refused.value.status_code
+
+    assert run(scenario()) == 401
 
 
 def test_the_ledger_is_not_readable_without_the_secret_or_an_admin_session():

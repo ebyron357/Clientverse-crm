@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import approval_queue
 import conversations
@@ -112,6 +112,15 @@ class MessageDraftInput(BaseModel):
     to_address: Optional[str] = Field(default=None, max_length=300)
     from_address: Optional[str] = Field(default=None, max_length=300)
     idempotency_key: Optional[str] = Field(default=None, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _not_a_system_key(cls, value: Optional[str]) -> Optional[str]:
+        # `recovery:` keys belong to the runner and the follow-up sweep. A person's draft
+        # carrying one was adopted by the sweep as its own follow-up.
+        if value and value.strip().lower().startswith("recovery:"):
+            raise ValueError("keys starting with 'recovery:' are reserved for the system")
+        return value
 
 
 class MessageApprovalInput(BaseModel):

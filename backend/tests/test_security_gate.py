@@ -403,3 +403,33 @@ def test_an_external_tool_must_name_the_digest_it_was_reviewed_at(db_env,
                                     version=approved["version"], digest="sha256:abc",
                                     require_digest=True))
     assert ok["id"] == approved["id"]
+
+
+def test_a_scan_that_found_critical_problems_is_not_a_pass(db_env, scanners_configured):
+    component = _register(db_env)
+    for name, checks in (("gate_a", gate.GATE_A_CHECKS), ("gate_b", gate.GATE_B_CHECKS)):
+        run(gate.record_gate(db_env, tenant_id=TENANT, component_id=component["id"],
+                             gate=name, checks=_pass_checks(checks),
+                             reviewer="admin@example.com"))
+    for scanner in gate.required_scanners(gate.KIND_SKILL):
+        run(gate.record_service_scan(db_env, tenant_id=TENANT, component_id=component["id"],
+                                     gate="gate_b", scanner=scanner, status="completed",
+                                     findings=[{"severity": "critical", "rule": "exfil"}]))
+    with pytest.raises(gate.SecurityGateError, match="high or critical"):
+        run(gate.decide(db_env, tenant_id=TENANT, component_id=component["id"],
+                        decision=gate.APPROVED, actor="admin@example.com", rationale="x"))
+
+
+def test_a_later_failed_scan_replaces_an_earlier_clean_one(db_env, scanners_configured):
+    component = _register(db_env)
+    for name, checks in (("gate_a", gate.GATE_A_CHECKS), ("gate_b", gate.GATE_B_CHECKS)):
+        run(gate.record_gate(db_env, tenant_id=TENANT, component_id=component["id"],
+                             gate=name, checks=_pass_checks(checks),
+                             reviewer="admin@example.com"))
+    scanners = gate.required_scanners(gate.KIND_SKILL)
+    _scanned(db_env, component["id"], "gate_b", _completed_scans(gate.KIND_SKILL))
+    run(gate.record_service_scan(db_env, tenant_id=TENANT, component_id=component["id"],
+                                 gate="gate_b", scanner=scanners[0], status="failed"))
+    with pytest.raises(gate.SecurityGateError):
+        run(gate.decide(db_env, tenant_id=TENANT, component_id=component["id"],
+                        decision=gate.APPROVED, actor="admin@example.com", rationale="x"))

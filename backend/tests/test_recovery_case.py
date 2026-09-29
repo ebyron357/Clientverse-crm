@@ -813,3 +813,22 @@ def test_a_case_cannot_be_linked_to_another_tenants_record(env):
         run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
                                 plan_reference="rs_anything"))
     assert run(rc.get_case(db, TENANT, case["id"]))["contact_id"] is None
+
+
+def test_adding_a_link_cannot_move_a_case_to_another_client(env):
+    """A case about contact A (of company A) given company B accepted company B's
+    invoices "via the case's company" -- a re-point made by addition."""
+    db, _ = env
+    run(db.companies.insert_many([{"tenant_id": TENANT, "id": "co_a2", "name": "A"},
+                                  {"tenant_id": TENANT, "id": "co_b2", "name": "B"}]))
+    run(db.contacts.insert_one({"tenant_id": TENANT, "id": "con_a2", "name": "A person",
+                                "company_id": "co_a2"}))
+    case = run(rc.open_case(db, missed_call_event()))
+    run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                            contact_id="con_a2"))
+    with pytest.raises(rc.LinkConflict, match="different clients"):
+        run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                                company_id="co_b2"))
+    agreed = run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                                     company_id="co_a2"))
+    assert agreed["company_id"] == "co_a2"

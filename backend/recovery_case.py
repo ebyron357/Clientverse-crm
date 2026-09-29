@@ -454,6 +454,16 @@ class LinkConflict(RecoveryCaseError):
     """The case already names a different record in that field."""
 
 
+async def _anchor_company(db, tenant_id: str, field: str, value: str) -> Optional[str]:
+    """The company a CRM reference belongs to (a company is its own)."""
+    if field == "company_id":
+        return value
+    collection = REFERENCE_COLLECTIONS[field]
+    record = await db[collection].find_one({"tenant_id": tenant_id, "id": value},
+                                           {"_id": 0, "company_id": 1})
+    return (record or {}).get("company_id")
+
+
 async def link_crm_records(db, *, tenant_id: str, case_id: str, actor: str,
                            audit: Optional[Callable[..., Awaitable[Any]]] = None,
                            **references: Optional[str]) -> dict:
@@ -488,6 +498,20 @@ async def link_crm_records(db, *, tenant_id: str, case_id: str, actor: str,
     new = {field: value for field, value in wanted.items() if case.get(field) != value}
     if not new:
         return case
+    # Every link must describe the same client. A case about contact A (of company A)
+    # given `company_id=B` would otherwise accept company B's invoices "via the case's
+    # company" -- a re-point by addition.
+    companies: dict[str, str] = {}
+    for field in REFERENCE_COLLECTIONS:
+        value = new.get(field) or case.get(field)
+        company = await _anchor_company(db, tenant_id, field, value) if value else None
+        if company:
+            companies[field] = company
+    if len(set(companies.values())) > 1:
+        detail = ", ".join(f"{field} -> company {company}"
+                           for field, company in sorted(companies.items()))
+        raise LinkConflict(f"These links name different clients ({detail}); a case is about "
+                           "one client.")
     criteria: dict[str, Any] = {"id": case_id, "tenant_id": tenant_id}
     for field in new:
         criteria[field] = None

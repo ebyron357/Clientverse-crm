@@ -155,6 +155,7 @@ def _parse(value) -> Optional[datetime]:
 # SCANNER_SERVICE results; none is implemented yet, so the gate cannot pass until one is.
 SCANNER_SERVICE = "scanner_service"
 REVIEWER_SUPPLIED = "reviewer_supplied"
+BLOCKING_SEVERITIES = ("high", "critical")
 
 
 def required_scanners(kind: str) -> list[str]:
@@ -388,9 +389,26 @@ def eligibility(component: dict) -> dict:
         reasons.append(f"Gate B (capability/execution review) is '{gate_b}'")
 
     readiness = scanner_readiness(component.get("kind", KIND_SKILL))
-    ran = {r.get("scanner") for gate in ("gate_a", "gate_b")
-           for r in ((component.get(gate) or {}).get("scanner_results") or [])
-           if r.get("status") == "completed" and r.get("source") == SCANNER_SERVICE}
+    # Each scanner's most recent service result is its verdict: a later failed or
+    # flagged re-scan replaces an earlier clean one. A completed scan that reported a
+    # high or critical finding is a finding, not a pass.
+    latest: dict[str, dict] = {}
+    for gate in ("gate_a", "gate_b"):
+        for result in ((component.get(gate) or {}).get("scanner_results") or []):
+            if result.get("source") != SCANNER_SERVICE:
+                continue
+            scanner = result.get("scanner")
+            if scanner not in latest or str(result.get("at") or "") >= str(
+                    latest[scanner].get("at") or ""):
+                latest[scanner] = result
+    ran = {scanner for scanner, result in latest.items() if result.get("status") == "completed"}
+    flagged = sorted(scanner for scanner, result in latest.items()
+                     if result.get("status") == "completed" and any(
+                         str((finding or {}).get("severity") or "").lower() in BLOCKING_SEVERITIES
+                         for finding in (result.get("findings") or [])))
+    if flagged:
+        reasons.append("The latest scan reported high or critical findings: "
+                       + ", ".join(flagged))
     missing_scans = [s for s in readiness["required"] if s not in ran]
     if missing_scans:
         reasons.append("Required scanners have not produced a completed result fetched by "

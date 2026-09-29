@@ -138,7 +138,45 @@ def _public(doc: Optional[dict]) -> Optional[dict]:
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
+# Entries that count toward any figure. A legacy entry found to book money another entry
+# already booked carries `duplicate_of` and is kept as history but never summed.
+COUNTED: dict[str, Any] = {"duplicate_of": None}
+
+
+def booking_key(collection: Optional[str], kind: str, record_id: str) -> str:
+    """What makes two ledger entries the same money, tenant-wide."""
+    if collection:
+        return f"{collection}:{record_id}"
+    # An operator confirmation names its own reference (a bank transfer, a cheque). The
+    # same reference booked on two cases is the same payment booked twice.
+    return f"operator:{str(record_id).strip().lower()}"
+
+
+async def backfill_booking_keys(db: Any) -> int:
+    """Give entries written before `booked_record` existed their key, earliest first.
+
+    Without it the tenant-wide uniqueness only covered new entries, and an invoice the
+    deployed ledger had already booked could be booked again on another case. A later
+    entry for money an earlier one booked is marked `duplicate_of` rather than deleted.
+    """
+    marked = 0
+    async for entry in db[COLLECTION].find(
+            {"booked_record": {"$exists": False}, "duplicate_of": None},
+            {"_id": 0}).sort("recorded_at", 1):
+        outcome = entry.get("outcome") or {}
+        key = booking_key(outcome.get("collection"), outcome.get("kind") or "",
+                          outcome.get("record_id") or "")
+        holder = await db[COLLECTION].find_one(
+            {"tenant_id": entry["tenant_id"], "booked_record": key}, {"_id": 0, "id": 1})
+        update = ({"duplicate_of": holder["id"]} if holder else {"booked_record": key})
+        await db[COLLECTION].update_one({"id": entry["id"], "tenant_id": entry["tenant_id"]},
+                                        {"$set": update})
+        marked += 1
+    return marked
+
+
 async def ensure_indexes(db: Any) -> None:
+    await backfill_booking_keys(db)
     # One entry per outcome per case. Replaying the same confirmation -- a webhook
     # redelivered, a sweep run twice -- must not book the revenue twice.
     await db[COLLECTION].create_index(
@@ -384,6 +422,41 @@ async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str
             "amount_source": "operator statement"}
 
 
+async def _related_booking(db: Any, tenant_id: str, collection: str,
+                           record: dict) -> Optional[dict]:
+    """A ledger entry already booking this record's other half, if any.
+
+    A won deal and the invoice that pays for it are one piece of money. Booked as two
+    records they counted twice -- a USD 10,000 deal and its USD 10,000 invoice showed as
+    USD 20,000 recovered. The link is the one the CRM itself records: the invoice's deal,
+    or the deal's workspace (created when the deal was won) that the invoice belongs to.
+    """
+    keys: set[str] = set()
+    if collection == "invoices":
+        deal_ids = {record.get("opportunity_id")} - {None}
+        if record.get("workspace_id"):
+            workspace = await db.workspaces.find_one(
+                {"tenant_id": tenant_id, "id": record["workspace_id"]},
+                {"_id": 0, "opportunity_id": 1})
+            deal_ids |= {(workspace or {}).get("opportunity_id")} - {None}
+        keys = {f"opportunities:{deal_id}" for deal_id in deal_ids}
+    elif collection == "opportunities":
+        workspace_ids = [row["id"] async for row in db.workspaces.find(
+            {"tenant_id": tenant_id, "opportunity_id": record.get("id")}, {"_id": 0, "id": 1})]
+        invoices = db.invoices.find(
+            {"tenant_id": tenant_id,
+             "$or": [{"opportunity_id": record.get("id")},
+                     {"workspace_id": {"$in": workspace_ids}}]},
+            {"_id": 0, "id": 1})
+        keys = {f"invoices:{row['id']}" async for row in invoices}
+    if not keys:
+        return None
+    found: Optional[dict] = await db[COLLECTION].find_one(
+        {"tenant_id": tenant_id, "booked_record": {"$in": sorted(keys)}, **COUNTED},
+        {"_id": 0, "id": 1, "case_id": 1, "booked_record": 1})
+    return found
+
+
 def _source_record_id(case: dict) -> Optional[str]:
     """The record a detector opened this case for (`kind:record_id`), if any."""
     source_event_id = str(case.get("source_event_id") or "")
@@ -477,6 +550,12 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
             raise AttributionError(
                 f"{record_id} does not belong to this case's client: "
                 + record_link["detail"])
+        related = await _related_booking(db, tenant_id, outcome["collection"], record)
+        if related:
+            raise RecordAlreadyBooked(
+                f"{record_id} is the same engagement's money as {related['booked_record']}, "
+                f"already in the ledger (entry {related['id']}, case {related['case_id']}); "
+                "a deal and the invoice that pays it are one recovery, booked once.")
     derived = await derive_basis(db, tenant_id=tenant_id, case_id=case_id,
                                  occurred_at=outcome["occurred_at"])
     attributed = derived["basis"] != BASIS_NONE
@@ -503,8 +582,7 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
         # no CRM record to check it against, and said so rather than hidden.
         "record_link": record_link,
     }
-    if outcome["collection"]:
-        entry["booked_record"] = f"{outcome['collection']}:{record_id}"
+    entry["booked_record"] = booking_key(outcome["collection"], kind, record_id)
     try:
         await db[COLLECTION].insert_one(dict(entry))
     except Exception as exc:
@@ -576,7 +654,8 @@ async def totals(db: Any, tenant_id: str) -> dict:
     attributed and unattributed totals are reported side by side on purpose: a product
     that only shows what it can claim is showing a number with no denominator.
     """
-    entries = await db[COLLECTION].find({"tenant_id": tenant_id}, {"_id": 0}).to_list(10000)
+    entries = await db[COLLECTION].find({"tenant_id": tenant_id, **COUNTED},
+                                        {"_id": 0}).to_list(10000)
 
     attributed: dict[str, float] = {}
     unattributed: dict[str, float] = {}
@@ -611,7 +690,8 @@ async def time_to_recovery(db: Any, tenant_id: str) -> dict:
     that are missing one would be a number about the data, not about the business.
     """
     entries = await db[COLLECTION].find(
-        {"tenant_id": tenant_id, "claim": CLAIM_ATTRIBUTED}, {"_id": 0}).to_list(5000)
+        {"tenant_id": tenant_id, "claim": CLAIM_ATTRIBUTED, **COUNTED},
+        {"_id": 0}).to_list(5000)
     durations: list[float] = []
     for entry in entries:
         case = await db[recovery_case_service.COLLECTION].find_one(

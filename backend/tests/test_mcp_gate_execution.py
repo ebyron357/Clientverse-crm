@@ -75,3 +75,38 @@ def test_an_unapproved_external_write_is_blocked_at_execution(monkeypatch):
     assert outcome["status"] == "blocked"
     assert pending == "blocked" and invocation == "blocked"
     assert ran == [], "the external tool must not run"
+
+
+def test_a_write_queued_before_the_kill_switch_does_not_run_after_it(monkeypatch):
+    ran = []
+
+    async def implementation(user, args):
+        ran.append(args)
+        return {"ok": True}
+
+    monkeypatch.setitem(server.TOOL_IMPL_L2, "create_task", implementation)
+    name = f"clientverse_mcp_kill_{uuid.uuid4().hex[:10]}"
+
+    async def body():
+        previous = server.db
+        server.db = server.mclient[name]
+        try:
+            db = server.db
+            await server.get_mcp_server(TENANT)
+            await db.mcp_server_state.update_one({"tenant_id": TENANT},
+                                                 {"$set": {"kill_switch": True}})
+            await db.mcp_pending_actions.insert_one({
+                "id": "pa_k", "tenant_id": TENANT, "tool": "create_task",
+                "args": {"workspace_id": "ws", "title": "t"},
+                "status": "pending_approval", "invocation_id": "inv_k"})
+            await db.mcp_tool_invocations.insert_one({
+                "id": "inv_k", "tenant_id": TENANT, "tool": "create_task",
+                "status": "pending_approval"})
+            return await server.execute_pending_mcp("pa_k", USER)
+        finally:
+            await server.mclient.drop_database(name)
+            server.db = previous
+
+    outcome = run(body())
+    assert outcome["status"] == "blocked" and "kill switch" in outcome["error"]
+    assert ran == []
