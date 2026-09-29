@@ -71,8 +71,9 @@ REQUESTER_KINDS = (REQUESTER_AGENT, REQUESTER_HUMAN, REQUESTER_SYSTEM)
 # code that owns those records may raise requests for them. A person raising one by hand
 # could name any message or plan as its subject and then cancel the request, and the
 # cancellation would withdraw the real one's subject.
-RESERVED_KINDS = ("mcp_write", "recovery_strategy", "communication_message")
-RESERVED_SUBJECT_TYPES = ("mcp_pending_action", "recovery_strategy", "communication_message")
+RESERVED_KINDS = ("mcp_write", "recovery_strategy", "communication_message", "document_share")
+RESERVED_SUBJECT_TYPES = ("mcp_pending_action", "recovery_strategy", "communication_message",
+                          "client_document")
 
 
 def assert_not_reserved(kind: Optional[str], subject_type: Optional[str]) -> None:

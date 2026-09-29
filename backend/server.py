@@ -4,7 +4,9 @@ import hashlib
 import hmac
 import json as _json
 import logging
+import math
 import os
+import re
 import secrets
 import time
 import uuid
@@ -53,7 +55,9 @@ import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
-from client_value import register_client_value_routes, stamp_paid_at
+from body_limits import BodySizeLimit
+from client_value import ensure_indexes as client_value_indexes
+from client_value import register_client_value_routes, stamp_paid_at, was_paid
 from operations_routes import register_operations_routes
 from work_queue import WorkQueue, run_worker_tick
 
@@ -165,6 +169,7 @@ async def lifespan(_: FastAPI):
         await recovery_followup.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
+    await client_value_indexes(db)
     try:
         for channel in register_channel_providers():
             logger.info("Registered outbound channel provider: %s", channel)
@@ -183,7 +188,34 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ClientVerse API", version="v1", lifespan=lifespan)
-api = APIRouter(prefix="/api")
+def _finite(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(item) for item in value]
+    return value
+
+
+class FiniteJSONResponse(JSONResponse):
+    """JSON that survives a non-finite number already in the database.
+
+    Inputs now refuse `Infinity`, `NaN` and out-of-range amounts, but one stored before
+    that -- or reached by a sum -- made every response containing it raise, so one bad
+    deal took the pipeline, dashboard and search down for the whole tenant. The common
+    path is unchanged; only a render that fails is retried with those values as null.
+    """
+
+    def render(self, content) -> bytes:
+        try:
+            return super().render(content)
+        except ValueError:
+            logger.warning("Rendered a response containing a non-finite number as null")
+            return super().render(_finite(content))
+
+
+api = APIRouter(prefix="/api", default_response_class=FiniteJSONResponse)
 
 
 CONTENT_SECURITY_POLICY = "; ".join([
@@ -219,17 +251,6 @@ async def validation_error_response(request: Request, exc: RequestValidationErro
         return JSONResponse(status_code=422, content={"detail": [
             {"loc": list(error.get("loc", ())), "msg": error.get("msg"),
              "type": error.get("type")} for error in exc.errors()]})
-
-
-@app.middleware("http")
-async def bound_public_intake_body(request: Request, call_next):
-    """The public intake door accepts a few hundred bytes of form fields. Refuse a larger
-    declared body before anything reads it."""
-    if request.url.path.startswith("/api/intake/public/"):
-        length = request.headers.get("content-length")
-        if length and length.isdigit() and int(length) > recovery_intake.MAX_PUBLIC_BODY_BYTES:
-            return JSONResponse(status_code=413, content={"detail": "Enquiry too large"})
-    return await call_next(request)
 
 
 @app.middleware("http")
@@ -899,7 +920,7 @@ STAGES = ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_
 class OppInput(BaseModel):
     name: str
     company_id: Optional[str] = None
-    value: float = 0
+    value: float = Field(default=0, ge=0, le=crm_core.MAX_MONEY, allow_inf_nan=False)
     stage: str = "lead"
     owner: Optional[str] = None
     currency: str = "USD"
@@ -988,10 +1009,13 @@ async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user
         {"$set": {"stage": inp.stage, "updated_at": now_iso()},
          "$push": {"stage_history": transition,
                    "history": crm_core.stage_history(user["email"], transition)}})
-    et = "opportunity.closed_won" if inp.stage == "closed_won" else ("opportunity.closed_lost" if inp.stage == "closed_lost" else "opportunity.stage_changed")
+    won_stages, closed_stages = await crm_core.stage_outcomes(db, user["tenant_id"])
+    et = ("opportunity.closed_won" if inp.stage in won_stages
+          else "opportunity.closed_lost" if inp.stage in closed_stages
+          else "opportunity.stage_changed")
     await record_event(et, "opportunity", opp_id, user["tenant_id"], user["email"], payload={"from": opp["stage"], "to": inp.stage})
     # auto-create workspace on won
-    if inp.stage == "closed_won" and opp.get("company_id"):
+    if inp.stage in won_stages and opp.get("company_id"):
         exists = await db.workspaces.find_one({"opportunity_id": opp_id, "tenant_id": user["tenant_id"]})
         if not exists:
             wid = new_id("ws")
@@ -1204,10 +1228,15 @@ class CommitmentInput(BaseModel):
     owner: Optional[str] = None
     due_date: Optional[str] = None
     status: str = "open"
+    # Shown to the client in the portal. Internal unless an admin says otherwise, the
+    # same rule shared documents follow.
+    client_visible: bool = False
 
 @api.post("/commitments")
 async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)):
     await assert_workspace(user, inp.workspace_id)
+    if inp.client_visible and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only an admin can share a commitment with the client")
     doc = {"id": new_id("cmt"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.commitments.insert_one(doc)
     await record_event("commitment.created", "commitment", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -1216,6 +1245,7 @@ async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)
 class CommitmentPatch(BaseModel):
     status: Optional[str] = None
     due_date: Optional[str] = None
+    client_visible: Optional[bool] = None
 
 @api.patch("/commitments/{cmt_id}")
 async def update_commitment(cmt_id: str, inp: CommitmentPatch, user=Depends(get_current_user)):
@@ -1227,8 +1257,12 @@ async def update_commitment(cmt_id: str, inp: CommitmentPatch, user=Depends(get_
         upd["status"] = inp.status
     if inp.due_date is not None:
         upd["due_date"] = inp.due_date or None
+    if inp.client_visible is not None:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Only an admin can change what the client sees")
+        upd["client_visible"] = inp.client_visible
     if upd:
-        await db.commitments.update_one({"id": cmt_id}, {"$set": upd})
+        await db.commitments.update_one({"id": cmt_id, "tenant_id": user["tenant_id"]}, {"$set": upd})
     etmap = {"at_risk": "commitment.at_risk", "breached": "commitment.breached", "fulfilled": "commitment.fulfilled"}
     if inp.status in etmap:
         await record_event(etmap[inp.status], "commitment", cmt_id, user["tenant_id"], user["email"], workspace_id=c["workspace_id"], payload={"title": c["title"]})
@@ -1310,8 +1344,9 @@ async def dashboard(user=Depends(get_current_user)):
     opps = await db.opportunities.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     workspaces = await db.workspaces.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     commitments = await db.commitments.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
-    pipeline_value = sum(o.get("value", 0) for o in opps if o.get("stage") not in ("closed_won", "closed_lost"))
-    won_value = sum(o.get("value", 0) for o in opps if o.get("stage") == "closed_won")
+    won_stages, closed_stages = await crm_core.stage_outcomes(db, t)
+    pipeline_value = sum(o.get("value", 0) for o in opps if o.get("stage") not in closed_stages)
+    won_value = sum(o.get("value", 0) for o in opps if o.get("stage") in won_stages)
     funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
     # health per workspace
     portfolio = []
@@ -1352,7 +1387,7 @@ async def dashboard(user=Depends(get_current_user)):
     }
     return {
         "pipeline_value": pipeline_value, "won_value": won_value,
-        "open_opportunities": len([o for o in opps if o.get("stage") not in ("closed_won", "closed_lost")]),
+        "open_opportunities": len([o for o in opps if o.get("stage") not in closed_stages]),
         "active_workspaces": len(workspaces), "at_risk_commitments": at_risk,
         "funnel": funnel, "portfolio": portfolio, "goal_rollup": goal_rollup,
     }
@@ -1652,7 +1687,8 @@ async def _tool_list_open_commitments(user, args):
 async def _tool_get_pipeline_summary(user, args):
     opps = await db.opportunities.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).to_list(2000)
     funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
-    return {"funnel": funnel, "open_value": sum(o.get("value", 0) for o in opps if o.get("stage") not in ("closed_won", "closed_lost"))}
+    _, closed_stages = await crm_core.stage_outcomes(db, user["tenant_id"])
+    return {"funnel": funnel, "open_value": sum(o.get("value", 0) for o in opps if o.get("stage") not in closed_stages)}
 
 async def _tool_list_tasks(user, args):
     q = {"tenant_id": user["tenant_id"]}
@@ -2139,15 +2175,19 @@ class OutcomeInput(BaseModel):
     workspace_id: str
     title: str
     target: Optional[str] = None
-    target_value: Optional[float] = None
-    current_value: float = 0
+    target_value: Optional[float] = Field(default=None, ge=-crm_core.MAX_MONEY,
+                                          le=crm_core.MAX_MONEY, allow_inf_nan=False)
+    current_value: float = Field(default=0, ge=-crm_core.MAX_MONEY, le=crm_core.MAX_MONEY,
+                                 allow_inf_nan=False)
     unit: Optional[str] = None
     status: str = "on_track"
     linked_commitment_ids: list[str] = []
 
 class OutcomePatch(BaseModel):
-    current_value: Optional[float] = None
-    target_value: Optional[float] = None
+    current_value: Optional[float] = Field(default=None, ge=-crm_core.MAX_MONEY,
+                                           le=crm_core.MAX_MONEY, allow_inf_nan=False)
+    target_value: Optional[float] = Field(default=None, ge=-crm_core.MAX_MONEY,
+                                          le=crm_core.MAX_MONEY, allow_inf_nan=False)
     status: Optional[str] = None
     title: Optional[str] = None
 
@@ -3265,7 +3305,8 @@ class RecordOutcomeInput(BaseModel):
     case_id: str
     kind: str
     record_id: str
-    amount: Optional[float] = None
+    amount: Optional[float] = Field(default=None, gt=0, le=crm_core.MAX_MONEY,
+                                    allow_inf_nan=False)
     currency: Optional[str] = None
     occurred_at: Optional[str] = None
     note: Optional[str] = None
@@ -3640,7 +3681,8 @@ async def create_stripe_payment_intent(
         },
     )
     if payment_status == "paid":
-        await stamp_paid_at(db, tenant_id=user["tenant_id"], invoice_id=invoice_id, at=now_iso())
+        await stamp_paid_at(db, tenant_id=user["tenant_id"], invoice_id=invoice_id,
+                            at=now_iso(), previously_paid=was_paid(invoice))
     await record_event(
         "invoice.payment_intent_created",
         "invoice",
@@ -3778,8 +3820,12 @@ async def stripe_webhook(request: Request):
                 )
                 handled = bool(result.matched_count)
                 if handled and payment_status == "paid":
+                    # When Stripe says the payment happened, not when this delivery was
+                    # processed: a retried webhook can arrive days later.
+                    paid_at = (datetime.fromtimestamp(int(event["created"]), tz=timezone.utc).isoformat()
+                               if str(event.get("created") or "").isdigit() else now_iso())
                     await stamp_paid_at(db, tenant_id=tenant_id, invoice_id=invoice_id,
-                                        at=now_iso())
+                                        at=paid_at, previously_paid=was_paid(invoice))
             if handled:
                 event_to_record = (
                     f"invoice.{event_type.split('.')[-1]}",
@@ -4515,13 +4561,24 @@ crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_cu
 recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
 
 
+# A client portal link is a bearer secret in its path: the page (`/portal/<token>`) and
+# its API (`/api/portal/<token>`, `/api/portal/<token>/requests`).
+_PORTAL_PATH = re.compile(r"(/portal/)[^/?#\s\"]+")
+
+
+def redact_secret_paths(text: str) -> str:
+    return _PORTAL_PATH.sub(r"\1[redacted]", recovery_intake.redact_intake_path(text))
+
+
 class _RedactIntakeSecrets(logging.Filter):
-    """The path form of the public intake route carries a secret. Hashing it at rest is
-    no use if the access log writes it out in plain text on every submission."""
+    """The public intake route and the client portal carry a secret in their path.
+    Hashing it at rest is no use if the access log writes it out in plain text on every
+    request. (Railway's own edge log records the path before it reaches this process;
+    the portal link format is recorded as an owner decision in the canonical document.)"""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):
-            record.args = tuple(recovery_intake.redact_intake_path(arg)
+            record.args = tuple(redact_secret_paths(arg)
                                 if isinstance(arg, str) else arg for arg in record.args)
         return True
 
@@ -4604,6 +4661,20 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
                                                  state=strategy_state, actor=actor)
             except recovery_service.RecoveryStrategyError:
                 logger.warning("Could not sync recovery strategy %s after a decision", subject_id)
+
+    if subject_type == "client_document" and subject_id \
+            and await _is_own_subject("client_documents", subject_id):
+        # Approval shares the document in the portal (if it was marked client-visible);
+        # rejection or withdrawal returns it to draft. Only from `pending_approval`, so a
+        # late decision cannot undo a later manual change.
+        target = {approval_service.APPROVED: "approved",
+                  approval_service.REJECTED: "draft",
+                  approval_service.CANCELLED: "draft"}.get(status)
+        if target:
+            await db.client_documents.update_one(
+                {"id": subject_id, "tenant_id": tenant_id, "status": "pending_approval"},
+                {"$set": {"status": target, "updated_at": now_iso(),
+                          "decided_by": actor}})
 
     if subject_type == "communication_message" and subject_id \
             and await _is_own_subject(conversation_service.MESSAGES, subject_id):
@@ -4718,6 +4789,9 @@ async def health():
         return JSONResponse(status_code=503, content=payload)
 
 app.include_router(api)
+# Inside CORS, so a refused body still carries the CORS headers the browser needs to
+# read the 413. Covers every /api/ route, counted on the bytes received (body_limits).
+app.add_middleware(BodySizeLimit)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

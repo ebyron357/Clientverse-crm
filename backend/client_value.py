@@ -6,12 +6,24 @@ payment-provider traffic without a separately certified connection.
 """
 
 import hashlib
+import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field, HttpUrl
+
+import approval_queue
+from crm_core import MAX_MONEY
+from crm_core import parse_date as crm_parse_date
+from recovery_intake import _client_address, _take
+
+# The portal request route is public: anyone holding a link can call it, and each call
+# writes a request, an audit event, a critical in-app notice and a webhook delivery.
+PORTAL_HOURLY_PER_LINK = 20
+PORTAL_HOURLY_PER_CLIENT = 30
+PORTAL_MAX_OPEN_PER_LINK = 50
 
 
 class PortalLinkInput(BaseModel):
@@ -40,8 +52,8 @@ class RecordStatusInput(BaseModel):
 
 class EstimateLine(BaseModel):
     label: str = Field(min_length=1, max_length=160)
-    quantity: float = Field(default=1, gt=0)
-    unit_price: float = Field(default=0, ge=0)
+    quantity: float = Field(default=1, gt=0, le=1_000_000, allow_inf_nan=False)
+    unit_price: float = Field(default=0, ge=0, le=MAX_MONEY, allow_inf_nan=False)
 
 
 class EstimateInput(BaseModel):
@@ -140,13 +152,77 @@ PLAYBOOKS = {
 }
 
 
-async def stamp_paid_at(db, *, tenant_id: str, invoice_id: str, at: str) -> None:
-    """Record when an invoice was first paid, once.
+async def ensure_indexes(db) -> None:
+    """One invoice per estimate. Its own try: a deployment that already holds duplicates
+    from before this index must still boot, and says why the index is missing."""
+    try:
+        await db.invoices.create_index(
+            [("tenant_id", 1), ("estimate_id", 1)], unique=True,
+            partialFilterExpression={"estimate_id": {"$type": "string"}},
+            name="one_invoice_per_estimate")
+    except Exception:
+        logging.getLogger("clientverse").exception(
+            "Could not create the one-invoice-per-estimate index; duplicate invoices for "
+            "one estimate already exist and must be voided before it can be built")
 
-    Attribution dates a payment by this field. It is written only while unset, so moving
-    the invoice away from paid and back -- or re-saving it as paid -- cannot re-date a
-    payment from before any outreach to after it.
+
+# What an unauthenticated portal visitor may see of each record. Everything else --
+# who created it, internal ids, notes -- stays inside the workspace.
+PORTAL_FIELDS = {
+    "commitments": ("id", "title", "status", "due_date"),
+    "documents": ("id", "title", "kind", "status", "external_url"),
+    "estimates": ("id", "title", "currency", "lines", "total", "status", "valid_until"),
+    "invoices": ("id", "title", "currency", "lines", "total", "status", "payment_status"),
+}
+
+
+# Where an invoice or estimate may go next. Any-to-any let a paid invoice be moved back
+# to draft and paid again, and an invoiced estimate be declined.
+INVOICE_TRANSITIONS = {
+    "draft": {"issued", "void"},
+    "issued": {"paid", "overdue", "void"},
+    "overdue": {"paid", "issued", "void"},
+    "paid": {"void"},
+    "void": set(),
+}
+ESTIMATE_TRANSITIONS = {
+    "draft": {"sent", "expired"},
+    "sent": {"approved", "declined", "expired", "draft"},
+    "approved": {"expired"},
+    "declined": set(),
+    "expired": {"draft"},
+}
+
+
+def _check_move(kind: str, table: dict, current: Optional[str], target: str) -> None:
+    current = current or "draft"
+    if target == current:
+        return
+    if target not in table.get(current, set()):
+        raise HTTPException(status_code=409,
+                            detail=f"A {current} {kind} cannot be moved to {target}")
+
+
+def portal_view(kind: str, record: dict) -> dict:
+    return {field: record.get(field) for field in PORTAL_FIELDS[kind] if field in record}
+
+
+def was_paid(invoice: Optional[dict]) -> bool:
+    return bool(invoice) and "paid" in (str(invoice.get("status") or "").lower(),
+                                         str(invoice.get("payment_status") or "").lower())
+
+
+async def stamp_paid_at(db, *, tenant_id: str, invoice_id: str, at: str,
+                        previously_paid: bool) -> None:
+    """Record when an invoice became paid -- only on the move into paid, and only once.
+
+    Attribution dates a payment by this field. An invoice that was already paid before
+    this call keeps whatever it has: one paid before payment dates were kept has none,
+    and re-saving it must not date that old payment to today, after this week's
+    outreach. It stays undated, and the ledger asks for an operator confirmation.
     """
+    if previously_paid:
+        return
     await db.invoices.update_one(
         {"id": invoice_id, "tenant_id": tenant_id, "paid_at": None,
          "$or": [{"status": "paid"}, {"payment_status": "paid"}]},
@@ -242,17 +318,33 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         docs = await db.client_documents.find({"tenant_id": link["tenant_id"], "workspace_id": link["workspace_id"], "client_visible": True, "status": {"$in": ["approved", "shared"]}}, {"_id": 0}).to_list(200)
         estimates = await db.estimates.find({"tenant_id": link["tenant_id"], "workspace_id": link["workspace_id"], "status": {"$in": ["sent", "approved"]}}, {"_id": 0}).to_list(100)
         invoices = await db.invoices.find({"tenant_id": link["tenant_id"], "workspace_id": link["workspace_id"], "status": {"$in": ["issued", "paid", "overdue"]}}, {"_id": 0}).to_list(100)
-        commitments = await db.commitments.find({"tenant_id": link["tenant_id"], "workspace_id": link["workspace_id"]}, {"_id": 0}).sort("due_date", 1).to_list(100)
+        # Only commitments an admin chose to share. They are internal by default: a
+        # member's note ("client is a late payer") must not reach the client unseen.
+        commitments = await db.commitments.find({"tenant_id": link["tenant_id"], "workspace_id": link["workspace_id"], "client_visible": True}, {"_id": 0}).sort("due_date", 1).to_list(100)
         return {"client_label": link["client_label"], "workspace": {"name": workspace["name"], "stage": workspace.get("stage")},
-                "company": {"name": (company or {}).get("name")}, "commitments": [clean(v) for v in commitments],
-                "documents": [clean(v) for v in docs], "estimates": [clean(v) for v in estimates], "invoices": [clean(v) for v in invoices],
+                "company": {"name": (company or {}).get("name")},
+                "commitments": [portal_view("commitments", v) for v in commitments],
+                "documents": [portal_view("documents", v) for v in docs],
+                "estimates": [portal_view("estimates", v) for v in estimates],
+                "invoices": [portal_view("invoices", v) for v in invoices],
                 "capability_note": "This portal supports read-only status and client requests. Billing, signatures, and messages remain provider-dependent and require human review."}
 
     @router.post("/portal/{token}/requests")
-    async def portal_request(token: str, inp: PortalRequestInput):
+    async def portal_request(token: str, inp: PortalRequestInput, request: Request):
         link = await public_portal(token)
+        hour = timedelta(hours=1)
+        if not await _take(db, f"portal:link:{link['id']}", PORTAL_HOURLY_PER_LINK, hour) or \
+                not await _take(db, f"portal:ip:{_client_address(request)}",
+                                PORTAL_HOURLY_PER_CLIENT, hour):
+            raise HTTPException(status_code=429, detail="Too many requests; try again later")
+        if await db.client_requests.count_documents(
+                {"tenant_id": link["tenant_id"], "portal_link_id": link["id"],
+                 "status": "open"}) >= PORTAL_MAX_OPEN_PER_LINK:
+            raise HTTPException(status_code=429,
+                                detail="This portal already has many open requests awaiting a reply")
         doc = {"id": new_id("req"), "tenant_id": link["tenant_id"], "workspace_id": link["workspace_id"], "title": inp.title,
-               "priority": inp.priority if inp.priority in ("low", "medium", "high") else "medium", "status": "open", "source": "portal", "created_at": now_iso()}
+               "priority": inp.priority if inp.priority in ("low", "medium", "high") else "medium", "status": "open", "source": "portal",
+               "portal_link_id": link["id"], "created_at": now_iso()}
         await db.client_requests.insert_one(doc)
         await record_event("portal.request_created", "client_request", doc["id"], link["tenant_id"], "portal", workspace_id=link["workspace_id"], payload={"title": inp.title})
         await in_app_notice(link["tenant_id"], "New portal request", inp.title, link["workspace_id"])
@@ -274,11 +366,22 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         doc = {"id": new_id("doc"), "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id, "title": inp.title,
                "kind": inp.kind, "external_url": str(inp.external_url) if inp.external_url else None, "client_visible": inp.client_visible,
                "requires_approval": inp.requires_approval, "status": status, "created_by": user["email"], "created_at": now_iso()}
-        await db.client_documents.insert_one(doc)
+        await db.client_documents.insert_one(dict(doc))
         if inp.requires_approval:
-            approval = {"id": new_id("apr"), "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id,
-                        "title": f"Approve document: {inp.title}", "kind": "document_share", "status": "requested", "document_id": doc["id"], "created_at": now_iso()}
-            await db.approvals.insert_one(approval)
+            # Through the approval queue, so the request has an expiry and an audit trail,
+            # and deciding it actually shares (or withholds) the document.
+            approval = await approval_queue.request(
+                db, tenant_id=user["tenant_id"], title=f"Approve document: {inp.title}",
+                kind="document_share", actor=user["email"],
+                requester_kind=approval_queue.REQUESTER_HUMAN,
+                summary=f"Share '{inp.title}' with the client in the portal.",
+                action={"type": "document_share", "document_id": doc["id"]},
+                subject_type="client_document", subject_id=doc["id"],
+                workspace_id=inp.workspace_id)
+            await db.client_documents.update_one(
+                {"id": doc["id"], "tenant_id": user["tenant_id"]},
+                {"$set": {"approval_id": approval["id"]}})
+            doc["approval_id"] = approval["id"]
         await record_event("document.created", "document", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title, "status": status})
         return clean(doc)
 
@@ -305,8 +408,11 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         await visible_workspace(user, inp.workspace_id)
         lines = [{"label": line.label, "quantity": line.quantity, "unit_price": line.unit_price, "total": round(line.quantity * line.unit_price, 2)} for line in inp.lines]
         total = round(sum(line["total"] for line in lines), 2)
+        if total > MAX_MONEY:
+            raise HTTPException(status_code=422, detail=f"An estimate total cannot exceed {MAX_MONEY:,}")
         doc = {"id": new_id("est"), "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id, "title": inp.title,
-               "currency": inp.currency.upper(), "lines": lines, "total": total, "valid_until": inp.valid_until, "status": "draft",
+               "currency": inp.currency.upper(), "lines": lines, "total": total,
+               "valid_until": crm_parse_date(inp.valid_until, "valid_until"), "status": "draft",
                "created_by": user["email"], "created_at": now_iso()}
         await db.estimates.insert_one(doc)
         await record_event("estimate.created", "estimate", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title, "total": total})
@@ -314,11 +420,22 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
 
     @router.patch("/estimates/{estimate_id}")
     async def update_estimate(estimate_id: str, inp: RecordStatusInput, user=Depends(require_role("admin"))):
-        if inp.status not in ("draft", "sent", "approved", "declined", "expired"):
+        if inp.status not in ESTIMATE_TRANSITIONS:
             raise HTTPException(status_code=422, detail="Unsupported estimate status")
-        result = await db.estimates.update_one({"id": estimate_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": inp.status, "updated_at": now_iso()}})
-        if not result.matched_count:
+        estimate = await db.estimates.find_one({"id": estimate_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+        if not estimate:
             raise HTTPException(status_code=404, detail="Estimate not found")
+        _check_move("estimate", ESTIMATE_TRANSITIONS, estimate.get("status"), inp.status)
+        if inp.status in ("declined", "expired", "draft") and await db.invoices.find_one(
+                {"tenant_id": user["tenant_id"], "estimate_id": estimate_id,
+                 "status": {"$ne": "void"}}, {"_id": 1}):
+            raise HTTPException(status_code=409,
+                                detail="This estimate has been invoiced; void the invoice first")
+        result = await db.estimates.update_one(
+            {"id": estimate_id, "tenant_id": user["tenant_id"], "status": estimate.get("status")},
+            {"$set": {"status": inp.status, "updated_at": now_iso()}})
+        if not result.matched_count:
+            raise HTTPException(status_code=409, detail="The estimate changed; reload it")
         return {"ok": True, "status": inp.status}
 
     @router.post("/estimates/{estimate_id}/invoice")
@@ -334,7 +451,16 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         invoice = {"id": new_id("inv"), "tenant_id": user["tenant_id"], "workspace_id": estimate["workspace_id"], "estimate_id": estimate_id,
                    "title": estimate["title"], "currency": estimate["currency"], "lines": estimate["lines"], "total": estimate["total"],
                    "status": "draft", "payment_status": "requires_stripe_configuration", "created_at": now_iso()}
-        await db.invoices.insert_one(invoice)
+        try:
+            await db.invoices.insert_one(dict(invoice))
+        except Exception as exc:
+            # A second click or a retry racing the first: the unique index lets exactly
+            # one invoice exist for the estimate, and the loser returns that one.
+            if getattr(exc, "code", None) != 11000 and "E11000" not in str(exc):
+                raise
+            winner = await db.invoices.find_one(
+                {"tenant_id": user["tenant_id"], "estimate_id": estimate_id}, {"_id": 0})
+            return {"invoice": clean(winner or invoice), "duplicate": True}
         await record_event("invoice.created", "invoice", invoice["id"], user["tenant_id"], user["email"], workspace_id=invoice["workspace_id"], payload={"estimate_id": estimate_id, "total": invoice["total"]})
         return {"invoice": clean(invoice), "duplicate": False, "provider_note": "Invoice created locally. Payment collection is unavailable until Stripe lifecycle certification passes."}
 
@@ -349,13 +475,25 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
 
     @router.patch("/invoices/{invoice_id}")
     async def update_invoice(invoice_id: str, inp: RecordStatusInput, user=Depends(require_role("admin"))):
-        if inp.status not in ("draft", "issued", "paid", "overdue", "void"):
+        if inp.status not in INVOICE_TRANSITIONS:
             raise HTTPException(status_code=422, detail="Unsupported invoice status")
-        result = await db.invoices.update_one({"id": invoice_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": inp.status, "updated_at": now_iso()}})
-        if not result.matched_count:
+        invoice = await db.invoices.find_one({"id": invoice_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
+        if not invoice:
             raise HTTPException(status_code=404, detail="Invoice not found")
+        _check_move("invoice", INVOICE_TRANSITIONS, invoice.get("status"), inp.status)
+        update = {"status": inp.status, "updated_at": now_iso()}
+        if inp.status == "paid" and invoice.get("payment_status") != "paid":
+            # Recorded by a person, so the payment status says so rather than keeping a
+            # provider state ("requires_stripe_configuration") that contradicts it.
+            update.update({"payment_status": "paid", "payment_source": "manual"})
+        result = await db.invoices.update_one(
+            {"id": invoice_id, "tenant_id": user["tenant_id"], "status": invoice.get("status")},
+            {"$set": update})
+        if not result.matched_count:
+            raise HTTPException(status_code=409, detail="The invoice changed; reload it")
         if inp.status == "paid":
-            await stamp_paid_at(db, tenant_id=user["tenant_id"], invoice_id=invoice_id, at=now_iso())
+            await stamp_paid_at(db, tenant_id=user["tenant_id"], invoice_id=invoice_id,
+                                at=now_iso(), previously_paid=was_paid(invoice))
         return {"ok": True, "status": inp.status}
 
     @router.get("/referrals")

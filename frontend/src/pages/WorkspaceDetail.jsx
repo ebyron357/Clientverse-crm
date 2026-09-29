@@ -171,7 +171,7 @@ export default function WorkspaceDetail() {
   const [workItem, setWorkItem] = useState({ kind: null, title: "" });
   const [workItemBusy, setWorkItemBusy] = useState(false);
   const [cmtDialog, setCmtDialog] = useState(false);
-  const [cmtForm, setCmtForm] = useState({ title: "", owner: "", due_date: "" });
+  const [cmtForm, setCmtForm] = useState({ title: "", owner: "", due_date: "", client_visible: false });
   const [slaBusy, setSlaBusy] = useState(false);
   const [activeTab, setActiveTab] = useState("commitments");
 
@@ -199,8 +199,9 @@ export default function WorkspaceDetail() {
     await api.post("/commitments", {
       workspace_id: id, title: cmtForm.title.trim(), owner: cmtForm.owner || null,
       due_date: cmtForm.due_date ? new Date(cmtForm.due_date).toISOString() : null,
+      client_visible: user?.role === "admin" && cmtForm.client_visible,
     });
-    toast.success("Commitment added"); setCmtDialog(false); setCmtForm({ title: "", owner: "", due_date: "" }); load();
+    toast.success("Commitment added"); setCmtDialog(false); setCmtForm({ title: "", owner: "", due_date: "", client_visible: false }); load();
   };
   const runSlaCheck = async () => {
     setSlaBusy(true);
@@ -356,6 +357,13 @@ export default function WorkspaceDetail() {
             <div className="space-y-1"><Label>Title</Label><Input value={cmtForm.title} onChange={(e) => setCmtForm((f) => ({ ...f, title: e.target.value }))} placeholder="e.g. Deliver dashboard by Friday" data-testid="commitment-title-input" /></div>
             <div className="space-y-1"><Label>Owner</Label><Input value={cmtForm.owner} onChange={(e) => setCmtForm((f) => ({ ...f, owner: e.target.value }))} placeholder="owner@example.com" data-testid="commitment-owner-input" /></div>
             <div className="space-y-1"><Label>Due date</Label><Input type="date" value={cmtForm.due_date} onChange={(e) => setCmtForm((f) => ({ ...f, due_date: e.target.value }))} data-testid="commitment-due-input" /></div>
+            {user?.role === "admin" && (
+              <label className="flex items-start gap-2 text-sm text-gray-600">
+                <input type="checkbox" className="mt-1" checked={cmtForm.client_visible} data-testid="commitment-client-visible"
+                       onChange={(e) => setCmtForm((f) => ({ ...f, client_visible: e.target.checked }))} />
+                <span>Show this commitment to the client in the portal. Commitments are internal unless shared here.</span>
+              </label>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCmtDialog(false)}>Cancel</Button>

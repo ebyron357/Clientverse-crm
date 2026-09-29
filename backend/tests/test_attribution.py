@@ -667,12 +667,32 @@ def test_the_first_payment_date_sticks(db):
 
     invoice = paid_invoice(db)
     first = invoice["paid_at"]
-    run(stamp_paid_at(db, tenant_id=TENANT, invoice_id=invoice["id"], at=iso(0)))
+    run(stamp_paid_at(db, tenant_id=TENANT, invoice_id=invoice["id"], at=iso(0),
+                      previously_paid=False))
     assert run(db.invoices.find_one({"id": invoice["id"]}))["paid_at"] == first
     unpaid = {"id": "inv_unpaid", "tenant_id": TENANT, "status": "issued"}
     run(db.invoices.insert_one(dict(unpaid)))
-    run(stamp_paid_at(db, tenant_id=TENANT, invoice_id="inv_unpaid", at=iso(0)))
+    run(stamp_paid_at(db, tenant_id=TENANT, invoice_id="inv_unpaid", at=iso(0),
+                      previously_paid=False))
     assert "paid_at" not in run(db.invoices.find_one({"id": "inv_unpaid"}))
+
+
+def test_re_saving_an_old_paid_invoice_does_not_date_it_today(db):
+    """An invoice paid before payment dates were kept has none. Marking it paid again
+    used to stamp today, after this week's outreach, and the ledger then credited it."""
+    from client_value import stamp_paid_at
+
+    legacy = {"id": "inv_legacy", "tenant_id": TENANT, "status": "paid",
+              "payment_status": "paid", "total": 9000.0, "currency": "USD"}
+    run(db.invoices.insert_one(dict(legacy)))
+    run(stamp_paid_at(db, tenant_id=TENANT, invoice_id="inv_legacy", at=iso(0),
+                      previously_paid=True))
+    assert "paid_at" not in run(db.invoices.find_one({"id": "inv_legacy"}))
+    case = _contacted_case(db)
+    with pytest.raises(attribution.AttributionError, match="no payment date"):
+        run(attribution.record_outcome(
+            db, tenant_id=TENANT, case_id=case["id"],
+            kind=attribution.OUTCOME_INVOICE_PAID, record_id="inv_legacy", actor="ops"))
 
 
 def test_a_deal_is_dated_by_its_first_win_not_its_latest(db):

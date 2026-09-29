@@ -29,12 +29,15 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, EmailStr, Field
+from starlette.concurrency import run_in_threadpool
 
 # --------------------------------------------------------------------------- constants
 
@@ -76,6 +79,24 @@ SORTABLE = {
 }
 
 MAX_PAGE = 200
+
+# The largest amount any money field may hold, and the same bound the recovery ledger
+# uses. `Infinity`, `NaN` and `1e308` are valid JSON to the parser, but a non-finite
+# number cannot be rendered back out, and two very large ones sum to infinity: either way
+# every page that shows the record -- and every total it joins -- fails.
+MAX_MONEY = 1_000_000_000_000
+
+
+def finite_money(value: Any, field: str) -> float:
+    """A money amount from an untyped source (a CSV cell): finite, 0..MAX_MONEY."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number") from exc
+    if not math.isfinite(amount) or amount < 0 or amount > MAX_MONEY:
+        raise ValueError(f"{field} must be between 0 and {MAX_MONEY:,}")
+    return amount
+
 MAX_IMPORT_ROWS = 5000
 
 # A cell a spreadsheet would run as a formula. Any member can type `=HYPERLINK(...)` into
@@ -88,6 +109,12 @@ def spreadsheet_safe(value):
     if isinstance(value, str) and value.startswith(FORMULA_TRIGGERS):
         return "'" + value
     return value
+
+
+def _read_csv_rows(text: str) -> tuple[Optional[list[str]], list[dict]]:
+    reader = csv.DictReader(io.StringIO(text))
+    rows = list(itertools.islice(reader, MAX_IMPORT_ROWS + 1))
+    return (list(reader.fieldnames) if reader.fieldnames else None), rows
 
 
 def spreadsheet_unescape(value: str) -> str:
@@ -116,7 +143,9 @@ def _history_entry(action: str, actor: str, detail: Optional[dict] = None) -> di
 
 
 def _escape_regex(value: str) -> str:
-    return re.escape(value.strip())[:200]
+    # Truncate before escaping: cutting an escaped string can leave a lone trailing
+    # backslash, which MongoDB rejects as a pattern -- a 500 from a long search.
+    return re.escape(value.strip()[:200])
 
 
 def _parse_date(value: Optional[str], field: str) -> Optional[str]:
@@ -207,7 +236,7 @@ async def query_records(db, collection: str, tenant_id: str, *,
     offset = max(0, int(offset or 0))
     return await (db[collection].find(query, {"_id": 0})
                   .sort([(field, direction)])
-                  .skip(offset).limit(limit).to_list(limit))
+                  .skip(max(0, int(offset or 0))).limit(limit).to_list(limit))
 
 
 # ---------------------------------------------------------------------------- pipeline
@@ -227,6 +256,19 @@ async def resolve_stages(db, tenant_id: str) -> list[dict]:
 
 async def stage_keys(db, tenant_id: str) -> list[str]:
     return [stage["key"] for stage in await resolve_stages(db, tenant_id)]
+
+
+async def stage_outcomes(db, tenant_id: str) -> tuple[set[str], set[str]]:
+    """The tenant's won stages and closed stages, from its own pipeline.
+
+    A tenant that renamed or added a won stage ("won", "signed") was invisible to every
+    check hard-coded to `closed_won`: its wins counted as open pipeline, created no
+    workspace and could never be attributed.
+    """
+    stages = await resolve_stages(db, tenant_id)
+    won = {stage["key"] for stage in stages if stage.get("is_won")}
+    closed = {stage["key"] for stage in stages if stage.get("is_closed")} | won
+    return won, closed
 
 
 # ------------------------------------------------------------------- request payloads
@@ -250,14 +292,14 @@ class CompanyPatch(BaseModel):
     domain: Optional[str] = Field(default=None, max_length=200)
     tier: Optional[str] = Field(default=None, max_length=60)
     owner: Optional[str] = Field(default=None, max_length=200)
-    annual_value: Optional[float] = Field(default=None, ge=0)
+    annual_value: Optional[float] = Field(default=None, ge=0, le=MAX_MONEY, allow_inf_nan=False)
 
 
 class DealPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     company_id: Optional[str] = None
     contact_ids: Optional[list[str]] = None
-    value: Optional[float] = Field(default=None, ge=0)
+    value: Optional[float] = Field(default=None, ge=0, le=MAX_MONEY, allow_inf_nan=False)
     currency: Optional[str] = Field(default=None, max_length=8)
     owner: Optional[str] = Field(default=None, max_length=200)
     expected_close_date: Optional[str] = None
@@ -311,8 +353,12 @@ class PipelineInput(BaseModel):
     stages: list[StageConfig] = Field(min_length=2, max_length=20)
 
 
+MAX_IMPORT_CHARS = 3 * 1024 * 1024
+
+
+
 class ImportInput(BaseModel):
-    csv: str = Field(min_length=1)
+    csv: str = Field(min_length=1, max_length=MAX_IMPORT_CHARS)
     # Importing is the one place a caller can create many records at once, so it is
     # explicit about what it will do with a row that already looks familiar.
     on_duplicate: str = "skip"  # skip | update | create
@@ -402,7 +448,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         offset = max(0, int(offset or 0))
         cursor = (db[collection].find(base, {"_id": 0})
                   .sort(sort_spec(collection, sort, order))
-                  .skip(offset).limit(limit))
+                  .skip(max(0, int(offset or 0))).limit(limit))
         items = await cursor.to_list(limit)
         total = await db[collection].count_documents(base)
         return {"items": items, "total": total, "limit": limit, "offset": offset}
@@ -415,6 +461,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         `domain_events` holds what the system recorded about the record. They are read
         together here for display and stay separate at rest.
         """
+        limit = max(1, min(int(limit or 100), MAX_PAGE))
         scope = {"tenant_id": tenant_of(user), "related_type": related_type,
                  "related_id": related_id}
         activities = await db[ACTIVITIES].find(scope, {"_id": 0}).sort(
@@ -510,8 +557,9 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         ).sort("created_at", -1).to_list(200)
         workspaces = await db.workspaces.find(
             {"tenant_id": tenant, "company_id": company_id}, {"_id": 0}).to_list(50)
-        open_deals = [deal for deal in deals if not deal.get("stage", "").startswith("closed")]
-        won = [deal for deal in deals if deal.get("stage") == "closed_won"]
+        won_stages, closed_stages = await stage_outcomes(db, tenant)
+        open_deals = [deal for deal in deals if deal.get("stage") not in closed_stages]
+        won = [deal for deal in deals if deal.get("stage") in won_stages]
         return {
             "company": company, "contacts": contacts, "deals": deals,
             "workspaces": workspaces,
@@ -884,7 +932,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         limit = max(1, min(int(limit or 50), MAX_PAGE))
         offset = max(0, int(offset or 0))
         items = await db[ACTIVITIES].find(query, {"_id": 0}).sort(
-            "occurred_at", -1).skip(offset).limit(limit).to_list(limit)
+            "occurred_at", -1).skip(max(0, int(offset or 0))).limit(limit).to_list(limit)
         return {"items": items, "total": await db[ACTIVITIES].count_documents(query),
                 "limit": limit, "offset": offset}
 
@@ -978,8 +1026,10 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         tenant = tenant_of(user)
 
         try:
-            reader = csv.DictReader(io.StringIO(inp.csv))
-            rows = list(reader)
+            # Off the event loop, and never more rows than the cap plus the one that
+            # proves it was exceeded: building every row first let one request hold
+            # about a hundred times its size in memory and stall every tenant's requests.
+            fieldnames, rows = await run_in_threadpool(_read_csv_rows, inp.csv)
         except csv.Error as exc:
             raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}")
         if not rows:
@@ -988,7 +1038,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             raise HTTPException(
                 status_code=422,
                 detail=f"Import is limited to {MAX_IMPORT_ROWS} rows per request")
-        unknown_columns = [c for c in (reader.fieldnames or [])
+        unknown_columns = [c for c in (fieldnames or [])
                            if c and c.strip() not in allowed]
         if unknown_columns:
             raise HTTPException(
@@ -1014,9 +1064,9 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 row.setdefault("stage", valid_stages[0])
                 if row.get("value"):
                     try:
-                        row["value"] = float(row["value"])
-                    except ValueError:
-                        errors.append({"row": index, "error": "value must be a number"})
+                        row["value"] = finite_money(row["value"], "value")
+                    except ValueError as exc:
+                        errors.append({"row": index, "error": str(exc)})
                         continue
                 if row.get("expected_close_date"):
                     try:
@@ -1042,11 +1092,17 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 skipped += 1
                 continue
             if existing and inp.on_duplicate == "update":
+                push: dict[str, Any] = {"history": _history_entry("imported", user["email"],
+                                                                  {"row": index})}
+                if entity == "deals" and row.get("stage") and row["stage"] != existing.get("stage"):
+                    # A stage change by import is a stage change: it goes in the history
+                    # attribution dates wins by, like a move made in the pipeline.
+                    push["stage_history"] = {"from": existing.get("stage"), "to": row["stage"],
+                                             "at": now_iso(), "actor": user["email"],
+                                             "via": "import"}
                 await db[collection].update_one(
                     {"id": existing["id"], "tenant_id": tenant},
-                    {"$set": {**row, "updated_at": now_iso()},
-                     "$push": {"history": _history_entry("imported", user["email"],
-                                                         {"row": index})}})
+                    {"$set": {**row, "updated_at": now_iso()}, "$push": push})
                 updated += 1
                 continue
             doc = {"id": new_id(prefix), "tenant_id": tenant, "created_at": now_iso(),

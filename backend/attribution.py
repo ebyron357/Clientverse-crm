@@ -50,12 +50,14 @@ across currencies.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import conversations as conversation_service
+import crm_core
 import recovery_case as recovery_case_service
 
 COLLECTION = "attribution_entries"
@@ -280,10 +282,15 @@ async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str
                                              {"_id": 0})
         if not invoice:
             raise OutcomeNotFound("No invoice with that id in this tenant")
-        paid = str(invoice.get("payment_status") or invoice.get("status") or "").lower()
-        if paid != "paid":
+        # Paid by either route: the provider (`payment_status`) or a person marking it
+        # (`status`). Reading only the first let a provider placeholder such as
+        # "requires_stripe_configuration" hide a payment someone recorded by hand.
+        states = {str(invoice.get("payment_status") or "").lower(),
+                  str(invoice.get("status") or "").lower()}
+        if "paid" not in states or str(invoice.get("status") or "").lower() == "void":
+            shown = invoice.get("status") or invoice.get("payment_status") or "unknown"
             raise AttributionError(
-                f"Invoice {record_id} is '{paid or 'unknown'}', not paid; an unpaid "
+                f"Invoice {record_id} is '{shown}', not paid; an unpaid "
                 "invoice is not recovered revenue.")
         # The date the payment was recorded, set once when the invoice first became
         # paid. Not `updated_at`: any later edit resets that to today, which would date a
@@ -305,15 +312,25 @@ async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str
                                                {"_id": 0})
         if not deal:
             raise OutcomeNotFound("No deal with that id in this tenant")
-        if deal.get("stage") != "closed_won":
+        won_stages, _ = await crm_core.stage_outcomes(db, tenant_id)
+        if deal.get("stage") not in won_stages:
             raise AttributionError(
-                f"Deal {record_id} is in stage '{deal.get('stage')}', not closed_won; "
+                f"Deal {record_id} is in stage '{deal.get('stage')}', not a won stage; "
                 "an open deal is pipeline, not revenue.")
-        # The first time the deal was won. A later move back into closed_won -- or a
+        history = deal.get("stage_history") or []
+        # The first time the deal was won. A later move back into a won stage -- or a
         # repeated one -- must not re-date a win that happened before any outreach.
         won_at = sorted(
-            parsed for parsed in (_parse(t.get("at")) for t in (deal.get("stage_history") or [])
-                                  if t.get("to") == "closed_won") if parsed)
+            parsed for parsed in (_parse(t.get("at")) for t in history
+                                  if t.get("to") in won_stages) if parsed)
+        # Leaving a won stage before any recorded move into one means the deal was won
+        # earlier, undated (imported won, say): moving it out and back must not date
+        # that old win to today.
+        left_won = sorted(
+            parsed for parsed in (_parse(t.get("at")) for t in history
+                                  if t.get("from") in won_stages) if parsed)
+        if left_won and (not won_at or left_won[0] <= won_at[0]):
+            won_at = []
         if not won_at:
             raise AttributionError(
                 f"Deal {record_id} is closed_won but its history does not say when it was "
@@ -342,8 +359,11 @@ async def _resolve_outcome(db: Any, tenant_id: str, *, kind: str, record_id: str
         value = float(amount)
     except (TypeError, ValueError):
         raise AttributionError("Amount must be a number")
-    if value <= 0:
-        raise AttributionError("A recovered amount must be greater than zero")
+    if not math.isfinite(value) or value <= 0:
+        raise AttributionError("A recovered amount must be a number greater than zero")
+    if value > recovery_case_service.MAX_AMOUNT:
+        raise AttributionError(
+            f"A recovered amount cannot exceed {recovery_case_service.MAX_AMOUNT:,}")
     code = (currency or recovery_case_service.DEFAULT_CURRENCY).strip().upper()
     if len(code) != 3 or not code.isalpha():
         raise AttributionError("Currency must be a three-letter code, such as USD")
