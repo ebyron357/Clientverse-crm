@@ -724,10 +724,25 @@ function ConversationsPanel({ isAdmin }) {
   const reconcile = async (message) => {
     setBusy(true);
     try {
-      const { data } = await api.post(`/messages/${message.id}/reconcile`);
+      const { data } = await api.post(`/messages/${message.id}/reconcile`, {});
       toast.success(`Provider says: ${data.status.replace(/_/g, " ")}`);
     } catch (e) {
-      toast.error(formatErr(e.response?.data?.detail) || "The provider could not be asked");
+      const detail = e.response?.data?.detail;
+      // "Not found" is not always proof it was never sent. The server says so, and only
+      // a person who has looked in the mailbox's Sent folder may record otherwise.
+      if (detail?.reason === "absence_not_proof") {
+        const checked = window.confirm(`${detail.detail}\n\nI checked the Sent folder and this message is not there. Record it as not sent?`);
+        if (checked) {
+          try {
+            await api.post(`/messages/${message.id}/reconcile`, { confirm_not_sent: true });
+            toast.success("Recorded as not sent. It can be approved and sent again.");
+          } catch (inner) {
+            toast.error(formatErr(inner.response?.data?.detail) || "Could not record that");
+          }
+        }
+      } else {
+        toast.error(formatErr(detail) || "The provider could not be asked");
+      }
     } finally {
       setBusy(false);
       await open(selected);

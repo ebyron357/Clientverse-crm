@@ -54,8 +54,10 @@ class FakeClient:
     """Records every call so a test can assert on what did (and did not) reach Gmail."""
 
     def __init__(self, get_responses, post_responses, log):
-        self._get = list(get_responses)
-        self._post = list(post_responses)
+        # Shared across every client one provider opens, as a real server's answers
+        # would be: the second request gets the second answer.
+        self._get = get_responses
+        self._post = post_responses
         self.log = log
 
     async def __aenter__(self):
@@ -91,9 +93,10 @@ def make_provider(*, connection=ACTIVE_CONNECTION, token="tok",
     async def get_connection(tenant_id):
         return connection
 
+    gets, posts = list(get_responses), list(post_responses)
     provider = gmail_provider.GmailChannelProvider(
         access_token=access_token, connection=get_connection,
-        http_client=lambda: FakeClient(get_responses, post_responses, log))
+        http_client=lambda: FakeClient(gets, posts, log))
     return provider, log
 
 
@@ -158,18 +161,68 @@ def test_a_conversation_with_no_address_is_refused():
 
 # -------------------------------------------------------------------------- sending
 
+def _stored(message_id):
+    return FakeResponse(200, {"payload": {"headers": [
+        {"name": "Message-ID", "value": f"<{message_id}>"}]}})
+
+
 def test_a_successful_send_returns_the_provider_id_and_the_id_it_sent_under():
+    minted = gmail_provider.message_id_for(TENANT, "k1")
     provider, log = make_provider(
-        get_responses=[FakeResponse(200, {"messages": []})],
+        get_responses=[FakeResponse(200, {"messages": []}), _stored(minted)],
         post_responses=[FakeResponse(200, {"id": "gmail-123", "threadId": "thr-9"})])
     result = run(provider.send(message=make_message(), conversation=make_conversation(),
                                idempotency_key="k1"))
     assert result.provider_message_id == "gmail-123"
     assert result.detail["deduplicated"] is False
-    assert result.detail["rfc822_message_id"].startswith("cv-")
+    assert result.detail["rfc822_message_id"] == minted
+    assert result.detail["dispatch_message_id"] == minted
+    assert result.detail["message_id_verified"] is True
+    assert result.detail["message_id_rewritten"] is False
     assert result.detail["thread_id"] == "thr-9"
-    assert [entry[0] for entry in log] == ["GET", "POST"], (
-        "the duplicate check must happen before the send, not after")
+    assert [entry[0] for entry in log] == ["GET", "POST", "GET"], (
+        "the duplicate check must happen before the send; the read-back after it")
+    assert log[2][1].endswith("/messages/gmail-123")
+
+
+def test_a_message_id_gmail_rewrote_is_recorded_as_what_the_client_received():
+    """Public reports say Gmail can replace a caller's Message-ID. A reply references
+    the id the client received, so that is the one matching must use."""
+    provider, _ = make_provider(
+        get_responses=[FakeResponse(200, {"messages": []}),
+                       _stored("CAB123xyz@mail.gmail.com")],
+        post_responses=[FakeResponse(200, {"id": "gmail-124", "threadId": "thr-9"})])
+    result = run(provider.send(message=make_message(), conversation=make_conversation(),
+                               idempotency_key="k1"))
+    assert result.detail["rfc822_message_id"] == "cab123xyz@mail.gmail.com"
+    assert result.detail["dispatch_message_id"] == gmail_provider.message_id_for(TENANT, "k1")
+    assert result.detail["message_id_rewritten"] is True
+
+
+def test_a_failed_read_back_never_fails_a_send_that_happened():
+    provider, _ = make_provider(
+        get_responses=[FakeResponse(200, {"messages": []}), FakeResponse(503)],
+        post_responses=[FakeResponse(200, {"id": "gmail-125"})])
+    result = run(provider.send(message=make_message(), conversation=make_conversation(),
+                               idempotency_key="k1"))
+    assert result.provider_message_id == "gmail-125"
+    assert result.detail["message_id_verified"] is False
+
+
+@pytest.mark.parametrize("connection, token, lookup", [
+    ({**ACTIVE_CONNECTION, "status": "connecting"}, "tok", None),
+    (ACTIVE_CONNECTION, RuntimeError("token endpoint 503"), None),
+    (ACTIVE_CONNECTION, "tok", FakeResponse(403, text="rate limited")),
+])
+def test_a_lookup_that_could_not_check_is_never_a_rejection(connection, token, lookup):
+    """During reconciliation, "I could not check" -- a reconnect in progress, a refresh
+    that failed, a 403 rate limit -- used to raise a DeliveryRejected, which the callers
+    recorded as proof the message was never sent, licensing a duplicate."""
+    provider, _ = make_provider(connection=connection, token=token,
+                                get_responses=[lookup] if lookup else [])
+    with pytest.raises(gmail_provider.LookupUnavailable) as excinfo:
+        run(provider.locate(tenant_id=TENANT, idempotency_key="k1"))
+    assert not isinstance(excinfo.value, cv.DeliveryRejected)
 
 
 def test_the_message_that_goes_out_is_the_approved_text_verbatim():

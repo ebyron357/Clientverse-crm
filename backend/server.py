@@ -2584,39 +2584,55 @@ async def _google_connection(tenant_id: str) -> Optional[dict]:
         {"tenant_id": tenant_id, "provider": "gmail"}, {"_id": 0})
 
 
-async def _fetch_inbound_gmail(*, tenant_id: str, limit: int = 50) -> list[dict]:
+# Everything recent that is not our own mail. Not just the inbox: a reply that a filter
+# archived or labelled is still the reply the case is waiting for. Spam and trash are
+# excluded by Gmail's search default.
+INBOUND_GMAIL_QUERY = "newer_than:7d -in:sent -in:drafts -in:chats -from:me"
+INBOUND_GMAIL_HEADERS = ["From", "To", "Cc", "Subject", "In-Reply-To", "References",
+                         "Content-Type", "X-Failed-Recipients", "Auto-Submitted",
+                         "Precedence", "X-Autoreply", "X-Autorespond"]
+
+
+async def _fetch_inbound_gmail(*, tenant_id: str, limit: int = 200) -> list[dict]:
     """Recent inbound mail for one tenant, using that tenant's own Gmail credentials.
 
-    Bounded and newest-first. A poll is the honest transport here: Gmail push requires
-    a Pub/Sub topic nobody has configured, and a poll that runs every tick is a working
-    return path rather than a planned one.
+    Bounded and newest-first, paged up to `limit`. One page used to be all it read, so
+    after any gap in the schedule the replies beyond the newest page were never seen.
+    A poll is the honest transport here: Gmail push requires a Pub/Sub topic nobody has
+    configured.
     """
     token = await _google_access_token(tenant_id)
     if not token:
         raise RuntimeError("not_connected")
     headers = {"Authorization": f"Bearer {token}"}
+    limit = max(1, min(int(limit), 500))
+    stubs: list[dict] = []
+    page_token: Optional[str] = None
     out: list[dict] = []
     async with httpx.AsyncClient(timeout=25) as client:
-        listing = await client.get(f"{gmail_provider.GMAIL_API}/messages",
-                                   params={"q": "in:inbox newer_than:7d",
-                                           "maxResults": max(1, min(int(limit), 100))},
-                                   headers=headers)
-        if listing.status_code == 401:
-            token = await _google_access_token(tenant_id, force_refresh=True)
-            headers = {"Authorization": f"Bearer {token}"}
+        while len(stubs) < limit:
+            params: dict = {"q": INBOUND_GMAIL_QUERY,
+                                      "maxResults": min(100, limit - len(stubs))}
+            if page_token:
+                params["pageToken"] = page_token
             listing = await client.get(f"{gmail_provider.GMAIL_API}/messages",
-                                       params={"q": "in:inbox newer_than:7d",
-                                               "maxResults": max(1, min(int(limit), 100))},
-                                       headers=headers)
-        if listing.status_code != 200:
-            raise RuntimeError(f"gmail_list_failed:{listing.status_code}")
-        for stub in (listing.json().get("messages") or []):
+                                       params=params, headers=headers)
+            if listing.status_code == 401:
+                token = await _google_access_token(tenant_id, force_refresh=True)
+                headers = {"Authorization": f"Bearer {token}"}
+                listing = await client.get(f"{gmail_provider.GMAIL_API}/messages",
+                                           params=params, headers=headers)
+            if listing.status_code != 200:
+                raise RuntimeError(f"gmail_list_failed:{listing.status_code}")
+            body = listing.json() or {}
+            stubs.extend(body.get("messages") or [])
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
+        for stub in stubs[:limit]:
             detail = await client.get(
                 f"{gmail_provider.GMAIL_API}/messages/{stub['id']}",
-                params={"format": "metadata",
-                        "metadataHeaders": ["From", "To", "Cc", "Subject", "In-Reply-To",
-                                            "References", "Content-Type",
-                                            "X-Failed-Recipients"]},
+                params={"format": "metadata", "metadataHeaders": INBOUND_GMAIL_HEADERS},
                 headers=headers)
             if detail.status_code == 200:
                 out.append(detail.json())
@@ -2682,6 +2698,43 @@ async def run_inbound_email_sweep(actor: str = "cron") -> dict:
     return totals
 
 
+# How long after a dispatch an empty lookup may be believed. Gmail's search index is not
+# instantaneous, and a message sent a minute ago can be missing from it.
+RECONCILE_MIN_AGE_MINUTES = 15
+
+
+async def _absence_is_conclusive(message: dict) -> tuple[bool, str]:
+    """May an empty provider lookup be read as "this message was never sent"?
+
+    The lookup searches for the Message-ID we minted. If the provider rewrote it -- and
+    there are public reports of Gmail doing so -- the search finds nothing for every
+    message, sent or not, and recording "never sent" invites a duplicate to the client.
+    So absence is only believed for a tenant whose own sends have been read back and
+    shown to keep the id, and only once the dispatch is old enough to be indexed.
+    """
+    since = None
+    for entry in reversed(message.get("history") or []):
+        if entry.get("action") == conversation_service.OUTCOME_UNKNOWN:
+            since = entry.get("at")
+            break
+    try:
+        dispatched = datetime.fromisoformat(since) if since else None
+    except ValueError:
+        dispatched = None
+    if not dispatched or datetime.now(timezone.utc) - dispatched < timedelta(
+            minutes=RECONCILE_MIN_AGE_MINUTES):
+        return False, (f"The dispatch is under {RECONCILE_MIN_AGE_MINUTES} minutes old; the "
+                       "provider's search may not show it yet.")
+    proven = await db[conversation_service.MESSAGES].find_one(
+        {"tenant_id": message["tenant_id"], "provider": "gmail",
+         "message_id_verified": True, "message_id_rewritten": False}, {"_id": 1})
+    if not proven:
+        return False, ("No send from this workspace has yet shown that Gmail keeps the "
+                       "Message-ID this lookup searches for, so not finding it proves "
+                       "nothing. Check the mailbox's Sent folder.")
+    return True, "provider does not hold this dispatch"
+
+
 async def run_reconcile_unknown_sweep(actor: str = "cron") -> dict:
     """Ask the provider about every message whose dispatch outcome was never observed.
 
@@ -2703,14 +2756,10 @@ async def run_reconcile_unknown_sweep(actor: str = "cron") -> dict:
         key = conversation_service.dispatch_key(message)
         try:
             found_id = await locate(tenant_id=message["tenant_id"], idempotency_key=key)
-        except conversation_service.DeliveryRejected as exc:
-            # The provider answered definitively that it cannot hold this message.
-            await conversation_service.reconcile_unknown(
-                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
-                found=False, detail={"lookup": str(exc)[:300]})
-            totals["resolved_failed"] += 1
-            continue
         except Exception:
+            # Including an authorisation that lapsed or a lookup Gmail refused: none of
+            # those says whether the message was sent. It used to be read as "never
+            # sent", which licensed a resend of something that may already have arrived.
             logger.warning("Could not reconcile message %s; leaving it unresolved",
                            message["id"])
             totals["unresolved"] += 1
@@ -2723,9 +2772,13 @@ async def run_reconcile_unknown_sweep(actor: str = "cron") -> dict:
                     message["tenant_id"], key)})
             totals["resolved_sent"] += 1
         else:
+            conclusive, reason = await _absence_is_conclusive(message)
+            if not conclusive:
+                totals["unresolved"] += 1
+                continue
             await conversation_service.reconcile_unknown(
                 db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
-                found=False, detail={"lookup": "provider does not hold this dispatch"})
+                found=False, detail={"lookup": reason})
             totals["resolved_failed"] += 1
     return totals
 
@@ -3010,6 +3063,21 @@ async def google_callback(state: str = Query(None), code: str = Query(None), err
         ui = await client.get("https://www.googleapis.com/oauth2/v2/userinfo",
                               headers={"Authorization": f"Bearer {tok['access_token']}"})
     email = ui.json().get("email") if ui.status_code == 200 else None
+    if email:
+        # One mailbox, one tenant. Two tenants polling the same inbox would each try to
+        # place the other's client mail, and a sender-address match could attach tenant
+        # A's client reply to tenant B's conversation.
+        other = await db.integration_connections.find_one(
+            {"provider": "gmail", "status": "active", "account_identity": email,
+             "tenant_id": {"$ne": tenant_id}}, {"_id": 0, "tenant_id": 1})
+        if other:
+            for p in ("gmail", "google_calendar"):
+                await set_conn(tenant_id, p, status="error",
+                               last_error="account_connected_to_another_workspace")
+            await record_event("integration.connection_refused", "integration", "gmail",
+                               tenant_id, actor,
+                               payload={"reason": "account_connected_to_another_workspace"})
+            return RedirectResponse(url=f"{dest}&oauth=account_in_use")
     ver_doc = await db.google_credentials.find_one({"tenant_id": tenant_id}, {"_id": 0})
     previous_refresh = None
     if ver_doc and ver_doc.get("enc"):
@@ -3024,7 +3092,11 @@ async def google_callback(state: str = Query(None), code: str = Query(None), err
     await db.google_credentials.update_one({"tenant_id": tenant_id},
         {"$set": {"enc": enc_secret(creds), "account_email": email, "credential_version": version, "updated_at": now_iso()}}, upsert=True)
     for p in ("gmail", "google_calendar"):
-        await set_conn(tenant_id, p, status="active", account_identity=email, scopes=GOOGLE_SCOPES,
+        # The scopes Google actually granted, not the ones requested: a person can untick
+        # "send email" on the consent screen, and a connection claiming a scope it does
+        # not hold would let a send be attempted that Gmail must refuse.
+        await set_conn(tenant_id, p, status="active", account_identity=email,
+                       scopes=creds["scopes"] or GOOGLE_SCOPES,
                        connected_by=actor, connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version)
         await record_event("integration.connected", "integration", p, tenant_id, actor, payload={"provider": p, "account": email})
     return RedirectResponse(url=f"{dest}&oauth=connected")
@@ -3209,13 +3281,22 @@ async def assign_unmatched_inbound(inbound_id: str, inp: AssignInboundInput,
     return result
 
 
+class ReconcileInput(BaseModel):
+    # Set only after a person has looked in the mailbox's Sent folder and not found the
+    # message. It records their finding; it is never inferred.
+    confirm_not_sent: bool = False
+
+
 @api.post("/messages/{message_id}/reconcile")
-async def reconcile_message(message_id: str, user=Depends(require_role("admin"))):
+async def reconcile_message(message_id: str, inp: Optional[ReconcileInput] = None,
+                            user=Depends(require_role("admin"))):
     """Ask the provider whether it holds a message stranded in `outcome_unknown`.
 
     Deliberately not a resend. The only thing an operator can do to such a message is
-    find out what actually happened to it.
+    find out what actually happened to it -- and, when the provider cannot prove the
+    answer, record what they found themselves.
     """
+    inp = inp or ReconcileInput()
     message = await conversation_service.get_message(db, user["tenant_id"], message_id)
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -3232,16 +3313,25 @@ async def reconcile_message(message_id: str, user=Depends(require_role("admin"))
     key = conversation_service.dispatch_key(message)
     try:
         found_id = await locate(tenant_id=user["tenant_id"], idempotency_key=key)
-    except conversation_service.DeliveryRejected as exc:
-        found_id = None
-        lookup_detail = str(exc)[:300]
     except Exception as exc:
         # An inconclusive lookup leaves the message where it is. Recording "not found"
         # here would license a resend of something that may already have arrived.
         raise HTTPException(status_code=502,
                             detail=f"The provider could not be asked: {str(exc)[:200]}")
-    else:
-        lookup_detail = "provider lookup completed"
+    lookup_detail = "provider lookup completed"
+    if not found_id:
+        conclusive, reason = await _absence_is_conclusive(message)
+        if conclusive:
+            lookup_detail = reason
+        elif inp.confirm_not_sent:
+            lookup_detail = (f"provider lookup found nothing; {user['email']} confirmed "
+                             "after checking the mailbox that it was not sent")
+        else:
+            raise HTTPException(status_code=409, detail={
+                "reason": "absence_not_proof",
+                "detail": f"Gmail does not show this message, but that is not proof it was "
+                          f"never sent: {reason} If the Sent folder does not have it, "
+                          f"confirm that and it will be recorded as not sent."})
     reconciled = await conversation_service.reconcile_unknown(
         db, tenant_id=user["tenant_id"], message_id=message_id, actor=user["email"],
         found=bool(found_id), provider_message_id=found_id,

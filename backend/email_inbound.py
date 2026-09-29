@@ -56,8 +56,21 @@ PROVIDER_GMAIL = "gmail"
 
 # Addresses that carry delivery reports rather than a human reply.
 BOUNCE_SENDERS = ("mailer-daemon@", "postmaster@")
-BOUNCE_SUBJECT_HINTS = ("delivery status notification", "undelivered mail returned",
-                        "mail delivery failed", "returned mail", "delivery incomplete")
+# Read only on something already known to be a delivery report -- never on its own. A
+# subject is the one field a client (or a case title quoted back in "Re: ...") controls.
+FAILURE_SUBJECT_HINTS = ("failure", "failed", "undeliverable", "undelivered",
+                         "returned mail", "returned to sender", "could not be delivered",
+                         "rejected", "not delivered")
+# Temporary: the provider will keep trying. Marking the message failed on one of these
+# licenses a resend of something that may still arrive.
+DELAY_SUBJECT_HINTS = ("delay", "delayed", "will retry", "delivery incomplete",
+                       "temporar", "warning")
+
+REPORT_BOUNCE = "bounce"
+REPORT_DELAY = "delay"
+REPORT_UNCLEAR = "unclear_report"
+
+AUTO_REPLY_PRECEDENCE = ("auto_reply", "bulk", "junk", "list")
 
 MATCH_THREAD = "provider_thread"
 MATCH_REPLY_HEADER = "reply_header"
@@ -116,24 +129,52 @@ def normalize(gmail_message: dict) -> dict:
         "labels": gmail_message.get("labelIds") or [],
         "failed_recipients": addresses(headers.get("x-failed-recipients")),
         "content_type": (headers.get("content-type") or "").lower(),
+        "auto_reply": _is_auto_reply(headers),
     }
 
 
-def is_bounce(record: dict) -> bool:
-    """Is this a delivery report rather than a person replying?
+def _is_auto_reply(headers: dict) -> bool:
+    """An out-of-office or other machine reply (RFC 3834 and the common variants).
 
-    A bounce read as a reply would tell a recovery case the client engaged, when in fact
-    the message never arrived -- the exact inversion this system exists to avoid.
+    Recorded as a reply it would stop follow-up and engage the case on a message no
+    person wrote.
     """
-    sender = (record.get("from_address") or "").lower()
-    if any(sender.startswith(prefix) for prefix in BOUNCE_SENDERS):
+    auto_submitted = (headers.get("auto-submitted") or "").strip().lower()
+    if auto_submitted and auto_submitted != "no":
         return True
+    if (headers.get("precedence") or "").strip().lower() in AUTO_REPLY_PRECEDENCE:
+        return True
+    return bool(headers.get("x-autoreply") or headers.get("x-autorespond"))
+
+
+def classify_report(record: dict) -> Optional[str]:
+    """None for an ordinary message; otherwise what kind of delivery report it is.
+
+    Two mistakes are possible and both are expensive. A bounce read as a reply tells a
+    case the client engaged when the message never arrived. A reply -- or a temporary
+    delay notice -- read as a bounce marks a delivered message failed, which invites
+    resending it. So a report is only a *bounce* on a permanent-failure signal, and
+    nothing is a report on its subject alone.
+    """
     if record.get("failed_recipients"):
-        return True
-    if "multipart/report" in (record.get("content_type") or ""):
-        return True
+        # Set by the rejecting mail server on a permanent failure.
+        return REPORT_BOUNCE
+    sender = (record.get("from_address") or "").lower()
+    is_report = any(sender.startswith(prefix) for prefix in BOUNCE_SENDERS) or \
+        "multipart/report" in (record.get("content_type") or "")
+    if not is_report:
+        return None
     subject = (record.get("subject") or "").lower()
-    return any(hint in subject for hint in BOUNCE_SUBJECT_HINTS)
+    if any(hint in subject for hint in DELAY_SUBJECT_HINTS):
+        return REPORT_DELAY
+    if any(hint in subject for hint in FAILURE_SUBJECT_HINTS):
+        return REPORT_BOUNCE
+    return REPORT_UNCLEAR
+
+
+def is_bounce(record: dict) -> bool:
+    """Is this a permanent delivery failure (see `classify_report`)?"""
+    return classify_report(record) == REPORT_BOUNCE
 
 
 # ---------------------------------------------------------------------- matching
@@ -145,7 +186,9 @@ async def _sent_message_with_wire_id(db: Any, tenant_id: str, reference: str) ->
     messages sent before that field existed still match their own replies.
     """
     found: Optional[dict] = await db[conversation_service.MESSAGES].find_one(
-        {"tenant_id": tenant_id, "rfc822_message_id": reference}, {"_id": 0})
+        {"tenant_id": tenant_id,
+         "$or": [{"rfc822_message_id": reference}, {"dispatch_message_id": reference}]},
+        {"_id": 0})
     if found:
         return found
     fallback: Optional[dict] = await db[conversation_service.MESSAGES].find_one(
@@ -193,6 +236,8 @@ async def match_conversation(db: Any, tenant_id: str, record: dict) -> dict:
         if contacts:
             candidates = await db[conversation_service.CONVERSATIONS].find(
                 {"tenant_id": tenant_id,
+                 # An email can only belong to an email thread.
+                 "channel": conversation_service.CHANNEL_EMAIL,
                  "$or": [{"contact_id": contacts[0]["id"]},
                          {"participants": {"$elemMatch": {
                              "kind": conversation_service.PARTICIPANT_CONTACT,
@@ -253,9 +298,41 @@ async def ingest(db: Any, *, tenant_id: str, record: dict,
     provider_message_id = record.get("provider_message_id")
     if not provider_message_id:
         return {"outcome": "ignored", "reason": "message carried no provider id"}
+    labels = set(record.get("labels") or [])
+    if labels & {"SENT", "DRAFT"}:
+        # Our own mail. An outbound stuck in `outcome_unknown` has no provider id yet, so
+        # the unique index could not stop it being recorded as the client's reply.
+        return {"outcome": "ignored", "reason": "the tenant's own sent or draft mail"}
 
-    if is_bounce(record):
+    # Already recorded on an earlier poll: never match it again (a second match could
+    # place it somewhere else), but finish anything the first pass did not.
+    existing = await db[conversation_service.MESSAGES].find_one(
+        {"tenant_id": tenant_id, "provider": record.get("provider"),
+         "provider_message_id": provider_message_id}, {"_id": 0})
+    if existing:
+        if (on_reply and existing.get("direction") == conversation_service.INBOUND
+                and not existing.get("reply_effects_applied_at")):
+            conversation = await conversation_service.get_conversation(
+                db, tenant_id, existing["conversation_id"])
+            if conversation:
+                await _apply_reply_effects(db, tenant_id, conversation, existing, record,
+                                           "replay", on_reply)
+        return {"outcome": "reply", "conversation_id": existing.get("conversation_id"),
+                "message_id": existing["id"], "deduplicated": True}
+
+    report = classify_report(record)
+    if report == REPORT_BOUNCE:
         return await _ingest_bounce(db, tenant_id, record)
+    if report == REPORT_DELAY:
+        return {"outcome": "ignored", "reason": "a temporary delay notice; delivery continues"}
+    if report == REPORT_UNCLEAR:
+        parked = await record_unmatched(
+            db, tenant_id, record,
+            "A delivery report with no permanent-failure signal; a person should read it.")
+        return {"outcome": "unmatched", "reason": parked["reason"],
+                "deduplicated": parked.get("deduplicated", False)}
+    if record.get("auto_reply"):
+        return {"outcome": "ignored", "reason": "an automatic reply, not a person"}
 
     match = await match_conversation(db, tenant_id, record)
     conversation = match["conversation"]
@@ -270,22 +347,48 @@ async def ingest(db: Any, *, tenant_id: str, record: dict,
         subject=record.get("subject"), provider=record.get("provider"),
         provider_message_id=provider_message_id, received_at=record.get("received_at"))
 
-    if not message.get("deduplicated") and record.get("thread_id") and not conversation.get(
-            "provider_thread_id"):
+    if (not message.get("deduplicated") and record.get("thread_id")
+            and match["basis"] in (MATCH_THREAD, MATCH_REPLY_HEADER)
+            and not conversation.get("provider_thread_id")):
         # Learn the provider thread from the first reply, so later messages in it match
-        # on the strongest evidence rather than the weakest. This is the provider's own
-        # thread id, kept separate from this system's internal thread key.
+        # on the strongest evidence rather than the weakest. Only from a strong match: a
+        # thread learned from a sender-address guess would make an unrelated thread
+        # this conversation's -- and send the next recovery email into it.
         await db[conversation_service.CONVERSATIONS].update_one(
             {"id": conversation["id"], "tenant_id": tenant_id},
             {"$set": {"provider_thread_id": record["thread_id"]}})
 
+    # A reply parked on an earlier poll that now places with evidence leaves the queue.
+    await db[UNMATCHED].update_many(
+        {"tenant_id": tenant_id, "provider": record.get("provider"),
+         "provider_message_id": provider_message_id, "status": "open"},
+        {"$set": {"status": "assigned", "assigned_to_conversation": conversation["id"],
+                  "assigned_by": "inbound-sweep", "assigned_at": _now_iso(),
+                  "match_basis": match["basis"]}})
+
     if on_reply and not message.get("deduplicated"):
-        await on_reply(tenant_id=tenant_id, conversation=conversation, message=message,
-                       record=record, basis=match["basis"])
+        await _apply_reply_effects(db, tenant_id, conversation, message, record,
+                                   match["basis"], on_reply)
 
     return {"outcome": "reply", "basis": match["basis"], "reason": match["reason"],
             "conversation_id": conversation["id"], "message_id": message["id"],
             "deduplicated": bool(message.get("deduplicated"))}
+
+
+async def _apply_reply_effects(db: Any, tenant_id: str, conversation: dict, message: dict,
+                               record: dict, basis: str,
+                               on_reply: Callable[..., Any]) -> None:
+    """Run what a reply changes outside its conversation, and record that it ran.
+
+    The message is stored before this runs, so a failure here used to be permanent: the
+    next poll saw a duplicate and skipped it, and the case never learned of the reply.
+    Now the next poll finishes the job.
+    """
+    await on_reply(tenant_id=tenant_id, conversation=conversation, message=message,
+                   record=record, basis=basis)
+    await db[conversation_service.MESSAGES].update_one(
+        {"tenant_id": tenant_id, "id": message["id"]},
+        {"$set": {"reply_effects_applied_at": _now_iso()}})
 
 
 async def _ingest_bounce(db: Any, tenant_id: str, record: dict) -> dict:
@@ -335,7 +438,7 @@ async def poll_tenant(db: Any, *, tenant_id: str, fetch_messages: Callable[..., 
     """
     summary: dict[str, Any] = {"tenant_id": tenant_id, "fetched": 0, "replies": 0,
                                "bounces": 0, "unmatched": 0, "duplicates": 0,
-                               "errors": 0}
+                               "ignored": 0, "errors": 0}
     try:
         raw_messages = await fetch_messages(tenant_id=tenant_id, limit=limit)
     except Exception as exc:
@@ -362,6 +465,8 @@ async def poll_tenant(db: Any, *, tenant_id: str, fetch_messages: Callable[..., 
             summary["bounces"] += 1
         elif outcome == "unmatched":
             summary["unmatched"] += 1
+        elif outcome == "ignored":
+            summary["ignored"] += 1
     return summary
 
 

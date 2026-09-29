@@ -347,6 +347,17 @@ For a recovery case, the runner drafts step 2 for you and raises the approval.
 adapter asks Gmail whether it already holds that dispatch and must return the same
 provider id without a second copy arriving.
 
+**Also check, on that first sent message (`GET /api/messages/{id}`):**
+`message_id_verified: true` and `message_id_rewritten: false`. This is the one fact the
+code cannot establish without a real Gmail account: whether Gmail keeps the
+`Message-ID` ClientVerse sets. There are public reports that `messages.send` replaces
+it. If it comes back `message_id_rewritten: true`, replies still match (the stored
+`rfc822_message_id` is what the client received), but the duplicate check and
+reconciliation cannot find messages by the id they search for — so reconciliation will
+never mark a stranded message as not sent on its own, and an admin has to confirm from
+the Sent folder instead. Report it either way; it decides whether the adapter needs a
+different lookup.
+
 ### 8.6 Reply to that email and confirm the loop closes
 
 Reply from the recipient mailbox, then either wait for the `inbound-email` tick or

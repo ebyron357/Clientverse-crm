@@ -26,9 +26,13 @@ the adapter manufactures one:
   `outcome_unknown`: does the provider hold it or not.
 
 The residual risk is stated rather than hidden: a provider that rewrote the supplied
-`Message-ID` would defeat the lookup. Gmail preserves a caller-supplied `Message-ID` on
-`messages.send`, and the adapter records the id it searched for alongside the id Gmail
-returned so a mismatch is visible in the message history rather than silent.
+`Message-ID` would defeat the lookup, and there are public reports of Gmail replacing it
+on `messages.send`. So after every send the adapter reads the header Gmail actually
+stored and returns both: `rfc822_message_id` is what the client received (and what a
+reply will reference), `dispatch_message_id` is what we minted and search for, and
+`message_id_verified` / `message_id_rewritten` say whether they were compared and
+whether they differ. Reconciliation only trusts an empty lookup for a tenant whose own
+sends have shown the id survives (see `server._absence_is_conclusive`).
 
 WHAT COUNTS AS A FAILURE
 
@@ -65,6 +69,16 @@ MESSAGE_ID_DOMAIN = "clientverse.app"
 # Gmail replies to a 4xx with a definite answer; these are the ones that mean "this
 # message was not accepted and never will be in its current form".
 PROVEN_REJECTION_CODES = {400, 401, 403, 404, 413, 422}
+
+
+class LookupUnavailable(Exception):
+    """A lookup could not be completed: no usable authorisation, or Gmail refused it.
+
+    Deliberately not a `DeliveryRejected`. During a send, being unable to authorise is a
+    proven non-dispatch; during reconciliation it is only "I could not check", and
+    reading that as "the provider does not hold it" is what turns a delivered message
+    into a duplicate.
+    """
 
 
 class GmailNotAuthorized(conversation_service.DeliveryRejected):
@@ -186,8 +200,13 @@ class GmailChannelProvider:
         be completed raises, because "I could not check" must never be recorded as "it
         is not there" -- that reading is what turns a stranded message into a duplicate.
         """
-        token, _ = await self._authorized_token(tenant_id)
-        return await self._find(token, message_id_for(tenant_id, idempotency_key))
+        try:
+            token, _ = await self._authorized_token(tenant_id)
+            return await self._find(token, message_id_for(tenant_id, idempotency_key))
+        except GmailNotAuthorized as exc:
+            # A reconnect in progress, a refresh that failed, a 403 rate limit: none of
+            # them says anything about whether the message was sent.
+            raise LookupUnavailable(str(exc)) from exc
 
     async def _find(self, token: str, message_id: str) -> Optional[str]:
         async with self._http_client() as client:
@@ -227,6 +246,9 @@ class GmailChannelProvider:
             return conversation_service.DeliveryResult(
                 provider_message_id=existing,
                 detail={"deduplicated": True, "rfc822_message_id": rfc_message_id,
+                        "dispatch_message_id": rfc_message_id,
+                        # Found by the id we minted, so Gmail kept it.
+                        "message_id_verified": True, "message_id_rewritten": False,
                         "note": "Gmail already held this dispatch; it was not sent twice."})
 
         raw = build_mime(message=message, conversation=conversation, sender=mailbox,
@@ -258,7 +280,36 @@ class GmailChannelProvider:
         provider_message_id = body.get("id")
         if not provider_message_id:
             raise RuntimeError("Gmail accepted the send but returned no message id")
+        stored = await self._stored_message_id(token, provider_message_id)
         return conversation_service.DeliveryResult(
             provider_message_id=provider_message_id,
-            detail={"deduplicated": False, "rfc822_message_id": rfc_message_id,
+            detail={"deduplicated": False,
+                    # What the client received, and so what a reply will reference.
+                    "rfc822_message_id": stored or rfc_message_id,
+                    "dispatch_message_id": rfc_message_id,
+                    "message_id_verified": stored is not None,
+                    "message_id_rewritten": stored is not None and stored != rfc_message_id,
                     "thread_id": body.get("threadId"), "mailbox": mailbox})
+
+    async def _stored_message_id(self, token: str, provider_message_id: str) -> Optional[str]:
+        """The Message-ID header Gmail actually stored for a message it accepted.
+
+        Best effort: the message is already sent, so a failed read must never fail the
+        send. `None` means "not checked", which reconciliation treats as unknown.
+        """
+        try:
+            async with self._http_client() as client:
+                response = await client.get(
+                    f"{GMAIL_API}/messages/{provider_message_id}",
+                    params={"format": "metadata", "metadataHeaders": ["Message-ID"]},
+                    headers={"Authorization": f"Bearer {token}"})
+            if response.status_code != 200:
+                return None
+            headers = ((response.json() or {}).get("payload") or {}).get("headers") or []
+            for header in headers:
+                if str(header.get("name", "")).lower() == "message-id":
+                    value = str(header.get("value") or "").strip().strip("<>").strip()
+                    return value.lower() or None
+        except Exception:
+            logger.warning("Could not read back the Message-ID of %s", provider_message_id)
+        return None

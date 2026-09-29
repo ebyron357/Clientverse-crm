@@ -47,11 +47,13 @@ def db():
 def gmail_message(*, message_id=None, thread_id=None, sender="buyer@client.test",
                   subject="Re: Your quote", in_reply_to=None, references=None,
                   snippet="Yes, let's proceed.", content_type="text/plain",
-                  failed_recipients=None, internal_date="1789000000000"):
+                  failed_recipients=None, internal_date="1789000000000",
+                  labels=("INBOX",), extra_headers=()):
     headers = [{"name": "From", "value": sender},
                {"name": "To", "value": "sales@acme.test"},
                {"name": "Subject", "value": subject},
-               {"name": "Content-Type", "value": content_type}]
+               {"name": "Content-Type", "value": content_type},
+               *({"name": name, "value": value} for name, value in extra_headers)]
     if in_reply_to:
         headers.append({"name": "In-Reply-To", "value": f"<{in_reply_to}>"})
     if references:
@@ -61,7 +63,7 @@ def gmail_message(*, message_id=None, thread_id=None, sender="buyer@client.test"
     return {"id": message_id or f"gm_{uuid.uuid4().hex[:10]}",
             "threadId": thread_id or f"thr_{uuid.uuid4().hex[:8]}",
             "snippet": snippet, "internalDate": internal_date,
-            "labelIds": ["INBOX"], "payload": {"headers": headers}}
+            "labelIds": list(labels), "payload": {"headers": headers}}
 
 
 def make_conversation(db, *, tenant_id=TENANT, contact_id="ct_1", **kwargs):
@@ -112,7 +114,8 @@ def test_a_message_with_no_headers_at_all_still_normalises():
                   subject="Delivery Status Notification (Failure)"),
     gmail_message(sender="postmaster@client.test", subject="Undelivered Mail Returned"),
     gmail_message(failed_recipients="buyer@client.test"),
-    gmail_message(content_type="multipart/report; report-type=delivery-status"),
+    gmail_message(content_type="multipart/report; report-type=delivery-status",
+                  subject="Delivery Status Notification (Failure)"),
 ])
 def test_a_delivery_report_is_not_mistaken_for_a_reply(message):
     assert inbound.is_bounce(inbound.normalize(message)) is True
@@ -346,3 +349,134 @@ def test_a_poll_that_cannot_reach_the_provider_reports_it_rather_than_claiming_z
     assert summary["errors"] == 1
     assert "not_connected" in summary["error"]
     assert summary["replies"] == 0
+
+
+
+# ------------------------------------------------ what must never become a bounce or a reply
+
+@pytest.mark.parametrize("message", [
+    # A temporary delay: the provider keeps trying. Failing the message invites a resend.
+    gmail_message(sender="mailer-daemon@googlemail.com",
+                  subject="Delivery Status Notification (Delay)"),
+    gmail_message(sender="mailer-daemon@googlemail.com",
+                  subject="Delivery incomplete"),
+    # A client whose reply quotes a case titled like a delivery problem.
+    gmail_message(subject="Re: Recovery: Delivery incomplete - order 1182"),
+    gmail_message(subject="Re: Returned mail about our invoice"),
+])
+def test_a_delay_notice_or_a_subject_alone_is_not_a_bounce(message):
+    assert inbound.is_bounce(inbound.normalize(message)) is False
+
+
+def test_a_delay_notice_changes_nothing(db):
+    conversation = make_conversation(db)
+    sent = make_sent_message(db, conversation, wire_id="cv-delay@clientverse.app")
+    result = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(gmail_message(
+        sender="mailer-daemon@googlemail.com", subject="Delivery Status Notification (Delay)",
+        in_reply_to="cv-delay@clientverse.app"))))
+    assert result["outcome"] == "ignored"
+    assert run(cv.get_message(db, TENANT, sent["id"]))["status"] == cv.SENT
+
+
+def test_a_reply_about_a_delivery_problem_is_still_a_reply(db):
+    conversation = make_conversation(db)
+    make_sent_message(db, conversation, wire_id="cv-subj@clientverse.app")
+    result = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(gmail_message(
+        subject="Re: Recovery: Delivery incomplete - order 1182",
+        in_reply_to="cv-subj@clientverse.app"))))
+    assert result["outcome"] == "reply"
+
+
+def test_an_unclear_delivery_report_is_parked_for_a_person(db):
+    result = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(gmail_message(
+        sender="postmaster@client.test", subject="Message status"))))
+    assert result["outcome"] == "unmatched"
+
+
+@pytest.mark.parametrize("headers", [
+    (("Auto-Submitted", "auto-replied"),),
+    (("Precedence", "auto_reply"),),
+    (("X-Autoreply", "yes"),),
+])
+def test_an_out_of_office_reply_is_not_a_client_reply(db, headers):
+    conversation = make_conversation(db)
+    make_sent_message(db, conversation, wire_id="cv-ooo@clientverse.app")
+    result = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(gmail_message(
+        in_reply_to="cv-ooo@clientverse.app", extra_headers=headers))))
+    assert result["outcome"] == "ignored"
+    assert not [m for m in run(cv.list_messages(db, TENANT, conversation["id"]))
+                if m["direction"] == cv.INBOUND]
+
+
+def test_the_tenants_own_sent_mail_is_never_a_reply(db):
+    conversation = make_conversation(db)
+    result = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(gmail_message(
+        thread_id=None, labels=("SENT",)))))
+    assert result["outcome"] == "ignored"
+    assert run(cv.list_messages(db, TENANT, conversation["id"])) == []
+
+
+def test_a_reply_matched_on_a_later_poll_leaves_the_unmatched_queue(db):
+    record = inbound.normalize(gmail_message(message_id="gm-later", sender="new@client.test"))
+    assert run(inbound.ingest(db, tenant_id=TENANT, record=record))["outcome"] == "unmatched"
+    conversation = make_conversation(db)
+    run(db[cv.CONVERSATIONS].update_one({"id": conversation["id"]},
+                                        {"$set": {"provider_thread_id": record["thread_id"]}}))
+    assert run(inbound.ingest(db, tenant_id=TENANT, record=record))["outcome"] == "reply"
+    assert run(inbound.list_unmatched(db, TENANT)) == []
+
+
+def test_reply_effects_that_failed_are_finished_on_the_next_poll(db):
+    conversation = make_conversation(db)
+    make_sent_message(db, conversation, wire_id="cv-eff@clientverse.app")
+    record = inbound.normalize(gmail_message(message_id="gm-eff",
+                                             in_reply_to="cv-eff@clientverse.app"))
+    calls = []
+
+    async def failing(**kwargs):
+        calls.append("fail")
+        raise RuntimeError("timeline write failed")
+
+    async def working(**kwargs):
+        calls.append("ok")
+
+    with pytest.raises(RuntimeError):
+        run(inbound.ingest(db, tenant_id=TENANT, record=record, on_reply=failing))
+    again = run(inbound.ingest(db, tenant_id=TENANT, record=record, on_reply=working))
+    assert again["deduplicated"] is True
+    assert calls == ["fail", "ok"], "the next poll must finish what the first could not"
+    third = run(inbound.ingest(db, tenant_id=TENANT, record=record, on_reply=working))
+    assert third["deduplicated"] is True and calls == ["fail", "ok"], "and then only once"
+
+
+def test_a_sender_address_match_does_not_teach_the_conversation_a_thread(db):
+    run(db.contacts.insert_one({"tenant_id": TENANT, "id": "ct_1",
+                                "email": "buyer@client.test"}))
+    conversation = make_conversation(db)
+    result = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(
+        gmail_message(thread_id="thr-unrelated"))))
+    assert result["basis"] == inbound.MATCH_CONTACT
+    assert run(cv.get_conversation(db, TENANT, conversation["id"])).get(
+        "provider_thread_id") is None
+
+
+def test_an_email_never_attaches_to_a_non_email_thread(db):
+    run(db.contacts.insert_one({"tenant_id": TENANT, "id": "ct_1",
+                                "email": "buyer@client.test"}))
+    run(cv.create_conversation(db, tenant_id=TENANT, channel=cv.CHANNEL_SMS,
+                               actor="user@example.com", contact_id="ct_1",
+                               participants=[{"kind": cv.PARTICIPANT_CONTACT, "id": "ct_1"}]))
+    result = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(
+        gmail_message())))
+    assert result["outcome"] == "unmatched"
+
+
+def test_a_reply_to_a_rewritten_message_id_still_matches(db):
+    conversation = make_conversation(db)
+    doc = make_sent_message(db, conversation, wire_id="cab-actual@mail.gmail.com")
+    run(db[cv.MESSAGES].update_one({"id": doc["id"]}, {"$set": {
+        "dispatch_message_id": "cv-minted@clientverse.app"}}))
+    for reference in ("cab-actual@mail.gmail.com", "cv-minted@clientverse.app"):
+        result = run(inbound.ingest(db, tenant_id=TENANT, record=inbound.normalize(
+            gmail_message(in_reply_to=reference))))
+        assert result["outcome"] == "reply" and result["basis"] == inbound.MATCH_REPLY_HEADER

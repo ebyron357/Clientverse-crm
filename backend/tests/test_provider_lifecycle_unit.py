@@ -357,6 +357,8 @@ def test_google_callback_reconnect_preserves_existing_refresh_token(monkeypatch)
     monkeypatch.setattr(server, "db", SimpleNamespace(
         oauth_states=oauth_states,
         google_credentials=credentials,
+        # No other workspace has this mailbox connected.
+        integration_connections=CaptureCollection(find_one_results=[None]),
     ))
     monkeypatch.setattr(server, "GOOGLE_CLIENT_ID", "client-id")
     monkeypatch.setattr(server, "GOOGLE_CLIENT_SECRET", "client-secret")
@@ -1127,3 +1129,59 @@ def test_stripe_payment_intent_preserves_tenant_filter_on_missing_invoice(monkey
     except server.HTTPException as exc:
         assert exc.status_code == 404
         assert exc.detail == "Invoice not found"
+
+
+
+def _callback_env(monkeypatch, *, other_tenant_connection, granted_scope):
+    oauth_states = CaptureCollection(find_one_results=[{
+        "state": "state_2", "tenant_id": "ten_b", "actor": "admin@b.example",
+        "code_verifier": "verifier", "expires_at": "2099-01-01T00:00:00+00:00"}])
+    credentials = CaptureCollection(find_one_results=[None])
+    monkeypatch.setattr(server, "db", SimpleNamespace(
+        oauth_states=oauth_states, google_credentials=credentials,
+        integration_connections=CaptureCollection(
+            find_one_results=[other_tenant_connection])))
+    monkeypatch.setattr(server, "GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setattr(server, "GOOGLE_CLIENT_SECRET", "client-secret")
+    monkeypatch.setattr(server, "GOOGLE_REDIRECT_URI",
+                        "https://crm.example/api/integrations/google/callback")
+    monkeypatch.setattr(server, "FRONTEND_URL", "https://crm.example")
+    monkeypatch.setattr(server, "enc_secret", lambda value: deepcopy(value))
+    connections = []
+
+    async def fake_set_conn(tenant_id, provider, **fields):
+        connections.append((tenant_id, provider, fields))
+
+    async def fake_record_event(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(server, "set_conn", fake_set_conn)
+    monkeypatch.setattr(server, "record_event", fake_record_event)
+    client = FakeAsyncClient(
+        post_responses=[FakeResponse(200, {"access_token": "a", "expires_in": 3600,
+                                           "scope": granted_scope})],
+        get_responses=[FakeResponse(200, {"email": "shared@example.com"})])
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
+    return credentials, connections
+
+
+def test_a_mailbox_already_connected_to_another_workspace_is_refused(monkeypatch):
+    """Two workspaces polling one inbox would each try to place the other's client mail."""
+    credentials, connections = _callback_env(
+        monkeypatch, other_tenant_connection={"tenant_id": "ten_a"},
+        granted_scope="https://www.googleapis.com/auth/gmail.readonly")
+    response = run(server.google_callback(state="state_2", code="code", error=None))
+    assert response.headers["location"].endswith("oauth=account_in_use")
+    assert credentials.updated == [], "no credential may be stored for the second workspace"
+    assert all(fields["status"] == "error" for _, _, fields in connections)
+
+
+def test_the_connection_records_the_scopes_google_granted_not_those_requested(monkeypatch):
+    """A person can untick "send email" on Google's consent screen."""
+    read_only = "https://www.googleapis.com/auth/gmail.readonly"
+    _, connections = _callback_env(monkeypatch, other_tenant_connection=None,
+                                   granted_scope=read_only)
+    response = run(server.google_callback(state="state_2", code="code", error=None))
+    assert response.headers["location"].endswith("oauth=connected")
+    gmail = [fields for _, provider, fields in connections if provider == "gmail"][0]
+    assert gmail["scopes"] == [read_only]

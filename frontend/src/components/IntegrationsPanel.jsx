@@ -55,6 +55,7 @@ export default function IntegrationsPanel() {
     if (p === "connected") toast.success("Google connected");
     else if (p === "expired") toast.error("Authorization link expired — try again");
     else if (p === "error") toast.error("Google authorization failed");
+    else if (p === "account_in_use") toast.error("That Google account is already connected to another workspace. Connect a different mailbox.");
     if (p) window.history.replaceState({}, "", window.location.pathname + "?tab=integrations");
   }, []);
 

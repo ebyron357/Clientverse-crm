@@ -901,6 +901,16 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
                                     # inbound path matches on -- stored as a field of its
                                     # own rather than buried in a history entry.
                                     "rfc822_message_id": result.detail.get("rfc822_message_id"),
+                                    # The id we minted and search by, and whether the
+                                    # provider was seen to keep it. Reconciliation reads
+                                    # these to decide whether an empty lookup means
+                                    # anything.
+                                    "dispatch_message_id": result.detail.get(
+                                        "dispatch_message_id"),
+                                    "message_id_verified": bool(
+                                        result.detail.get("message_id_verified")),
+                                    "message_id_rewritten": bool(
+                                        result.detail.get("message_id_rewritten")),
                                     "sent_at": _iso(_now())},
                              detail=result.detail)
     await _touch_conversation(db, tenant_id, conversation["id"], direction=OUTBOUND,
