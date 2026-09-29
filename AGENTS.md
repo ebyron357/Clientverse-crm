@@ -1,5 +1,21 @@
 # ClientVerse CRM — Agent Memory
 
+## Session state (2026-09-29, branch `claude/vibrant-hypatia-6aabmc`)
+
+- **Pushed, not merged** (owner merges — O-17): scheduler misfire detection
+  (`backend/cron_schedule.py`, `GET /api/cron/schedule`), the scheduler ledger restricted
+  to the cron secret / `ADMIN_EMAIL` operator, and five recovery-loop fixes
+  (`backend/tests/test_recovery_engagement.py` drives run → approve → send → pay →
+  attribute through the real modules). Canonical document v1.11 §3.3/§11 is current.
+- **A real mongod works here without network access to mongodb.org:** conda-forge is
+  reachable, so `micromamba create -p <dir> -c conda-forge mongodb` installs `mongod`
+  (8.3.7). Prefer it over `mongomock://` — the suite then passes in full.
+- **Per-stage tests had hidden five loop breaks by setting intermediate states by hand.**
+  When touching the recovery pipeline, run `scripts/operations_smoke.mjs` with
+  `CLIENTVERSE_CRON_SECRET` against a local API as well as pytest.
+- Jev QC variables are unset in this environment (O-18): the gate fails closed, so do
+  not report anything `VERIFIED_COMPLETE`.
+
 ## Session state (2026-09-28)
 
 - **Running application code is `main@c9f5a6e`** (the recovery-engine merge). Railway

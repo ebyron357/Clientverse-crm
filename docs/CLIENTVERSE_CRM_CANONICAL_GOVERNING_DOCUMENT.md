@@ -1,11 +1,11 @@
 # ClientVerse CRM — Canonical Governing Document
 
-**Version:** 1.10 — complete replacement
-**Effective:** 2026-09-28
+**Version:** 1.11 — complete replacement
+**Effective:** 2026-09-29
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
 **Repository:** `ebyron357/Clientverse-crm`
 **Baseline commit at issue:** `main@3f14347610e5ca6cd8521c74f4420d3b2c08a9e8` (PR #24 merged 2026-09-15T18:19Z)
-**Running application code at this revision:** `main@c9f5a6e` (recovery-engine activation merge, 2026-09-28; **deployed** — §3.2); later `main` commits are docs/tooling only. Earlier heads: `730b1b3` (PR #28), `e8d5678` (PR #27), `3150530` (PR #26)
+**Running application code at this revision:** `main@c9f5a6e` (recovery-engine activation merge, 2026-09-28; **deployed** — §3.2); later `main` commits are docs/tooling only. **Branch `claude/vibrant-hypatia-6aabmc` (pushed, not merged) carries fixes to that code — §3.1, §3.3.** Earlier heads: `730b1b3` (PR #28), `e8d5678` (PR #27), `3150530` (PR #26)
 
 ---
 
@@ -129,6 +129,8 @@ The module registry is the **contract of record** for which surfaces exist and w
 - `main@730b1b3` — PR #28 squash-merged at 2026-09-16T23:31Z, bringing the Recovery Case and normalized recovery-event foundation (E-21) and the recovery runner (E-22). Exact-head CI run 35162676444 passed.
 - `main@c9f5a6e` (head as of 2026-09-28) — the owner merged `claude/trusting-brahmagupta-lj26xf` (scheduler falsifiability, CRM baseline completion, Gmail send/receive, the attribution ledger, the eight declared detector families, backend lint/type/dependency/config CI gates, and the proof surface). Its capability-level findings (`docs/ACTIVATION_REPORT.md`) are reconciled into §4 as of v1.10: C-27…C-29 and E-23 added; M-01, M-08, M-10, E-01, E-02 and E-09 updated. **Exact-head CI could not run:** since 2026-09-27T22:35Z every GitHub Actions job on every branch fails in 2–4 s with no runner assigned (§10.2 O-16). The same gates were run locally on this tree on 2026-09-28: `ruff` clean, `scripts/typecheck.py` blocking modules clean, `pip-audit` no known vulnerabilities, `scripts/validate_config.py` passed, `yarn lint --max-warnings=0` passed, `CI=true yarn build` passed, `scripts/crm_release_smoke.mjs` 82/82, backend 675 passed / 16 failed / 4 skipped on `mongomock` — the documented driver-fidelity baseline; the 16 need a real mongod, which the session cannot reach.
 
+- Branch `claude/vibrant-hypatia-6aabmc` (2026-09-29, **pushed, not merged, not deployed**): `62b3ead` scheduler misfire detection and operator-only ledger; `5731df4`, `fbeedb1`, `8000da6` five defects that stopped the recovery loop finishing (§3.3). GitHub Actions still runs nothing (O-16), so the gates were run locally against a real `mongod` 8.3.7: backend suite **760 passed, 4 skipped**; `ruff` clean; `scripts/typecheck.py` blocking set clean (now including `cron_schedule`); `scripts/validate_config.py` pass; `pip-audit` clean; frontend `yarn lint --max-warnings=0` and `CI=true yarn build` pass; `scripts/crm_release_smoke.mjs` **82/82**; `scripts/operations_smoke.mjs` exit 0 with the cron secret, now walking plan approval → case approved → run → executing over HTTP. Every capability it touches is `TESTED` on the branch, not `MERGED`.
+
 ### 3.2 Production truth
 
 - Railway deployment `d9af2985-30e4-4fb8-b030-ac8b1446db89` running `ca30587` was **LIVE VERIFIED** on 2026-09-01: `/api/health` 200 `{"status":"ok","database":"up"}`, `scripts/proof_of_life.mjs` exit 0 including cross-tenant 404, smoke records fully purged. Evidence: `docs/evidence/production-smoke-20260901.json`.
@@ -150,6 +152,8 @@ The module registry is the **contract of record** for which surfaces exist and w
 | `AGENTS.md` and `docs/REMAINING_WORK.md`: "frontend `yarn lint --max-warnings=0` … are the CI gates" | **False as written.** `.github/workflows/ci.yml` ran only `yarn install` and `yarn build` for the frontend; lint was never executed in CI. A `no-unused-vars` error consequently reached `main@3f14347` unnoticed. Corrected in this change set: the lint gate is added to the workflow and the error is fixed. |
 | Next Best Action described as delivered | The workspace strip was client-side only. A backend recommendation service, aggregate queue, and persisted feedback now exist; see NBA-1 in §4.C. |
 | Module registry surfaces marked `available` | `available` means the route and API contract exist, not that the capability is live-verified in production. |
+| E-01 (v1.10): "Every step now has deployed code … only owner grants and the scheduler stand in the way" | **False for the deployed code.** Driving the loop end to end on 2026-09-29 found five defects that would have stopped it with every owner input supplied: (1) a Second Chance plan composed by the sweep was never linked to its case, so the case stayed `detected` and could never be approved; (2) approving a plan approved the strategy but never the case, and the runner only runs `approved` cases; (3) the runner addressed contact-backed drafts to nobody, so the email adapter would reject every automated recovery email; (4) nothing moved a case to `engaged` when its client was reached, so an outcome the attribution ledger correctly attributed failed to mark the case recovered; (5) an approval that lapsed jammed its plan and case (or message) permanently. Each stage's tests passed because they set the intermediate states by hand. All five are fixed on `claude/vibrant-hypatia-6aabmc` with regression tests that fail on the old code. |
+| C-28 (v1.10): scheduler evidence "readable by an admin session" | Registration is self-serve and makes every registrant the admin of a new tenant, so the global ledger (job results and error text from every tenant) was readable by anyone who signed up. Restricted on the branch to the cron secret or the `ADMIN_EMAIL` platform operator; an HTTP test proves a self-registered admin gets 403. |
 
 ### 3.4 Open pull requests
 
@@ -204,7 +208,7 @@ The module registry is the **contract of record** for which surfaces exist and w
 | C-25 | Scheduled-job driver | **BLOCKED — OWNER INPUT** | In `main`, but cannot run: the two repository secrets are unset (O-03) and GitHub Actions assigns no runner to any job since 2026-09-27T22:35Z (O-16). Design: `.github/workflows/scheduled-jobs.yml` calls every cron endpoint on the documented cadences once two repository secrets exist, and exits cleanly while they do not. See O-03. | PR #26 |
 | C-26 | Conversations operator surface | DEPLOYED | The `/operations` Conversations panel: open threads with channel, handler, consent state and message count; a thread reader with its messages and any blocked-send reason; assign, handoff and close. It states plainly that no delivery provider is registered rather than offering a send button that would fail. | This change set |
 | C-27 | CRM baseline completion — record detail, edit, archive/restore and timeline for contacts, companies and deals; tenant-configurable pipelines with per-deal stage history; tasks on any record; notes, calls, meetings and logged emails as activity; global search; filtering; CSV import and export | DEPLOYED | `backend/crm_core.py` (33 tests): `/api/contacts\|companies\|opportunities/{id}` with `archive`, `restore`, `timeline`; `GET\|PUT /api/pipelines/default`; `/api/tasks`, `/api/crm/tasks`, `/api/tasks/overview`; `/api/activities`; `GET /api/search`; `GET /api/export/{entity}`; `POST /api/import/{entity}`. Cross-tenant access answers 404 on every new surface. Release smoke `scripts/crm_release_smoke.mjs` 82/82 locally on 2026-09-28; **not run against production**. | `docs/ACTIVATION_REPORT.md` (branch `claude/trusting-brahmagupta-lj26xf`, merged at `c9f5a6e`) |
-| C-28 | Scheduled-run ledger and scheduler health | DEPLOYED | `backend/cron_ledger.py` (10 tests): every scheduled request, including rejected ones, is recorded in `cron_run_log`; `GET /api/cron/runs` and `GET /api/cron/health` (`receiving_scheduled_traffic`). Production has recorded no scheduled traffic (O-03, O-16). | Same |
+| C-28 | Scheduled-run ledger and scheduler health | DEPLOYED (ledger) / TESTED (misfire detection, branch `claude/vibrant-hypatia-6aabmc`) | `backend/cron_ledger.py` (10 tests): every scheduled request, including rejected ones, is recorded in `cron_run_log`; `GET /api/cron/runs` and `GET /api/cron/health` (`receiving_scheduled_traffic`). Production has recorded no scheduled traffic (O-03, O-16). On the branch: `backend/cron_schedule.py` (31 tests) declares every job's cadence, grace and maximum runtime, and `GET /api/cron/schedule` (and a `schedule` summary on `/api/cron/health`, and Operations → Scheduler) judges each job `on_schedule`, `overdue` (with `missed_ticks`), `stalled`, `failing`, `rejected` or `never_run` from the ledger; `scripts/validate_config.py` fails the build if the workflow's cadences drift from the declaration. All three endpoints now answer only the cron secret or the platform operator (§3.3). | Same |
 | C-29 | Backend CI gates — `ruff`, `scripts/typecheck.py` ratchet, `pip-audit`, `scripts/validate_config.py` | MERGED | `.github/workflows/ci.yml` job *Backend lint and types*. CI configuration, so `DEPLOYED` does not apply; the job cannot currently run (O-16). All four pass locally on `main` (2026-09-28). | Same |
 
 ### 4.B Approved module contracts — registered, not yet built
@@ -231,7 +235,7 @@ These were declared in `frontend/src/platform/modules.js` as `contract_pending` 
 
 | ID | Capability | Status | Provenance | Notes |
 |---|---|---|---|---|
-| E-01 | **Second Chance** — missed-opportunity / dormant-and-lost revenue recovery (the ten-step north-star workflow end to end) | **BLOCKED — OWNER INPUT** | RECOVERED — ClickUp `CONTROL — W2` §11 | Every step now has deployed code at `c9f5a6e`: detection (E-02…E-04, E-23), strategy composition (E-20), approval (M-07), execution (E-22), outbound email (M-01 adapter), reply ingestion (M-01 inbound), attribution (M-08) and proof (M-10). It has **never run end to end**, and cannot until the scheduler runs (O-03, O-16) and `gmail.send` is granted (O-01). No step is `LIVE VERIFIED`. |
+| E-01 | **Second Chance** — missed-opportunity / dormant-and-lost revenue recovery (the ten-step north-star workflow end to end) | **BLOCKED — OWNER INPUT** | RECOVERED — ClickUp `CONTROL — W2` §11 | Every step now has deployed code at `c9f5a6e`: detection (E-02…E-04, E-23), strategy composition (E-20), approval (M-07), execution (E-22), outbound email (M-01 adapter), reply ingestion (M-01 inbound), attribution (M-08) and proof (M-10). It has **never run end to end**, and cannot until the scheduler runs (O-03, O-16) and `gmail.send` is granted (O-01). No step is `LIVE VERIFIED`. **The deployed code could not have completed the loop even then** — five defects, fixed and `TESTED` on branch `claude/vibrant-hypatia-6aabmc` (§3.3); it must be merged first (O-17). The branch's `backend/tests/test_recovery_engagement.py` drives run → approve → send → pay → attribute through the real modules and ends with the case `recovered`. |
 | E-02 | Missed-call recovery | DEPLOYED (detection) / BLOCKED — OWNER INPUT (telephony) | DIRECTIVE 2026-09-15 (corroborated by the public product promise on `clientverse.io`: "cannot afford a missed call") | Detection is **deployed** at `c9f5a6e`: call logs are captured through `POST /api/intake/calls` (`backend/recovery_intake.py`) and `detect_missed_calls` in `backend/detectors.py` opens a Recovery Case, run by `POST /api/cron/detect-recovery`. Call capture is an intake API, not a telephony integration; recovery by phone still needs the telephony and consent decision (O-06, E-08 → M-04). Recovery by email follows M-01. |
 | E-03 | Stalled-lead recovery | DEPLOYED | RECOVERED — ClickUp §11 ("dormant or lost opportunity"); UX assessment ("opportunity has no future activity") | `backend/second_chance.py`. Deterministic rule: an open opportunity with no qualifying activity (event, stage change, or update) for `SECOND_CHANCE_STALLED_LEAD_DAYS` (default 14). Emits an explainable reason, an `opportunity:<id>` source reference, and a deduplicated durable work item. Closed stages are out of scope. No outbound communication. 13 tests. |
 | E-04 | Missed-follow-up recovery | DEPLOYED | RECOVERED — C-06 commitment-risk evaluation exists and is the seed signal | `backend/second_chance.py`. An unresolved commitment or delivery task past its due date plus a configurable grace window becomes a recovery candidate with overdue days, owner and source reference. No outbound communication. |
@@ -252,7 +256,7 @@ These were declared in `frontend/src/platform/modules.js` as `contract_pending` 
 | E-19 | Slack / ClickUp handoffs | APPROVED — NOT STARTED | RECOVERED — canonical operating contract (ClickUp = task/status plane, Slack = operator/alert plane); workforce repo ships both adapters | **Not present in the CRM.** The CRM contains only a seeded registry record `Slack Notifier` (status `BETA`) — a catalog entry, not an integration. |
 | E-20 | Recovery strategy composer (north-star steps 2–4) | DEPLOYED | RECOVERED — ClickUp `CONTROL — W2` §11 steps 2–4 ("gather authorized context", "evaluate the account and its history", "recommend a recovery strategy") | `backend/recovery_strategy.py`. Reads only tenant-owned CRM records — no external lookup and no enrichment. An ordered playbook of six named lanes (`commitment_repair`, `delivery_recovery`, `commitment_repair_first`, `dormant_nurture`, `owner_led_reengagement`, `written_followup`, plus an explicit `needs_human_triage` fallback) selects a lane by stated entry conditions; the output names the rule and cites every fact to the record it came from. **No score, no confidence, no model judgement.** Each step declares the channel it needs and is marked `blocked` with the reason when that channel is not authorised for the tenant. Composition raises an M-07 approval request; it never sends. 25 tests. |
 | E-21 | Recovery Case + normalized recovery-event foundation | DEPLOYED | DIRECTIVE 2026-09-16 (Phase 1 execution authorization) | `backend/recovery_case.py`. One normalized event contract for all ten declared sources, and the Recovery Case the event becomes. **Removes the requirement that a recovery opportunity originate as an internal CRM record**: `contact_id`, `company_id`, `opportunity_id` and `workspace_id` are all optional, so a missed call known only by a phone number is a first-class case. Case identity is (tenant, source, source event) with a unique index, so concurrent workers produce one case. Every tenant-owned reference is ownership-checked at creation and at resolution. **Potential and confirmed value are separate fields**; confirming recovered revenue requires evidence. Transitions reuse the existing domain-event log. The two existing detectors emit cases without losing their work items, and `recovery_strategy.compose_for_case` lets a case with no CRM context reach the planner. 61 tests. |
-| E-22 | Recovery runner (execution to the provider boundary) | DEPLOYED | DIRECTIVE 2026-09-16 (Phase 1 follow-on) | `backend/recovery_runner.py`. Claims an approved Recovery Case off the durable queue and walks its plan: internal steps are **executed** (a task lands against the case), outbound steps are **drafted into a conversation and stop at the provider boundary** with the refusal named. Each outbound message raises its own M-07 approval carrying the exact text — the plan's approval authorised a motion, not a sentence. The plan's approval is re-read at run time, so a withdrawn approval halts execution rather than relying on the case's state flag. Idempotent per case and per step: a replayed job adopts the existing draft and task instead of producing a second copy. The case reaches `executing` and no further — `engaged` would mean a counterparty engaged, and none can be reached. Worker handler + `POST /api/cron/recovery-runner` + `POST /api/recovery-cases/{id}/run`. 15 tests. |
+| E-22 | Recovery runner (execution to the provider boundary) | DEPLOYED | DIRECTIVE 2026-09-16 (Phase 1 follow-on) | `backend/recovery_runner.py`. Claims an approved Recovery Case off the durable queue and walks its plan: internal steps are **executed** (a task lands against the case), outbound steps are **drafted into a conversation and stop at the provider boundary** with the refusal named. Each outbound message raises its own M-07 approval carrying the exact text — the plan's approval authorised a motion, not a sentence. The plan's approval is re-read at run time, so a withdrawn approval halts execution rather than relying on the case's state flag. Idempotent per case and per step: a replayed job adopts the existing draft and task instead of producing a second copy. The case reaches `executing` and no further; on the branch, the delivery choke point moves it to `engaged` when a provider accepts a message on its thread or the client replies (`recovery_case.record_contact`), and the runner addresses drafts to the contact's email, read within the tenant. Worker handler + `POST /api/cron/recovery-runner` + `POST /api/recovery-cases/{id}/run`. 15 tests. |
 | E-23 | Recovery intake and the remaining detector families — web enquiries (including a public token-scoped intake), unanswered quotes, unanswered estimates, no-response, cancelled appointments, no-shows, external CRM events | DEPLOYED | DIRECTIVE 2026-09-16 (the ten declared recovery sources, E-21) | `backend/detectors.py` (32 tests; about half assert the lanes do **not** fire on ordinary business) and `backend/recovery_intake.py` (`/api/intake/calls`, `/api/intake/web-enquiries`, `/api/intake/public/{token}/web-enquiries`, `/api/intake/tokens`, `/api/intake/external-events`). All families run from `POST /api/cron/detect-recovery` and open cases through E-21, deduplicated on (source, record). Detection sends nothing. Has never run in production (O-03, O-16). |
 
 ### 4.D Capabilities explicitly out of scope
@@ -389,7 +393,7 @@ been built since this list was first written; everything not so marked does not 
 1. ~~`Conversation` domain model — tenant-scoped thread, participants, channel, direction, consent state, assignment, status~~ — **DELIVERED** (`backend/conversations.py`; see M-02). Adds the agent/human boundary E-10 requires to be visible, provider-thread deduplication so a replayed webhook cannot fork a thread, and an inbound path that reopens a closed conversation. Consent starts `unknown`: no record means no permission, never assumed permission. (M-02, E-09)
 2. ~~`CommunicationMessage` model + provider-agnostic delivery/receipt interface~~ — **DELIVERED** (`backend/conversations.py`; see M-01, M-03). An explicit message state machine, a `ChannelProvider` protocol with a per-channel registry, and one delivery choke point that checks — in order — that the message is dispatchable, the channel is authorised, consent is granted, an M-07 approval exists and is claimed for exactly this message, and a provider is registered. Each failure is a named refusal recorded on the message. A provider call that is rejected and one that times out after acceptance are **separate states** — `failed` and `outcome_unknown` — because only the first is safe to retry; an unknown outcome is resolved by reconciling against the provider, never by sending again, and adapters receive a dispatch idempotency key. **The application registry is empty**: no provider adapter has been built or certified, so every outbound attempt refuses today. Receipt and inbound paths exist so an adapter added later has somewhere to deliver into. (M-01, M-03)
 3. ~~Durable work-queue service~~ — **DELIVERED** (`backend/work_queue.py`; see E-05). Persisted items, lease with crash recovery, attempt counter, capped exponential backoff, dead-letter, database-enforced idempotency key, dedupe key, round-robin per-tenant fairness, admin replay. (E-05)
-4. Scheduler contract — **partially delivered**: durable jobs now survive redeploys and record every attempt, and five new authenticated cron entry points exist (`/api/cron/work-queue`, `/api/cron/second-chance`, `/api/cron/next-best-actions`, `/api/cron/recovery-strategies`, `/api/cron/approval-expiry`, all idempotent per delivery id and documented in `docs/RAILWAY_RUNBOOK.md`). Misfire detection and a first-class schedule record remain open. (E-06, still needs O-03)
+4. Scheduler contract — **partially delivered**: durable jobs now survive redeploys and record every attempt, and five new authenticated cron entry points exist (`/api/cron/work-queue`, `/api/cron/second-chance`, `/api/cron/next-best-actions`, `/api/cron/recovery-strategies`, `/api/cron/approval-expiry`, all idempotent per delivery id and documented in `docs/RAILWAY_RUNBOOK.md`). ~~Misfire detection and a first-class schedule record~~ — **DELIVERED on branch `claude/vibrant-hypatia-6aabmc`** (`backend/cron_schedule.py`; see C-28). (E-06, still needs O-03)
 5. ~~Recommendation service v1~~ — **DELIVERED** (`backend/next_best_action.py`; see NBA-1). Explainable facts, cited source records, priority bands, and accept/dismiss/complete/snooze feedback with outcome; Command Center and `/operations` aggregate queues. (M-11, E-07)
 6. ~~Approval queue service as a first-class module surface, reusing C-09 primitives~~ — **DELIVERED** (`backend/approval_queue.py`; see M-07). Bound actions, single-use consumption, expiry, deduplication, requester provenance, risk tiers and a decision history, all on C-09's own collection. `POST /api/approvals`, the `PATCH /api/approvals/{id}` decision route and MCP level-2 writes now run through it, so there is one gate rather than two. Operator surface at `/operations`. (M-07, E-10)
 
@@ -397,11 +401,11 @@ been built since this list was first written; everything not so marked does not 
 7. Recovery-candidate detector — **stalled lead and missed follow-up DELIVERED** (`backend/second_chance.py`). Dormant/lost-opportunity re-engagement and missed call (requires #12) remain open. (E-01…E-04)
 8. ~~Recovery strategy composer: authorized-context gathering, account/history evaluation, strategy recommendation with rationale~~ — **DELIVERED** (`backend/recovery_strategy.py`; see E-20). Authorised CRM context only, an ordered playbook with named rules, facts cited to their source record, per-step channel authority derived from the tenant's own integration records, and an M-07 approval request per proposal. Composition sweep at `POST /api/cron/recovery-strategies`. (E-01 steps 2–4)
 9. ~~Recovery campaign runner on the durable queue, with approval gate before any outbound step~~ — **DELIVERED** (`backend/recovery_runner.py`; see E-22). Executes internal steps, drafts outbound steps with their own approval, and stops at the provider boundary. (E-01 steps 5–6, 9)
-10. Reply/meeting/decision/task return path into CRM objects. (E-01 step 8)
-11. Recovery attribution ledger: recovered / lost / pending revenue per candidate, per lane, per period. (E-01 step 10, M-08)
+10. Reply/meeting/decision/task return path into CRM objects — **email replies DELIVERED** (`backend/email_inbound.py`, deployed at `c9f5a6e`: a placed reply lands on its conversation and the contact's timeline, raises a domain event, and — on the branch — engages its recovery case). Meetings (needs M-05 / §7.1) and decisions arriving by other channels remain open. (E-01 step 8)
+11. ~~Recovery attribution ledger~~ — **DELIVERED** (`backend/attribution.py`, deployed at `c9f5a6e`; see M-08). Per-lane and per-period reporting beyond `GET /api/attribution/totals` remains open. (E-01 step 10, M-08)
 
 25. Fold the Gmail sync mirror (`crm_communications`) into `Conversation` / `CommunicationMessage`. The sync writes a read-only inbound mirror that predates the conversation model and is not threaded, consent-aware or outbound-capable; the two are not yet one store. (M-01, M-02)
-26. Channel provider adapters implementing `conversations.ChannelProvider` — one per channel, each behind its own authorisation. Nothing implements the protocol today. (M-01, M-03, O-01, O-06)
+26. Channel provider adapters implementing `conversations.ChannelProvider` — **email DELIVERED** (`backend/gmail_provider.py`, deployed at `c9f5a6e`, waiting on the `gmail.send` grant, O-01). SMS and phone have no adapter (O-06). (M-01, M-03, O-01, O-06)
 
 **Channels and execution**
 12. Call activity capture + telephony provider adapter behind a consent/recording/jurisdiction policy. (M-04, E-08, unblocks E-02)
@@ -439,21 +443,21 @@ Carried forward from the September 12 principles recorded in ClickUp `CONTROL �
 
 **Wave 1 — Foundations**
 4. ~~Durable work-queue service~~ — **DONE** (MERGED at `main@3150530`, awaiting deploy). → §8 #3
-5. Scheduler contract — **partially done**; misfire detection outstanding. → §8 #4
+5. ~~Scheduler contract~~ — **DONE** on branch `claude/vibrant-hypatia-6aabmc` (misfire detection + declared schedule). → §8 #4
 6. Approval queue module surface. → §8 #6
 7. ~~Recommendation service v1 + Command Center aggregate NBA queue~~ — **DONE** (MERGED). → §8 #5
 
 **Wave 2 — Second Chance, lowest-dependency lanes first**
 8. ~~Recovery-candidate detector for stalled leads (E-03) and missed follow-ups (E-04)~~ — **DONE** (MERGED). → §8 #7
-9. Recovery strategy composer. → §8 #8
-10. Recovery campaign runner with mandatory approval gate. → §8 #9
-11. Attribution ledger (E-01 step 10). → §8 #11
+9. ~~Recovery strategy composer~~ — **DONE** (DEPLOYED). → §8 #8
+10. ~~Recovery campaign runner with mandatory approval gate~~ — **DONE** (DEPLOYED; end-to-end defects fixed on the branch). → §8 #9
+11. ~~Attribution ledger (E-01 step 10)~~ — **DONE** (DEPLOYED). → §8 #11
 
 **Wave 3 — Conversations and human handoff**
 12. `Conversation` + `CommunicationMessage` models. → §8 #1, #2
 13. Email and SMS channel modules. → M-01, M-03
 14. Unified inbox with assignment and human handoff. → §8 #14
-15. Reply/meeting/decision/task return path (closes the Second Chance loop). → §8 #10
+15. Reply/meeting/decision/task return path (closes the Second Chance loop) — email replies **DONE**; meetings and other channels open. → §8 #10
 
 **Wave 4 — Governance gate (mandatory before any external component is ingested)**
 16. ~~External-component intake registry + §6 dual-gate pipeline~~ — **DONE** (MERGED); scanner wiring is owner-blocked (O-13, O-14). → §8 #19
@@ -523,6 +527,8 @@ Fold pattern improvements into whichever wave touches the relevant surface. Neve
 | O-14 | Security-gate scanners not configured | Provide reachable endpoints for `SECURITY_GATE_NVIDIA_SKILLSPECTOR_URL`, `SECURITY_GATE_CISCO_SKILL_SCANNER_URL` and `SECURITY_GATE_CISCO_MCP_SCANNER_URL`. The gate refuses every approval while any required scanner is unconfigured, which is the intended safe default, so no external component can be trusted until this is done. | E-12 execution |
 | O-15 | Production is unreachable from the agent environment | None, if the owner is content for deployment to run elsewhere. The session egress policy blocks `railway.app` and `backboard.railway.com`, so production deploy/verify must be run from an environment that can reach Railway (CI, the owner's machine, or a differently-scoped agent session). This is `BLOCKED — TECHNICAL`, not an owner decision. | Current-head deployment and production certification |
 | O-16 | GitHub Actions executes nothing | Since 2026-09-27T22:35Z every job on every branch (CI and Scheduled jobs) completes as `failure` in 2–4 s with `runner_id: 0` and no log; it began between two scheduled runs of the same unchanged commit. Restore Actions: GitHub → Settings → Billing and plans (Actions spending limit / payment), and the repository's Settings → Actions → General | CI as a merge gate; C-25 and therefore every scheduled cron endpoint (O-03) |
+| O-17 | Branch `claude/vibrant-hypatia-6aabmc` is not merged | Review and merge it (Railway redeploys `main`). Without it the recovery loop cannot finish even once O-01 and O-03 are done (§3.3), and the scheduler ledger stays readable by any self-registered admin. Merge is an owner action: agents here push branches and do not merge | E-01 end to end, C-28 misfire detection, the ledger access fix |
+| O-18 | Jev QC gate not configured for agent sessions | Set `JEV_QC_WEBHOOK_URL` (and `JEV_QC_WEBHOOK_TOKEN` once Header Auth is on) in the Claude Code environment. With them unset the gate fails closed, so no agent can report any task `VERIFIED_COMPLETE` | Every completion claim (AGENTS.md gate) |
 
 Secrets are never to be pasted into GitHub, ClickUp, Slack, chat, logs, or evidence artifacts. Configuration is reported by name and presence only.
 
@@ -530,43 +536,42 @@ Secrets are never to be pasted into GitHub, ClickUp, Slack, chat, logs, or evide
 
 ## 11. What can start immediately
 
-Delivered in the 2026-09-15 execution pass and **merged into `main@3150530`** via PR #26:
-the durable work queue, the stalled-lead and missed-follow-up detectors, the Next Best
-Action backend service with its aggregate queues, the dual-gate security pipeline with MCP
-enforcement, the CI lint gate, and the `/operations` operator surface. Merged, **not
-deployed** — see §3.2.
+This section is the agent backlog: work that needs no owner input and no unresolved
+source. Owner-only items are §10.2. Updated 2026-09-29.
 
-Delivered in the 2026-09-16 pass and **merged into `main@e8d5678`** via PR #27: the
-approval queue module surface (M-07), the recovery strategy composer (E-20), the
-`Conversation` and `CommunicationMessage` models with their provider-agnostic delivery
-interface (M-02, E-10), their operator panels on `/operations`, and two further cron entry
-points. Merged, **not deployed** — see §3.2.
+**Done on branch `claude/vibrant-hypatia-6aabmc` (pushed; merge is O-17):**
+scheduler misfire detection and the declared schedule (§8 #4); the operator-only
+scheduler ledger; five recovery-loop defects (§3.3). Earlier items on this list — the
+runner, attribution, the email adapter and email reply ingestion — are deployed at
+`c9f5a6e`.
 
-Remaining work that needs no owner input and no unresolved source:
+**Remaining, in recommended order:**
 
-1. **Certify `main@e8d5678`** — deploy it, then run `scripts/proof_of_life.mjs` and
-   `scripts/operations_smoke.mjs` against production from an environment that can reach
-   Railway (O-15). This is now the largest single gap in the programme: three waves of
-   capability are merged and **none of it has ever been certified against production**.
-   Every capability below `MERGED` in §4 is blocked on this one step, not on more building.
-2. **Recovery campaign runner (§8 #9)** — consumes an approved strategy off the durable queue
-   and executes only its internal steps, drafting the outbound ones into conversations where
-   they wait, correctly, for a channel.
-3. **Reply/decision return path (§8 #10)** — turning an inbound reply, meeting or decision
-   back into CRM objects. The inbound path now exists to hang this on.
-4. **Fold the Gmail sync mirror into conversations (§8 #25)** — one store rather than two.
-5. **Attribution ledger (§8 #11)** — closes the north-star loop for recovered/lost/pending revenue.
-6. **Scheduler misfire detection (§8 #4)** — completes the scheduler contract.
-7. **Twenty-derived UX refinements (E-17)** on surfaces already being touched.
+1. **Scheduled recovery follow-up (E-06, north-star step 9).** Technically unblocked now
+   that the scheduler contract is complete: after a message reached the client and no
+   reply arrived within the cadence, draft the next follow-up with its own M-07 approval;
+   stop on reply, withdrawn consent, a terminal case, or a human handoff.
+2. **Fold the Gmail sync mirror into conversations (§8 #25)** — one store rather than
+   two. Low urgency while Gmail is unconnected in production (O-01), and it carries a
+   real regression risk: the mirror and the inbound sweep read the same mailbox, and a
+   message the mirror records first must not stop the sweep applying the reply's effects
+   to its case.
+3. **Per-lane / per-period attribution reporting** beyond the ledger totals (§8 #11).
+4. **Twenty-derived UX refinements (E-17)** on surfaces already being touched.
+5. **Design-first modules** (each needs a written contract before code): Calendar (M-05,
+   also gated on O-01), Workflows (M-06), Support (M-09), Migration (M-12), Knowledge
+   (M-13), the CRM ↔ workforce contract (E-11 / §8 #21), and revenue forecast (M-08).
 
-What is **not** on that list, deliberately: a channel provider adapter (§8 #26). Writing one
-needs a provider decision and its credentials (O-01 for email, O-06 for telephony), so it is
-owner-blocked rather than agent-blocked.
+**Blocked for agents, not for lack of code:** production certification of any head
+(O-15 — the session egress policy refuses the Railway host), CI as a gate (O-16), and
+any `VERIFIED_COMPLETE` claim (O-18).
 
-**Recommendation:** merge and certify first (item 1), then item 2. Steps 1–4 of the north
-star exist end to end and stop, correctly, at a gate. The runner can carry steps 5–6 as far
-as a drafted, approved message sitting in a conversation; the last hop out of the CRM waits
-on an owner decision, not on more building.
+**Recommendation:** merge the branch (O-17) and restore Actions (O-16) first — together
+with the two scheduler secrets (O-03) and the `gmail.send` grant (O-01), that is
+everything between the current code and the first recovery that runs end to end in
+production. Then item 1.
+
+---
 
 ## 12. Status control and evidence rules
 
@@ -604,6 +609,7 @@ ClientVerse CRM is closed only when all of the following hold:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.11 | 2026-09-29 | Branch `claude/vibrant-hypatia-6aabmc` recorded (§3.1): scheduler misfire detection and a declared schedule complete the scheduler contract (§8 #4, C-28 `TESTED`); the scheduler ledger is restricted to the cron secret and the platform operator after it was found readable by any self-registered admin. Driving the recovery loop end to end found five defects that the deployed code would have hit with every owner input supplied — corrected in §3.3, fixed and `TESTED` on the branch, and recorded against E-01 and E-22. §8 #10, #11 and #26 updated to what is deployed; §9 and §11 rewritten to the current backlog. Added O-17 (merge the branch) and O-18 (Jev QC gate unconfigured). Nothing moves to `MERGED`, `DEPLOYED` or `LIVE VERIFIED`. |
 | 1.10 | 2026-09-28 | Reconciled the capability findings of the merged recovery-engine branch (`docs/ACTIVATION_REPORT.md`) into §4, each checked against the code on `main` before being recorded. Added C-27 (CRM baseline completion), C-28 (scheduled-run ledger and health), C-29 (backend CI gates, `MERGED`) and E-23 (recovery intake and the remaining detector families). M-01 keeps `BLOCKED — OWNER INPUT` but records the deployed Gmail adapter and inbound ingestion; M-08 and M-10 become deployed for their recovery halves; E-01 and E-09 move to `BLOCKED — OWNER INPUT` because every step now exists and only owner grants and the scheduler stand in the way; E-02 detection is deployed while telephony stays blocked. Nothing moves to `LIVE VERIFIED`. |
 | 1.9 | 2026-09-28 | Deployed-state reconciliation. `main@c9f5a6e` (the owner's merge of `claude/trusting-brahmagupta-lj26xf`) is deployed on Railway (`1f809799-…`, 2026-09-28T05:25Z), so every capability that was `MERGED` — and E-21/E-22, which PR #28 merged at `730b1b3` — moves to `DEPLOYED` at that commit, except C-23 (CI configuration, stays `MERGED`) and C-25 (cannot run → `BLOCKED — OWNER INPUT`). None moves to `LIVE VERIFIED`. §3.1/§3.2/§3.4 record the new heads, the local gate results that stand in for CI, and the absence of any scheduler traffic. Added O-16: GitHub Actions has assigned no runner to any job since 2026-09-27T22:35Z. The capabilities `docs/ACTIVATION_REPORT.md` records for the merged branch are not yet reconciled row by row. |
 | 1.8 | 2026-09-16 | Worked the PR #28 review in full. Nine posted and six suppressed findings were verified against the code and fixed, not deflected. The material ones: `attach()` tenant-checked only the four CRM references, so a plan, approval, conversation or work item belonging to another tenant could be stapled onto a case — all eight attachable references are now checked; `confirm_recovery()` wrote the state and the amount separately, and a failure between them left a case terminal with nothing recorded and no legal transition back — it is one conditional write now; `float()` admitted `nan` and the infinities past the `< 0` check, which would have made every value aggregate non-finite; `source_event_id` was truncated to 200 characters *before* the unique index, so two distinct events sharing a prefix deduplicated into one case; `summary()` summed value across currencies, reporting £40,000 + $40,000 as 80,000; `compose_for_tenant` swept only the work queue, so a case-only source — the missed call this slice exists for — was never planned for in production; and a folded work item kept the case link only in memory. Corrected two overclaims in §3.1 of this document: `ca30587` *has* been deployed to production (2026-09-01, §3.2), and PR #28 is open unmerged work. Backend suite **508 passed, 4 skipped** (475/4 before; +33, no regressions). |

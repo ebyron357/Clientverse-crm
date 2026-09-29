@@ -1,9 +1,21 @@
 # ClientVerse — Owner Handoff
 
-**Prepared:** 2026-09-21 · **Release state updated:** 2026-09-28
+**Prepared:** 2026-09-21 · **Release state updated:** 2026-09-29
 **Branch this describes:** `claude/trusting-brahmagupta-lj26xf` — **merged to `main` as `c9f5a6e`**
 **Running application code:** `main@c9f5a6e` — this branch **is** now in production (see §1)
 
+> **2026-09-29 update — merge `claude/vibrant-hypatia-6aabmc` before §8.5–§8.7.**
+> Walking the recovery loop end to end found that the deployed code could not finish
+> it, even with every owner input supplied: Second Chance plans were never linked to
+> their case, approving a plan never approved the case, runner drafts had no recipient,
+> nothing marked a case `engaged` when the client was reached (so an attributed outcome
+> could not mark it recovered), and lapsed approvals jammed their work. All five are
+> fixed with regression tests on that branch, which also adds scheduler misfire
+> detection (`GET /api/cron/schedule`, Operations → Scheduler) and restricts the
+> scheduler ledger to the cron secret and the `ADMIN_EMAIL` operator (it was readable by
+> any self-registered admin). Canonical document v1.11 §3.3 has the detail; O-17 there
+> is this merge.
+>
 > **2026-09-28 update — read before §1.** The owner merged this branch and Railway
 > deployed it: deployment `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, commit
 > `c9f5a6ec27e14682d49c055a57477e78b80231ef`, SUCCESS at 2026-09-28T05:25Z. Its boot log
@@ -42,13 +54,13 @@ named instead of the secret.
 |---|---|
 | Production URL | `https://clientverse-crm-production-production.up.railway.app` |
 | Login URL | `https://clientverse-crm-production-production.up.railway.app/login` |
-| Deployed git SHA | `730b1b3b30e5b8f9d88bffc0dc3161c1a8046296` (`main`) |
-| Railway deployment ID | `4b5f7f84-fcca-43ed-8777-415082747e6e` |
-| Deployment status | SUCCESS |
-| Deployment timestamp | 2026-09-16T23:33:41Z |
+| Running application code | `c9f5a6e` (`main`); later `main` commits so far are docs/tooling only |
+| Railway deployment ID | Changes with every `main` merge — read it from Railway; `/api/health` reports `git_sha` |
+| Deployment status | SUCCESS (first live 2026-09-28T05:25Z as `1f809799-…`) |
+| Awaiting merge | `claude/vibrant-hypatia-6aabmc` — see the 2026-09-29 note above |
 | Healthcheck path | `/api/health` |
 
-**The work described in this handoff is not in production.** It is on
+*(As of 2026-09-21; since 2026-09-28 it is — see the notes above.)* **The work described in this handoff is not in production.** It is on
 `claude/trusting-brahmagupta-lj26xf`, verified by CI against a real MongoDB, and
 deploys when that branch is merged to `main` (Railway auto-deploys `main`).
 

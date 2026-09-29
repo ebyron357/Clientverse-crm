@@ -398,3 +398,49 @@ def test_a_message_whose_approval_lapsed_is_blocked_with_the_reason(db):
     assert "expired" in blocked["blocked_detail"]
     # From blocked, a fresh approval can be requested.
     assert cv.PENDING_APPROVAL in cv.MESSAGE_TRANSITIONS[cv.BLOCKED]
+
+
+# ------------------------------------------------------------------ the reply hook
+
+def test_the_inbound_reply_hook_engages_the_case_and_logs_the_timeline(db):
+    """`server._on_inbound_reply` is what the inbound sweep calls for every placed reply.
+    It is exercised here against the same database, with the server's own globals."""
+    from cryptography.fernet import Fernet
+
+    os.environ.setdefault("APP_ENV", "test")
+    os.environ.setdefault("JWT_SECRET", "engagement-test-jwt-secret-long-enough-1234")
+    os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
+    os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
+    os.environ.setdefault("INTEGRATION_ENC_KEY", Fernet.generate_key().decode())
+    import server
+
+    case, message_id = executing_case(db)
+    message = run(cv.get_message(db, TENANT, message_id))
+    conversation = run(cv.get_conversation(db, TENANT, message["conversation_id"]))
+    received_at = datetime.now(timezone.utc).isoformat()
+    reply = run(cv.record_inbound(db, tenant_id=TENANT, conversation_id=conversation["id"],
+                                  body="Yes, let's talk next week.",
+                                  from_address=CLIENT_EMAIL, provider="gmail",
+                                  provider_message_id="gmail-reply-1",
+                                  received_at=received_at))
+
+    previous = server.db
+    server.db = db
+    try:
+        run(server._on_inbound_reply(
+            tenant_id=TENANT, conversation=conversation, message=reply,
+            record={"subject": "Re: Recovery", "body": reply["body"],
+                    "received_at": received_at, "from_address": CLIENT_EMAIL,
+                    "provider": "gmail"},
+            basis="provider_thread"))
+    finally:
+        server.db = previous
+
+    engaged = run(rc.get_case(db, TENANT, case["id"]))
+    assert engaged["state"] == rc.ENGAGED
+    assert engaged["reply_count"] == 1
+    assert engaged["last_reply_at"] == received_at
+    activity = run(db.crm_activities.find_one({"tenant_id": TENANT, "message_id": reply["id"]},
+                                              {"_id": 0}))
+    assert activity and activity["outcome"] == "reply_received"
+    assert activity["related_id"] == "con_1"
