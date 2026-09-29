@@ -215,3 +215,22 @@ def test_invoice_payment_intent_cannot_be_created_by_another_tenant():
     # -- never a leak of tenant A's invoice/payment state to tenant B.
     r = requests.post(f"{API}/invoices/{uuid.uuid4().hex}/stripe-payment-intent", headers=b, json={}, timeout=15)
     assert r.status_code in (400, 404), r.text
+
+
+def test_a_new_record_cannot_reference_another_tenants_records():
+    """Nothing leaked through these today, because every read filters by tenant; but a
+    stored foreign id is a record pointing across the boundary, waiting for one read
+    that does not."""
+    a = _fixture()
+    b = _h(_register())
+    b_workspace = requests.post(f"{API}/workspaces", headers=b, json={"name": "B ws"},
+                                timeout=15).json()["id"]
+    assert requests.post(f"{API}/workspaces", headers=b, timeout=15, json={
+        "name": "Squat", "company_id": a.company_id}).status_code == 404
+    assert requests.post(f"{API}/outcomes", headers=b, timeout=15, json={
+        "workspace_id": b_workspace, "title": "Borrowed",
+        "linked_commitment_ids": [a.commitment_id]}).status_code == 404
+    for tool, args in (("create_task", {"title": "x"}), ("add_note", {"body": "x"})):
+        invoke = requests.post(f"{API}/mcp/invoke", headers=b, timeout=15, json={
+            "tool": tool, "args": {"workspace_id": a.workspace_id, **args}})
+        assert invoke.status_code == 404, (tool, invoke.text)

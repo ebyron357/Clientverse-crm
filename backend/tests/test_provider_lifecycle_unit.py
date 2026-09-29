@@ -6,6 +6,7 @@ re-auth failure state, retries, idempotent upserts, disconnect behavior, and red
 """
 
 import asyncio
+import hashlib
 import os
 import sys
 from copy import deepcopy
@@ -73,6 +74,16 @@ class FakeRequest:
         return self._body
 
 
+BROWSER_BINDING = "browser-that-started-the-connect"
+BINDING_HASH = hashlib.sha256(BROWSER_BINDING.encode()).hexdigest()
+
+
+def _bound_browser(binding=BROWSER_BINDING):
+    """The callback request as the browser that started the connect sends it."""
+    return SimpleNamespace(cookies={server.OAUTH_BINDING_COOKIE: binding} if binding else {},
+                           headers={})
+
+
 class CaptureCollection:
     def __init__(self, find_one_results=None):
         self.find_one_results = list(find_one_results or [])
@@ -120,7 +131,7 @@ def test_google_connect_builds_pkce_readonly_authorization(monkeypatch):
     monkeypatch.setattr(server, "GOOGLE_CLIENT_SECRET", "test-client-secret")
     monkeypatch.setattr(server, "GOOGLE_REDIRECT_URI", "https://crm.example/api/integrations/google/callback")
 
-    result = run(server.google_connect(user={"tenant_id": "ten_a", "email": "admin@example.com"}))
+    result = run(server.google_connect(server.Response(), user={"tenant_id": "ten_a", "email": "admin@example.com"}))
     parsed = urlparse(result["authorization_url"])
     query = parse_qs(parsed.query)
 
@@ -348,6 +359,7 @@ def test_google_callback_reconnect_preserves_existing_refresh_token(monkeypatch)
         "tenant_id": "ten_a",
         "actor": "admin@example.com",
         "code_verifier": "verifier",
+        "binding_hash": BINDING_HASH,
         "expires_at": "2099-01-01T00:00:00+00:00",
     }])
     credentials = CaptureCollection(find_one_results=[{
@@ -385,7 +397,7 @@ def test_google_callback_reconnect_preserves_existing_refresh_token(monkeypatch)
     )
     monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
 
-    response = run(server.google_callback(state="state_1", code="code_1", error=None))
+    response = run(server.google_callback(_bound_browser(), state="state_1", code="code_1", error=None))
 
     assert response.status_code == 307
     assert response.headers["location"].endswith("oauth=connected")
@@ -952,7 +964,7 @@ def test_google_connect_requires_oauth_client_configuration(monkeypatch):
     monkeypatch.setattr(server, "ensure_connections", lambda _tenant_id: asyncio.sleep(0))
 
     try:
-        run(server.google_connect(user={"tenant_id": "ten_a", "email": "admin@example.com"}))
+        run(server.google_connect(server.Response(), user={"tenant_id": "ten_a", "email": "admin@example.com"}))
         raise AssertionError("expected missing Google OAuth configuration")
     except server.HTTPException as exc:
         assert exc.status_code == 400
@@ -1150,7 +1162,8 @@ def test_stripe_payment_intent_preserves_tenant_filter_on_missing_invoice(monkey
 def _callback_env(monkeypatch, *, other_tenant_connection, granted_scope):
     oauth_states = CaptureCollection(find_one_results=[{
         "state": "state_2", "tenant_id": "ten_b", "actor": "admin@b.example",
-        "code_verifier": "verifier", "expires_at": "2099-01-01T00:00:00+00:00"}])
+        "code_verifier": "verifier", "binding_hash": BINDING_HASH,
+        "expires_at": "2099-01-01T00:00:00+00:00"}])
     credentials = CaptureCollection(find_one_results=[None])
     monkeypatch.setattr(server, "db", SimpleNamespace(
         oauth_states=oauth_states, google_credentials=credentials,
@@ -1185,7 +1198,7 @@ def test_a_mailbox_already_connected_to_another_workspace_is_refused(monkeypatch
     credentials, connections = _callback_env(
         monkeypatch, other_tenant_connection={"tenant_id": "ten_a"},
         granted_scope="https://www.googleapis.com/auth/gmail.readonly")
-    response = run(server.google_callback(state="state_2", code="code", error=None))
+    response = run(server.google_callback(_bound_browser(), state="state_2", code="code", error=None))
     assert response.headers["location"].endswith("oauth=account_in_use")
     assert credentials.updated == [], "no credential may be stored for the second workspace"
     assert all(fields["status"] == "error" for _, _, fields in connections)
@@ -1196,7 +1209,47 @@ def test_the_connection_records_the_scopes_google_granted_not_those_requested(mo
     read_only = "https://www.googleapis.com/auth/gmail.readonly"
     _, connections = _callback_env(monkeypatch, other_tenant_connection=None,
                                    granted_scope=read_only)
-    response = run(server.google_callback(state="state_2", code="code", error=None))
+    response = run(server.google_callback(_bound_browser(), state="state_2", code="code", error=None))
     assert response.headers["location"].endswith("oauth=connected")
     gmail = [fields for _, provider, fields in connections if provider == "gmail"][0]
     assert gmail["scopes"] == [read_only]
+
+
+# ---------- the connect is bound to the browser that started it ----------
+
+def test_google_connect_binds_the_state_to_this_browser(monkeypatch):
+    oauth_states = CaptureCollection()
+    monkeypatch.setattr(server, "db", SimpleNamespace(oauth_states=oauth_states))
+
+    async def fake_set_conn(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(server, "ensure_connections", lambda tenant_id: asyncio.sleep(0))
+    monkeypatch.setattr(server, "set_conn", fake_set_conn)
+    monkeypatch.setattr(server, "GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setattr(server, "GOOGLE_CLIENT_SECRET", "client-secret")
+    monkeypatch.setattr(server, "GOOGLE_REDIRECT_URI",
+                        "https://crm.example/api/integrations/google/callback")
+    response = server.Response()
+    run(server.google_connect(response, user={"tenant_id": "ten_a",
+                                              "email": "admin@example.com"}))
+    cookie = response.headers["set-cookie"]
+    assert cookie.startswith(f"{server.OAUTH_BINDING_COOKIE}=")
+    assert "HttpOnly" in cookie and "Path=/api/integrations/google/callback" in cookie
+    assert "samesite=" in cookie.lower()
+    value = cookie.split(";", 1)[0].split("=", 1)[1]
+    assert oauth_states.inserted[0]["binding_hash"] == hashlib.sha256(value.encode()).hexdigest()
+
+
+def test_a_consent_link_completed_in_another_browser_connects_nothing(monkeypatch):
+    """A stranger starts a connect in their own tenant and sends the victim the link."""
+    credentials, connections = _callback_env(
+        monkeypatch, other_tenant_connection=None,
+        granted_scope="https://www.googleapis.com/auth/gmail.readonly")
+    state = deepcopy(server.db.oauth_states.find_one_results[0])
+    for browser in (_bound_browser("a-different-browser"), _bound_browser(None)):
+        server.db.oauth_states.find_one_results = [deepcopy(state)]
+        response = run(server.google_callback(browser, state="state_2", code="code",
+                                              error=None))
+        assert response.headers["location"].endswith("oauth=wrong_browser")
+    assert credentials.updated == [] and connections == []

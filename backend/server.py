@@ -261,11 +261,14 @@ def verify_password(pw: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(user_id: str, email: str) -> str:
+def create_access_token(user_id: str, email: str, password_version: int = 0) -> str:
     # jti keeps two tokens issued in the same second from being byte-identical (JWT
     # exp/iat only have second granularity) -- without it, revoking one login's token
     # would also revoke a different login's token that happened to match exactly.
+    # `pwv` ties the token to the password it was issued under: changing the password
+    # bumps the user's version and ends every session issued before it.
     payload = {"sub": user_id, "email": email, "type": "access", "jti": secrets.token_hex(16),
+               "pwv": int(password_version or 0),
                "exp": datetime.now(timezone.utc) + timedelta(days=7)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
@@ -371,6 +374,8 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        if int(payload.get("pwv") or 0) != int(user.get("password_version") or 0):
+            raise HTTPException(status_code=401, detail="Session ended by a password change")
         user.pop("password_hash", None)
         return await resolve_membership(user)
     except jwt.InvalidTokenError:
@@ -389,6 +394,8 @@ async def get_current_user(request: Request) -> dict:
     user = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if int(sess.get("password_version") or 0) != int(user.get("password_version") or 0):
+        raise HTTPException(status_code=401, detail="Session ended by a password change")
     user.pop("password_hash", None)
     return await resolve_membership(user)
 
@@ -480,7 +487,7 @@ async def login(inp: LoginInput, response: Response):
         await _record_login_failure(email)
         raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     await _reset_login_failures(email)
-    token = create_access_token(user["user_id"], email)
+    token = create_access_token(user["user_id"], email, user.get("password_version") or 0)
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
@@ -513,7 +520,7 @@ async def google_session(request: Request, response: Response):
     await db.user_sessions.insert_one({
         "user_id": user["user_id"], "session_token": session_token,
         "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
-        "created_at": now_iso(),
+        "created_at": now_iso(), "password_version": int(user.get("password_version") or 0),
     })
     set_auth_cookie(response, session_token)
     user.pop("password_hash", None)
@@ -1001,6 +1008,9 @@ async def list_workspaces(user=Depends(get_current_user)):
 
 @api.post("/workspaces")
 async def create_workspace(inp: WorkspaceInput, user=Depends(get_current_user)):
+    if inp.company_id and not await db.companies.find_one(
+            {"id": inp.company_id, "tenant_id": user["tenant_id"]}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Company not found")
     doc = {"id": new_id("ws"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump(), "opportunity_id": None}
     await db.workspaces.insert_one(doc)
     await record_event("client_workspace.created", "workspace", doc["id"], user["tenant_id"], user["email"], workspace_id=doc["id"], payload={"name": inp.name})
@@ -1423,7 +1433,13 @@ async def seed():
             logger.info("Seeded initial administrator without fictional demo data")
     else:
         if existing.get("password_hash") and not verify_password(admin_pw, existing["password_hash"]):
-            await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pw)}})
+            # Rotating ADMIN_PASSWORD must also end the sessions issued under the old
+            # one, or a leaked token outlives the rotation meant to cut it off.
+            await db.users.update_one({"email": admin_email},
+                                      {"$set": {"password_hash": hash_password(admin_pw),
+                                                "password_changed_at": now_iso()},
+                                       "$inc": {"password_version": 1}})
+            logger.info("Administrator password re-synced from ADMIN_PASSWORD; earlier sessions ended")
     # registries seed (idempotent by name)
     await seed_registries()
     await seed_team()
@@ -1456,7 +1472,10 @@ async def seed_team():
             "role": "member", "status": "active", "invited_by": admin_email, "invited_at": now_iso(),
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
     elif existing_member.get("password_hash") and not verify_password(mem_pw, existing_member["password_hash"]):
-        await db.users.update_one({"email": mem_email}, {"$set": {"password_hash": hash_password(mem_pw)}})
+        await db.users.update_one({"email": mem_email},
+                                  {"$set": {"password_hash": hash_password(mem_pw),
+                                            "password_changed_at": now_iso()},
+                                   "$inc": {"password_version": 1}})
 
 async def seed_demo(tenant_id, actor):
     co1 = {"id": new_id("co"), "tenant_id": tenant_id, "name": "Northwind Analytics", "industry": "Data & AI", "website": "northwind.example", "tier": "enterprise", "created_at": now_iso()}
@@ -1784,6 +1803,12 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
     for field, spec in tool["input_schema"].items():
         if spec.get("required") and not inp.args.get(field):
             await fail(422, f"Missing required argument: {field}", tool["level"])
+        # A workspace argument is a reference into this tenant. Stored unchecked, a task
+        # or note would carry another tenant's workspace id.
+        if spec.get("type") == "workspace" and inp.args.get(field) and not \
+                await db.workspaces.find_one({"id": inp.args[field], "tenant_id": tenant},
+                                             {"_id": 1}):
+            await fail(404, "Workspace not found", tool["level"])
 
     # idempotency
     if inp.idempotency_key:
@@ -2133,6 +2158,10 @@ async def update_outcome(oid: str, inp: OutcomePatch, user=Depends(get_current_u
 @api.post("/outcomes")
 async def create_outcome(inp: OutcomeInput, user=Depends(get_current_user)):
     await assert_workspace(user, inp.workspace_id)
+    linked = sorted(set(inp.linked_commitment_ids or []))
+    if linked and await db.commitments.count_documents(
+            {"id": {"$in": linked}, "tenant_id": user["tenant_id"]}) != len(linked):
+        raise HTTPException(status_code=404, detail="Commitment not found")
     doc = {"id": new_id("out"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.outcomes.insert_one(dict(doc))
     await snapshot_outcome(doc)
@@ -3065,8 +3094,12 @@ async def list_connections(user=Depends(get_current_user)):
     rows = await db.integration_connections.find({"tenant_id": user["tenant_id"]}, SAFE_CONN_FIELDS).to_list(50)
     return rows
 
+OAUTH_BINDING_COOKIE = "cv_oauth_binding"
+OAUTH_CALLBACK_PATH = "/api/integrations/google/callback"
+
+
 @api.post("/integrations/google/connect")
-async def google_connect(user=Depends(require_role("admin"))):
+async def google_connect(response: Response, user=Depends(require_role("admin"))):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=400, detail="Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
     if not GOOGLE_REDIRECT_URI:
@@ -3078,8 +3111,20 @@ async def google_connect(user=Depends(require_role("admin"))):
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    # The state names a tenant, so whoever completes the flow connects their mailbox to
+    # that tenant. Binding it to this browser stops the classic OAuth CSRF: a stranger
+    # starting a connect in their own tenant and sending the victim the consent link,
+    # which would otherwise connect the victim's mailbox to the stranger's workspace.
+    binding = secrets.token_urlsafe(24)
+    # Same attributes as the session cookie, so it is stored wherever that one is (the
+    # SPA may be served from another site); a stranger cannot plant it either way.
+    secure = FRONTEND_URL.startswith("https://")
+    response.set_cookie(OAUTH_BINDING_COOKIE, binding, max_age=600, httponly=True,
+                        secure=secure, samesite="none" if secure else "lax",
+                        path=OAUTH_CALLBACK_PATH)
     await db.oauth_states.insert_one({"state": state, "tenant_id": user["tenant_id"], "actor": user["email"],
         "code_verifier": verifier, "created_at": now_iso(),
+        "binding_hash": hashlib.sha256(binding.encode()).hexdigest(),
         "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()})
     for p in ("gmail", "google_calendar"):
         await set_conn(user["tenant_id"], p, status="connecting")
@@ -3091,11 +3136,18 @@ async def google_connect(user=Depends(require_role("admin"))):
     return {"authorization_url": url}
 
 @api.get("/integrations/google/callback")
-async def google_callback(state: str = Query(None), code: str = Query(None), error: str = Query(None)):
+async def google_callback(request: Request, state: str = Query(None), code: str = Query(None),
+                          error: str = Query(None)):
     dest = f"{FRONTEND_URL}/registries?tab=integrations"
     st = await db.oauth_states.find_one({"state": state}, {"_id": 0}) if state else None
     if error or not st or not code:
         return RedirectResponse(url=f"{dest}&oauth=error")
+    binding = request.cookies.get(OAUTH_BINDING_COOKIE) or ""
+    if not st.get("binding_hash") or not hmac.compare_digest(
+            st["binding_hash"], hashlib.sha256(binding.encode()).hexdigest()):
+        # Completed in a browser that did not start it. The state stays usable by the
+        # browser that did, until it expires.
+        return RedirectResponse(url=f"{dest}&oauth=wrong_browser")
     try:
         exp_dt = datetime.fromisoformat(st["expires_at"])
         if exp_dt.tzinfo is None:
