@@ -3849,7 +3849,7 @@ async def workspace_activity(ws_id: str, user=Depends(get_current_user)):
     ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    comms = await db.crm_communications.find({"tenant_id": user["tenant_id"], "workspace_id": ws_id}, {"_id": 0}).sort("ts", -1).to_list(25)
+    comms = await _workspace_email(user["tenant_id"], ws, limit=25)
     meetings = await db.crm_meetings.find({"tenant_id": user["tenant_id"], "workspace_id": ws_id}, {"_id": 0}).sort("start", 1).to_list(25)
     billing = await db.crm_billing.find({"tenant_id": user["tenant_id"], "workspace_id": ws_id}, {"_id": 0}).sort("ts", -1).to_list(50)
     conns = await db.integration_connections.find({"tenant_id": user["tenant_id"]}, SAFE_CONN_FIELDS).to_list(50)
@@ -3921,13 +3921,68 @@ def _event_to_timeline(ev):
             "ref": {"type": ev.get("resource_type"), "id": ev.get("resource_id")},
             "external_ref": None, "stale": False, "failure": "fail" in et or "dead" in et}
 
+async def _workspace_email(tenant_id: str, ws: dict, limit: int = 100) -> list[dict]:
+    """A workspace's email: the Gmail sync mirror and the conversation store, as one list.
+
+    The mirror (`crm_communications`) only holds what the periodic Gmail sync saw; mail
+    sent through the CRM and replies placed on a thread live in conversations. Reading
+    only the mirror showed a client emailed through the CRM as "no matched client email".
+    Conversation messages are included only once they reached someone (sent, delivered)
+    or arrived (received) -- a draft is not communication -- and a message present in
+    both stores (same provider message id) is listed once.
+    """
+    ws_id = ws["id"]
+    mirror = await db.crm_communications.find(
+        {"tenant_id": tenant_id, "workspace_id": ws_id}, {"_id": 0}
+    ).sort("ts", -1).to_list(limit)
+    scope: list[dict] = [{"workspace_id": ws_id}]
+    if ws.get("company_id"):
+        scope.append({"company_id": ws["company_id"]})
+    conversations = await db[conversation_service.CONVERSATIONS].find(
+        {"tenant_id": tenant_id, "channel": conversation_service.CHANNEL_EMAIL, "$or": scope},
+        {"_id": 0, "id": 1, "subject": 1}).to_list(500)
+    seen = {row.get("external_id") for row in mirror if row.get("external_id")}
+    merged = list(mirror)
+    if conversations:
+        subjects = {row["id"]: row.get("subject") for row in conversations}
+        messages = await db[conversation_service.MESSAGES].find(
+            {"tenant_id": tenant_id, "conversation_id": {"$in": list(subjects)},
+             "status": {"$in": [conversation_service.SENT, conversation_service.DELIVERED,
+                                conversation_service.RECEIVED]}},
+            {"_id": 0}).sort("created_at", -1).to_list(limit)
+        for message in messages:
+            if message.get("provider_message_id") and message["provider_message_id"] in seen:
+                continue
+            inbound = message.get("direction") == conversation_service.INBOUND
+            merged.append({
+                "id": message["id"], "tenant_id": tenant_id, "workspace_id": ws_id,
+                "provider": message.get("provider") or "email",
+                "external_id": message.get("provider_message_id"),
+                "conversation_id": message.get("conversation_id"),
+                "subject": message.get("subject") or subjects.get(message.get("conversation_id")),
+                "from_email": message.get("from_address") if inbound else message.get("author"),
+                "to": [message["to_address"]] if message.get("to_address") else [],
+                "snippet": (message.get("body") or "")[:200],
+                "ts": (message.get("delivered_at") or message.get("sent_at")
+                       or message.get("created_at")),
+                "direction": message.get("direction"),
+                "source": "conversation",
+            })
+    merged.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
+    return merged[:limit]
+
+
 def _integration_items(comms, meetings, billing, stale_providers):
     out = []
     for c in comms:
+        from_conversation = c.get("source") == "conversation"
         out.append({"id": c["id"], "tenant_id": c["tenant_id"], "workspace_id": c.get("workspace_id"),
-                    "source": "gmail", "event_type": "gmail.message", "title": c.get("subject") or "(email)",
+                    "source": "gmail", "event_type": "email.message" if from_conversation else "gmail.message",
+                    "title": c.get("subject") or "(email)",
                     "summary": c.get("snippet") or "", "occurred_at": c.get("ts"), "actor": c.get("from_email"),
-                    "severity": "info", "ref": {"type": "communication", "id": c["id"]},
+                    "severity": "info",
+                    "ref": ({"type": "communication_message", "id": c["id"]} if from_conversation
+                            else {"type": "communication", "id": c["id"]}),
                     "external_ref": c.get("external_id"), "stale": "gmail" in stale_providers, "failure": False})
     for m in meetings:
         out.append({"id": m["id"], "tenant_id": m["tenant_id"], "workspace_id": m.get("workspace_id"),
@@ -3949,14 +4004,15 @@ def _integration_items(comms, meetings, billing, stale_providers):
 async def workspace_timeline(ws_id: str, sources: str = Query(None), severity: str = Query(None),
                              q: str = Query(None), date_from: str = Query(None), date_to: str = Query(None),
                              limit: int = Query(25, le=100), offset: int = Query(0), user=Depends(get_current_user)):
-    ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1})
+    ws = await db.workspaces.find_one({"id": ws_id, "tenant_id": user["tenant_id"]},
+                                      {"_id": 0, "id": 1, "company_id": 1})
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
     tid = user["tenant_id"]
     evs = await db.domain_events.find({"tenant_id": tid, "workspace_id": ws_id}, {"_id": 0}).sort("timestamp", -1).limit(500).to_list(500)
     conns = await db.integration_connections.find({"tenant_id": tid}, {"_id": 0}).to_list(50)
     stale_providers = {c["provider"] for c in conns if c["status"] != "active" or (_age_hours(c.get("last_success_at")) or 0) > STALE_SYNC_HOURS}
-    comms = await db.crm_communications.find({"tenant_id": tid, "workspace_id": ws_id}, {"_id": 0}).limit(100).to_list(100)
+    comms = await _workspace_email(tid, ws, limit=100)
     meetings = await db.crm_meetings.find({"tenant_id": tid, "workspace_id": ws_id}, {"_id": 0}).limit(100).to_list(100)
     billing = await db.crm_billing.find({"tenant_id": tid, "workspace_id": ws_id}, {"_id": 0}).limit(100).to_list(100)
     items = [_event_to_timeline(e) for e in evs] + _integration_items(comms, meetings, billing, stale_providers)
@@ -4120,7 +4176,8 @@ async def workspace_health_signals(ws_id: str, user=Depends(get_current_user)):
     conns = await db.integration_connections.find({"tenant_id": tid}, {"_id": 0}).to_list(50)
     gmail = next((c for c in conns if c["provider"] == "gmail"), None)
     if gmail and gmail["status"] == "active":
-        latest = await db.crm_communications.find_one({"tenant_id": tid, "workspace_id": ws_id}, {"_id": 0}, sort=[("ts", -1)])
+        recent = await _workspace_email(tid, ws, limit=1)
+        latest = recent[0] if recent else None
         age = _age_hours(latest.get("ts")) if latest else None
         if age is None or age > 24 * 14:
             signals.append({"signal": "Stale client communication", "severity": "warning", "impact": -5, "type": "inference",

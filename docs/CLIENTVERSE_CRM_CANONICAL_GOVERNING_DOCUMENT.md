@@ -418,7 +418,7 @@ been built since this list was first written; everything not so marked does not 
 10. Reply/meeting/decision/task return path into CRM objects — **email replies DELIVERED** (`backend/email_inbound.py`, deployed at `c9f5a6e`: a placed reply lands on its conversation and the contact's timeline, raises a domain event, and — on the branch — engages its recovery case). Meetings (needs M-05 / §7.1) and decisions arriving by other channels remain open. (E-01 step 8)
 11. ~~Recovery attribution ledger~~ — **DELIVERED** (`backend/attribution.py`, deployed at `c9f5a6e`; see M-08). ~~Per-lane and per-period reporting~~ — **DELIVERED on the branch** (`GET /api/proof/breakdown`; see M-10). (E-01 step 10, M-08)
 
-25. Fold the Gmail sync mirror (`crm_communications`) into `Conversation` / `CommunicationMessage`. The sync writes a read-only inbound mirror that predates the conversation model and is not threaded, consent-aware or outbound-capable; the two are not yet one store. (M-01, M-02)
+25. Fold the Gmail sync mirror (`crm_communications`) into `Conversation` / `CommunicationMessage`. The sync writes a read-only inbound mirror that predates the conversation model and is not threaded, consent-aware or outbound-capable; the two are not yet one store. (M-01, M-02) **Read side done on branch `claude/vibrant-hypatia-6aabmc`:** workspace activity, the workspace timeline and the "stale client communication" health signal read both stores as one list (sent, delivered and received messages only; a message in both is listed once), so a client emailed through the CRM no longer shows as "no recent email". **Write side remains:** the sync still writes the mirror, because writing its messages into conversations first would make the inbound sweep treat a reply as already seen and skip its effects on the case.
 26. Channel provider adapters implementing `conversations.ChannelProvider` — **email DELIVERED** (`backend/gmail_provider.py`, deployed at `c9f5a6e`, waiting on the `gmail.send` grant, O-01). SMS and phone have no adapter (O-06). (M-01, M-03, O-01, O-06)
 
 **Channels and execution**
@@ -564,8 +564,8 @@ runner, attribution, the email adapter and email reply ingestion — are deploye
 
 1. ~~Scheduled recovery follow-up (E-06, north-star step 9)~~ — **done on the branch**
    (`backend/recovery_followup.py`; see E-06).
-2. **Fold the Gmail sync mirror into conversations (§8 #25)** — one store rather than
-   two. Low urgency while Gmail is unconnected in production (O-01), and it carries a
+2. **Fold the Gmail sync mirror into conversations (§8 #25)** — the read side is done on
+   the branch (the workspace surfaces read both stores as one); the write side remains. Low urgency while Gmail is unconnected in production (O-01), and it carries a
    real regression risk: the mirror and the inbound sweep read the same mailbox, and a
    message the mirror records first must not stop the sweep applying the reply's effects
    to its case.
