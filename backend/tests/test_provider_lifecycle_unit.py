@@ -431,6 +431,13 @@ def test_google_disconnect_keeps_shared_credentials_until_both_providers_inactiv
     assert credentials.deleted == [{"tenant_id": "ten_a"}]
 
 
+
+def _tenant_test_key(key):
+    """The tenant's own connected Stripe key, without a credential lookup in Mongo."""
+    async def _key(_tenant_id):
+        return key
+    return _key
+
 def test_stripe_payment_intent_success_is_test_only_tenant_scoped_and_idempotent(monkeypatch):
     invoices = CaptureCollection(find_one_results=[
         {"id": "inv_1", "tenant_id": "ten_a", "workspace_id": "ws_1", "total": 125.50,
@@ -439,7 +446,7 @@ def test_stripe_payment_intent_success_is_test_only_tenant_scoped_and_idempotent
          "currency": "USD", "status": "issued"},
     ])
     monkeypatch.setattr(server, "db", SimpleNamespace(invoices=invoices))
-    monkeypatch.setenv("STRIPE_API_KEY", "rk_test_x")
+    monkeypatch.setattr(server, "_stripe_api_key", _tenant_test_key("rk_test_x"))
     calls = []
 
     def fake_create(**kwargs):
@@ -503,7 +510,7 @@ def test_stripe_payment_failure_is_sanitized_and_recorded(monkeypatch):
         "currency": "usd", "status": "issued",
     }])
     monkeypatch.setattr(server, "db", SimpleNamespace(invoices=invoices))
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_x")
+    monkeypatch.setattr(server, "_stripe_api_key", _tenant_test_key("sk_test_x"))
 
     class FakeStripeFailure(Exception):
         code = "card_declined"
@@ -1117,7 +1124,7 @@ def test_stripe_webhook_rejects_missing_signature(monkeypatch):
 def test_stripe_payment_intent_preserves_tenant_filter_on_missing_invoice(monkeypatch):
     invoices = CaptureCollection(find_one_results=[None])
     monkeypatch.setattr(server, "db", SimpleNamespace(invoices=invoices))
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_x")
+    monkeypatch.setattr(server, "_stripe_api_key", _tenant_test_key("sk_test_x"))
 
     try:
         run(server.create_stripe_payment_intent(

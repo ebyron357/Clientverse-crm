@@ -4,6 +4,9 @@ import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
 import { Mail, Calendar, CreditCard, RefreshCw, Plug, Unplug, AlertTriangle, CheckCircle2, Clock, ShieldAlert } from "lucide-react";
 
@@ -35,6 +38,8 @@ export default function IntegrationsPanel() {
   const [conns, setConns] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
+  const [stripeKeyOpen, setStripeKeyOpen] = useState(false);
+  const [stripeKey, setStripeKey] = useState("");
 
   const load = useCallback(async () => {
     setLoadError("");
@@ -60,6 +65,7 @@ export default function IntegrationsPanel() {
   }, []);
 
   const connect = async (provider) => {
+    if (META[provider].kind === "stripe") { setStripeKey(""); setStripeKeyOpen(true); return; }
     setBusy(provider);
     try {
       if (META[provider].kind === "google") {
@@ -69,6 +75,19 @@ export default function IntegrationsPanel() {
       }
       const { data } = await api.post(`/integrations/${provider}/connect`);
       toast.success(`Connected ${META[provider].label} (${data.account})`);
+      load();
+    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+    finally { setBusy(""); }
+  };
+  // Each workspace connects its own Stripe account. The deployment's shared key is the
+  // operator's own account and is only used for the operator's workspace.
+  const connectStripe = async () => {
+    setBusy("stripe");
+    try {
+      const key = stripeKey.trim();
+      const { data } = await api.post("/integrations/stripe/connect", key ? { api_key: key } : {});
+      toast.success(`Connected Stripe (${data.account})`);
+      setStripeKeyOpen(false); setStripeKey("");
       load();
     } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
     finally { setBusy(""); }
@@ -97,6 +116,24 @@ export default function IntegrationsPanel() {
 
   return (
     <div className="space-y-4" data-testid="integrations-panel">
+      <Dialog open={stripeKeyOpen} onOpenChange={setStripeKeyOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Connect Stripe</DialogTitle>
+            <DialogDescription>
+              Paste a secret or restricted key for your own Stripe account, with read access to customers, invoices and subscriptions. It is stored encrypted for this workspace only and is never shown again.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label htmlFor="stripe-key">Stripe key</Label>
+            <Input id="stripe-key" type="password" autoComplete="off" placeholder="rk_test_… or sk_test_…" value={stripeKey}
+              onChange={(e) => setStripeKey(e.target.value)} className="mt-1 font-mono" data-testid="stripe-key-input" />
+          </div>
+          <DialogFooter>
+            <Button onClick={connectStripe} disabled={busy === "stripe"} className="bg-[#0A0A0A] hover:bg-[#262626]" data-testid="stripe-key-connect">Connect</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-5 text-slate-600" data-testid="integrations-honesty-banner">
         <strong className="font-semibold text-[#132038]">Status honesty:</strong> cards below reflect tenant connection state from the CRM API. They do not claim live Google or Stripe provider certification.
       </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
@@ -69,7 +69,8 @@ export default function WebhookManager() {
   };
   const create = async () => {
     if (!form.name || !form.url) return;
-    await api.post("/webhooks", form);
+    try { await api.post("/webhooks", form); }
+    catch (e) { toast.error("Endpoint not saved", { description: formatErr(e.response?.data?.detail) }); return; }
     toast.success("Webhook created"); setOpen(false); setForm({ name: "", url: "", events: [] }); load();
   };
   const toggleEvent = (ev) => setForm((f) => ({ ...f, events: f.events.includes(ev) ? f.events.filter((x) => x !== ev) : [...f.events, ev] }));
@@ -82,7 +83,7 @@ export default function WebhookManager() {
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild><Button data-testid="new-webhook-button" className="bg-[#0A0A0A] hover:bg-[#262626]"><Plus className="w-4 h-4 mr-1" />New Endpoint</Button></DialogTrigger>
           <DialogContent>
-            <DialogHeader><DialogTitle>New Webhook Endpoint</DialogTitle><DialogDescription>Signed HMAC-SHA256 delivery with retries and dead-letter.</DialogDescription></DialogHeader>
+            <DialogHeader><DialogTitle>New Webhook Endpoint</DialogTitle><DialogDescription>Signed HMAC-SHA256 delivery with retries and dead-letter. The URL must be a public address; private and internal addresses are refused, and redirects are not followed.</DialogDescription></DialogHeader>
             <div className="space-y-4">
               <div><Label>Name</Label><Input data-testid="webhook-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1" /></div>
               <div><Label>URL</Label><Input data-testid="webhook-url-input" placeholder="https://your-app.com/hooks" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} className="mt-1" /></div>

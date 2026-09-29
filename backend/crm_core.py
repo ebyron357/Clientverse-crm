@@ -78,6 +78,24 @@ SORTABLE = {
 MAX_PAGE = 200
 MAX_IMPORT_ROWS = 5000
 
+# A cell a spreadsheet would run as a formula. Any member can type `=HYPERLINK(...)` into
+# a contact's name, and whoever opens the export in Excel or Sheets would run it.
+FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def spreadsheet_safe(value):
+    """Export a text value so a spreadsheet shows it rather than evaluating it."""
+    if isinstance(value, str) and value.startswith(FORMULA_TRIGGERS):
+        return "'" + value
+    return value
+
+
+def spreadsheet_unescape(value: str) -> str:
+    """Undo `spreadsheet_safe` on import, so an export re-imports unchanged."""
+    if value.startswith("'") and value[1:].startswith(FORMULA_TRIGGERS):
+        return value[1:]
+    return value
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -920,7 +938,8 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            writer.writerow({column: row.get(column, "") for column in columns})
+            writer.writerow({column: spreadsheet_safe(row.get(column, ""))
+                             for column in columns})
         await record_event("data.exported", entity, entity, tenant_of(user),
                            user["email"], payload={"rows": len(rows)})
         return Response(
@@ -980,7 +999,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         created, updated, skipped, errors = 0, 0, 0, []
 
         for index, raw in enumerate(rows, start=2):  # row 1 is the header
-            row = {k.strip(): (v.strip() if isinstance(v, str) else v)
+            row = {k.strip(): (spreadsheet_unescape(v.strip()) if isinstance(v, str) else v)
                    for k, v in raw.items() if k and k.strip() in allowed}
             row = {k: v for k, v in row.items() if v not in (None, "")}
             missing = [field for field in required if not row.get(field)]

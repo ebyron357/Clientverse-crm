@@ -75,6 +75,13 @@ async def _seed_contact(tenant_id, email, company_id=None):
     })
 
 
+async def _own_key(tenant_id, key):
+    """What connecting Stripe with the tenant's own key stores."""
+    await server.db.stripe_credentials.insert_one({
+        "tenant_id": tenant_id, "enc": server.enc_secret({"api_key": key}),
+        "credential_version": 1})
+
+
 def _fake_customer(cid, email, name="Cust"):
     return {"id": cid, "email": email, "name": name, "currency": "usd", "created": 1700000000}
 
@@ -115,7 +122,8 @@ def test_stripe_sync_tenant_a_and_b_objects_are_mutually_invisible(monkeypatch):
         _fake_invoice("in_bob", "bob@acme-b.example"),
     ]
     _patch_stripe_lists(monkeypatch, customers=shared_customers, invoices=shared_invoices)
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_shared_account")
+    run(_own_key(tenant_a, "sk_test_a"))
+    run(_own_key(tenant_b, "sk_test_b"))
 
     run(server.sync_stripe(tenant_a, "test"))
     _patch_stripe_lists(monkeypatch, customers=shared_customers, invoices=shared_invoices)
@@ -143,7 +151,7 @@ def test_stripe_payment_intent_direct_id_access_denied_cross_tenant(monkeypatch)
         "id": invoice_id, "tenant_id": tenant_a, "workspace_id": "ws_x", "total": 10.0,
         "currency": "usd", "status": "issued",
     })))
-    monkeypatch.setenv("STRIPE_API_KEY", "rk_test_x")
+    run(_own_key(tenant_b, "rk_test_b"))
 
     async def _attempt():
         return await server.create_stripe_payment_intent(
@@ -207,7 +215,7 @@ def test_stripe_sync_skips_unmatched_records_entirely(monkeypatch):
         _fake_customer("cus_mallory", "mallory@unrelated.example", "Mallory"),
     ]
     _patch_stripe_lists(monkeypatch, customers=customers)
-    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_shared_account")
+    run(_own_key(tenant_a, "sk_test_a"))
 
     summary = run(server.sync_stripe(tenant_a, "test"))
 
@@ -240,7 +248,7 @@ def test_sync_stripe_prefers_tenant_scoped_credential_over_shared_env_key(monkey
     seen_keys = []
 
     def fake_customer_list(**kw):
-        seen_keys.append(server._stripe.api_key)
+        seen_keys.append(kw.get("api_key"))
         return SimpleNamespace(data=[_fake_customer("cus_alice", "alice@acme-a.example")])
 
     monkeypatch.setattr(server._stripe.Customer, "list", fake_customer_list)
@@ -256,7 +264,7 @@ def test_stripe_connect_with_api_key_stores_tenant_scoped_credential_not_shared(
     tenant_a = _tenant_id()
     monkeypatch.setenv("STRIPE_API_KEY", "sk_test_shared_should_not_be_stored")
     monkeypatch.setattr(server._stripe.Account, "retrieve",
-                         lambda: {"email": "billing@acme-a.example", "id": "acct_a"})
+                         lambda **kw: {"email": "billing@acme-a.example", "id": "acct_a"})
 
     result = run(server.stripe_connect(
         server.StripeConnectInput(api_key="sk_test_tenant_a_own_key"),
@@ -273,3 +281,65 @@ def test_stripe_connect_with_api_key_stores_tenant_scoped_credential_not_shared(
     run(server.disconnect_provider("stripe", user={"tenant_id": tenant_a, "email": "admin@acme-a.example"}))
     stored_after = run(_db(lambda: server.db.stripe_credentials.find_one({"tenant_id": tenant_a}, {"_id": 0})))
     assert stored_after is None
+
+
+# ---------- the deployment's shared key is the operator's account, not everyone's ----------
+
+def test_a_self_registered_tenant_cannot_use_the_shared_stripe_key(monkeypatch):
+    """Registration is self-serve. A stranger falling back to the operator's account
+    could create contacts with any customer's email and have sync copy their invoices."""
+    stranger = _tenant_id()
+    run(_seed_contact(stranger, "victim@customer.example"))
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_operator_account")
+    monkeypatch.setenv("ADMIN_EMAIL", "operator@clientverse.example")
+    _patch_stripe_lists(monkeypatch, customers=[
+        _fake_customer("cus_victim", "victim@customer.example")])
+
+    try:
+        run(server.sync_stripe(stranger, "test"))
+        raise AssertionError("a stranger's sync must not reach the operator's account")
+    except RuntimeError as exc:
+        assert str(exc) == "not_connected"
+    try:
+        run(server.stripe_connect(None, user={"tenant_id": stranger,
+                                              "email": "eve@example.com"}))
+        raise AssertionError("connect without a key must be refused for a stranger")
+    except server.HTTPException as exc:
+        assert exc.status_code == 400
+    rows = run(_db(lambda: server.db.crm_billing.find({"tenant_id": stranger}).to_list(10)))
+    assert rows == []
+
+
+def test_the_operators_own_tenant_may_use_the_shared_key(monkeypatch):
+    operator_tenant = _tenant_id()
+    email = f"operator_{uuid.uuid4().hex[:8]}@clientverse.example"
+    run(_db(lambda: server.db.users.insert_one({
+        "user_id": server.new_id("user"), "email": email, "tenant_id": operator_tenant,
+        "role": "admin"})))
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_operator_account")
+    monkeypatch.setenv("ADMIN_EMAIL", email)
+    assert run(server._stripe_api_key(operator_tenant)) == "sk_test_operator_account"
+    assert run(server._stripe_api_key(_tenant_id())) is None
+
+
+def test_the_key_is_passed_per_call_and_never_set_process_wide(monkeypatch):
+    """Two tenants syncing at once used to overwrite one global key under each other."""
+    tenant_a, tenant_b = _tenant_id(), _tenant_id()
+    run(_own_key(tenant_a, "sk_test_a"))
+    run(_own_key(tenant_b, "sk_test_b"))
+    monkeypatch.setattr(server._stripe, "api_key", "sentinel-untouched")
+    seen = []
+
+    def listing(kind):
+        def _list(**kw):
+            seen.append((kind, kw.get("api_key")))
+            return SimpleNamespace(data=[])
+        return _list
+
+    for kind in ("Customer", "Invoice", "Subscription"):
+        monkeypatch.setattr(getattr(server._stripe, kind), "list", listing(kind))
+    run(server.sync_stripe(tenant_a, "test"))
+    run(server.sync_stripe(tenant_b, "test"))
+    assert server._stripe.api_key == "sentinel-untouched"
+    assert {key for _, key in seen[:3]} == {"sk_test_a"}
+    assert {key for _, key in seen[3:]} == {"sk_test_b"}

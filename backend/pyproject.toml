@@ -117,6 +117,6 @@ ignore_missing_imports = true
 # signatures FastAPI itself reads, and annotating every one buys nothing a route test
 # does not already catch.
 module = ["attribution", "cron_ledger", "cron_schedule", "detectors", "email_inbound",
-          "gmail_provider", "recovery_followup", "recovery_proof"]
+          "gmail_provider", "outbound_url", "recovery_followup", "recovery_proof"]
 disallow_incomplete_defs = true
 warn_return_any = true

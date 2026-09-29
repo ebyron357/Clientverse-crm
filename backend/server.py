@@ -44,6 +44,7 @@ import detectors
 import email_inbound
 import gmail_provider
 import next_best_action as nba_service
+import outbound_url
 import recovery_case as recovery_case_service
 import recovery_followup
 import recovery_intake
@@ -1936,15 +1937,22 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
     attempts = list(delivery.get("attempts", []))
     for n in range(len(attempts) + 1, WEBHOOK_MAX_ATTEMPTS + 1):
         try:
-            resp = await asyncio.to_thread(requests.post, webhook["url"], data=body, headers=headers, timeout=6)
+            resp = await asyncio.to_thread(outbound_url.post, webhook["url"], data=body,
+                                           headers=headers, timeout=6)
             code = resp.status_code
             attempts.append({"n": n, "status_code": code, "error": None, "at": now_iso()})
             if 200 <= code < 300:
                 await db.webhook_deliveries.update_one({"id": delivery["id"]},
                     {"$set": {"status": "delivered", "attempts": attempts, "delivered_at": now_iso(), "dlq": False}})
                 return "delivered"
+        except outbound_url.UnsafeDestination as e:
+            # Not a transient failure: the destination is refused, so stop retrying.
+            attempts.append({"n": n, "status_code": None, "error": outbound_url.describe_failure(e),
+                             "at": now_iso()})
+            break
         except Exception as e:
-            attempts.append({"n": n, "status_code": None, "error": str(e)[:200], "at": now_iso()})
+            attempts.append({"n": n, "status_code": None, "error": outbound_url.describe_failure(e),
+                             "at": now_iso()})
         await asyncio.sleep(0.25 * n)
     await db.webhook_deliveries.update_one({"id": delivery["id"]},
         {"$set": {"status": "failed", "attempts": attempts, "dlq": True}})
@@ -1995,6 +2003,11 @@ async def reveal_webhook_secret(wid: str, user=Depends(require_role("admin"))):
 
 @api.post("/webhooks")
 async def create_webhook(inp: WebhookInput, user=Depends(require_role("admin"))):
+    try:
+        # Checked again on every send; a host that does not resolve yet is accepted here.
+        outbound_url.check(inp.url, allow_unresolved=True)
+    except outbound_url.UnsafeDestination as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     doc = {"id": new_id("wh"), "tenant_id": user["tenant_id"], "name": inp.name, "url": inp.url,
            "events": inp.events, "status": "AVAILABLE", "signed": True, "enabled": True,
            "secret": "whsec_" + secrets.token_hex(16), "description": "Custom endpoint.", "created_at": now_iso()}
@@ -2538,9 +2551,12 @@ async def _google_creds(tenant_id):
 # ---- Stripe credential helpers ----
 # Mirrors the Google pattern: a tenant that connects its own Stripe secret key gets an
 # encrypted, tenant-scoped credential so its sync never runs against another tenant's
-# (or the shared/default) Stripe account. Falls back to the single global STRIPE_API_KEY
-# env var when no tenant-scoped credential has been configured, preserving existing
-# single-tenant/dev/CI behavior.
+# Stripe account. The deployment-wide STRIPE_API_KEY is the platform operator's own
+# account, so only the operator's tenant (the one `ADMIN_EMAIL` belongs to) may use it:
+# registration is self-serve, and a stranger's tenant falling back to it could create
+# contacts with any customer's email and have sync copy that customer's invoices in.
+# Every Stripe call passes its key explicitly; nothing sets the SDK's process-wide key,
+# which two tenants syncing at once would otherwise overwrite under each other.
 
 async def _stripe_credentials(tenant_id):
     try:
@@ -2553,13 +2569,32 @@ async def _stripe_credentials(tenant_id):
         return None
     return dec_secret(doc["enc"]), doc
 
+async def _platform_tenant_id():
+    operator = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
+    if not operator:
+        return None
+    try:
+        found = await db.users.find_one({"email": operator}, {"_id": 0, "tenant_id": 1})
+    except AttributeError:
+        return None
+    return (found or {}).get("tenant_id")
+
+
+async def _shared_stripe_key(tenant_id):
+    """The deployment's own STRIPE_API_KEY, for the platform operator's tenant only."""
+    shared = os.environ.get("STRIPE_API_KEY")
+    if shared and tenant_id and tenant_id == await _platform_tenant_id():
+        return shared
+    return None
+
+
 async def _stripe_api_key(tenant_id):
     creds = await _stripe_credentials(tenant_id)
     if creds:
         key = creds[0].get("api_key")
         if key:
             return key
-    return os.environ.get("STRIPE_API_KEY")
+    return await _shared_stripe_key(tenant_id)
 
 async def _google_access_token(tenant_id, force_refresh=False):
     creds, _doc = (await _google_creds(tenant_id)) or (None, None)
@@ -2923,7 +2958,6 @@ async def sync_stripe(tenant_id, actor):
     key = await _stripe_api_key(tenant_id)
     if not key:
         raise RuntimeError("not_connected")
-    _stripe.api_key = key
     contacts = await _contacts_by_email(tenant_id)
 
     def match_by_email(email):
@@ -2944,7 +2978,7 @@ async def sync_stripe(tenant_id, actor):
     # they belong to, matched in the same pass as customers below.
     customer_contact = {}
 
-    for it in _stripe.Customer.list(limit=50).data:
+    for it in _stripe.Customer.list(limit=50, api_key=key).data:
         rec = normalize_stripe_customer(it)
         contact_id, company_id = match_by_email(rec.get("email"))
         customer_contact[it.get("id")] = (contact_id, company_id)
@@ -2954,7 +2988,7 @@ async def sync_stripe(tenant_id, actor):
         await store(rec, contact_id, company_id)
         matched += 1
 
-    for it in _stripe.Invoice.list(limit=50).data:
+    for it in _stripe.Invoice.list(limit=50, api_key=key).data:
         rec = normalize_stripe_invoice(it)
         contact_id, company_id = match_by_email(rec.get("email"))
         if not contact_id:
@@ -2965,7 +2999,7 @@ async def sync_stripe(tenant_id, actor):
         await store(rec, contact_id, company_id)
         matched += 1
 
-    for it in _stripe.Subscription.list(limit=50).data:
+    for it in _stripe.Subscription.list(limit=50, api_key=key).data:
         rec = normalize_stripe_subscription(it)
         contact_id, company_id = customer_contact.get(it.get("customer"), (None, None))
         if not contact_id:
@@ -3442,16 +3476,17 @@ async def cron_schedule_status(request: Request):
 @api.post("/integrations/stripe/connect")
 async def stripe_connect(inp: Optional[StripeConnectInput] = None, user=Depends(require_role("admin"))):
     tenant_key = (inp.api_key.strip() if inp and inp.api_key else None) or None
-    key = tenant_key or os.environ.get("STRIPE_API_KEY")
+    key = tenant_key or await _shared_stripe_key(user["tenant_id"])
     if not key:
-        raise HTTPException(status_code=400, detail="Stripe is not configured (STRIPE_API_KEY).")
+        raise HTTPException(status_code=400, detail=(
+            "Enter your own Stripe secret or restricted key to connect Stripe."))
     await ensure_connections(user["tenant_id"])
-    _stripe.api_key = key
     try:
-        acct = await asyncio.to_thread(_stripe.Account.retrieve)
+        acct = await asyncio.to_thread(_stripe.Account.retrieve, api_key=key)
         identity = acct.get("email") or acct.get("id")
     except Exception as e:
-        await set_conn(user["tenant_id"], "stripe", status="error", last_error=str(e)[:200])
+        await set_conn(user["tenant_id"], "stripe", status="error",
+                       last_error=type(e).__name__)
         raise HTTPException(status_code=400, detail="Could not verify Stripe account")
     key_mode = "test" if key.startswith(("sk_test_", "rk_test_")) else "live" if key.startswith(("sk_live_", "rk_live_")) else "unknown"
     version = 1
@@ -3494,7 +3529,6 @@ async def create_stripe_payment_intent(
     amount = round(float(invoice.get("total") or 0) * 100)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Invoice total must be greater than zero")
-    _stripe.api_key = key
     params = {
         "amount": amount,
         "currency": (invoice.get("currency") or "usd").lower(),
@@ -3511,6 +3545,7 @@ async def create_stripe_payment_intent(
         intent = await asyncio.to_thread(
             _stripe.PaymentIntent.create,
             **params,
+            api_key=key,
             idempotency_key=f"clientverse:{user['tenant_id']}:{invoice_id}:payment-intent:v1",
         )
     except Exception as exc:
@@ -4453,8 +4488,8 @@ JOB_GENERATE_NEXT_BEST_ACTIONS = "next_best_action.generate"
 
 
 async def _handle_generate_next_best_actions(item: dict) -> dict:
-    tenant_id = (item.get("payload") or {}).get("tenant_id") or item.get("tenant_id")
-    return await nba_service.generate(db, tenant_id, actor="work-queue")
+    # The item's own tenant, never one named in its payload.
+    return await nba_service.generate(db, item["tenant_id"], actor="work-queue")
 
 
 async def _handle_run_recovery_case(item: dict) -> dict:
@@ -4465,9 +4500,8 @@ async def _handle_run_recovery_case(item: dict) -> dict:
     to a job whose case was withdrawn between queueing and running.
     """
     payload = item.get("payload") or {}
-    tenant_id = payload.get("tenant_id") or item.get("tenant_id")
     return await recovery_runner_service.run_case(
-        db, tenant_id=tenant_id, case_id=payload["case_id"],
+        db, tenant_id=item["tenant_id"], case_id=payload["case_id"],
         actor="work-queue", audit=record_event)
 
 
