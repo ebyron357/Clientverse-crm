@@ -26,6 +26,9 @@ import second_chance
 import security_gate
 from work_queue import InvalidTransition, WorkQueue, WorkQueueError
 
+# The queue the worker drains (see SYSTEM_QUEUE in server.py).
+SYSTEM_QUEUE_NAME = "system"
+
 
 class WorkItemResolution(BaseModel):
     resolution: str = Field(default="resolved", max_length=200)
@@ -198,6 +201,14 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
     @router.post("/work-queue/{item_id}/resolve")
     async def resolve_work_item(item_id: str, inp: WorkItemResolution,
                                 user=Depends(get_current_user)):
+        current = await queue.get(item_id, tenant_id=user["tenant_id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="Work item not found")
+        if current.get("queue") == SYSTEM_QUEUE_NAME and user.get("role") != "admin":
+            # A system job is work the worker runs, such as executing an approved
+            # recovery. Marking it done by hand records a job as completed that never
+            # ran, so only an admin may close one.
+            raise HTTPException(status_code=403, detail="Only an admin can resolve a system job")
         try:
             item = await queue.resolve(item_id, tenant_id=user["tenant_id"], actor=user["email"],
                                        resolution=inp.resolution)

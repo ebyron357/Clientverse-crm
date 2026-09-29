@@ -9,10 +9,11 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field, HttpUrl
+from pymongo.errors import DuplicateKeyError
 
 import approval_queue
 from crm_core import MAX_MONEY
@@ -72,6 +73,26 @@ class ReferralInput(BaseModel):
     status: str = "active"
 
 
+APPOINTMENT_STATUSES = ("scheduled", "confirmed", "completed", "no_show", "cancelled")
+# Where an appointment may go next. Any-to-any let a member turn a completed visit into a
+# no-show, which the no-show detector then chased as a recovery. Finished outcomes are
+# final for members; an admin may correct one (`ADMIN_CORRECTIONS`).
+APPOINTMENT_TRANSITIONS = {
+    "scheduled": {"confirmed", "completed", "no_show", "cancelled"},
+    "confirmed": {"scheduled", "completed", "no_show", "cancelled"},
+    "completed": set(),
+    "no_show": set(),
+    "cancelled": set(),
+}
+APPOINTMENT_ADMIN_CORRECTIONS = {
+    "completed": {"no_show"},
+    "no_show": {"completed", "scheduled"},
+    "cancelled": {"scheduled"},
+}
+# A reminder is prepared only for a booking that is still going to happen.
+REMINDABLE_APPOINTMENT_STATUSES = ("scheduled", "confirmed")
+
+
 class AppointmentInput(BaseModel):
     title: str = Field(min_length=2, max_length=200)
     start_at: str
@@ -79,8 +100,11 @@ class AppointmentInput(BaseModel):
     owner: Optional[str] = None
     workspace_id: Optional[str] = None
     company_id: Optional[str] = None
+    # Who the appointment is with. The appointment detectors read it to know whom a
+    # cancelled or missed booking should be followed up with.
+    contact_id: Optional[str] = None
     appointment_type: str = "service"
-    status: str = "scheduled"
+    status: Literal["scheduled", "confirmed", "completed", "no_show", "cancelled"] = "scheduled"
     notes: Optional[str] = Field(default=None, max_length=1000)
 
 
@@ -155,6 +179,19 @@ PLAYBOOKS = {
 async def ensure_indexes(db) -> None:
     """One invoice per estimate. Its own try: a deployment that already holds duplicates
     from before this index must still boot, and says why the index is missing."""
+    # Appointment times as real instants, so the conflict check can be a range query.
+    await db.appointments.create_index([("tenant_id", 1), ("owner", 1), ("start_ts", 1)])
+    await backfill_appointment_instants(db)
+    # One reminder task per appointment; only reminder tasks carry `appointment_id`.
+    await db.tasks.create_index(
+        [("tenant_id", 1), ("appointment_id", 1)], unique=True,
+        partialFilterExpression={"appointment_id": {"$type": "string"}},
+        name="one_reminder_per_appointment")
+    # One application of a playbook per workspace. Keyed on a field only new applications
+    # carry, so a deployment holding duplicates from before still boots.
+    await db.playbook_applications.create_index(
+        [("tenant_id", 1), ("application_key", 1)], unique=True,
+        partialFilterExpression={"application_key": {"$type": "string"}})
     try:
         await db.invoices.create_index(
             [("tenant_id", 1), ("estimate_id", 1)], unique=True,
@@ -164,6 +201,27 @@ async def ensure_indexes(db) -> None:
         logging.getLogger("clientverse").exception(
             "Could not create the one-invoice-per-estimate index; duplicate invoices for "
             "one estimate already exist and must be voided before it can be built")
+
+
+def appointment_instant(value) -> Optional[datetime]:
+    """An appointment time as a UTC instant, or None when it cannot be read."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+async def backfill_appointment_instants(db, *, batch: int = 1000) -> int:
+    """Give appointments stored before `start_ts`/`end_ts` existed their instants."""
+    done = 0
+    async for row in db.appointments.find({"start_ts": {"$exists": False}},
+                                          {"_id": 1, "start_at": 1, "end_at": 1}).limit(50_000):
+        start, end = appointment_instant(row.get("start_at")), appointment_instant(row.get("end_at"))
+        await db.appointments.update_one({"_id": row["_id"]},
+                                         {"$set": {"start_ts": start, "end_ts": end}})
+        done += 1
+    return done
 
 
 # What an unauthenticated portal visitor may see of each record. Everything else --
@@ -527,20 +585,20 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         return start, end
 
     async def appointment_conflict(tenant_id, owner, start, end, ignore_id=None):
+        """An existing live booking of this owner's that overlaps [start, end).
+
+        The overlap is the query itself, on the stored UTC instants. Reading the owner's
+        first 1,000 bookings and comparing in Python stopped finding conflicts once past
+        bookings -- never moved out of `scheduled` -- filled those 1,000 slots.
+        """
         if not owner:
             return None
-        query = {"tenant_id": tenant_id, "owner": owner, "status": {"$in": ["scheduled", "confirmed"]}}
+        query = {"tenant_id": tenant_id, "owner": owner,
+                 "status": {"$in": ["scheduled", "confirmed"]},
+                 "start_ts": {"$lt": end}, "end_ts": {"$gt": start}}
         if ignore_id:
             query["id"] = {"$ne": ignore_id}
-        rows = await db.appointments.find(query, {"_id": 0}).to_list(1000)
-        for row in rows:
-            try:
-                existing_start, existing_end = await parse_range(row["start_at"], row["end_at"])
-                if existing_start < end and existing_end > start:
-                    return row
-            except HTTPException:
-                continue
-        return None
+        return await db.appointments.find_one(query, {"_id": 0})
 
     @router.get("/appointments")
     async def list_appointments(workspace_id: Optional[str] = None, user=Depends(get_current_user)):
@@ -559,12 +617,18 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
             company = await db.companies.find_one({"tenant_id": user["tenant_id"], "id": inp.company_id}, {"_id": 0})
             if not company:
                 raise HTTPException(status_code=404, detail="Company not found")
+        if inp.contact_id:
+            contact = await db.contacts.find_one({"tenant_id": user["tenant_id"], "id": inp.contact_id}, {"_id": 0, "id": 1})
+            if not contact:
+                raise HTTPException(status_code=404, detail="Contact not found")
         start, end = await parse_range(inp.start_at, inp.end_at)
         conflict = await appointment_conflict(user["tenant_id"], inp.owner, start, end)
         if conflict:
             raise HTTPException(status_code=409, detail={"message": "Appointment conflicts with an existing owner schedule", "conflict_title": conflict.get("title"), "conflict_start": conflict.get("start_at")})
         doc = {"id": new_id("apt"), "tenant_id": user["tenant_id"], "title": inp.title, "start_at": start.isoformat(), "end_at": end.isoformat(),
-               "owner": inp.owner, "workspace_id": inp.workspace_id, "company_id": inp.company_id, "appointment_type": inp.appointment_type,
+               "start_ts": start.astimezone(timezone.utc), "end_ts": end.astimezone(timezone.utc),
+               "owner": inp.owner, "workspace_id": inp.workspace_id, "company_id": inp.company_id,
+               "contact_id": inp.contact_id, "appointment_type": inp.appointment_type,
                "status": inp.status, "notes": inp.notes, "reminder_state": "draft_only", "created_by": user["email"], "created_at": now_iso()}
         await db.appointments.insert_one(doc)
         await record_event("appointment.created", "appointment", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title, "status": inp.status})
@@ -580,14 +644,31 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         conflict = await appointment_conflict(user["tenant_id"], row.get("owner"), start, end, ignore_id=appointment_id)
         if conflict:
             raise HTTPException(status_code=409, detail={"message": "Reschedule conflicts with an existing owner schedule", "conflict_title": conflict.get("title"), "conflict_start": conflict.get("start_at")})
-        patch = {"start_at": start.isoformat(), "end_at": end.isoformat(), "updated_at": now_iso()}
-        if inp.status:
-            if inp.status not in ("scheduled", "confirmed", "completed", "no_show", "cancelled"):
+        patch = {"start_at": start.isoformat(), "end_at": end.isoformat(),
+                 "start_ts": start.astimezone(timezone.utc), "end_ts": end.astimezone(timezone.utc),
+                 "updated_at": now_iso()}
+        current = row.get("status") or "scheduled"
+        if inp.status and inp.status != current:
+            if inp.status not in APPOINTMENT_STATUSES:
                 raise HTTPException(status_code=422, detail="Unsupported appointment status")
+            allowed = set(APPOINTMENT_TRANSITIONS.get(current, set()))
+            if user.get("role") == "admin":
+                allowed |= APPOINTMENT_ADMIN_CORRECTIONS.get(current, set())
+            if inp.status not in allowed:
+                raise HTTPException(status_code=409,
+                                    detail=f"An appointment cannot move from '{current}' to '{inp.status}'")
             patch["status"] = inp.status
+            if inp.status == "cancelled":
+                # The cancelled-appointment detector dates the recovery from this.
+                patch["cancelled_at"] = now_iso()
         if inp.notes is not None:
             patch["notes"] = inp.notes
-        await db.appointments.update_one({"id": appointment_id, "tenant_id": user["tenant_id"]}, {"$set": patch})
+        # Conditional on the status read above, so two concurrent moves cannot both apply.
+        moved = await db.appointments.update_one(
+            {"id": appointment_id, "tenant_id": user["tenant_id"], "status": row.get("status")},
+            {"$set": patch})
+        if not moved.matched_count:
+            raise HTTPException(status_code=409, detail="The appointment changed meanwhile; reload it")
         await record_event("appointment.updated", "appointment", appointment_id, user["tenant_id"], user["email"], workspace_id=row.get("workspace_id"), payload={"status": patch.get("status", row.get("status"))})
         return {"ok": True, **patch}
 
@@ -598,14 +679,30 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
             raise HTTPException(status_code=404, detail="Appointment not found")
         if not appointment.get("workspace_id"):
             raise HTTPException(status_code=400, detail="Appointment must be linked to a workspace before creating a reminder task")
-        task = {"id": new_id("task"), "tenant_id": user["tenant_id"], "workspace_id": appointment["workspace_id"],
+        if (appointment.get("status") or "scheduled") not in REMINDABLE_APPOINTMENT_STATUSES:
+            raise HTTPException(status_code=409,
+                                detail=f"A '{appointment.get('status')}' appointment needs no reminder")
+        # One reminder task per appointment. Repeating the call used to add another task
+        # each time, and each became its own missed-follow-up recovery case.
+        task_id = f"task_rem_{appointment_id}"
+        existing = await db.tasks.find_one({"tenant_id": user["tenant_id"], "id": task_id}, {"_id": 0})
+        if existing:
+            return {"task": clean(existing), "duplicate": True, "outbound": "disabled",
+                    "note": "A reminder task already exists for this appointment."}
+        task = {"id": task_id, "tenant_id": user["tenant_id"], "workspace_id": appointment["workspace_id"],
                 "title": f"Prepare reminder: {appointment['title']}", "assignee": appointment.get("owner"), "due_date": appointment["start_at"],
-                "status": "todo", "source": "appointment_reminder", "created_at": now_iso()}
-        await db.tasks.insert_one(task)
-        await db.appointments.update_one({"id": appointment_id}, {"$set": {"reminder_state": "task_created"}})
+                "status": "todo", "source": "appointment_reminder", "appointment_id": appointment_id,
+                "created_at": now_iso()}
+        try:
+            await db.tasks.insert_one(dict(task))
+        except DuplicateKeyError:
+            existing = await db.tasks.find_one({"tenant_id": user["tenant_id"], "appointment_id": appointment_id}, {"_id": 0})
+            return {"task": clean(existing or task), "duplicate": True, "outbound": "disabled",
+                    "note": "A reminder task already exists for this appointment."}
+        await db.appointments.update_one({"id": appointment_id, "tenant_id": user["tenant_id"]}, {"$set": {"reminder_state": "task_created"}})
         await in_app_notice(user["tenant_id"], "Appointment reminder needs review", task["title"], appointment["workspace_id"])
         await record_event("appointment.reminder_prepared", "appointment", appointment_id, user["tenant_id"], user["email"], workspace_id=appointment["workspace_id"], payload={"task_id": task["id"], "outbound": "disabled"})
-        return {"task": clean(task), "outbound": "disabled", "note": "No email or SMS was sent; a human-review task was created."}
+        return {"task": clean(task), "duplicate": False, "outbound": "disabled", "note": "No email or SMS was sent; a human-review task was created."}
 
     @router.get("/field/check-ins")
     async def list_field_checkins(workspace_id: Optional[str] = None, user=Depends(get_current_user)):
@@ -647,6 +744,8 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         rule = await db.safe_automation_rules.find_one({"id": rule_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
         if not rule:
             raise HTTPException(status_code=404, detail="Automation rule not found")
+        if not rule.get("enabled"):
+            raise HTTPException(status_code=409, detail="This automation rule is disabled")
         if not rule.get("workspace_id"):
             raise HTTPException(status_code=400, detail="Select a workspace before running a safe automation")
         await visible_workspace(user, rule["workspace_id"])
@@ -681,7 +780,10 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
 
     @router.get("/delivery/capacity")
     async def delivery_capacity(user=Depends(get_current_user)):
-        rows = await db.tasks.find({"tenant_id": user["tenant_id"], "status": {"$ne": "done"}}, {"_id": 0}).to_list(2000)
+        # Open means not finished in any way: a cancelled task is not work anyone carries.
+        rows = await db.tasks.find({"tenant_id": user["tenant_id"],
+                                    "status": {"$nin": ["done", "cancelled", "complete", "completed"]}},
+                                   {"_id": 0}).to_list(2000)
         people = {}
         now = datetime.now(timezone.utc)
         for task in rows:
@@ -715,8 +817,16 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
         existing = await db.playbook_applications.find_one({"tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id, "playbook_key": playbook_key}, {"_id": 0})
         if existing:
             return {"application": clean(existing), "duplicate": True}
-        app = {"id": new_id("play"), "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id, "playbook_key": playbook_key, "created_at": now_iso(), "created_by": user["email"]}
-        await db.playbook_applications.insert_one(app)
+        app = {"id": new_id("play"), "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id, "playbook_key": playbook_key,
+               "application_key": f"{inp.workspace_id}:{playbook_key}", "created_at": now_iso(), "created_by": user["email"]}
+        try:
+            # The unique index decides a race the read above cannot: eight concurrent
+            # applies used to create eight applications and three times as many tasks.
+            await db.playbook_applications.insert_one(dict(app))
+        except DuplicateKeyError:
+            winner = await db.playbook_applications.find_one(
+                {"tenant_id": user["tenant_id"], "application_key": app["application_key"]}, {"_id": 0})
+            return {"application": clean(winner or app), "duplicate": True}
         tasks = []
         for title in playbook["tasks"]:
             task = {"id": new_id("task"), "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id, "title": title,
