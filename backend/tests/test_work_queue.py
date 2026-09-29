@@ -435,3 +435,59 @@ def test_fairness_serves_the_longest_waiting_tenant_first(queue_env):
 
     claimed = run(queue_env.claim(worker_id="w1", queue="system", limit=1))
     assert [c["tenant_id"] for c in claimed] == ["ten_waiting"]
+
+
+# ------------------------------------------------------------ second review round
+
+def test_a_worker_that_dies_on_its_last_attempt_is_dead_lettered(queue_env):
+    """Recovery used to be refused as 'finishing anonymously', so the item stayed
+    `claimed` forever, holding its dedupe key so the work could never be queued again."""
+    item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job",
+                                 dedupe_key="job-1", max_attempts=1))
+    run(queue_env.claim(worker_id="died", queue="system", limit=1, lease_seconds=0))
+    recovery = run(queue_env.recover_expired_leases())
+    assert recovery["dead_lettered"] == 1
+    dead = run(queue_env.get(item["id"], tenant_id=TENANT))
+    assert dead["status"] == DEAD_LETTER and dead["active_dedupe_key"] is None
+    again = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job",
+                                  dedupe_key="job-1"))
+    assert again["id"] != item["id"], "the work must be queueable again"
+
+
+def test_recovery_works_through_the_oldest_expired_leases_first(queue_env):
+    ids = []
+    for n in range(3):
+        item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job",
+                                     idempotency_key=f"k{n}"))
+        ids.append(item["id"])
+    run(queue_env.claim(worker_id="w1", queue="system", limit=3, lease_seconds=0))
+    # The last item queued has been stuck longest.
+    for n, item_id in enumerate(ids):
+        run(queue_env.collection.update_one(
+            {"id": item_id}, {"$set": {"lease_expires_at": f"2001-01-0{3 - n}T00:00:00+00:00"}}))
+    run(queue_env.recover_expired_leases(limit=1))
+    statuses = [run(queue_env.get(i, tenant_id=TENANT))["status"] for i in ids]
+    assert statuses == [CLAIMED, CLAIMED, RETRY_SCHEDULED]
+
+
+def test_replaying_work_that_was_already_queued_again_is_refused(queue_env):
+    old = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job",
+                                dedupe_key="job-2"))
+    run(queue_env.claim(worker_id="w1", queue="system", limit=1))
+    run(queue_env.fail(old["id"], tenant_id=TENANT, reason="boom", retryable=False,
+                       worker_id="w1"))
+    newer = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job",
+                                  dedupe_key="job-2"))
+    assert newer["id"] != old["id"]
+    with pytest.raises(InvalidTransition, match="run it twice"):
+        run(queue_env.replay(old["id"], tenant_id=TENANT, actor="admin@example.com"))
+    assert run(queue_env.get(old["id"], tenant_id=TENANT))["status"] == DEAD_LETTER
+
+
+def test_an_operator_can_close_an_item_whose_worker_is_gone(queue_env):
+    item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="demo.job"))
+    run(queue_env.claim(worker_id="gone", queue="system", limit=1, lease_seconds=0))
+    resolved = run(queue_env.resolve(item["id"], tenant_id=TENANT, actor="ops@example.com",
+                                     resolution="handled by hand"))
+    assert resolved["status"] == COMPLETED and resolved["lease_owner"] is None
+    assert resolved["history"][-1]["detail"]["lease_expired"] is True

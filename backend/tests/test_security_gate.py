@@ -72,6 +72,15 @@ def _completed_scans(kind):
             for s in gate.required_scanners(kind)]
 
 
+def _scanned(db_env, component_id, gate_name, scans):
+    """What the server's scanner client records after running a scan. Results typed into
+    `record_gate` are notes and never count; these do."""
+    for scan in scans:
+        run(gate.record_service_scan(db_env, tenant_id=TENANT, component_id=component_id,
+                                     gate=gate_name, scanner=scan["scanner"],
+                                     status=scan["status"]))
+
+
 # ------------------------------------------------------------ registration
 
 def test_registration_alone_grants_nothing(db_env):
@@ -211,6 +220,7 @@ def _approve(db_env, kind=gate.KIND_SKILL, version="1.0.0", decision=gate.APPROV
     run(gate.record_gate(db_env, tenant_id=TENANT, component_id=component["id"], gate="gate_b",
                          checks=_pass_checks(gate.GATE_B_CHECKS), reviewer="admin@example.com",
                          scanner_results=scans))
+    _scanned(db_env, component["id"], "gate_b", scans)
     return run(gate.decide(db_env, tenant_id=TENANT, component_id=component["id"],
                            decision=decision, actor="admin@example.com",
                            rationale="Both gates passed with completed scans"))
@@ -291,6 +301,7 @@ def test_rejected_component_cannot_jump_straight_to_approved(db_env, scanners_co
     run(gate.record_gate(db_env, tenant_id=TENANT, component_id=component["id"], gate="gate_b",
                          checks=_pass_checks(gate.GATE_B_CHECKS), reviewer="admin@example.com",
                          scanner_results=scans))
+    _scanned(db_env, component["id"], "gate_b", scans)
     run(gate.decide(db_env, tenant_id=TENANT, component_id=component["id"],
                     decision=gate.REJECTED, actor="admin@example.com", rationale="policy"))
     with pytest.raises(gate.InvalidGateTransition):
@@ -321,4 +332,74 @@ def test_eligibility_explains_every_blocking_reason(db_env, monkeypatch):
 def test_history_records_every_action(db_env, scanners_configured):
     approved = _approve(db_env)
     actions = [h["action"] for h in approved["history"]]
-    assert actions == ["registered", "gate_a_recorded", "gate_b_recorded", "decision"]
+    scans = ["gate_b_scanned"] * len(_completed_scans(gate.KIND_SKILL))
+    assert actions == ["registered", "gate_a_recorded", "gate_b_recorded", *scans, "decision"]
+
+
+# ------------------------------------------------------------ second review round
+
+def test_scans_typed_into_the_api_are_notes_not_scans(db_env, scanners_configured):
+    """Any visitor can register and become a tenant admin, so a result the caller
+    reports is only what the caller says it is."""
+    component = _register(db_env)
+    scans = _completed_scans(gate.KIND_SKILL)
+    for name, checks in (("gate_a", gate.GATE_A_CHECKS), ("gate_b", gate.GATE_B_CHECKS)):
+        run(gate.record_gate(db_env, tenant_id=TENANT, component_id=component["id"],
+                             gate=name, checks=_pass_checks(checks),
+                             reviewer="admin@example.com", scanner_results=scans))
+    recorded = run(gate.get_component(db_env, tenant_id=TENANT, component_id=component["id"]))
+    assert {r["source"] for r in recorded["gate_b"]["scanner_results"]} == {
+        gate.REVIEWER_SUPPLIED}
+    assert gate.eligibility(recorded)["eligible"] is False
+    with pytest.raises(gate.SecurityGateError, match="notes, not scans"):
+        run(gate.decide(db_env, tenant_id=TENANT, component_id=component["id"],
+                        decision=gate.APPROVED, actor="admin@example.com", rationale="trust me"))
+
+
+def test_a_gate_change_during_a_decision_defeats_the_approval(db_env, scanners_configured,
+                                                              monkeypatch):
+    """Eligibility is judged on a read; the approval must not overwrite a change (a
+    failing re-scan, say) that lands between that read and the write."""
+    from pymongo import MongoClient
+
+    component = _register(db_env)
+    scans = _completed_scans(gate.KIND_SKILL)
+    for name, checks in (("gate_a", gate.GATE_A_CHECKS), ("gate_b", gate.GATE_B_CHECKS)):
+        run(gate.record_gate(db_env, tenant_id=TENANT, component_id=component["id"],
+                             gate=name, checks=_pass_checks(checks),
+                             reviewer="admin@example.com"))
+    _scanned(db_env, component["id"], "gate_b", scans)
+    judged = gate.eligibility
+    sync = MongoClient(MONGO_URL)
+
+    def eligibility_then_concurrent_rescan(doc):
+        verdict = judged(doc)
+        sync[db_env.name][gate.COLLECTION].update_one(
+            {"id": component["id"]},
+            {"$set": {"gate_b.status": "failed", "updated_at": "2099-01-01T00:00:00+00:00"}})
+        return verdict
+
+    monkeypatch.setattr(gate, "eligibility", eligibility_then_concurrent_rescan)
+    try:
+        with pytest.raises(gate.InvalidGateTransition):
+            run(gate.decide(db_env, tenant_id=TENANT, component_id=component["id"],
+                            decision=gate.APPROVED, actor="admin@example.com",
+                            rationale="raced"))
+        after = sync[db_env.name][gate.COLLECTION].find_one({"id": component["id"]})
+    finally:
+        sync.close()
+    assert after["state"] != gate.APPROVED
+
+
+def test_an_external_tool_must_name_the_digest_it_was_reviewed_at(db_env,
+                                                                  scanners_configured):
+    approved = _approve(db_env)
+    with pytest.raises(gate.SecurityGateError, match="digest"):
+        run(gate.assert_executable(db_env, tenant_id=TENANT,
+                                   source_url=approved["source_url"],
+                                   version=approved["version"], require_digest=True))
+    ok = run(gate.assert_executable(db_env, tenant_id=TENANT,
+                                    source_url=approved["source_url"],
+                                    version=approved["version"], digest="sha256:abc",
+                                    require_digest=True))
+    assert ok["id"] == approved["id"]

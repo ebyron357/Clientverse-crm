@@ -411,10 +411,12 @@ class WorkQueue:
         """
         now = _now()
         recovered, dead_lettered = 0, 0
+        # Oldest expiry first, so a backlog of expired leases is worked through in order
+        # rather than the same first page being re-read on every tick.
         cursor = self.collection.find(
             {"status": {"$in": [CLAIMED, PROCESSING]}, "lease_expires_at": {"$lt": _iso(now)}},
             {"_id": 0},
-        ).limit(limit)
+        ).sort("lease_expires_at", 1).limit(limit)
         for doc in await cursor.to_list(limit):
             attempts = int(doc.get("attempts", 0))
             max_attempts = int(doc.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
@@ -425,10 +427,17 @@ class WorkQueue:
             # under itself.
             still_expired = {"lease_owner": doc.get("lease_owner"),
                              "lease_expires_at": {"$lt": _iso(_now())}}
+            # Recovery acts for the dead worker, so it names that worker as the lease
+            # holder. Without it the terminal move below was refused as "finished
+            # anonymously" on every tick, and a job whose worker died on its last attempt
+            # stayed `processing` forever -- unresolvable, unreplayable, holding its
+            # dedupe key so the work could never be queued again.
+            owner = doc.get("lease_owner")
             try:
                 if attempts >= max_attempts:
                     await self._transition(
                         doc["id"], doc["tenant_id"], DEAD_LETTER, actor=actor,
+                        expect_owner=owner,
                         extra={"last_error": reason, "failure_reason": reason,
                                "lease_owner": None, "lease_expires_at": None,
                                "active_dedupe_key": None},
@@ -440,6 +449,7 @@ class WorkQueue:
                     delay = backoff_seconds(attempts)
                     await self._transition(
                         doc["id"], doc["tenant_id"], RETRY_SCHEDULED, actor=actor,
+                        expect_owner=owner,
                         extra={"last_error": reason, "lease_owner": None, "lease_expires_at": None,
                                "available_at": _iso(now + timedelta(seconds=delay))},
                         detail={"attempts": attempts, "retry_in_seconds": delay},
@@ -459,13 +469,22 @@ class WorkQueue:
             raise WorkQueueError("Work item not found")
         if current.get("status") not in (FAILED, DEAD_LETTER):
             raise InvalidTransition("Only failed or dead-lettered work can be replayed")
-        return await self._transition(
-            item_id, tenant_id, QUEUED, actor=actor,
-            extra={"attempts": 0, "available_at": _iso(_now()), "lease_owner": None,
-                   "lease_expires_at": None, "last_error": None,
-                   "active_dedupe_key": current.get("dedupe_key")},
-            detail={"replayed_from": current.get("status")},
-        )
+        try:
+            return await self._transition(
+                item_id, tenant_id, QUEUED, actor=actor,
+                extra={"attempts": 0, "available_at": _iso(_now()), "lease_owner": None,
+                       "lease_expires_at": None, "last_error": None,
+                       "active_dedupe_key": current.get("dedupe_key")},
+                detail={"replayed_from": current.get("status")},
+            )
+        except Exception as exc:
+            if getattr(exc, "code", None) == 11000 or "E11000" in str(exc):
+                # A newer open item already carries this work (the sweep re-queued it
+                # after this one died). Replaying would run it twice.
+                raise InvalidTransition(
+                    "This work is already queued again as a newer item; replaying this "
+                    "one would run it twice") from exc
+            raise
 
     # --------------------------------------------------------- operator view
 
@@ -487,14 +506,18 @@ class WorkQueue:
         current = await self.collection.find_one({"id": item_id, "tenant_id": tenant_id}, {"_id": 0})
         if not current:
             raise WorkQueueError("Work item not found")
+        lease_expired = False
         if current.get("status") in (CLAIMED, PROCESSING) and current.get("lease_owner"):
-            # A worker holds this item right now. Completing it here would make that
-            # worker's own completion fail, so the operator is told to wait rather than
-            # silently creating a race.
-            raise InvalidTransition(
-                "This item is being processed by a worker right now; resolve it once the "
-                "current attempt finishes"
-            )
+            expires = current.get("lease_expires_at")
+            lease_expired = bool(expires) and expires < _iso(_now())
+            if not lease_expired:
+                # A worker holds this item right now. Completing it here would make that
+                # worker's own completion fail, so the operator is told to wait rather
+                # than silently creating a race.
+                raise InvalidTransition(
+                    "This item is being processed by a worker right now; resolve it once "
+                    "the current attempt finishes"
+                )
         now = _iso(_now())
         extra = {"resolved_at": now, "resolved_by": actor, "resolution": resolution,
                  "lease_owner": None, "lease_expires_at": None, "active_dedupe_key": None}
@@ -506,6 +529,16 @@ class WorkQueue:
                 projection={"_id": 0}, return_document=True,
             )
             return doc
+        if lease_expired:
+            # The worker is gone; its lease lapsed. The operator may close the item on
+            # its behalf, but only while the lease is still the expired one they saw.
+            return await self._transition(
+                item_id, tenant_id, COMPLETED, actor=actor,
+                extra={**extra, "completed_at": now},
+                detail={"resolution": resolution, "lease_expired": True},
+                action="resolved", expect_owner=current["lease_owner"],
+                extra_criteria={"lease_expires_at": current.get("lease_expires_at")},
+            )
         return await self._transition(
             item_id, tenant_id, COMPLETED, actor=actor,
             extra={**extra, "completed_at": now},

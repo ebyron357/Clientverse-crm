@@ -1665,6 +1665,22 @@ async def execute_pending_mcp(pending_id, user):
         return {"status": "skipped"}
     inv_id = p["invocation_id"]
     tool = MCP_TOOLS.get(p["tool"])
+    if tool and tool.get("external"):
+        # The gate is re-checked at execution, not only when the write was requested: a
+        # component revoked, re-scanned or expired while this waited for approval must
+        # not run on the strength of the earlier check.
+        try:
+            await security_gate_service.assert_executable(
+                db, tenant_id=user["tenant_id"], source_url=tool.get("source_url"),
+                version=tool.get("version"), digest=tool.get("digest"),
+                require_digest=True)
+        except security_gate_service.SecurityGateError as exc:
+            await db.mcp_pending_actions.update_one(
+                {"id": pending_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": "blocked"}})
+            await db.mcp_tool_invocations.update_one(
+                {"id": inv_id, "tenant_id": user["tenant_id"]},
+                {"$set": {"status": "blocked", "error": str(exc)}})
+            return {"status": "blocked", "error": str(exc)}
     start = time.perf_counter()
     try:
         result = await asyncio.wait_for(TOOL_IMPL_L2[p["tool"]](user, p["args"]), timeout=tool["timeout_seconds"])
@@ -1753,7 +1769,8 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
         try:
             await security_gate_service.assert_executable(
                 db, tenant_id=tenant, source_url=tool.get("source_url", ""),
-                version=tool.get("version", ""), digest=tool.get("digest"))
+                version=tool.get("version", ""), digest=tool.get("digest"),
+                require_digest=True)
         except security_gate_service.SecurityGateError as exc:
             await fail(403, f"Security gate: {exc}", tool["level"])
 

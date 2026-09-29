@@ -151,6 +151,12 @@ def _parse(value) -> Optional[datetime]:
     return None
 
 
+# Where a scanner result came from. Only the server's own scanner client may produce
+# SCANNER_SERVICE results; none is implemented yet, so the gate cannot pass until one is.
+SCANNER_SERVICE = "scanner_service"
+REVIEWER_SUPPLIED = "reviewer_supplied"
+
+
 def required_scanners(kind: str) -> list[str]:
     """Gate 1 is always NVIDIA; Gate 2 routes by kind. A component that is both a
     skill and an MCP surface is scanned by both Cisco scanners."""
@@ -308,7 +314,13 @@ async def record_gate(db, *, tenant_id: str, component_id: str, gate: str, check
         "completed_at": now if status != "incomplete" else None,
         "reviewer": reviewer,
         "checks": merged,
-        "scanner_results": scanner_results or current.get("scanner_results", []),
+        # Kept as the reviewer's notes, never as scans. A result typed into this API is
+        # whatever its caller says it is, and any visitor can register and become a
+        # tenant admin; only a result fetched by the server from the scanner itself
+        # (`source: scanner_service`) can satisfy the gate.
+        "scanner_results": ([{**dict(result), "source": REVIEWER_SUPPLIED}
+                             for result in scanner_results if isinstance(result, dict)]
+                            if scanner_results else current.get("scanner_results", [])),
         "findings": findings if findings is not None else current.get("findings", []),
     }
     updates = {gate: gate_doc, "updated_at": now}
@@ -333,6 +345,38 @@ async def record_gate(db, *, tenant_id: str, component_id: str, gate: str, check
     return doc
 
 
+async def record_service_scan(db, *, tenant_id: str, component_id: str, gate: str,
+                              scanner: str, status: str,
+                              findings: Optional[list] = None) -> dict:
+    """Record a result the server fetched from a scanner itself.
+
+    The only way a scan can count toward approval. It is deliberately not reachable from
+    the API: it is the seam a server-side scanner client (for the endpoints configured in
+    `SECURITY_GATE_*_URL`) calls once it has run the scan and read the verdict. A new
+    result on an approved component re-opens review, as a re-run gate does.
+    """
+    if gate not in ("gate_a", "gate_b"):
+        raise SecurityGateError("gate must be 'gate_a' or 'gate_b'")
+    component = await db[COLLECTION].find_one({"tenant_id": tenant_id, "id": component_id},
+                                              {"_id": 0})
+    if not component:
+        raise SecurityGateError("Component not found")
+    now = _iso(_now())
+    result = {"scanner": scanner, "status": status, "findings": findings or [],
+              "source": SCANNER_SERVICE, "at": now}
+    updates: dict[str, Any] = {"updated_at": now}
+    if component.get("state") in EXECUTABLE_STATES:
+        updates.update({"state": UNDER_REVIEW, "decision": None, "expires_at": None})
+    doc = await db[COLLECTION].find_one_and_update(
+        {"tenant_id": tenant_id, "id": component_id},
+        {"$set": updates,
+         "$push": {f"{gate}.scanner_results": result,
+                   "history": {"action": f"{gate}_scanned", "actor": f"scanner:{scanner}",
+                               "at": now, "detail": {"status": status}}}},
+        projection={"_id": 0}, return_document=True)
+    return doc
+
+
 def eligibility(component: dict) -> dict:
     """Can this component be approved right now? Explains every blocking reason."""
     reasons: list[str] = []
@@ -346,11 +390,12 @@ def eligibility(component: dict) -> dict:
     readiness = scanner_readiness(component.get("kind", KIND_SKILL))
     ran = {r.get("scanner") for gate in ("gate_a", "gate_b")
            for r in ((component.get(gate) or {}).get("scanner_results") or [])
-           if r.get("status") == "completed"}
+           if r.get("status") == "completed" and r.get("source") == SCANNER_SERVICE}
     missing_scans = [s for s in readiness["required"] if s not in ran]
     if missing_scans:
-        reasons.append("Required scanners have not produced a completed result: "
-                       + ", ".join(missing_scans))
+        reasons.append("Required scanners have not produced a completed result fetched by "
+                       "the server from the scanner itself (results entered through the "
+                       "API are notes, not scans): " + ", ".join(missing_scans))
     unconfigured = [s["scanner"] for s in readiness["statuses"] if not s["configured"]]
     if unconfigured:
         reasons.append("Scanner endpoints are not configured: " + ", ".join(unconfigured))
@@ -404,19 +449,36 @@ async def decide(db, *, tenant_id: str, component_id: str, decision: str, actor:
     updates["expires_at"] = (_iso(now + timedelta(days=max(1, int(expires_in_days))))
                              if decision in EXECUTABLE_STATES else None)
 
-    return await db[COLLECTION].find_one_and_update(
-        {"tenant_id": tenant_id, "id": component_id},
+    # Conditional on exactly what eligibility was judged against. A gate re-run landing
+    # between the read and this write (a failing re-scan, say) must defeat the approval
+    # rather than be overwritten by it.
+    decided = await db[COLLECTION].find_one_and_update(
+        {"tenant_id": tenant_id, "id": component_id, "state": current_state,
+         "updated_at": component.get("updated_at")},
         {"$set": updates,
          "$push": {"history": {"action": "decision", "actor": actor, "at": _iso(now),
                                "detail": {"decision": decision, "rationale": rationale}}}},
         projection={"_id": 0},
         return_document=True,
     )
+    if not decided:
+        raise InvalidGateTransition(
+            "The component changed while this decision was being made; review it again")
+    return decided
 
 
 async def assert_executable(db, *, tenant_id: str, source_url: str, version: str,
-                            digest: Optional[str] = None) -> dict:
-    """Enforcement hook: raise unless this exact source, version and digest are trusted."""
+                            digest: Optional[str] = None,
+                            require_digest: bool = False) -> dict:
+    """Enforcement hook: raise unless this exact source, version and digest are trusted.
+
+    With `require_digest`, a caller that names no digest is refused: without one the
+    approval is not tied to the exact bytes that were reviewed.
+    """
+    if require_digest and not digest:
+        raise SecurityGateError(
+            "An external component must name the digest it was reviewed at before it can "
+            "execute")
     component = await db[COLLECTION].find_one(
         {"tenant_id": tenant_id, "source_url": source_url, "version": version}, {"_id": 0}
     )
