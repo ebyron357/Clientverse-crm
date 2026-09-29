@@ -3121,6 +3121,17 @@ async def proof_portfolio(user=Depends(get_current_user)):
     return await recovery_proof.portfolio(db, user["tenant_id"])
 
 
+@api.get("/proof/breakdown")
+async def proof_breakdown(by: str = "lane", period: str = "month",
+                          user=Depends(get_current_user)):
+    """Recovered, unattributed, open and ended-without-recovery value by lane, source or
+    period. Currencies are never summed; potential is never presented as revenue."""
+    try:
+        return await recovery_proof.breakdown(db, user["tenant_id"], by=by, period=period)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @api.get("/proof/traceability")
 async def proof_traceability(user=Depends(get_current_user)):
     """Where each figure on the portfolio view comes from."""

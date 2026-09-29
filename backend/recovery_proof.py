@@ -31,8 +31,10 @@ anything.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
+import approval_queue
 import attribution
 import conversations as conversation_service
 import recovery_case as recovery_case_service
@@ -61,9 +63,13 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
     if not case:
         return None
 
-    strategy = await db[recovery_strategy_service.COLLECTION].find_one(
-        {"tenant_id": tenant_id, "recovery_case_id": case_id}, {"_id": 0},
-        sort=[("created_at", -1)])
+    # The case names its plan. Strategies do not carry the case id, so looking one up by
+    # `recovery_case_id` found nothing and every case proof showed no plan and no steps.
+    strategy = None
+    if case.get("plan_reference"):
+        strategy = await db[recovery_strategy_service.COLLECTION].find_one(
+            {"tenant_id": tenant_id, "id": case["plan_reference"]},
+            {"_id": 0, "active_candidate_key": 0})
 
     conversations = await db[conversation_service.CONVERSATIONS].find(
         {"tenant_id": tenant_id, "recovery_case_id": case_id}, {"_id": 0}).to_list(50)
@@ -214,8 +220,13 @@ async def portfolio(db: Any, tenant_id: str) -> dict:
         replies = await db[conversation_service.MESSAGES].count_documents(
             {**scope, "direction": conversation_service.INBOUND})
 
+    # Open means `requested` in the approval queue's vocabulary. This counted status
+    # "pending", which the queue never writes, so the figure was always zero. Lapsed
+    # requests are closed first, as on every other read path, so an expired request is
+    # not reported as waiting on a decision.
+    await approval_queue.expire_due(db, tenant_id=tenant_id)
     awaiting_approval = await db[APPROVALS].count_documents(
-        {"tenant_id": tenant_id, "status": "pending"})
+        {"tenant_id": tenant_id, "status": {"$in": list(approval_queue.OPEN_STATUSES)}})
 
     attribution_totals = await attribution.totals(db, tenant_id)
     timing = await attribution.time_to_recovery(db, tenant_id)
@@ -291,7 +302,8 @@ async def traceability(db: Any, tenant_id: str) -> dict:
         "cases.detected": f"{recovery_case_service.COLLECTION} where tenant_id matches",
         "cases.worked": (f"{recovery_case_service.COLLECTION} in any state past "
                          f"'{recovery_case_service.DETECTED}'"),
-        "approvals.pending": f"{APPROVALS} where status = 'pending'",
+        "approvals.pending": (f"{APPROVALS} where status in "
+                              f"{list(approval_queue.OPEN_STATUSES)} (lapsed requests closed first)"),
         "messages.drafted": (f"{conversation_service.MESSAGES} where direction = "
                              f"'{conversation_service.OUTBOUND}' on a conversation "
                              "linked to a recovery case"),
@@ -310,4 +322,155 @@ async def traceability(db: Any, tenant_id: str) -> dict:
         "time_to_recovery": (
             "days between a case's detection and the outcome date on its attributed "
             f"{attribution.COLLECTION} entry, over entries carrying both dates"),
+        **breakdown_traceability(),
+    }
+
+
+# ------------------------------------------------------------------ breakdown
+
+BREAKDOWN_DIMENSIONS = ("lane", "source", "period")
+PERIODS = ("month", "week")
+UNPLANNED_LANE = "unplanned"
+
+# Which date places each figure in a period. Stated with the result, because a period
+# view that mixes a case's detection date with its outcome's date without saying so is
+# comparing two different calendars.
+PERIOD_BASIS = {
+    "cases": "the date the case was detected (created)",
+    "attributed_recovered_value_by_currency": "the outcome's own date",
+    "unattributed_outcome_value_by_currency": "the outcome's own date",
+    "open_potential_value_by_currency": "the date the case was detected",
+    "ended_without_recovery_potential_by_currency": "the date the case last changed",
+}
+
+
+def _period_key(value: Optional[str], period: str) -> str:
+    if not value:
+        return "undated"
+    try:
+        moment = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return "undated"
+    moment = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    moment = moment.astimezone(timezone.utc)
+    if period == "week":
+        year, week, _ = moment.isocalendar()
+        return f"{year}-W{week:02d}"
+    return f"{moment.year}-{moment.month:02d}"
+
+
+def _add(bucket: dict, currency: str, amount: float) -> None:
+    bucket[currency] = round(bucket.get(currency, 0.0) + float(amount), 2)
+
+
+async def breakdown(db: Any, tenant_id: str, *, by: str = "lane",
+                    period: str = "month") -> dict:
+    """Recovered, unattributed, open and ended-without-recovery value, split by the
+    recovery lane that planned it, the source that detected it, or the period it fell in.
+
+    The same rules as the portfolio: potential and confirmed are separate figures, and
+    nothing is summed across currencies. "Ended without recovery" is the *potential* of
+    cases that closed or failed with no confirmed value -- an estimate of what was at
+    stake, not a claim about revenue lost.
+    """
+    if by not in BREAKDOWN_DIMENSIONS:
+        raise ValueError(f"by must be one of {BREAKDOWN_DIMENSIONS}")
+    if period not in PERIODS:
+        raise ValueError(f"period must be one of {PERIODS}")
+
+    cases = await db[recovery_case_service.COLLECTION].find(
+        {"tenant_id": tenant_id},
+        {"_id": 0, "id": 1, "source": 1, "state": 1, "potential_value": 1, "currency": 1,
+         "plan_reference": 1, "confirmed_value": 1, "created_at": 1,
+         "updated_at": 1}).to_list(20000)
+    plan_ids = [case["plan_reference"] for case in cases if case.get("plan_reference")]
+    lanes: dict[str, str] = {}
+    if plan_ids:
+        async for strategy in db[recovery_strategy_service.COLLECTION].find(
+                {"tenant_id": tenant_id, "id": {"$in": plan_ids}}, {"_id": 0, "id": 1,
+                                                                     "lane": 1}):
+            lanes[strategy["id"]] = strategy.get("lane") or UNPLANNED_LANE
+    by_case = {case["id"]: case for case in cases}
+
+    def case_key(case: dict, date_field: str = "created_at") -> str:
+        if by == "lane":
+            return lanes.get(case.get("plan_reference") or "", UNPLANNED_LANE)
+        if by == "source":
+            return case.get("source") or "unknown"
+        return _period_key(case.get(date_field), period)
+
+    rows: dict[str, dict] = {}
+
+    def row(key: str) -> dict:
+        return rows.setdefault(key, {
+            "key": key, "cases": 0, "recovered_cases": 0,
+            "attributed_entries": 0, "unattributed_entries": 0,
+            "attributed_recovered_value_by_currency": {},
+            "unattributed_outcome_value_by_currency": {},
+            "open_potential_value_by_currency": {},
+            "ended_without_recovery_potential_by_currency": {},
+        })
+
+    for case in cases:
+        currency = case.get("currency") or recovery_case_service.DEFAULT_CURRENCY
+        target = row(case_key(case))
+        target["cases"] += 1
+        state = case.get("state")
+        if state == recovery_case_service.RECOVERED:
+            target["recovered_cases"] += 1
+        potential = case.get("potential_value")
+        if not isinstance(potential, (int, float)):
+            continue
+        if state in recovery_case_service.OPEN_STATES:
+            _add(target["open_potential_value_by_currency"], currency, potential)
+        elif state in (recovery_case_service.CLOSED, recovery_case_service.FAILED) and \
+                case.get("confirmed_value") is None:
+            ended = row(case_key(case, "updated_at"))
+            _add(ended["ended_without_recovery_potential_by_currency"], currency, potential)
+
+    entries = await db[attribution.COLLECTION].find(
+        {"tenant_id": tenant_id}, {"_id": 0}).to_list(10000)
+    for entry in entries:
+        case = by_case.get(entry.get("case_id")) or {}
+        outcome = entry.get("outcome") or {}
+        if by == "period":
+            key = _period_key(outcome.get("occurred_at"), period)
+        else:
+            key = case_key(case) if case else "unknown"
+        target = row(key)
+        currency = entry.get("currency") or recovery_case_service.DEFAULT_CURRENCY
+        amount = float(outcome.get("amount") or 0)
+        if entry.get("claim") == attribution.CLAIM_ATTRIBUTED:
+            target["attributed_entries"] += 1
+            _add(target["attributed_recovered_value_by_currency"], currency, amount)
+        else:
+            target["unattributed_entries"] += 1
+            _add(target["unattributed_outcome_value_by_currency"], currency, amount)
+
+    return {
+        "tenant_id": tenant_id,
+        "by": by,
+        "period": period if by == "period" else None,
+        "period_basis": PERIOD_BASIS if by == "period" else None,
+        "rows": [rows[key] for key in sorted(rows)],
+        "note": ("Attributed recovered value is money a record says arrived where outreach "
+                 "demonstrably reached the client. Open and ended-without-recovery figures "
+                 "are potential -- estimates of what was at stake -- and are never revenue. "
+                 "No figure is summed across currencies."),
+    }
+
+
+def breakdown_traceability() -> dict:
+    return {
+        "breakdown.lane": (f"a case's lane is the lane of the {recovery_strategy_service.COLLECTION} "
+                           "record its plan_reference names; cases with no plan are 'unplanned'"),
+        "breakdown.source": f"{recovery_case_service.COLLECTION}.source",
+        "breakdown.attributed_recovered_value_by_currency": (
+            f"sum of outcome.amount over {attribution.COLLECTION} where claim = "
+            f"'{attribution.CLAIM_ATTRIBUTED}', grouped by the entry's case and currency"),
+        "breakdown.open_potential_value_by_currency": (
+            f"sum of potential_value over {recovery_case_service.COLLECTION} in an open state"),
+        "breakdown.ended_without_recovery_potential_by_currency": (
+            f"sum of potential_value over {recovery_case_service.COLLECTION} closed or "
+            "failed with no confirmed value"),
     }

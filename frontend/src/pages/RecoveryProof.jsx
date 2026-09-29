@@ -167,6 +167,92 @@ function CaseProof({ caseId, onBack }) {
   );
 }
 
+const BREAKDOWN_VIEWS = [
+  { value: "lane", label: "By lane" },
+  { value: "source", label: "By source" },
+  { value: "period", label: "By month" },
+];
+
+function MoneyCell({ byCurrency, tone = "text-gray-700" }) {
+  const entries = Object.entries(byCurrency || {});
+  if (!entries.length) return <span className="text-gray-300">—</span>;
+  return (
+    <div className={`space-y-0.5 ${tone}`}>
+      {entries.map(([currency, amount]) => <div key={currency}>{money(amount, currency)}</div>)}
+    </div>
+  );
+}
+
+function Breakdown() {
+  const [view, setView] = useState("lane");
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(() => {
+    setError("");
+    setData(null);
+    api.get("/proof/breakdown", { params: { by: view, period: "month" } })
+      .then(({ data: result }) => setData(result))
+      .catch((e) => setError(e.response?.data?.detail || "The breakdown could not be loaded."));
+  }, [view]);
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="mt-6 rounded-xl border border-gray-200 bg-white shadow-sm" data-testid="proof-breakdown">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-6 py-4">
+        <h2 className="font-display text-lg font-bold text-[#0a1628]">Breakdown</h2>
+        <div className="flex gap-1.5" role="group" aria-label="Breakdown view">
+          {BREAKDOWN_VIEWS.map((option) => (
+            <Button key={option.value} size="sm" variant={view === option.value ? "default" : "outline"}
+                    className="h-7 text-xs" onClick={() => setView(option.value)}
+                    data-testid={`breakdown-${option.value}`}>{option.label}</Button>
+          ))}
+        </div>
+      </div>
+      {error ? (
+        <div className="p-5"><SurfaceError title="Breakdown unavailable" description={String(error)} onRetry={load} testid="breakdown-error" /></div>
+      ) : !data ? (
+        <div className="p-5"><SurfaceLoading rows={1} testid="breakdown-loading" /></div>
+      ) : data.rows.length === 0 ? (
+        <div className="p-5 text-sm text-gray-500">No cases yet.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="text-[11px] uppercase tracking-[0.06em] text-gray-400">
+              <tr>
+                <th className="px-6 py-2 font-semibold">{view === "period" ? "Month" : view === "source" ? "Source" : "Lane"}</th>
+                <th className="px-3 py-2 font-semibold">Cases</th>
+                <th className="px-3 py-2 font-semibold">Recovered</th>
+                <th className="px-3 py-2 font-semibold">Attributed recovered</th>
+                <th className="px-3 py-2 font-semibold">Unattributed outcomes</th>
+                <th className="px-3 py-2 font-semibold">Open potential</th>
+                <th className="px-3 py-2 font-semibold">Ended without recovery (potential)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {data.rows.map((row) => (
+                <tr key={row.key} data-testid={`breakdown-row-${row.key}`}>
+                  <td className="px-6 py-2.5 font-semibold text-[#0a1628]">{row.key.replace(/_/g, " ")}</td>
+                  <td className="px-3 py-2.5 text-gray-600">{row.cases}</td>
+                  <td className="px-3 py-2.5 text-gray-600">{row.recovered_cases}</td>
+                  <td className="px-3 py-2.5 font-semibold"><MoneyCell byCurrency={row.attributed_recovered_value_by_currency} tone="text-emerald-700" /></td>
+                  <td className="px-3 py-2.5"><MoneyCell byCurrency={row.unattributed_outcome_value_by_currency} /></td>
+                  <td className="px-3 py-2.5"><MoneyCell byCurrency={row.open_potential_value_by_currency} tone="text-slate-500" /></td>
+                  <td className="px-3 py-2.5"><MoneyCell byCurrency={row.ended_without_recovery_potential_by_currency} tone="text-slate-500" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="border-t border-gray-100 px-6 py-3 text-[11px] leading-5 text-gray-500">
+        {data?.note}
+        {view === "period" ? " Cases and potential are placed by the date the case was detected; recovered and unattributed revenue by the outcome's own date." : ""}
+      </p>
+    </div>
+  );
+}
+
 export default function RecoveryProof() {
   const [report, setReport] = useState(null);
   const [cases, setCases] = useState(null);
@@ -240,6 +326,8 @@ export default function RecoveryProof() {
               note={report.time_to_recovery.measured_entries ? `over ${report.time_to_recovery.measured_entries} recovered case(s)` : "Not measurable yet"}
             />
           </div>
+
+          <Breakdown />
 
           <div className="mt-6 rounded-xl border border-gray-200 bg-white shadow-sm">
             <h2 className="font-display border-b border-gray-100 px-6 py-4 text-lg font-bold text-[#0a1628]">Cases</h2>

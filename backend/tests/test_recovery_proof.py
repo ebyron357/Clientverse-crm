@@ -270,3 +270,125 @@ def test_every_portfolio_figure_names_where_it_comes_from(db):
         assert section in report
         if field:
             assert field in report[section]
+
+
+# ------------------------------------------------------------- the plan and approvals
+
+def test_case_proof_shows_the_plan_the_case_names(db):
+    """Strategies do not carry the case id; the case names its plan. Looking the plan up
+    by case id found nothing, so every case proof showed no plan and no steps."""
+    import approval_queue as aq
+    import recovery_strategy as rs
+
+    run(rs.ensure_indexes(db))
+    run(aq.ensure_indexes(db))
+    case = make_case(db)
+    strategy = run(rs.compose_for_case(db, TENANT, case))
+    proof = run(recovery_proof.case_proof(db, TENANT, case["id"]))
+    assert proof["strategy"] and proof["strategy"]["id"] == strategy["id"]
+    assert proof["actions_taken"]["steps"], "the plan's steps must be visible"
+    assert "active_candidate_key" not in proof["strategy"]
+
+
+def test_pending_approvals_are_counted_in_the_queues_own_vocabulary(db):
+    """The portfolio counted status 'pending', which the queue never writes."""
+    import approval_queue as aq
+
+    run(aq.ensure_indexes(db))
+    live = run(aq.request(db, tenant_id=TENANT, title="Send renewal note",
+                          kind="external_effect", actor="agent:composer"))
+    lapsed = run(aq.request(db, tenant_id=TENANT, title="Old request",
+                            kind="external_effect", actor="agent:composer"))
+    run(db[aq.COLLECTION].update_one({"id": lapsed["id"]},
+                                     {"$set": {"expires_at": iso(1)}}))
+    run(aq.request(db, tenant_id=OTHER_TENANT, title="Other tenant",
+                   kind="external_effect", actor="agent:composer"))
+    report = run(recovery_proof.portfolio(db, TENANT))
+    assert live["status"] == aq.REQUESTED
+    assert report["approvals"]["pending"] == 1, "live only; lapsed and other tenants excluded"
+
+
+# --------------------------------------------------------------------- breakdown
+
+def _planned(db, case):
+    import recovery_strategy as rs
+    run(rs.ensure_indexes(db))
+    return run(rs.compose_for_case(db, TENANT, case))
+
+
+def test_breakdown_by_lane_keeps_recovered_open_and_ended_apart(db):
+    recovered = make_case(db, potential=4000.0)
+    open_case = make_case(db, potential=1500.0)
+    ended = make_case(db, potential=900.0)
+    plan = _planned(db, recovered)
+    _planned(db, open_case)
+    _planned(db, ended)
+    conversation = conversation_for(db, recovered)
+    message(db, conversation, direction=cv.OUTBOUND, status=cv.SENT, days_ago=10)
+    engage(db, recovered)
+    invoice = paid_invoice(db, total=4000.0)
+    run(attribution.record_outcome(db, tenant_id=TENANT, case_id=recovered["id"],
+                                   kind=attribution.OUTCOME_INVOICE_PAID,
+                                   record_id=invoice["id"], actor="ops@acme.test"))
+    run(rc.set_state(db, tenant_id=TENANT, case_id=ended["id"], state=rc.CLOSED))
+
+    result = run(recovery_proof.breakdown(db, TENANT, by="lane"))
+    assert result["by"] == "lane"
+    rows = {row["key"]: row for row in result["rows"]}
+    lane = rows[plan["lane"]]
+    assert lane["cases"] == 3 and lane["recovered_cases"] == 1
+    assert lane["attributed_recovered_value_by_currency"] == {"USD": 4000.0}
+    assert lane["open_potential_value_by_currency"] == {"USD": 1500.0}
+    assert lane["ended_without_recovery_potential_by_currency"] == {"USD": 900.0}
+    assert "total" not in lane, "no combined figure"
+
+
+def test_breakdown_never_sums_across_currencies(db):
+    make_case(db, potential=1000.0, currency="USD")
+    make_case(db, potential=2000.0, currency="GBP")
+    rows = run(recovery_proof.breakdown(db, TENANT, by="source"))["rows"]
+    assert len(rows) == 1
+    assert rows[0]["key"] == rc.SOURCE_DORMANT_DEAL
+    assert rows[0]["open_potential_value_by_currency"] == {"USD": 1000.0, "GBP": 2000.0}
+
+
+def test_an_unplanned_case_is_reported_as_unplanned(db):
+    make_case(db, potential=300.0)
+    rows = run(recovery_proof.breakdown(db, TENANT, by="lane"))["rows"]
+    assert [row["key"] for row in rows] == [recovery_proof.UNPLANNED_LANE]
+
+
+def test_breakdown_by_period_uses_the_outcome_date_for_revenue(db):
+    case = make_case(db, potential=4000.0)
+    conversation = conversation_for(db, case)
+    message(db, conversation, direction=cv.OUTBOUND, status=cv.SENT, days_ago=10)
+    engage(db, case)
+    invoice = paid_invoice(db, total=4000.0, days_ago=1)
+    run(attribution.record_outcome(db, tenant_id=TENANT, case_id=case["id"],
+                                   kind=attribution.OUTCOME_INVOICE_PAID,
+                                   record_id=invoice["id"], actor="ops@acme.test"))
+    result = run(recovery_proof.breakdown(db, TENANT, by="period", period="week"))
+    assert result["period_basis"]["attributed_recovered_value_by_currency"] == \
+        "the outcome's own date"
+    paid_week = recovery_proof._period_key(invoice["paid_at"], "week")
+    rows = {row["key"]: row for row in result["rows"]}
+    assert rows[paid_week]["attributed_recovered_value_by_currency"] == {"USD": 4000.0}
+    assert all(key == "undated" or "-W" in key for key in rows)
+
+
+def test_breakdown_is_tenant_scoped_and_validates_its_dimensions(db):
+    make_case(db, tenant_id=OTHER_TENANT, potential=999.0)
+    assert run(recovery_proof.breakdown(db, TENANT, by="source"))["rows"] == []
+    with pytest.raises(ValueError):
+        run(recovery_proof.breakdown(db, TENANT, by="salesperson"))
+    with pytest.raises(ValueError):
+        run(recovery_proof.breakdown(db, TENANT, by="period", period="decade"))
+
+
+def test_every_breakdown_figure_names_where_it_comes_from(db):
+    trace = run(recovery_proof.traceability(db, TENANT))
+    for key in ("breakdown.lane", "breakdown.source",
+                "breakdown.attributed_recovered_value_by_currency",
+                "breakdown.open_potential_value_by_currency",
+                "breakdown.ended_without_recovery_potential_by_currency"):
+        assert key in trace
