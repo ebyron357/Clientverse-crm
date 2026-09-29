@@ -442,6 +442,60 @@ async def release_plan(db, *, tenant_id: str, case_id: str,
     return _public(updated)
 
 
+class LinkConflict(RecoveryCaseError):
+    """The case already names a different record in that field."""
+
+
+async def link_crm_records(db, *, tenant_id: str, case_id: str, actor: str,
+                           audit: Optional[Callable[..., Awaitable[Any]]] = None,
+                           **references: Optional[str]) -> dict:
+    """Name the client a case is about, where detection could not.
+
+    A missed call or a web enquiry arrives as a number or an address. Linking the case to
+    the contact, company, deal or workspace it turned out to be lets the attribution
+    ledger check that an invoice or deal booked on the case belongs to that client.
+
+    A link can be added but never re-pointed: moving a case to a different client after
+    the fact would let any payment be made to "belong" to it. Each field is written only
+    while it is still empty, in the same update that checks it.
+    """
+    unknown = [field for field in references if field not in REFERENCE_COLLECTIONS]
+    if unknown:
+        raise RecoveryCaseError(f"Not a CRM reference: {', '.join(sorted(unknown))}")
+    wanted = {field: str(value).strip() for field, value in references.items()
+              if value is not None and str(value).strip()}
+    if not wanted:
+        raise RecoveryCaseError("Name at least one record to link")
+
+    case = await get_case(db, tenant_id, case_id)
+    if not case:
+        raise RecoveryCaseNotFound("Recovery case not found")
+    for field, value in wanted.items():
+        if case.get(field) and case[field] != value:
+            raise LinkConflict(
+                f"This case is already linked to {field} '{case[field]}'; a case is about "
+                "one client and its links are not re-pointed.")
+        await _assert_owned(db, tenant_id, field, value)
+
+    new = {field: value for field, value in wanted.items() if case.get(field) != value}
+    if not new:
+        return case
+    criteria: dict[str, Any] = {"id": case_id, "tenant_id": tenant_id}
+    for field in new:
+        criteria[field] = None
+    updated = await db[COLLECTION].find_one_and_update(
+        criteria,
+        {"$set": {**new, "updated_at": _iso(_now())},
+         "$push": {"history": _history("linked", actor, dict(new))}},
+        projection={"_id": 0}, return_document=True)
+    if not updated:
+        raise LinkConflict("The case's links changed while this was being saved; reload it")
+    if audit:
+        await audit("recovery_case.linked", "recovery_case", case_id, tenant_id, actor,
+                    workspace_id=updated.get("workspace_id"), payload=new)
+    return _public(updated)
+
+
 async def attach(db, *, tenant_id: str, case_id: str, actor: str = "system",
                  audit: Optional[Callable[..., Awaitable[Any]]] = None,
                  **references) -> dict:

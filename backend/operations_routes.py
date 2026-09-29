@@ -52,6 +52,13 @@ class ApprovalRequestInput(BaseModel):
     require_separate_approver: bool = False
 
 
+class CaseLinkInput(BaseModel):
+    contact_id: Optional[str] = Field(default=None, max_length=100)
+    company_id: Optional[str] = Field(default=None, max_length=100)
+    opportunity_id: Optional[str] = Field(default=None, max_length=100)
+    workspace_id: Optional[str] = Field(default=None, max_length=100)
+
+
 class FollowupPolicyInput(BaseModel):
     cadence_days: int = Field(ge=1, le=recovery_followup.MAX_CADENCE_DAYS)
     max_followups: int = Field(ge=0, le=recovery_followup.MAX_FOLLOWUPS_LIMIT)
@@ -551,6 +558,23 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
         if not case:
             raise HTTPException(status_code=404, detail="Recovery case not found")
         return case
+
+    @router.post("/recovery-cases/{case_id}/link")
+    async def link_recovery_case(case_id: str, inp: CaseLinkInput,
+                                 user=Depends(require_role("admin"))):
+        """Link a case to the contact, company, deal or workspace it is about."""
+        try:
+            return await recovery_case.link_crm_records(
+                db, tenant_id=user["tenant_id"], case_id=case_id, actor=user["email"],
+                audit=record_event, **inp.model_dump())
+        except recovery_case.RecoveryCaseNotFound:
+            raise HTTPException(status_code=404, detail="Recovery case not found")
+        except recovery_case.CrossTenantReference:
+            raise HTTPException(status_code=404, detail="Record not found")
+        except recovery_case.LinkConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except recovery_case.RecoveryCaseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     @router.post("/recovery-cases/{case_id}/run")
     async def run_recovery_case(case_id: str, user=Depends(require_role("admin"))):

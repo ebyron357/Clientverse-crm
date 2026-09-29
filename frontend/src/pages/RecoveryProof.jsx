@@ -75,6 +75,78 @@ const OUTCOME_KINDS = [
  * its basis and the amount (from the invoice or deal itself) and returns its reasoning,
  * which is shown as-is — including when the answer is "not attributed".
  */
+const LINK_FIELDS = [
+  { field: "contact_id", label: "Contact", path: "/contacts" },
+  { field: "company_id", label: "Company", path: "/companies" },
+  { field: "opportunity_id", label: "Deal", path: "/opportunities" },
+];
+
+/** Name the client a case is about, where detection only had a number or an address.
+ *  Links fill empty fields only; the server refuses to re-point one. */
+function LinkCase({ caseId, links, onLinked }) {
+  const missing = LINK_FIELDS.filter(({ field }) => !links?.[field]);
+  const [options, setOptions] = useState({});
+  const [form, setForm] = useState({});
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    Promise.allSettled(missing.map(({ path }) => api.get(path))).then((results) => {
+      if (!active) return;
+      const next = {};
+      results.forEach((result, index) => {
+        next[missing[index].field] = result.status === "fulfilled" && Array.isArray(result.value.data)
+          ? result.value.data : [];
+      });
+      setOptions(next);
+    });
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseId, missing.length]);
+
+  if (!missing.length) return null;
+  const chosen = Object.fromEntries(Object.entries(form).filter(([, value]) => value));
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/recovery-cases/${caseId}/link`, chosen);
+      toast.success("Case linked");
+      setForm({});
+      onLinked();
+    } catch (e) {
+      toast.error(formatErr(e.response?.data?.detail) || "The case could not be linked");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mt-4 rounded-xl border border-gray-200 bg-white p-6 shadow-sm" data-testid="link-case">
+      <h3 className="font-display text-lg font-bold text-[#0a1628]">Who is this case about?</h3>
+      <p className="mt-1 text-xs leading-5 text-gray-500">
+        Link the case to its client so an invoice or deal booked on it can be checked against them. Without a
+        link, a booked outcome is recorded on your word alone. A link can be added, not changed.
+      </p>
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        {missing.map(({ field, label }) => (
+          <div key={field} className="text-[11px] text-gray-500">
+            <label htmlFor={`link-${field}`}>{label}</label>
+            <select id={`link-${field}`} data-testid={`link-${field}`}
+                    className="mt-1 block h-9 w-56 rounded-md border border-gray-200 bg-white px-2 text-sm"
+                    value={form[field] || ""} onChange={(e) => setForm({ ...form, [field]: e.target.value })}>
+              <option value="">—</option>
+              {(options[field] || []).slice(0, 500).map((record) => (
+                <option key={record.id} value={record.id}>{record.name || record.email || record.id}</option>
+              ))}
+            </select>
+          </div>
+        ))}
+        <Button className="h-9 cv-action-primary" disabled={busy || !Object.keys(chosen).length} onClick={submit}
+                data-testid="link-case-submit">Link</Button>
+      </div>
+    </div>
+  );
+}
+
 function RecordOutcome({ caseId, sourceRecord, onRecorded }) {
   const defaultDeal = sourceRecord?.collection === "opportunities" ? sourceRecord.id : "";
   const [form, setForm] = useState({ kind: "invoice_paid", record_id: "", amount: "", currency: "USD", note: "" });
@@ -246,7 +318,10 @@ function CaseProof({ caseId, onBack }) {
       </div>
 
       {user?.role === "admin" && !proof.outcome.is_terminal ? (
-        <RecordOutcome caseId={proof.case.id} sourceRecord={proof.source_record} onRecorded={load} />
+        <>
+          <LinkCase caseId={proof.case.id} links={proof.case.links} onLinked={load} />
+          <RecordOutcome caseId={proof.case.id} sourceRecord={proof.source_record} onRecorded={load} />
+        </>
       ) : null}
 
       {comms.outbound?.length > 0 && (

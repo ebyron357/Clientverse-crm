@@ -577,10 +577,10 @@ runner, attribution, the email adapter and email reply ingestion — are deploye
    own status for "the client answered", which is what the lane means.
 5. **Server-side scanner client (E-12)** — the only way a scan can now count. Blocked
    on the scanners' API contract (O-14), not on code.
-6. **Link a recovery case to a CRM record** — a case opened from a missed call or a
-   web enquiry names no contact, company or deal, so an outcome booked on it is recorded
-   with `record_link.anchored: false` (the recorder's word). A route to attach the
-   contact or company would let the ledger check those links too.
+6. ~~Link a recovery case to a CRM record~~ — **done on the branch**:
+   `POST /api/recovery-cases/{id}/link` (admin) and "Who is this case about?" on the case
+   proof. Links fill empty fields only and are never re-pointed, so an outcome booked
+   afterwards is checked against the client (`record_link.anchored: true`).
 7. **Twenty-derived UX refinements (E-17)** on surfaces already being touched.
 8. **Design-first modules** (each needs a written contract before code): Calendar (M-05,
    also gated on O-01), Workflows (M-06), Support (M-09), Migration (M-12), Knowledge

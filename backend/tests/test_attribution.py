@@ -726,3 +726,19 @@ def test_a_recovery_keeps_the_currency_the_money_arrived_in(db):
     assert recovered["confirmed_currency"] == "EUR" and recovered["currency"] == "USD"
     summary = run(rc.summary(db, TENANT))
     assert summary["confirmed_recovered_value_by_currency"] == {"EUR": 8000.0}
+
+
+def test_linking_a_case_turns_an_unverified_link_into_a_checked_one(db):
+    run(db.workspaces.insert_many([
+        {"id": "ws_link_a", "tenant_id": TENANT, "company_id": "co_link_a"},
+        {"id": "ws_link_b", "tenant_id": TENANT, "company_id": "co_link_b"}]))
+    run(db.companies.insert_one({"id": "co_link_a", "tenant_id": TENANT, "name": "A"}))
+    case = _contacted_case(db)
+    run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                            company_id="co_link_a"))
+    elsewhere = paid_invoice(db)
+    run(db.invoices.update_one({"id": elsewhere["id"]}, {"$set": {"workspace_id": "ws_link_b"}}))
+    with pytest.raises(attribution.AttributionError, match="does not belong"):
+        run(attribution.record_outcome(
+            db, tenant_id=TENANT, case_id=case["id"],
+            kind=attribution.OUTCOME_INVOICE_PAID, record_id=elsewhere["id"], actor="ops"))

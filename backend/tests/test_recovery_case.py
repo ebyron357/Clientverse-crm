@@ -769,3 +769,47 @@ def test_one_case_holds_one_plan_even_when_its_work_item_comes_back(env):
     assert len(run(rs.list_strategies(db, TENANT))) == 1
     run(runner.run_case(db, tenant_id=TENANT, case_id=case["id"]))
     assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.EXECUTING
+
+
+# ------------------------------------------------------ linking a case to its client
+
+def test_an_operator_can_name_the_client_a_missed_call_turned_out_to_be(env):
+    db, _ = env
+    run(db.contacts.insert_one({"tenant_id": TENANT, "id": "con_caller", "name": "Caller"}))
+    run(db.companies.insert_one({"tenant_id": TENANT, "id": "co_caller", "name": "Caller Co"}))
+    case = run(rc.open_case(db, missed_call_event()))
+    linked = run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"],
+                                     actor="ops@example.com", contact_id="con_caller",
+                                     company_id="co_caller", opportunity_id=None))
+    assert (linked["contact_id"], linked["company_id"]) == ("con_caller", "co_caller")
+    assert linked["history"][-1]["action"] == "linked"
+
+
+def test_a_link_is_never_re_pointed_at_another_client(env):
+    """Otherwise any payment could be made to belong to the case after the fact."""
+    db, _ = env
+    run(db.companies.insert_many([{"tenant_id": TENANT, "id": "co_a", "name": "A"},
+                                  {"tenant_id": TENANT, "id": "co_b", "name": "B"}]))
+    case = run(rc.open_case(db, missed_call_event()))
+    run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                            company_id="co_a"))
+    with pytest.raises(rc.LinkConflict):
+        run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                                company_id="co_b"))
+    # Naming the same record again is not a change.
+    same = run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                                   company_id="co_a"))
+    assert same["company_id"] == "co_a"
+
+
+def test_a_case_cannot_be_linked_to_another_tenants_record(env):
+    db, _ = env
+    run(db.contacts.insert_one({"tenant_id": OTHER_TENANT, "id": "con_x", "name": "X"}))
+    case = run(rc.open_case(db, missed_call_event()))
+    with pytest.raises(rc.CrossTenantReference):
+        run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                                contact_id="con_x"))
+    with pytest.raises(rc.RecoveryCaseError):
+        run(rc.link_crm_records(db, tenant_id=TENANT, case_id=case["id"], actor="ops",
+                                plan_reference="rs_anything"))
+    assert run(rc.get_case(db, TENANT, case["id"]))["contact_id"] is None

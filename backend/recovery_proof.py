@@ -119,6 +119,10 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
         "case": {
             "id": case["id"],
             "title": case.get("title"),
+            # The CRM records this case is about. An outcome booked on the case is checked
+            # against them; with none, its link is recorded as the recorder's word.
+            "links": {field: case.get(field)
+                      for field in recovery_case_service.REFERENCE_COLLECTIONS},
             "state": case.get("state"),
             "owner": (case.get("evidence") or {}).get("owner"),
             "source": case.get("source"),
