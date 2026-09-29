@@ -739,7 +739,7 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
             if case and case.get("state") in recovery_case.TERMINAL_STATES:
                 # The recovery already ended; a fresh plan and approval for it would be
                 # work nobody is going to do. Same rule as the case route.
-                planned_case_ids.add(case_id)
+                planned_case_ids.add(case["id"])
                 continue
             strategy = await compose_for_candidate(db, tenant_id, candidate, actor=actor,
                                                    channels=channels)

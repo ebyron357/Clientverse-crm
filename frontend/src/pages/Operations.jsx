@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
 import NextBestActions from "@/components/NextBestActions";
@@ -357,6 +358,141 @@ function RecoveryStrategiesPanel({ isAdmin }) {
                   <StepRow key={`${strategy.id}-step-${index}`} step={step} />
                 ))}
               </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const FOLLOWUP_TONE = {
+  due: "bg-cyan-50 text-cyan-800 border-cyan-200",
+  not_due: "bg-slate-50 text-slate-700 border-slate-200",
+  previous_followup_pending: "bg-amber-50 text-amber-900 border-amber-200",
+  replied: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  limit_reached: "bg-slate-50 text-slate-700 border-slate-200",
+};
+
+const FOLLOWUP_LABEL = {
+  due: "Due",
+  not_due: "Waiting for reply",
+  replied: "Client replied",
+  handed_to_human: "Handed to a person",
+  conversation_closed: "Thread closed",
+  consent_not_granted: "No consent",
+  previous_followup_pending: "Previous follow-up pending",
+  limit_reached: "Limit reached",
+  followups_disabled: "Follow-ups off",
+  case_not_active: "Case not active",
+  no_contact_yet: "Not contacted yet",
+};
+
+function RecoveryFollowupsPanel({ isAdmin }) {
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState({ cadence_days: "", max_followups: "" });
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const { data } = await api.get("/recovery-followups");
+      setPreview(data);
+      setDraft({ cadence_days: String(data.policy.cadence_days),
+                 max_followups: String(data.policy.max_followups) });
+    } catch (e) {
+      setPreview({ cases: [], by_status: {} });
+      setError(formatErr(e.response?.data?.detail) || "Follow-ups could not be read.");
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const runNow = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/recovery-followups/run");
+      toast.success(`Drafted ${data.drafted.length} follow-up(s) for approval; nothing was sent`);
+      await load();
+    } catch (e) {
+      toast.error(formatErr(e.response?.data?.detail) || "Follow-ups could not be drafted");
+    } finally { setBusy(false); }
+  };
+
+  const savePolicy = async () => {
+    setBusy(true);
+    try {
+      await api.put("/recovery-followups/policy", {
+        cadence_days: Number(draft.cadence_days), max_followups: Number(draft.max_followups),
+      });
+      toast.success("Follow-up policy saved");
+      await load();
+    } catch (e) {
+      toast.error(formatErr(e.response?.data?.detail) || "Policy could not be saved");
+    } finally { setBusy(false); }
+  };
+
+  if (preview === null) return <SurfaceLoading rows={1} testid="followups-loading" />;
+  if (error) return <SurfaceError title="Follow-ups unavailable" description={error}
+                                  onRetry={load} testid="followups-error" />;
+
+  const policy = preview.policy || {};
+  const cases = preview.cases || [];
+  return (
+    <div className="mt-8" data-testid="recovery-followups-panel">
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-[#132038]">Scheduled follow-up</div>
+          <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">
+            When a recovery message reached the client and no reply came back, a follow-up is
+            drafted on the same thread every {policy.cadence_days} day(s), at most{" "}
+            {policy.max_followups} time(s). Each draft needs its own approval. A reply, a
+            handoff to a person, or withdrawn consent stops it.
+          </p>
+        </div>
+        {isAdmin ? (
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="text-[11px] text-slate-500">
+              <label htmlFor="followup-cadence">Cadence (days)</label>
+              <Input id="followup-cadence" className="mt-1 h-8 w-20" type="number" min={1} max={30}
+                     value={draft.cadence_days} data-testid="followup-cadence"
+                     onChange={(e) => setDraft({ ...draft, cadence_days: e.target.value })} />
+            </div>
+            <div className="text-[11px] text-slate-500">
+              <label htmlFor="followup-max">Max follow-ups</label>
+              <Input id="followup-max" className="mt-1 h-8 w-20" type="number" min={0} max={5}
+                     value={draft.max_followups} data-testid="followup-max"
+                     onChange={(e) => setDraft({ ...draft, max_followups: e.target.value })} />
+            </div>
+            <Button size="sm" variant="outline" onClick={savePolicy} disabled={busy}
+                    data-testid="followup-policy-save">Save</Button>
+            <Button size="sm" className="cv-action-primary" onClick={runNow} disabled={busy}
+                    data-testid="followup-run">Draft due follow-ups</Button>
+          </div>
+        ) : null}
+      </div>
+
+      {cases.length === 0 ? (
+        <SurfaceEmpty icon={Route} title="No active recoveries"
+                      description="Cases appear here once their plan is running."
+                      testid="followups-empty" />
+      ) : (
+        <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+          {cases.map((item) => (
+            <div key={item.case_id} className="px-4 py-3" data-testid={`followup-${item.status}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className={FOLLOWUP_TONE[item.status] || "bg-slate-50 text-slate-700 border-slate-200"}>
+                  {FOLLOWUP_LABEL[item.status] || item.status}
+                </Badge>
+                <span className="text-sm font-semibold text-[#132038]">{item.title || item.case_id}</span>
+              </div>
+              <div className="mt-0.5 text-xs leading-5 text-slate-500">{item.reason}</div>
+              {item.followups_drafted ? (
+                <div className="mt-0.5 text-[11px] text-slate-400">
+                  {item.followups_drafted} follow-up(s) drafted so far
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
@@ -952,6 +1088,7 @@ export default function Operations() {
         <TabsContent value="queue" className="mt-5"><WorkQueuePanel isAdmin={isAdmin} /></TabsContent>
         <TabsContent value="recovery" className="mt-5">
           <RecoveryStrategiesPanel isAdmin={isAdmin} />
+          <RecoveryFollowupsPanel isAdmin={isAdmin} />
         </TabsContent>
         <TabsContent value="approvals" className="mt-5">
           <ApprovalQueuePanel isAdmin={isAdmin} />

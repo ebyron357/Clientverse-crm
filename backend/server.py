@@ -42,6 +42,7 @@ import email_inbound
 import gmail_provider
 import next_best_action as nba_service
 import recovery_case as recovery_case_service
+import recovery_followup
 import recovery_intake
 import recovery_proof
 import recovery_runner as recovery_runner_service
@@ -157,6 +158,7 @@ async def lifespan(_: FastAPI):
         await recovery_service.ensure_indexes(db)
         await conversation_service.ensure_indexes(db)
         await recovery_case_service.ensure_indexes(db)
+        await recovery_followup.ensure_indexes(db)
     except Exception:
         logger.exception("Failed to create a non-critical application index")
     try:
@@ -2300,6 +2302,25 @@ async def cron_recovery_runner(request: Request):
         "recovery-runner", run_id,
         lambda: recovery_runner_service.run_ready_cases_all_tenants(
             db, work_queue, actor="cron", audit=record_event), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+@api.post("/cron/recovery-followups")
+async def cron_recovery_followups(request: Request):
+    """Draft every due recovery follow-up (E-06) for approval. Drafting only.
+
+    A case is due when a message reached its client, no reply came back within the
+    tenant's cadence, consent still stands, the thread is still agent-handled, and the
+    tenant's follow-up limit is not reached. Each draft carries its own approval and
+    leaves only through the delivery choke point.
+    """
+    run_id, entry_id = await _begin_cron(request, "recovery-followups")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job(
+        "recovery-followups", run_id,
+        lambda: recovery_followup.run_all_tenants(db, actor="cron", audit=record_event),
+        entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 

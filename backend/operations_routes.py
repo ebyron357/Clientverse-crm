@@ -19,6 +19,7 @@ import approval_queue
 import conversations
 import next_best_action as nba
 import recovery_case
+import recovery_followup
 import recovery_runner
 import recovery_strategy
 import second_chance
@@ -49,6 +50,11 @@ class ApprovalRequestInput(BaseModel):
     facts: Optional[list] = None
     expires_in_hours: Optional[int] = Field(default=None, ge=1, le=90 * 24)
     require_separate_approver: bool = False
+
+
+class FollowupPolicyInput(BaseModel):
+    cadence_days: int = Field(ge=1, le=recovery_followup.MAX_CADENCE_DAYS)
+    max_followups: int = Field(ge=0, le=recovery_followup.MAX_FOLLOWUPS_LIMIT)
 
 
 class ApprovalDecisionInput(BaseModel):
@@ -559,6 +565,47 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
                            payload={"work_item_id": item["id"]})
         return {"queued": True, "work_item_id": item["id"],
                 "deduplicated": item.get("deduplicated", False)}
+
+    # ----------------------------------------------------- recovery follow-up
+
+    @router.get("/recovery-followups")
+    async def preview_recovery_followups(user=Depends(get_current_user)):
+        """Every active case's follow-up verdict: due, or the named reason it is not.
+
+        Read-only. Nothing is drafted here."""
+        return await recovery_followup.preview(db, user["tenant_id"])
+
+    @router.post("/recovery-followups/run")
+    async def run_recovery_followups(user=Depends(require_role("admin"))):
+        """Draft every due follow-up now, each with its own approval. Nothing is sent."""
+        summary_ = await recovery_followup.run_for_tenant(
+            db, user["tenant_id"], actor=user["email"], audit=record_event)
+        await record_event("recovery_followup.swept", "tenant", user["tenant_id"],
+                           user["tenant_id"], user["email"],
+                           payload={"drafted": len(summary_["drafted"]),
+                                    "by_status": summary_["by_status"]})
+        return summary_
+
+    @router.get("/recovery-followups/policy")
+    async def get_followup_policy(user=Depends(get_current_user)):
+        return await recovery_followup.get_policy(db, user["tenant_id"])
+
+    @router.put("/recovery-followups/policy")
+    async def set_followup_policy(inp: FollowupPolicyInput,
+                                  user=Depends(require_role("admin"))):
+        """How long to wait for a reply before drafting a follow-up, and how many to draft
+        at most. Tenant configuration, never a per-call argument."""
+        try:
+            policy = await recovery_followup.set_policy(
+                db, tenant_id=user["tenant_id"], cadence_days=inp.cadence_days,
+                max_followups=inp.max_followups, actor=user["email"])
+        except recovery_followup.FollowupPolicyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_event("recovery_followup.policy_configured", "tenant", user["tenant_id"],
+                           user["tenant_id"], user["email"],
+                           payload={"cadence_days": policy["cadence_days"],
+                                    "max_followups": policy["max_followups"]})
+        return policy
 
     # ----------------------------------------------------- recovery strategies
 

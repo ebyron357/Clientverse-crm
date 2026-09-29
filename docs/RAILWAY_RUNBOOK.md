@@ -125,7 +125,8 @@ replacement scheduler must use the same cadences, or production's misfire detect
 | Second Chance detection | `POST /api/cron/second-chance` | `5 * * * *` — stalled leads and missed follow-ups | 45 min |
 | All detector families | `POST /api/cron/detect-recovery` | `5 * * * *` | 45 min |
 | Recovery strategy composition | `POST /api/cron/recovery-strategies` | `5 * * * *` — composition only; no outbound step executes while its channel is unauthorised | 45 min |
-| Approval expiry | `POST /api/cron/approval-expiry` | `5 * * * *` — lapses approval requests nobody decided | 45 min |
+| Approval expiry | `POST /api/cron/approval-expiry` | `5 * * * *` — lapses approval requests nobody decided, then withdraws plans and blocks messages that were waiting on a lapsed approval | 45 min |
+| Recovery follow-ups | `POST /api/cron/recovery-followups` | `5 * * * *` — drafts the next follow-up (each with its own approval) where a message reached the client and no reply came within the tenant's cadence; sends nothing | 45 min |
 
 ### Misfire detection
 

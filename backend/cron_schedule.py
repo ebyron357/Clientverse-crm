@@ -110,6 +110,9 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("approval-expiry", "5 * * * *",
                  "Expire approvals past their deadline",
                  grace_minutes=45),
+    ScheduledJob("recovery-followups", "5 * * * *",
+                 "Draft due recovery follow-ups for approval",
+                 grace_minutes=45),
 )
 
 BY_JOB: dict[str, ScheduledJob] = {entry.job: entry for entry in SCHEDULE}
