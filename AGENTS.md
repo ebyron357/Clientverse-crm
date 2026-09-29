@@ -6,7 +6,8 @@
   (`backend/cron_schedule.py`, `GET /api/cron/schedule`), the scheduler ledger restricted
   to the cron secret / `ADMIN_EMAIL` operator, and five recovery-loop fixes
   (`backend/tests/test_recovery_engagement.py` drives run → approve → send → pay →
-  attribute through the real modules). Canonical document v1.11 §3.3/§11 is current.
+  attribute through the real modules), plus two review rounds' fixes. Canonical
+  document v1.13 §3.3/§11 is current.
 - **A real mongod works here without network access to mongodb.org:** conda-forge is
   reachable, so `micromamba create -p <dir> -c conda-forge mongodb` installs `mongod`
   (8.3.7). Prefer it over `mongomock://` — the suite then passes in full.
@@ -24,6 +25,14 @@
   for safety, only for how often reconciliation needs a human.
 - Watch for `pkill -f "uvicorn server:app"` inside a command whose own text contains
   that string: it kills the calling shell (exit 144). Put it in a script file.
+- **Second review round (v1.13) changed three contracts** a later change must keep:
+  webhook and other tenant-chosen URLs are called only through `backend/outbound_url.py`;
+  security-gate scans count only via `record_service_scan` (no scanner client exists, so
+  nothing external can be approved yet); an invoice or deal is booked once per tenant and
+  dated by `paid_at` / first `closed_won`, never `updated_at`.
+- Scratch smoke runner: set `CLIENTVERSE_API_BASE`, `CLIENTVERSE_ADMIN_EMAIL`,
+  `CLIENTVERSE_ADMIN_PASSWORD` (and `CLIENTVERSE_CRON_SECRET` for operations) — the smokes
+  exit with a stack trace, not a message, when one is missing.
 
 ## Session state (2026-09-28)
 

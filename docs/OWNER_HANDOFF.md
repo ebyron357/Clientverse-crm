@@ -16,6 +16,17 @@
 > any self-registered admin). Canonical document v1.11 §3.3 has the detail; O-17 there
 > is this merge.
 >
+> Later the same day a second review round found and fixed, on the same branch: webhook
+> URLs that let any registrant make the server call internal addresses; CSV exports that
+> carried spreadsheet formulas; tenants without a Stripe key reading the operator's
+> Stripe account; one invoice bookable as recovered revenue on several cases and dated by
+> its last edit; members able to override admin approval decisions; a queue job that
+> crashed on its last attempt staying stuck forever; security-gate scan results taken on
+> the caller's word; `ADMIN_PASSWORD` rotation leaving old sessions alive; and the Google
+> connect link completable in someone else's browser. Canonical document v1.13 §3.3.
+> Three behaviours change for you, below: §2 (rotation ends sessions), §6 (each
+> workspace connects its own Stripe key) and §8.7 (the invoice must belong to the case).
+>
 > **2026-09-28 update — read before §1.** The owner merged this branch and Railway
 > deployed it: deployment `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, commit
 > `c9f5a6ec27e14682d49c055a57477e78b80231ef`, SUCCESS at 2026-09-28T05:25Z. Its boot log
@@ -97,6 +108,11 @@ The admin password is whatever is currently in the Railway variable `ADMIN_PASSW
    Railway triggers a redeploy on the change.
 2. Wait for the deployment to reach SUCCESS.
 3. Sign in with the new password.
+
+With `claude/vibrant-hypatia-6aabmc` merged, step 2 also signs out every session that
+was issued under the old password, so a copied token stops working at the rotation.
+"Sign in with Google" is refused for this account: it has a password, and that button
+takes the email address on the word of an external service (canonical O-19).
 
 Read the current value only from the Railway dashboard, which is the approved secret
 store for this deployment. **Rotate it now if it has ever been shared over chat,
@@ -245,6 +261,13 @@ like a delivery problem rather than a configuration one.
 | Deduplication verified | **By test, yes** — `stripe_webhook_events.event_id` carries a unique index and the suite asserts a replayed event is handled once (`backend/tests/test_provider_lifecycle_unit.py`). **In production, no** |
 | Secret storage location | Railway service variables, once set. Nowhere else |
 
+**Which account a workspace syncs** (with the branch merged): `STRIPE_API_KEY` is treated
+as the operator's own Stripe account and is used only by the workspace `ADMIN_EMAIL`
+belongs to. Every other workspace connects Stripe by pasting its own secret or
+restricted key into the Connect dialog (Registries → Integrations); it is stored
+encrypted for that workspace only. Before this, any workspace without a key fell back to
+the operator's account.
+
 A legacy webhook signing secret was noted in earlier project records as needing
 rotation. Since no Stripe secret is currently set on the service, rotating means
 generating a fresh one when the endpoint is created, not reusing anything previous.
@@ -374,6 +397,14 @@ at the top of Operations → Conversations, where a person can place each one.)
 branch merged, Recovery Proof → open the case → **Record an outcome** (admin). The form
 only points at the record; the claim, basis and amount are derived by the server.
 
+With the branch merged the ledger also checks that the invoice belongs to the case's
+client (its workspace, company, deal or contact) and refuses one booked elsewhere
+already, and it dates the payment by when the invoice was first marked paid — so mark
+the invoice paid in the CRM (or let Stripe's webhook do it) rather than editing it by
+hand afterwards. An invoice marked paid before the branch was merged has no payment date
+and is refused; record that one as an operator confirmation with the date the money
+arrived.
+
 **Verify:** on a case where a message actually reached the client, the entry comes back
 `claim: attributed` with `basis: reply_after_contact` or `delivered_contact` and the
 message ids as evidence. On a case where nothing was sent, it comes back
@@ -388,6 +419,8 @@ report it.
 - Delete the `Mongo_url` duplicate variable.
 - Rotate `ADMIN_PASSWORD` if it has ever left the Railway dashboard.
 - Decide whether Stripe is in scope; if so, configure test mode first.
+- Decide whether to keep "Sign in with Google" through `auth.emergentagent.com`
+  (canonical O-19), or replace it with direct Google sign-in under your own OAuth client.
 - Set `PUBLIC_BACKEND_URL` and `GOOGLE_REDIRECT_URI` explicitly before adding a custom
   domain.
 
@@ -401,7 +434,8 @@ report it.
 | Integration credential encryption tested | **YES, by test** | Fernet round-trip and tenant-scoped credential isolation, `backend/tests/test_stripe_tenant_isolation.py`, `test_unit_integrations.py`. Not exercised in production |
 | JWT / session configuration present | **YES** | `JWT_SECRET` set; the application refuses to boot with a weak or default secret unless `ALLOW_INSECURE_JWT` is explicitly set, which it is not |
 | Session revocation works | **YES, by test; NOT in production** | A token replayed after logout returns 401 (`test_session_revocation.py`, smoke step 49) |
-| OAuth state validation works | **YES, by test** | `test_integrations.py` covers state mismatch and replay on the Google callback |
+| OAuth state validation works | **YES, by test** | `test_integrations.py` covers state mismatch and replay on the Google callback. With the branch merged the state is also bound to the browser that started the connect; finishing the consent in another browser connects nothing (`oauth=wrong_browser`) |
+| Webhook destinations restricted | **YES, by test, on the branch** | Only public addresses, checked on create and every send, no redirects (`backend/outbound_url.py`, `test_outbound_url.py`). An endpoint on a private network cannot be a webhook target |
 | Cron shared secret matches both ends | **NO — it is absent from one end** | Set on Railway, **not set in GitHub**. §4 |
 | Provider credentials absent from browser responses | **YES** | `SENSITIVE_CONN_FIELDS` is projected out of every connection response; asserted by test |
 | Production secrets absent from source control | **YES** | No secret value appears in the repository or in this document. GitHub secret scanning is enabled on the repository |

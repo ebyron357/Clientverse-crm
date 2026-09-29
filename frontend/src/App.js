@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import "@/App.css";
-import { api, setStoredToken } from "@/lib/api";
+import { api, formatErr, setStoredToken } from "@/lib/api";
+import { toast } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import AppErrorBoundary from "@/components/AppErrorBoundary";
@@ -41,7 +42,10 @@ function AuthCallback() {
         if (data?.token) setStoredToken(data.token);
         window.history.replaceState(null, "", "/");
         window.location.href = "/dashboard";
-      } catch {
+      } catch (error) {
+        // Say why, rather than landing silently back on the sign-in page: an account
+        // with a password is refused here and must sign in with it.
+        if (error?.response?.status === 403) toast.error(formatErr(error.response.data?.detail));
         navigate("/login");
       }
     })();

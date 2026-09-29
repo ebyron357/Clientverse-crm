@@ -506,6 +506,13 @@ async def google_session(request: Request, response: Response):
     data = r.json()
     email = data["email"].lower()
     user = await db.users.find_one({"email": email}, {"_id": 0})
+    if user and user.get("password_hash"):
+        # This sign-in takes the email address on the word of an external session
+        # service. An account that has a password -- the platform operator's among
+        # them -- signs in with that password only, so a fault or compromise in that
+        # service cannot hand out sessions for it.
+        raise HTTPException(status_code=403,
+                            detail="This account signs in with its email and password.")
     if not user:
         tenant_id = new_id("ten")
         await db.tenants.insert_one({"tenant_id": tenant_id, "name": f"{data.get('name','')}'s Org", "created_at": now_iso()})
