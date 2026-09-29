@@ -502,6 +502,55 @@ async def set_state(db, *, tenant_id: str, case_id: str, state: str, actor: str 
                              actor=actor, detail=detail, audit=audit)
 
 
+CONTACT_OUTBOUND = "outbound_reached"   # a provider accepted a message to the counterparty
+CONTACT_REPLY = "reply_received"         # the counterparty wrote back
+CONTACT_KINDS = (CONTACT_OUTBOUND, CONTACT_REPLY)
+
+
+async def record_contact(db, *, tenant_id: str, case_id: str, kind: str,
+                         message_id: Optional[str], at: Optional[str] = None,
+                         actor: str = "system",
+                         audit: Optional[Callable[..., Awaitable[Any]]] = None
+                         ) -> Optional[dict]:
+    """Record that this case actually reached its counterparty, and engage it.
+
+    `engaged` is the only state a recovery can be confirmed from, and it means what it
+    says: a message the provider accepted went to the client, or the client replied.
+    Until this existed nothing in the running system made that move -- the runner stops at
+    `executing` by design, and the delivery path never told the case anything -- so an
+    outcome the attribution ledger could genuinely attribute still failed to confirm,
+    because `executing -> recovered` is not a transition.
+
+    The contact itself is recorded as a fact on the case whatever its state. The state
+    moves only from `executing`: a case still being planned or approved has not had its
+    plan run, and a message someone sent on its thread by hand is contact, not execution.
+    Idempotent: an already engaged or terminal case is left where it is.
+    """
+    if kind not in CONTACT_KINDS:
+        raise RecoveryCaseError(f"contact kind must be one of {CONTACT_KINDS}")
+    at = at or _iso(_now())
+    counter = "contact_count" if kind == CONTACT_OUTBOUND else "reply_count"
+    stamp = "last_contact_at" if kind == CONTACT_OUTBOUND else "last_reply_at"
+    noted = await db[COLLECTION].find_one_and_update(
+        {"id": case_id, "tenant_id": tenant_id},
+        {"$set": {stamp: at, "updated_at": _iso(_now())},
+         "$min": {"first_contact_at": at},
+         "$inc": {counter: 1}},
+        return_document=True)
+    if not noted:
+        return None
+    if noted.get("state") != EXECUTING:
+        return _public(noted)
+    try:
+        return await _transition(
+            db, tenant_id=tenant_id, case_id=case_id, state=ENGAGED, actor=actor,
+            detail={"contact": kind, "message_id": message_id, "at": at}, audit=audit)
+    except InvalidCaseTransition:
+        # Moved concurrently (another receipt engaged it first, or someone closed it).
+        # Either way the contact is recorded and the case is where a person put it.
+        return await get_case(db, tenant_id, case_id)
+
+
 async def confirm_recovery(db, *, tenant_id: str, case_id: str, amount: float,
                            evidence: dict, actor: str = "system",
                            audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:

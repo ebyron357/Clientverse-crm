@@ -86,6 +86,33 @@ def _step_key(case_id: str, step_index: int) -> str:
     return f"recovery:{case_id}:step:{step_index}"
 
 
+async def _contact_address(db, tenant_id: str, contact_id: str) -> Optional[str]:
+    """The email address on the case's contact record, read within the tenant.
+
+    Without it a contact-backed case produced a thread with no one to send to: the
+    participant carried an id and nothing else, and the email adapter -- correctly --
+    refuses to guess a recipient. So every automated recovery email for a CRM contact
+    would have failed at the provider.
+    """
+    contact = await db.contacts.find_one({"tenant_id": tenant_id, "id": contact_id},
+                                         {"_id": 0, "email": 1})
+    address = str((contact or {}).get("email") or "").strip()
+    return address or None
+
+
+def _email_recipient_of(conversation: dict) -> Optional[str]:
+    """The contact participant's address, if it is an email address.
+
+    A case opened from a missed call knows its counterparty only by phone number; that
+    is not somewhere an email can go, and addressing one to it would only fail later.
+    """
+    for participant in conversation.get("participants") or []:
+        address = str(participant.get("address") or "")
+        if participant.get("kind") == conversations.PARTICIPANT_CONTACT and "@" in address:
+            return address
+    return None
+
+
 async def _conversation_for_case(db, tenant_id: str, case: dict, channel: str,
                                  actor: str) -> dict:
     """Find or open the thread this case's outreach belongs to.
@@ -101,8 +128,9 @@ async def _conversation_for_case(db, tenant_id: str, case: dict, channel: str,
 
     participants = []
     if case.get("contact_id"):
+        address = await _contact_address(db, tenant_id, case["contact_id"])
         participants.append({"kind": conversations.PARTICIPANT_CONTACT,
-                             "id": case["contact_id"]})
+                             "id": case["contact_id"], "address": address})
     elif case.get("external_identity"):
         # All we know about the counterparty is how they reached us.
         identity = case["external_identity"]
@@ -192,9 +220,13 @@ async def _run_outbound_step(db, tenant_id: str, case: dict, step: dict, index: 
                 "blocked_reason": existing.get("blocked_reason") or step.get("blocked_reason")}
 
     conversation = await _conversation_for_case(db, tenant_id, case, step["channel"], actor)
+    # Addressed explicitly, so the approval names who it goes to and the recipient is
+    # fixed at the moment a person reads it rather than resolved again at send time.
+    to_address = (_email_recipient_of(conversation)
+                  if step["channel"] == conversations.CHANNEL_EMAIL else None)
     message = await conversations.draft_message(
         db, tenant_id=tenant_id, conversation_id=conversation["id"],
-        body=_draft_body(case, step), actor=actor,
+        body=_draft_body(case, step), actor=actor, to_address=to_address,
         idempotency_key=_step_key(case["id"], index),
         requester_kind=approval_queue.REQUESTER_AGENT)
 
@@ -218,9 +250,10 @@ async def run_case(db, *, tenant_id: str, case_id: str, actor: str = "recovery-r
                    audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Execute one approved Recovery Case as far as it is permitted to go.
 
-    Refuses anything not approved. Moves the case to `executing` on entry and to `engaged`
-    only if something actually reached a counterparty — which, with no provider registered,
-    it currently cannot. The case does not advance on the strength of intent.
+    Refuses anything not approved. Moves the case to `executing` on entry and no further:
+    the move to `engaged` happens at the delivery choke point, when a provider actually
+    accepts a message to the counterparty (or when they reply) -- see
+    `recovery_case.record_contact`. The case does not advance on the strength of intent.
     """
     case = await recovery_case.get_case(db, tenant_id, case_id)
     if not case:

@@ -40,12 +40,16 @@ this model is follow-on work and is recorded as such in the canonical document.
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol
 
 import approval_queue
+import recovery_case
 import recovery_strategy
+
+logger = logging.getLogger("clientverse.conversations")
 
 CONVERSATIONS = "conversations"
 MESSAGES = "communication_messages"
@@ -651,6 +655,11 @@ async def request_approval(db, *, tenant_id: str, message_id: str, actor: str,
         workspace_id=conversation.get("workspace_id"),
         facts=[{"label": "Channel", "value": message["channel"],
                 "source": f"conversation:{conversation['id']}"},
+               {"label": "Recipient", "value": message.get("to_address") or next(
+                   (p.get("address") for p in conversation.get("participants") or []
+                    if p.get("kind") == PARTICIPANT_CONTACT and p.get("address")),
+                   "none on record"),
+                "source": f"communication_message:{message['id']}"},
                {"label": "Consent", "value": (conversation.get("consent") or {}).get("state"),
                 "source": f"conversation:{conversation['id']}"}],
         blocked_reasons=blocked_reasons,
@@ -715,6 +724,25 @@ async def mark_refused(db, *, tenant_id: str, message_id: str, actor: str,
     return await _transition(db, tenant_id, message, BLOCKED, actor,
                              extra={"blocked_reason": reason, "blocked_detail": detail},
                              detail={"reason": reason, "detail": detail})
+
+
+async def _note_case_contact(db, tenant_id: str, conversation: dict, message: dict,
+                             actor: str) -> None:
+    """Tell the recovery case this thread belongs to that its counterparty was reached.
+
+    Called only once a provider has accepted the message. The message is already sent
+    when this runs, so a failure here is logged and swallowed: an engagement flag that
+    could not be written must never be reported as a send that did not happen.
+    """
+    case_id = conversation.get("recovery_case_id")
+    if not case_id or message.get("direction") != OUTBOUND:
+        return
+    try:
+        await recovery_case.record_contact(
+            db, tenant_id=tenant_id, case_id=case_id, kind=recovery_case.CONTACT_OUTBOUND,
+            message_id=message.get("id"), at=message.get("sent_at"), actor=actor)
+    except Exception:
+        logger.exception("Could not record contact on recovery case %s", case_id)
 
 
 async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
@@ -857,6 +885,7 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
     if updates:
         await db[CONVERSATIONS].update_one(
             {"id": conversation["id"], "tenant_id": tenant_id}, {"$set": updates})
+    await _note_case_contact(db, tenant_id, conversation, sent, actor)
     return sent
 
 
@@ -887,8 +916,13 @@ async def reconcile_unknown(db, *, tenant_id: str, message_id: str, actor: str,
                  "error": None}
         if (detail or {}).get("rfc822_message_id"):
             extra["rfc822_message_id"] = detail["rfc822_message_id"]
-        return await _transition(db, tenant_id, message, SENT, actor, extra=extra,
+        sent = await _transition(db, tenant_id, message, SENT, actor, extra=extra,
                                  detail={"reconciled": True, **(detail or {})})
+        # The provider held it all along, so the client was reached when it was sent.
+        conversation = await get_conversation(db, tenant_id, message["conversation_id"])
+        if conversation:
+            await _note_case_contact(db, tenant_id, conversation, sent, actor)
+        return sent
     return await _transition(db, tenant_id, message, FAILED, actor,
                              extra={"error": "Provider confirmed it never accepted this message"},
                              detail={"reconciled": True, "proven": True, **(detail or {})})

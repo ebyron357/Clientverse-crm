@@ -2590,12 +2590,15 @@ async def _on_inbound_reply(*, tenant_id, conversation, message, record, basis):
                                 "contact_id": contact_id},
                        source="provider")
     if conversation.get("recovery_case_id"):
-        # Record engagement against the case. `replied_at` is a fact; whether the case
-        # succeeded is a separate decision made against evidence elsewhere.
-        await db[recovery_case_service.COLLECTION].update_one(
-            {"tenant_id": tenant_id, "id": conversation["recovery_case_id"]},
-            {"$set": {"last_reply_at": record.get("received_at")},
-             "$inc": {"reply_count": 1}})
+        # Record engagement against the case, and engage it if its plan is executing: a
+        # reply is the plainest evidence there is that the counterparty was reached.
+        # Whether the case *succeeded* is still a separate decision, made against
+        # evidence by the attribution ledger.
+        await recovery_case_service.record_contact(
+            db, tenant_id=tenant_id, case_id=conversation["recovery_case_id"],
+            kind=recovery_case_service.CONTACT_REPLY, message_id=message["id"],
+            at=record.get("received_at"), actor=f"provider:{record.get('provider')}",
+            audit=record_event)
 
 
 async def run_inbound_email_sweep(actor: str = "cron") -> dict:
