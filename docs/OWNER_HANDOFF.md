@@ -289,6 +289,12 @@ table must show HTTP 200 and an evidence id per endpoint, and the final step mus
 report that production recorded the run. If either secret is still missing, the run now
 **fails** with "Scheduler not configured" instead of quietly passing.
 
+Then, about an hour later (so every hourly job has had its tick), open Operations →
+**Scheduler** or `GET /api/cron/schedule` (branch merged): `healthy: true`, every job
+`on_schedule`. A job still `never_run` is not being called; `rejected` means the two
+secrets differ; `overdue` means the scheduler stopped. The check reads production's own
+ledger, so it stays honest even when the workflow is not running at all.
+
 ### 8.2 Merge this branch and let it deploy
 
 Nothing in §8.3 onwards exists in production until this is done. Railway auto-deploys
