@@ -7,7 +7,7 @@
   to the cron secret / `ADMIN_EMAIL` operator, and five recovery-loop fixes
   (`backend/tests/test_recovery_engagement.py` drives run → approve → send → pay →
   attribute through the real modules), plus two review rounds' fixes. Canonical
-  document v1.13 §3.3/§11 is current.
+  document v1.14 §3.3/§11 is current.
 - **A real mongod works here without network access to mongodb.org:** conda-forge is
   reachable, so `micromamba create -p <dir> -c conda-forge mongodb` installs `mongod`
   (8.3.7). Prefer it over `mongomock://` — the suite then passes in full.
@@ -30,6 +30,14 @@
   security-gate scans count only via `record_service_scan` (no scanner client exists, so
   nothing external can be approved yet); an invoice or deal is booked once per tenant and
   dated by `paid_at` / first `closed_won`, never `updated_at`.
+- **Three review rounds found ~90 defects in all**, a third of them in code this branch
+  itself added. Run a read-only reviewer on new code too, not only on inherited code.
+  Give each reviewer its own API port and database, and never `pkill -f uvicorn`: the
+  restart script kills only the port-8001 server now, after it killed a reviewer's API.
+- Contracts added in round three: every `/api/` body is limited in `body_limits.py`;
+  money fields are finite and bounded by `crm_core.MAX_MONEY`; the API router renders a
+  stored non-finite number as null (`FiniteJSONResponse`) rather than failing the tenant;
+  all-tenant sweeps go tenant by tenant or rotate (least recently checked first).
 - Scratch smoke runner: set `CLIENTVERSE_API_BASE`, `CLIENTVERSE_ADMIN_EMAIL`,
   `CLIENTVERSE_ADMIN_PASSWORD` (and `CLIENTVERSE_CRON_SECRET` for operations) — the smokes
   exit with a stack trace, not a message, when one is missing.

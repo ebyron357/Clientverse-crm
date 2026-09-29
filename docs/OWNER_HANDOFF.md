@@ -27,6 +27,22 @@
 > Three behaviours change for you, below: §2 (rotation ends sessions), §6 (each
 > workspace connects its own Stripe key) and §8.7 (the invoice must belong to the case).
 >
+> A third review round (client portal, alerts and cron sweeps, and this branch's own
+> code) is also fixed there. What changes for you once merged:
+> - **Commitments are internal by default.** The client portal shows only commitments
+>   an admin ticks "Show this commitment to the client" on; it used to show all of them,
+>   internal notes and staff emails included. Documents keep their approval step, which
+>   now actually shares the document when approved.
+> - **Invoices move draft → issued → paid/overdue → void**, and a paid invoice cannot go
+>   back to draft. Marking one paid by hand dates the payment; re-saving an invoice that
+>   was already paid does not re-date it.
+> - Request bodies are limited (1 MB, 3 MB for CSV imports, 16 KB on public routes);
+>   money amounts must be real numbers up to 1,000,000,000,000.
+> - Five wrong passwords lock an account for 15 minutes, counted even when the guesses
+>   arrive at once; the count clears when the lock ends.
+> - Three owner decisions were added to the canonical document: email verification
+>   (O-20), the portal link format (O-21) and what members may export or archive (O-22).
+>
 > **2026-09-28 update — read before §1.** The owner merged this branch and Railway
 > deployed it: deployment `1f809799-a4a2-4dc9-9e38-8d19ba1b282d`, commit
 > `c9f5a6ec27e14682d49c055a57477e78b80231ef`, SUCCESS at 2026-09-28T05:25Z. Its boot log
