@@ -412,7 +412,7 @@ async def list_cases(db, tenant_id: str, *, state: Optional[str] = "open",
 
 
 async def list_unplanned(db, tenant_id: str, *, limit: int = 200) -> list[dict]:
-    """Open cases that have never been planned for.
+    """Open cases with no plan: never planned, or whose plan lapsed and was released.
 
     A case created from a work item is reached by the composer through that item. A case
     with no work item — a missed call, a web enquiry, anything that never was a CRM record
@@ -420,10 +420,26 @@ async def list_unplanned(db, tenant_id: str, *, limit: int = 200) -> list[dict]:
     """
     docs = await db[COLLECTION].find({
         "tenant_id": tenant_id,
-        "state": {"$in": [DETECTED]},
+        "state": {"$in": [DETECTED, PLANNED]},
         "plan_reference": None,
     }).sort("created_at", 1).to_list(int(limit))
     return [_public(d) for d in docs]
+
+
+async def release_plan(db, *, tenant_id: str, case_id: str,
+                       actor: str = "system") -> Optional[dict]:
+    """Clear a `planned` case's plan so the next sweep plans it afresh.
+
+    Used when a plan lapsed or was withdrawn. Without it the case kept a reference to a
+    dead plan, and nothing ever selected it again.
+    """
+    updated = await db[COLLECTION].find_one_and_update(
+        {"id": case_id, "tenant_id": tenant_id, "state": PLANNED},
+        {"$set": {"plan_reference": None, "approval_reference": None,
+                  "updated_at": _iso(_now())},
+         "$push": {"history": _history("plan_released", actor, {})}},
+        return_document=True)
+    return _public(updated)
 
 
 async def attach(db, *, tenant_id: str, case_id: str, actor: str = "system",

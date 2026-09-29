@@ -404,7 +404,7 @@ def test_a_non_crm_case_reaches_the_planner_safely(env):
     strategy = run(rs.compose_for_case(db, TENANT, case))
     assert strategy["lane"] == "needs_human_triage", (
         "with no owner and no contact the planner must say so, not invent a motion")
-    assert strategy["rule"] == "insufficient_context"
+    assert strategy["rule"] == "inbound_demand.no_email_route"
     assert strategy["blocked_reasons"] == [] or all(strategy["steps"])
 
     linked = run(rc.get_case(db, TENANT, case["id"]))
@@ -423,7 +423,11 @@ def test_a_resolved_non_crm_case_can_reach_a_real_lane(env):
     case = run(rc.attach(db, tenant_id=TENANT, case_id=case["id"], contact_id="con_ours"))
 
     strategy = run(rs.compose_for_case(db, TENANT, case))
-    assert strategy["lane"] == "written_followup"
+    # A real, executable lane that says what is actually waiting -- not the stalled-deal
+    # reasoning ("idle N days at stage 'unknown'") a missed call used to receive.
+    assert strategy["lane"] == "respond_to_waiting_contact"
+    assert "missed call" in strategy["rationale"]
+    assert any(step["channel"] == "email" for step in strategy["steps"])
 
 
 def test_the_planner_refuses_a_case_from_another_tenant(env):
@@ -652,3 +656,116 @@ def test_the_sweep_does_not_plan_the_same_case_twice(env):
     }], db=db))
     summary = run(rs.compose_for_tenant(db, queue, TENANT))
     assert summary["strategies_composed"] == 1, summary
+
+
+# ------------------------------------------------------- the plan's lifecycle
+#
+# Each of these is a way the composer sweep, which runs every hour, used to undo or
+# block work that had already moved on. A review found them by running the sweep twice.
+
+def _approve_plan(db, strategy):
+    import approval_queue as aq
+    run(aq.decide(db, tenant_id=TENANT, approval_id=strategy["approval_id"],
+                  decision=aq.APPROVED, actor="admin@example.com"))
+    run(rs.set_state(db, TENANT, strategy["id"], state=rs.STATE_APPROVED,
+                     actor="admin@example.com"))
+
+
+def test_a_later_sweep_never_moves_a_running_case_back(env):
+    """A regression this branch introduced and fixed: re-linking the approved plan moved
+    an executing case back to `approved` on every sweep, so it re-ran hourly and could
+    never be engaged."""
+    import recovery_runner as runner
+
+    db, queue = env
+    seed_dormant_opportunity(db)
+    run(second_chance.run_detection(db, queue, TENANT))
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    case = run(rc.list_cases(db, TENANT))[0]
+    _approve_plan(db, run(rs.get_strategy(db, TENANT, case["plan_reference"])))
+    run(runner.run_case(db, tenant_id=TENANT, case_id=case["id"]))
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.EXECUTING
+
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    after = run(rc.get_case(db, TENANT, case["id"]))
+    assert after["state"] == rc.EXECUTING
+    moves = [entry["action"] for entry in after["history"]]
+    assert moves.count(rc.APPROVED) == 1, moves
+
+
+def test_a_full_queue_does_not_starve_the_other_sources(env):
+    """With a hundred open Second Chance items, cases from every other source used to get
+    a planning budget of zero."""
+    db, queue = env
+    for index in range(rs.COMPOSE_LIMIT):
+        run(queue.enqueue(tenant_id=TENANT, queue=second_chance.QUEUE_NAME,
+                          item_type=second_chance.TYPE_STALLED_LEAD,
+                          payload={"record_id": f"opp_{index}", "record_kind": "opportunity",
+                                   "title": "Idle", "reason": "Idle"},
+                          dedupe_key=f"filler:{index}", actor="test"))
+    missed = run(rc.open_case(db, missed_call_event()))
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    assert run(rc.get_case(db, TENANT, missed["id"]))["plan_reference"]
+
+
+def test_a_lapsed_plan_is_replanned_and_a_rejected_one_is_left_for_a_person(env):
+    import approval_queue as aq
+
+    db, queue = env
+    lapsed = run(rc.open_case(db, missed_call_event()))
+    rejected = run(rc.open_case(db, missed_call_event()))
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    lapsed_plan = run(rc.get_case(db, TENANT, lapsed["id"]))["plan_reference"]
+    rejected_plan = run(rc.get_case(db, TENANT, rejected["id"]))["plan_reference"]
+
+    run(db[aq.COLLECTION].update_one(
+        {"id": run(rs.get_strategy(db, TENANT, lapsed_plan))["approval_id"]},
+        {"$set": {"expires_at": "2000-01-01T00:00:00+00:00"}}))
+    run(aq.expire_due(db, tenant_id=TENANT))
+    run(rs.release_lapsed(db, tenant_id=TENANT))
+    rejected_strategy = run(rs.get_strategy(db, TENANT, rejected_plan))
+    run(aq.decide(db, tenant_id=TENANT, approval_id=rejected_strategy["approval_id"],
+                  decision=aq.REJECTED, actor="admin@example.com"))
+    run(rs.set_state(db, TENANT, rejected_plan, state=rs.STATE_REJECTED,
+                     actor="admin@example.com"))
+
+    released = run(rc.get_case(db, TENANT, lapsed["id"]))
+    assert released["state"] == rc.PLANNED and released["plan_reference"] is None
+
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    replanned = run(rc.get_case(db, TENANT, lapsed["id"]))
+    assert replanned["state"] == rc.AWAITING_APPROVAL
+    assert replanned["plan_reference"] and replanned["plan_reference"] != lapsed_plan
+
+    left = run(rc.get_case(db, TENANT, rejected["id"]))
+    assert left["state"] == rc.PLANNED and left["plan_reference"] == rejected_plan, \
+        "a plan a person rejected is not re-proposed every hour"
+
+
+def test_one_case_holds_one_plan_even_when_its_work_item_comes_back(env):
+    """Resolving the Second Chance item and re-detecting the record used to compose a
+    second plan and repoint the approved case at it; the runner then refused the case."""
+    import recovery_runner as runner
+
+    db, queue = env
+    seed_dormant_opportunity(db)
+    run(second_chance.run_detection(db, queue, TENANT))
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    case = run(rc.list_cases(db, TENANT))[0]
+    plan = run(rs.get_strategy(db, TENANT, case["plan_reference"]))
+    _approve_plan(db, plan)
+
+    item = run(queue.list_items(tenant_id=TENANT, status="open",
+                                queue=second_chance.QUEUE_NAME))[0]
+    run(queue.resolve(item["id"], tenant_id=TENANT, actor="owner@example.com",
+                      resolution="handled"))
+    run(second_chance.run_detection(db, queue, TENANT))
+    run(rs.compose_for_tenant(db, queue, TENANT))
+
+    after = run(rc.get_case(db, TENANT, case["id"]))
+    assert after["plan_reference"] == plan["id"]
+    assert after["approval_reference"] == plan["approval_id"]
+    assert len(run(rs.list_strategies(db, TENANT))) == 1
+    run(runner.run_case(db, tenant_id=TENANT, case_id=case["id"]))
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.EXECUTING

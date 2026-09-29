@@ -171,7 +171,7 @@ def test_a_draft_estimate_nobody_sent_is_not_chased(env):
 
 def test_an_unanswered_quote_is_a_separate_source_from_an_estimate(env):
     db, _ = env
-    insert(db, "documents", {"title": "Fit-out quote", "kind": "quote", "status": "sent",
+    insert(db, "client_documents", {"title": "Fit-out quote", "kind": "quote", "status": "sent",
                              "total": 18000.0, "created_at": ago(days=20)})
     found = run(detectors.detect_unanswered_quotes(db, TENANT))
     assert len(found) == 1
@@ -181,7 +181,7 @@ def test_an_unanswered_quote_is_a_separate_source_from_an_estimate(env):
 
 def test_an_ordinary_document_is_not_treated_as_a_quote(env):
     db, _ = env
-    insert(db, "documents", {"title": "Scope note", "kind": "document", "status": "sent",
+    insert(db, "client_documents", {"title": "Scope note", "kind": "document", "status": "sent",
                              "created_at": ago(days=30)})
     assert run(detectors.detect_unanswered_quotes(db, TENANT)) == []
 
@@ -336,7 +336,7 @@ def _seed_one_of_everything(db, *, tenant_id=TENANT):
                                          "received_at": ago(days=2)}, tenant_id=tenant_id)
     insert(db, "estimates", {"title": "E", "status": "sent", "total": 100.0,
                              "created_at": ago(days=14)}, tenant_id=tenant_id)
-    insert(db, "documents", {"title": "Q", "kind": "quote", "status": "sent",
+    insert(db, "client_documents", {"title": "Q", "kind": "quote", "status": "sent",
                              "total": 200.0, "created_at": ago(days=14)},
            tenant_id=tenant_id)
     _conversation_with(db, statuses=[(cv.SENT, 10)], tenant_id=tenant_id)
@@ -444,3 +444,25 @@ def test_one_broken_lane_does_not_stop_the_others(env, monkeypatch):
     summary = run(detectors.run_detection(db, queue, TENANT))
     assert summary["by_lane"]["missed_calls"]["error"]
     assert summary["detected"] == 7
+
+
+# ----------------------------------------------- records the CRM actually writes
+
+def test_a_quote_shared_through_the_crm_is_detected(env):
+    """The CRM records a quote sent to a client as a `client_documents` row with status
+    `shared`. The detector used to read a `documents` collection nothing writes."""
+    db, _ = env
+    insert(db, "client_documents", {"title": "Kitchen quote", "kind": "quote",
+                                    "status": "shared", "created_at": ago(days=20),
+                                    "updated_at": ago(days=20)})
+    assert len(run(detectors.detect_unanswered_quotes(db, TENANT))) == 1
+
+
+def test_an_appointment_a_person_marked_no_show_is_detected_at_once(env):
+    """The CRM accepts status `no_show`; detection used to ignore it, so marking a
+    no-show inside the grace period prevented the case from ever opening."""
+    db, _ = env
+    insert(db, "appointments", {"title": "Site visit", "status": "no_show",
+                                "start_at": ago(hours=1), "end_at": ago()})
+    found = run(detectors.detect_no_shows(db, TENANT))
+    assert len(found) == 1

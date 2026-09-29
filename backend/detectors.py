@@ -87,13 +87,16 @@ ANSWERED_CALL_OUTCOMES = ("answered", "connected", "completed")
 QUOTE_KINDS = ("quote", "proposal", "pricing")
 
 # Statuses that mean a priced offer is out with the client and undecided.
-OPEN_OFFER_STATUSES = ("sent", "issued", "awaiting_response", "pending")
+# `shared` is how the CRM's own documents record that a quote went to the client.
+OPEN_OFFER_STATUSES = ("sent", "issued", "awaiting_response", "pending", "shared")
 DECIDED_OFFER_STATUSES = ("approved", "accepted", "rejected", "declined", "won", "lost",
                           "invoiced", "cancelled", "expired", "withdrawn")
 
 CANCELLED_APPOINTMENT_STATUSES = ("cancelled", "canceled")
 COMPLETED_APPOINTMENT_STATUSES = ("completed", "done", "attended", "fulfilled")
 PENDING_APPOINTMENT_STATUSES = ("scheduled", "confirmed", "booked")
+# Marked explicitly by a person. The CRM accepts it, so detection must too.
+NO_SHOW_STATUSES = ("no_show", "no-show", "noshow")
 
 # External events worth recovering. An event kind nobody declared is ignored rather than
 # guessed at: an unknown event is not an opportunity, it is an unknown.
@@ -324,7 +327,9 @@ async def _detect_open_offers(db: Any, tenant_id: str, *, collection: str, detec
 async def detect_unanswered_quotes(db: Any, tenant_id: str, *,
                                    grace_days: int = QUOTE_GRACE_DAYS) -> list[dict]:
     return await _detect_open_offers(
-        db, tenant_id, collection="documents", detector_type=TYPE_UNANSWERED_QUOTE,
+        # The CRM writes quotes and proposals to `client_documents`; `documents` was
+        # never written by anything, so this lane could not fire.
+        db, tenant_id, collection="client_documents", detector_type=TYPE_UNANSWERED_QUOTE,
         grace_days=grace_days, kinds=QUOTE_KINDS, label="quote")
 
 
@@ -452,7 +457,7 @@ async def detect_no_shows(db: Any, tenant_id: str, *,
     cutoff = now - timedelta(hours=max(0, int(grace_hours)))
     appointments = await db.appointments.find(
         {"tenant_id": tenant_id,
-         "status": {"$in": list(PENDING_APPOINTMENT_STATUSES)}},
+         "status": {"$in": list(PENDING_APPOINTMENT_STATUSES + NO_SHOW_STATUSES)}},
         {"_id": 0}).sort("start_at", -1).to_list(DETECTION_LIMIT)
     responded = await _responded_records(db, tenant_id, "appointment",
                                          [a["id"] for a in appointments])
@@ -462,7 +467,10 @@ async def detect_no_shows(db: Any, tenant_id: str, *,
         if appointment["id"] in responded:
             continue
         end = _parse(appointment.get("end_at")) or _parse(appointment.get("start_at"))
-        if not end or end > cutoff:
+        marked = _status(appointment.get("status")) in NO_SHOW_STATUSES
+        # A person marking the no-show is the evidence; the grace period only exists for
+        # bookings nobody has updated yet.
+        if not end or (end > cutoff and not marked):
             continue
         elapsed = _hours(now - end)
         detections.append({

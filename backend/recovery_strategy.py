@@ -339,6 +339,45 @@ def select_lane(candidate: dict, context: dict) -> dict:
             ],
         }
 
+    # --- sources that are not a stalled deal ----------------------------------
+    # A missed call, a web enquiry, an unanswered offer or a missed appointment is
+    # someone waiting on us. The stalled-deal branches below reason about idle days and
+    # pipeline stage, which these records do not have, and would give the approver the
+    # wrong rationale.
+    if item_type.startswith("recovery_case."):
+        source = item_type.split(".", 1)[1].replace("_", " ")
+        reason = (candidate.get("payload") or {}).get("reason") or "It has had no response."
+        identity = evidence.get("external_identity") or {}
+        reachable_by_email = has_contact or identity.get("kind") == "email"
+        if not reachable_by_email:
+            return {
+                "lane": "needs_human_triage",
+                "rule": "inbound_demand.no_email_route",
+                "rationale": (
+                    f"A {source} is waiting on a response ({reason}), but there is no known "
+                    f"contact or email address to answer it on. A person needs to reach "
+                    f"them by whatever route the source provides."),
+                "steps": [
+                    _step("triage_contact", CHANNEL_INTERNAL,
+                          "Identify the person and the right way to reach them."),
+                ],
+            }
+        return {
+            "lane": "respond_to_waiting_contact",
+            "rule": "inbound_demand.reachable",
+            "rationale": (
+                f"A {source} is waiting on a response: {reason} A short written reply "
+                f"that answers it directly is the proportionate next step."),
+            "steps": [
+                _step("draft_response", CHANNEL_INTERNAL,
+                      "Draft a reply that answers what they asked, referencing the original."),
+                _step("send_response", CHANNEL_EMAIL,
+                      "Send the reply and record it against the case."),
+                _step("schedule_followup", CHANNEL_INTERNAL,
+                      "Set a dated checkpoint for their answer."),
+            ],
+        }
+
     # --- stalled lead lanes ----------------------------------------------------
     if context.get("open_commitments"):
         return {
@@ -531,6 +570,12 @@ async def _link_plan_to_case(db, tenant_id: str, case_id: str, strategy: dict,
     with no plan, so no stalled-lead or missed-follow-up recovery could ever be approved
     or run.
     """
+    current = await recovery_case.get_case(db, tenant_id, case_id) or {}
+    if current.get("state") not in (recovery_case.DETECTED, recovery_case.PLANNED,
+                                    recovery_case.AWAITING_APPROVAL):
+        # Approved, running, engaged or finished: its plan is settled. Re-linking here
+        # once moved an executing case back to `approved` on every sweep.
+        return
     await recovery_case.attach(db, tenant_id=tenant_id, case_id=case_id, actor=actor,
                                plan_reference=strategy["id"],
                                approval_reference=strategy.get("approval_id"))
@@ -555,6 +600,34 @@ async def _link_plan_to_case(db, tenant_id: str, case_id: str, strategy: dict,
             pass
 
 
+def _plan_key(candidate: dict) -> Optional[str]:
+    """What a live plan is unique to: the recovery case where there is one.
+
+    Plans used to be keyed by whichever route found the candidate -- the work item, or
+    the case itself -- so one case could hold two live plans, and the second repointed
+    the case's approval away from the one a person had already approved.
+    """
+    case_id = candidate.get("recovery_case_id") or \
+        (candidate.get("payload") or {}).get("recovery_case_id")
+    return f"case:{case_id}" if case_id else candidate.get("id")
+
+
+def _needs_plan(case: dict) -> bool:
+    """Whether the composer should (re)plan this case.
+
+    `awaiting_approval` is re-checked so a materially changed recommendation replaces the
+    pending one. A case already approved, running or engaged is never re-planned -- the
+    sweep once moved an executing case back to `approved` every hour. A `planned` case
+    whose plan was rejected is left for a person: re-proposing the same plan every hour
+    would nag the person who just said no. One whose plan lapsed has its plan cleared
+    and is planned afresh.
+    """
+    state = case.get("state")
+    if state in (recovery_case.DETECTED, recovery_case.AWAITING_APPROVAL):
+        return True
+    return state == recovery_case.PLANNED and not case.get("plan_reference")
+
+
 async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
                                 actor: str = "recovery-composer",
                                 channels: Optional[dict] = None) -> dict:
@@ -571,6 +644,7 @@ async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
 
     blocked_reasons = sorted({s["blocked_reason"] for s in steps if s["blocked_reason"]})
     candidate_id = candidate.get("id")
+    plan_key = _plan_key(candidate)
     now = _now()
 
     strategy = {
@@ -595,12 +669,12 @@ async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
         "composed_by": actor,
         "created_at": _iso(now),
         "updated_at": _iso(now),
-        "active_candidate_key": candidate_id,
+        "active_candidate_key": plan_key,
         "approval_id": None,
     }
 
     existing = await db[COLLECTION].find_one(
-        {"tenant_id": tenant_id, "active_candidate_key": candidate_id}) if candidate_id else None
+        {"tenant_id": tenant_id, "active_candidate_key": plan_key}) if plan_key else None
 
     if existing and existing.get("state") == STATE_APPROVED:
         # An approved plan is not re-proposed. Nothing executes it yet, so a sweep that
@@ -736,9 +810,10 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
         try:
             case_id = (candidate.get("payload") or {}).get("recovery_case_id")
             case = (await recovery_case.get_case(db, tenant_id, case_id)) if case_id else None
-            if case and case.get("state") in recovery_case.TERMINAL_STATES:
-                # The recovery already ended; a fresh plan and approval for it would be
-                # work nobody is going to do. Same rule as the case route.
+            if case and not _needs_plan(case):
+                # Ended, already approved or running, or a plan a person rejected: a
+                # fresh plan and approval would be work nobody is going to do, or undo a
+                # decision already made.
                 planned_case_ids.add(case["id"])
                 continue
             strategy = await compose_for_candidate(db, tenant_id, candidate, actor=actor,
@@ -750,9 +825,9 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
         except Exception as exc:  # one bad candidate must not stop the sweep
             errors.append({"candidate_id": candidate.get("id"), "error": str(exc)[:300]})
 
-    remaining = max(0, limit - len(candidates))
-    cases = (await recovery_case.list_unplanned(db, tenant_id, limit=remaining)
-             if remaining else [])
+    # Cases get a budget of their own. Sharing one with the queue meant a tenant with a
+    # hundred open Second Chance items never had a missed call or a web enquiry planned.
+    cases = await recovery_case.list_unplanned(db, tenant_id, limit=limit)
     for case in cases:
         if case["id"] in planned_case_ids:
             continue
@@ -858,7 +933,12 @@ async def _sync_case_with_decision(db, tenant_id: str, strategy: dict, state: st
             detail={"plan": strategy["id"], "decision": state})
     except recovery_case.InvalidCaseTransition:
         # Moved concurrently; the case is wherever a person or another decision put it.
-        pass
+        return
+    if state == STATE_WITHDRAWN:
+        # Nobody decided (it lapsed) or it was withdrawn: release the case so the next
+        # sweep proposes afresh. A rejected plan keeps its reference -- a person said no,
+        # and the case waits for a person rather than being asked again every hour.
+        await recovery_case.release_plan(db, tenant_id=tenant_id, case_id=case["id"])
 
 
 async def release_lapsed(db, *, tenant_id: Optional[str] = None,
