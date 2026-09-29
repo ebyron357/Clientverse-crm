@@ -466,3 +466,80 @@ def test_an_appointment_a_person_marked_no_show_is_detected_at_once(env):
                                 "start_at": ago(hours=1), "end_at": ago()})
     found = run(detectors.detect_no_shows(db, TENANT))
     assert len(found) == 1
+
+
+# ------------------------------------------------------- "somebody already answered"
+#
+# The check used to look only at activities and tasks related to the enquiry record
+# itself -- relation types the CRM refuses -- so it could never match, and every answered
+# enquiry still became a recovery case a day later.
+
+def _old_enquiry(db, email="asker@visitor.example"):
+    insert(db, "web_enquiries", {"email": email, "message": "Quote please",
+                                 "status": "new", "received_at": ago(hours=48)})
+
+
+def test_an_enquiry_answered_by_email_is_not_a_recovery(env):
+    db, _ = env
+    _old_enquiry(db)
+    insert(db, "communication_messages", {"direction": "outbound", "status": "sent",
+                                          "to_address": "Asker@Visitor.example",
+                                          "sent_at": ago(hours=40)})
+    assert run(detectors.detect_web_enquiries(db, TENANT)) == []
+
+
+def test_an_enquiry_answered_by_a_logged_call_is_not_a_recovery(env):
+    db, _ = env
+    _old_enquiry(db)
+    insert(db, "crm_activities", {"type": "call", "participants": ["asker@visitor.example"],
+                                  "occurred_at": ago(hours=30)})
+    assert run(detectors.detect_web_enquiries(db, TENANT)) == []
+
+
+def test_an_enquiry_whose_contact_was_worked_is_not_a_recovery(env):
+    db, _ = env
+    _old_enquiry(db)
+    insert(db, "contacts", {"id": "con_asker", "email": "asker@visitor.example"})
+    insert(db, "crm_activities", {"type": "email", "related_type": "contact",
+                                  "related_id": "con_asker", "occurred_at": ago(hours=20)})
+    assert run(detectors.detect_web_enquiries(db, TENANT)) == []
+
+
+def test_contact_before_the_enquiry_or_with_someone_else_does_not_count(env):
+    db, _ = env
+    _old_enquiry(db)
+    insert(db, "communication_messages", {"direction": "outbound", "status": "sent",
+                                          "to_address": "asker@visitor.example",
+                                          "sent_at": ago(hours=72)})
+    insert(db, "communication_messages", {"direction": "outbound", "status": "sent",
+                                          "to_address": "someone.else@visitor.example",
+                                          "sent_at": ago(hours=10)})
+    insert(db, "communication_messages", {"direction": "outbound", "status": "draft",
+                                          "to_address": "asker@visitor.example",
+                                          "sent_at": ago(hours=10)})
+    assert len(run(detectors.detect_web_enquiries(db, TENANT))) == 1
+
+
+def test_another_tenants_contact_with_the_address_does_not_count(env):
+    db, _ = env
+    _old_enquiry(db)
+    insert(db, "communication_messages", {"direction": "outbound", "status": "sent",
+                                          "to_address": "asker@visitor.example",
+                                          "sent_at": ago(hours=10)}, tenant_id="ten_other")
+    assert len(run(detectors.detect_web_enquiries(db, TENANT))) == 1
+
+
+def test_a_person_acting_on_an_appointment_counts_and_a_system_event_does_not(env):
+    db, _ = env
+    insert(db, "appointments", {"id": "apt_acted", "title": "Visit", "status": "scheduled",
+                                "start_at": ago(hours=6), "end_at": ago(hours=5)})
+    insert(db, "appointments", {"id": "apt_system", "title": "Visit", "status": "scheduled",
+                                "start_at": ago(hours=6), "end_at": ago(hours=5)})
+    insert(db, "domain_events", {"event_type": "appointment.updated",
+                                 "resource_type": "appointment", "resource_id": "apt_acted",
+                                 "actor": "owner@example.com"})
+    insert(db, "domain_events", {"event_type": "appointment.created",
+                                 "resource_type": "appointment", "resource_id": "apt_system",
+                                 "actor": "owner@example.com"})
+    found = {d["record_id"] for d in run(detectors.detect_no_shows(db, TENANT))}
+    assert found == {"apt_system"}

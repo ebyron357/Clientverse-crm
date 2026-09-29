@@ -32,6 +32,7 @@ guessed would manufacture recovery opportunities out of ordinary business.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -166,7 +167,51 @@ async def _responded_records(db: Any, tenant_id: str, related_type: str,
         {"_id": 0, "related_id": 1}).to_list(5000)
     responded.update(row["related_id"] for row in tasks if row.get("related_id"))
 
+    # A person acting on the record itself -- a status change, a reschedule -- leaves a
+    # domain event naming it. The record arriving does too, and that is not a response.
+    events = await db.domain_events.find(
+        {"tenant_id": tenant_id, "resource_type": related_type,
+         "resource_id": {"$in": record_ids},
+         "event_type": {"$not": {"$regex": r"\.(received|created|recorded)$"}},
+         "actor": {"$not": {"$regex": r"^(intake_token:|cron$|recovery-|system$)"}}},
+        {"_id": 0, "resource_id": 1}).to_list(5000)
+    responded.update(row["resource_id"] for row in events if row.get("resource_id"))
+
     return responded
+
+
+async def _contacted_since(db: Any, tenant_id: str, email: str, since: datetime) -> bool:
+    """Whether anyone reached this address after `since`.
+
+    For an enquiry the response that matters is the one that went to the person who
+    asked, and it lands on their address rather than on the enquiry record: a message
+    this system sent them, or a call, email or meeting someone logged with them.
+    """
+    address = email.strip().lower()
+    if not address:
+        return False
+    after = since.isoformat()
+    exact = {"$regex": f"^{re.escape(address)}$", "$options": "i"}
+    sent = await db.communication_messages.find_one(
+        {"tenant_id": tenant_id, "direction": "outbound",
+         "status": {"$in": ["sent", "delivered"]}, "to_address": exact,
+         "sent_at": {"$gte": after}}, {"_id": 1})
+    if sent:
+        return True
+    logged = await db.crm_activities.find_one(
+        {"tenant_id": tenant_id, "participants": exact,
+         "occurred_at": {"$gte": after}}, {"_id": 1})
+    if logged:
+        return True
+    contacts = await db.contacts.find({"tenant_id": tenant_id, "email": exact},
+                                      {"_id": 0, "id": 1}).to_list(5)
+    if not contacts:
+        return False
+    on_contact = await db.crm_activities.find_one(
+        {"tenant_id": tenant_id, "related_type": "contact",
+         "related_id": {"$in": [c["id"] for c in contacts]},
+         "occurred_at": {"$gte": after}}, {"_id": 1})
+    return bool(on_contact)
 
 
 # --------------------------------------------------------------------- the lanes
@@ -249,8 +294,10 @@ async def detect_web_enquiries(db: Any, tenant_id: str, *,
         received = _parse(enquiry.get("received_at"))
         if not received or received > cutoff:
             continue
-        waited = _hours(now - received)
         email = (enquiry.get("email") or "").strip()
+        if email and await _contacted_since(db, tenant_id, email, received):
+            continue
+        waited = _hours(now - received)
         detections.append({
             "tenant_id": tenant_id,
             "type": TYPE_WEB_ENQUIRY,

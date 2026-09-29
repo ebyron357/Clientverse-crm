@@ -559,10 +559,19 @@ runner, attribution, the email adapter and email reply ingestion — are deploye
    message the mirror records first must not stop the sweep applying the reply's effects
    to its case.
 3. ~~Per-lane / per-period attribution reporting~~ — **done on the branch** (see M-10).
-4. **Twenty-derived UX refinements (E-17)** on surfaces already being touched.
-5. **Design-first modules** (each needs a written contract before code): Calendar (M-05,
+4. ~~The "already responded" check could never match~~ — **fixed on the branch**: an
+   enquiry is answered when a message was sent, or a call/email/meeting logged, to its
+   address (or on the contact with that address) after it arrived; any record is acted
+   on when a person's domain event names it. Quotes and estimates still rely on their
+   own status for "the client answered", which is what the lane means.
+5. **Twenty-derived UX refinements (E-17)** on surfaces already being touched.
+6. **Design-first modules** (each needs a written contract before code): Calendar (M-05,
    also gated on O-01), Workflows (M-06), Support (M-09), Migration (M-12), Knowledge
    (M-13), the CRM ↔ workforce contract (E-11 / §8 #21), and revenue forecast (M-08).
+
+**Owner-side verification this code cannot do for itself:** on the first real Gmail send,
+whether `message_id_rewritten` is false (OWNER_HANDOFF §8.5) — it decides whether
+reconciliation can ever conclude "not sent" unaided.
 
 **Blocked for agents, not for lack of code:** production certification of any head
 (O-15 — the session egress policy refuses the Railway host), CI as a gate (O-16), and
