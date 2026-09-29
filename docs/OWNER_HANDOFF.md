@@ -348,11 +348,14 @@ trigger it from the Actions tab.
 
 **Verify:** the reply appears as an inbound message on the same conversation,
 `GET /api/inbound/unmatched` does **not** contain it, and the contact's timeline shows
-it.
+it. (With the branch merged, replies that could not be placed with evidence are listed
+at the top of Operations → Conversations, where a person can place each one.)
 
 ### 8.7 Confirm one recovery outcome and check the claim
 
-`POST /api/attribution/outcomes` with the case id and a paid invoice id.
+`POST /api/attribution/outcomes` with the case id and a paid invoice id — or, with the
+branch merged, Recovery Proof → open the case → **Record an outcome** (admin). The form
+only points at the record; the claim, basis and amount are derived by the server.
 
 **Verify:** on a case where a message actually reached the client, the entry comes back
 `claim: attributed` with `basis: reply_after_contact` or `delivered_contact` and the

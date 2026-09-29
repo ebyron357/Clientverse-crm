@@ -634,16 +634,20 @@ function ConversationsPanel({ isAdmin }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState({ state: "granted", basis: "" });
+  const [unmatched, setUnmatched] = useState([]);
+  const [placement, setPlacement] = useState({});
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [list, totals] = await Promise.all([
+      const [list, totals, parked] = await Promise.all([
         api.get("/conversations", { params: { status: "open", limit: 100 } }),
         api.get("/conversations/summary"),
+        api.get("/inbound/unmatched", { params: { status: "open", limit: 100 } }),
       ]);
       setThreads(list.data || []);
       setSummary(totals.data || null);
+      setUnmatched(parked.data?.items || []);
     } catch (e) {
       setThreads([]);
       setError(formatErr(e.response?.data?.detail) || "Conversations could not be read.");
@@ -700,6 +704,36 @@ function ConversationsPanel({ isAdmin }) {
     }
   };
 
+  // A reply the server could not place with evidence waits here for a person. Placing it
+  // is recorded as a person's decision, never as a match the system made.
+  const place = async (item) => {
+    const conversationId = placement[item.id];
+    if (!conversationId) return;
+    setBusy(true);
+    try {
+      await api.post(`/inbound/unmatched/${item.id}/assign`, { conversation_id: conversationId });
+      toast.success("Reply placed in the conversation");
+      await load();
+    } catch (e) {
+      toast.error(formatErr(e.response?.data?.detail) || "The reply could not be placed");
+    } finally { setBusy(false); }
+  };
+
+  // The only thing an operator may do with a dispatch nobody observed: ask the provider.
+  // Never a resend.
+  const reconcile = async (message) => {
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/messages/${message.id}/reconcile`);
+      toast.success(`Provider says: ${data.status.replace(/_/g, " ")}`);
+    } catch (e) {
+      toast.error(formatErr(e.response?.data?.detail) || "The provider could not be asked");
+    } finally {
+      setBusy(false);
+      await open(selected);
+    }
+  };
+
   if (threads === null) return <SurfaceLoading rows={3} testid="conversations-loading" />;
   if (error) return <SurfaceError title="Conversations unavailable" description={error}
                                   onRetry={load} testid="conversations-error" />;
@@ -733,6 +767,39 @@ function ConversationsPanel({ isAdmin }) {
             deployment has a Google OAuth client and the workspace has granted the send
             permission; until then every outbound attempt is refused with its reason.
           </p>
+        </div>
+      ) : null}
+
+      {unmatched.length ? (
+        <div className="mb-5 rounded-xl border border-amber-200 bg-white" data-testid="unmatched-inbound">
+          <div className="border-b border-amber-100 bg-amber-50/60 px-4 py-2 text-xs font-bold uppercase tracking-[0.12em] text-amber-900">
+            {unmatched.length} repl{unmatched.length === 1 ? "y" : "ies"} waiting to be placed
+          </div>
+          <div className="divide-y divide-slate-100">
+            {unmatched.map((item) => (
+              <div key={item.id} className="flex flex-wrap items-start gap-3 px-4 py-3" data-testid="unmatched-item">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-[#132038]">{item.subject || "(no subject)"}</div>
+                  <div className="text-[11px] text-slate-500">from {item.from_address || "unknown sender"}</div>
+                  <p className="mt-1 line-clamp-2 text-xs text-slate-600">{item.body}</p>
+                  <p className="mt-1 text-[11px] text-amber-700">Not placed automatically: {item.reason}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <label htmlFor={`place-${item.id}`} className="sr-only">Conversation</label>
+                  <select id={`place-${item.id}`} className="h-8 max-w-[14rem] rounded-md border border-slate-200 bg-white px-2 text-xs"
+                          value={placement[item.id] || ""}
+                          onChange={(e) => setPlacement({ ...placement, [item.id]: e.target.value })}>
+                    <option value="">Choose a conversation…</option>
+                    {threads.map((thread) => (
+                      <option key={thread.id} value={thread.id}>{thread.subject || thread.id}</option>
+                    ))}
+                  </select>
+                  <Button size="sm" variant="outline" className="h-8 text-xs" disabled={busy || !placement[item.id]}
+                          onClick={() => place(item)} data-testid="unmatched-place">Place</Button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
 
@@ -876,6 +943,12 @@ function ConversationsPanel({ isAdmin }) {
                           <Button size="sm" className="mt-2 h-7 cv-action-primary text-xs" disabled={busy}
                                   onClick={() => send(message)} data-testid="message-send">
                             Send
+                          </Button>
+                        ) : null}
+                        {isAdmin && message.status === "outcome_unknown" ? (
+                          <Button size="sm" variant="outline" className="mt-2 h-7 text-xs" disabled={busy}
+                                  onClick={() => reconcile(message)} data-testid="message-reconcile">
+                            Ask the provider what happened
                           </Button>
                         ) : null}
                       </div>

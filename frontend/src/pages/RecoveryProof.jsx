@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, formatErr } from "@/lib/api";
+import { toast } from "sonner";
+import { useAuth } from "@/context/AuthContext";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
@@ -60,7 +63,106 @@ function Counter({ icon: Icon, label, value, note }) {
   );
 }
 
+const OUTCOME_KINDS = [
+  { value: "invoice_paid", label: "Invoice paid", record: "Invoice id" },
+  { value: "deal_won", label: "Deal won", record: "Deal id" },
+  { value: "operator_confirmed", label: "Confirmed by me", record: "Reference" },
+];
+
+/**
+ * Record an outcome against a case. The form says what happened and points at the
+ * record; it cannot say whether this system caused it. The server derives the claim,
+ * its basis and the amount (from the invoice or deal itself) and returns its reasoning,
+ * which is shown as-is — including when the answer is "not attributed".
+ */
+function RecordOutcome({ caseId, sourceRecord, onRecorded }) {
+  const defaultDeal = sourceRecord?.collection === "opportunities" ? sourceRecord.id : "";
+  const [form, setForm] = useState({ kind: "invoice_paid", record_id: "", amount: "", currency: "USD", note: "" });
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const kind = OUTCOME_KINDS.find((option) => option.value === form.kind);
+
+  const submit = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const body = { case_id: caseId, kind: form.kind, record_id: form.record_id.trim(),
+                     note: form.note || null };
+      if (form.kind === "operator_confirmed") {
+        body.amount = Number(form.amount);
+        body.currency = form.currency || "USD";
+      }
+      const { data } = await api.post("/attribution/outcomes", body);
+      setResult(data);
+      toast.success(data.claim === "attributed" ? "Outcome recorded and attributed" : "Outcome recorded — not attributed");
+      onRecorded();
+    } catch (e) {
+      toast.error(formatErr(e.response?.data?.detail) || "The outcome could not be recorded");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mt-4 rounded-xl border border-gray-200 bg-white p-6 shadow-sm" data-testid="record-outcome">
+      <h3 className="font-display text-lg font-bold text-[#0a1628]">Record an outcome</h3>
+      <p className="mt-1 text-xs leading-5 text-gray-500">
+        Point at the record that shows money arrived. Whether this recovery gets the credit is decided from the
+        case&apos;s own messages, not from anything entered here.
+      </p>
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        <div className="text-[11px] text-gray-500">
+          <label htmlFor="outcome-kind">What happened</label>
+          <select id="outcome-kind" data-testid="outcome-kind"
+                  className="mt-1 block h-9 rounded-md border border-gray-200 bg-white px-2 text-sm"
+                  value={form.kind}
+                  onChange={(e) => setForm({ ...form, kind: e.target.value,
+                                             record_id: e.target.value === "deal_won" ? defaultDeal : form.record_id })}>
+            {OUTCOME_KINDS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+        <div className="text-[11px] text-gray-500">
+          <label htmlFor="outcome-record">{kind.record}</label>
+          <Input id="outcome-record" data-testid="outcome-record" className="mt-1 h-9 w-56 font-mono text-xs"
+                 value={form.record_id} onChange={(e) => setForm({ ...form, record_id: e.target.value })} />
+        </div>
+        {form.kind === "operator_confirmed" ? (
+          <>
+            <div className="text-[11px] text-gray-500">
+              <label htmlFor="outcome-amount">Amount</label>
+              <Input id="outcome-amount" data-testid="outcome-amount" type="number" min="0" step="0.01"
+                     className="mt-1 h-9 w-32" value={form.amount}
+                     onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+            </div>
+            <div className="text-[11px] text-gray-500">
+              <label htmlFor="outcome-currency">Currency</label>
+              <Input id="outcome-currency" className="mt-1 h-9 w-20 uppercase" maxLength={3}
+                     value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value.toUpperCase() })} />
+            </div>
+          </>
+        ) : null}
+        <div className="min-w-[12rem] flex-1 text-[11px] text-gray-500">
+          <label htmlFor="outcome-note">Note (optional)</label>
+          <Input id="outcome-note" className="mt-1 h-9" value={form.note}
+                 onChange={(e) => setForm({ ...form, note: e.target.value })} />
+        </div>
+        <Button className="h-9 cv-action-primary" disabled={busy || !form.record_id.trim()
+                  || (form.kind === "operator_confirmed" && !(Number(form.amount) > 0))}
+                onClick={submit} data-testid="outcome-submit">Record</Button>
+      </div>
+      {result ? (
+        <div className="mt-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-600" data-testid="outcome-result">
+          <span className="font-semibold">{result.claim === "attributed" ? "Attributed" : "Not attributed"}</span>
+          {" — "}{result.reason}
+          {result.case_updated === false && result.case_update_error ? (
+            <div className="mt-1 text-amber-700">The case was not updated: {result.case_update_error}</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function CaseProof({ caseId, onBack }) {
+  const { user } = useAuth();
   const [proof, setProof] = useState(null);
   const [loadError, setLoadError] = useState("");
 
@@ -142,6 +244,10 @@ function CaseProof({ caseId, onBack }) {
           </ul>
         )}
       </div>
+
+      {user?.role === "admin" && !proof.outcome.is_terminal ? (
+        <RecordOutcome caseId={proof.case.id} sourceRecord={proof.source_record} onRecorded={load} />
+      ) : null}
 
       {comms.outbound?.length > 0 && (
         <div className="mt-4 rounded-xl border border-gray-200 bg-white shadow-sm">

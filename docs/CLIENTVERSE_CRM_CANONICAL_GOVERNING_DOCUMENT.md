@@ -542,7 +542,7 @@ source. Owner-only items are §10.2. Updated 2026-09-29.
 
 **Done on branch `claude/vibrant-hypatia-6aabmc` (pushed; merge is O-17):**
 scheduler misfire detection and the declared schedule (§8 #4); the operator-only
-scheduler ledger; five recovery-loop defects (§3.3); scheduled recovery follow-up (E-06); consent and Send in the conversations UI; the proof breakdown and two proof-report fixes (M-10). Earlier items on this list — the
+scheduler ledger; five recovery-loop defects (§3.3); scheduled recovery follow-up (E-06); consent and Send in the conversations UI; the proof breakdown and two proof-report fixes (M-10); UI for the steps that were API-only — recording an outcome on a case (step 10), placing an unmatched reply, and asking the provider about an `outcome_unknown` dispatch. Earlier items on this list — the
 runner, attribution, the email adapter and email reply ingestion — are deployed at
 `c9f5a6e`.
 
