@@ -11,6 +11,10 @@ Three classes of mistake this catches, all of which have happened to this projec
 3. **Deployment configuration drifting from what the application needs** -- the
    healthcheck path in `railway.json` pointing somewhere that is not the health
    endpoint.
+4. **The scheduler drifting from the declared schedule.** Production judges every
+   cron job against `backend/cron_schedule.py` to detect misfires. If the workflow
+   drives a job on another cadence, or not at all, every alarm that raises is false
+   and every silence is untrustworthy -- so the two must agree exactly.
 
 Exit code 1 on any finding, with the file and the reason.
 """
@@ -75,6 +79,48 @@ def check_cron_paths() -> None:
               f"by this workflow")
 
 
+def _workflow_schedule(text: str) -> tuple[list[str], dict[str, str]]:
+    """The workflow's `on.schedule` crons, and job -> cron from its `case` mapping."""
+    crons = re.findall(r"-\s*cron:\s*'([^']+)'", text)
+    mapping: dict[str, str] = {}
+    for cron, group in re.findall(r"'([^']+)'\)\s+paths='([^']+)'", text):
+        for job in (part.strip() for part in group.split(",")):
+            if job:
+                mapping[job] = cron
+    return crons, mapping
+
+
+def check_schedule_matches_declaration() -> None:
+    workflow = ROOT / ".github/workflows/scheduled-jobs.yml"
+    if not workflow.exists():
+        return
+    sys.path.insert(0, str(ROOT / "backend"))
+    try:
+        import cron_schedule
+    except Exception as exc:  # pragma: no cover - reported, not raised
+        fail("backend/cron_schedule.py", f"cannot be imported: {exc}")
+        return
+    crons, mapping = _workflow_schedule(workflow.read_text())
+    for cron in crons:
+        if cron not in {c for c in mapping.values()}:
+            fail(str(workflow), f"schedule '{cron}' selects no endpoints")
+    declared = {job.job: job.cron for job in cron_schedule.SCHEDULE}
+    for job, cron in sorted(declared.items()):
+        if job not in mapping:
+            fail(str(workflow),
+                 f"does not schedule '{job}', which backend/cron_schedule.py declares on "
+                 f"'{cron}'; production would report it as never run")
+        elif mapping[job] != cron:
+            fail(str(workflow),
+                 f"schedules '{job}' on '{mapping[job]}' but backend/cron_schedule.py "
+                 f"declares '{cron}'; misfire detection would judge it against the wrong "
+                 f"cadence")
+    for job in sorted(set(mapping) - set(declared)):
+        fail(str(workflow),
+             f"schedules '{job}', which backend/cron_schedule.py does not declare, so "
+             f"nothing would notice if it stopped")
+
+
 def check_deployment_config() -> None:
     path = ROOT / "railway.json"
     if not path.exists():
@@ -106,6 +152,7 @@ def check_ci_gates() -> None:
 def main() -> int:
     check_scheduler_contract()
     check_cron_paths()
+    check_schedule_matches_declaration()
     check_deployment_config()
     check_ci_gates()
     if FINDINGS:

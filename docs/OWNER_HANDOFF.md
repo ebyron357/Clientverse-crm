@@ -381,12 +381,15 @@ nothing else.
 
 ## 10. How to check the system is alive, from now on
 
-Three questions, three endpoints, all admin-authenticated:
+Four questions, four endpoints. The two scheduler endpoints answer only the platform
+operator (the `ADMIN_EMAIL` administrator) or the cron secret, because they span every
+tenant:
 
 | Question | Endpoint | Healthy answer |
 |---|---|---|
 | Is the service up? | `GET /api/health` | `status: ok`, `database: up`, and a `git_sha` matching what you deployed |
 | Is the automation actually running? | `GET /api/cron/health` | `receiving_scheduled_traffic: true` and a recent `last_authenticated_call_at`. **`false` means the scheduler is not reaching production, regardless of what GitHub Actions reports** |
+| Is every job keeping to its schedule? | `GET /api/cron/schedule` (also Operations → Scheduler) | `healthy: true`. Otherwise each job names its problem — `rejected`, `never_run`, `overdue` (with `missed_ticks`), `stalled` or `failing` (with `last_error`); see `docs/RAILWAY_RUNBOOK.md` §6 |
 | Is the recovery engine producing anything? | `GET /api/proof/portfolio` | Cases detected, messages *actually sent* (not drafted), and attributed recovered value reported separately from open potential |
 
 If `receiving_scheduled_traffic` is `false` and the scheduler workflow is green, the

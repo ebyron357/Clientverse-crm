@@ -99,25 +99,58 @@ integrations never auto-sync, digests never send, and the durable work queue has
 worker — this is a configuration step, not a code deficiency.
 
 **The repository ships a driver for this.** `.github/workflows/scheduled-jobs.yml`
-calls every endpoint below on its documented cadence once two repository secrets are
-set: `CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET`. Until both exist the
-workflow exits without calling anything, so an unconfigured repository produces neither
-failing runs nor silently skipped work. Configure exactly one scheduler: if you prefer a
-dedicated service, disable that workflow rather than running both.
+calls every endpoint below on its declared cadence once two repository secrets are set:
+`CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET`. With either missing, every run
+**fails** with "Scheduler not configured" — it used to exit green without calling
+anything, which hid a scheduler that never ran for weeks. Configure exactly one
+scheduler: if you prefer a dedicated service, disable that workflow rather than running
+both.
 
-Wire an external scheduler (Railway Cron, n8n, or any HTTP-capable scheduler) to call, on
-the **production** domain:
+The cadences are declared once, in `backend/cron_schedule.py`, and
+`scripts/validate_config.py` fails the build if the workflow drives any job on a
+different cadence, drives a job that is not declared, or omits one that is. A
+replacement scheduler must use the same cadences, or production's misfire detection
+(below) will report its jobs as overdue.
 
-| Job | Path | Cadence |
+| Job | Path | Cadence (cron, UTC) | Grace before a tick counts as missed |
+|---|---|---|---|
+| Commitment risk | `POST /api/cron/commitment-risk` | `*/15 * * * *` | 30 min |
+| Work-queue worker | `POST /api/cron/work-queue` | `*/5 * * * *` — recovers leases abandoned by crashed workers, then claims and processes due durable jobs | 30 min |
+| Recovery runner | `POST /api/cron/recovery-runner` | `*/5 * * * *` — executes approved strategies up to the provider boundary | 30 min |
+| Integration sync | `POST /api/cron/integration-sync` | `0,30 * * * *` | 30 min |
+| Next best actions | `POST /api/cron/next-best-actions` | `0,30 * * * *` — recomputes the ranked recommendation queue | 30 min |
+| Inbound email | `POST /api/cron/inbound-email` | `10,40 * * * *` — pulls replies back into conversations | 30 min |
+| Reconcile unknown dispatches | `POST /api/cron/reconcile-unknown` | `10,40 * * * *` — asks the provider about sends whose outcome was never observed; never re-sends | 30 min |
+| Daily digest | `POST /api/cron/daily-digest` | `5 * * * *` (the job itself checks each tenant's configured local digest hour) | 45 min |
+| Second Chance detection | `POST /api/cron/second-chance` | `5 * * * *` — stalled leads and missed follow-ups | 45 min |
+| All detector families | `POST /api/cron/detect-recovery` | `5 * * * *` | 45 min |
+| Recovery strategy composition | `POST /api/cron/recovery-strategies` | `5 * * * *` — composition only; no outbound step executes while its channel is unauthorised | 45 min |
+| Approval expiry | `POST /api/cron/approval-expiry` | `5 * * * *` — lapses approval requests nobody decided | 45 min |
+
+### Misfire detection
+
+`GET /api/cron/schedule` judges every declared job against the ledger of requests
+production actually received (`cron_run_log`) and reports one status per job, worst
+first:
+
+| Status | Meaning | Usual fix |
 |---|---|---|
-| Commitment risk | `POST /api/cron/commitment-risk` | every 15 minutes |
-| Integration sync | `POST /api/cron/integration-sync` | every 30 minutes |
-| Daily digest | `POST /api/cron/daily-digest` | hourly (the job itself checks each tenant's configured local digest hour) |
-| Work-queue worker | `POST /api/cron/work-queue` | every 5 minutes — recovers leases abandoned by crashed workers, then claims and processes due durable jobs |
-| Second Chance detection | `POST /api/cron/second-chance` | hourly — detects stalled leads and missed follow-ups, then queues a recommendation refresh per tenant |
-| Next best actions | `POST /api/cron/next-best-actions` | every 30 minutes — recomputes the ranked recommendation queue |
-| Recovery strategy composition | `POST /api/cron/recovery-strategies` | hourly — composes a recovery strategy for every open Second Chance candidate and raises its approval request. Composition only: no outbound step can execute while its channel is unauthorised |
-| Approval expiry | `POST /api/cron/approval-expiry` | hourly — lapses approval requests nobody decided, so a stale request can never authorise an action |
+| `rejected` | The scheduler is calling, but with a secret production refuses | Make the scheduler's `WEBHOOK_CRON_SECRET` match the Railway variable exactly |
+| `never_run` | Production has no record of this job ever being requested (ledger keeps 30 days) | Configure the scheduler; if it is configured, it is not reaching production |
+| `overdue` | At least one scheduled tick passed its grace with no request; `missed_ticks` counts them | The scheduler stopped or was disabled (for GitHub Actions: billing / Actions settings) |
+| `stalled` | A run was accepted and never started (>10 min), or started and never finished (>30 min) — typically a redeploy mid-run | Usually self-heals on the next tick; persistent stalls mean the job hangs |
+| `failing` | The latest run that finished raised; `last_error` has the message | Read `/api/cron/runs?job=<job>&status=failed` and the service log |
+| `on_schedule` | None of the above | — |
+
+It is computed on read from evidence production already holds, so it still works when
+the scheduler is the thing that has stopped. `GET /api/cron/health` embeds the
+summary under `schedule`, and the Operations page shows it on the **Scheduler** tab.
+Both — and `/api/cron/runs` — are readable only with the cron secret or by the platform
+operator (the `ADMIN_EMAIL` administrator): the ledger spans every tenant, and
+registration makes any visitor the admin of their own tenant.
+
+Wire an external scheduler (Railway Cron, n8n, or any HTTP-capable scheduler) to call,
+on the **production** domain, the paths above on the cadences above.
 
 Every call must carry:
 

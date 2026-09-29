@@ -8,12 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
 import NextBestActions from "@/components/NextBestActions";
-import { ClipboardCheck, Inbox, ListChecks, Lock, MessagesSquare, RefreshCw, Route, ShieldCheck, Undo2 } from "lucide-react";
+import { ClipboardCheck, Clock, Inbox, ListChecks, Lock, MessagesSquare, RefreshCw, Route, ShieldCheck, Undo2 } from "lucide-react";
 
 /**
  * Operations — operator visibility for the durable work queue, Second Chance recovery
- * candidates, composed recovery strategies, the approval queue, conversations, and the
- * external-component security gate.
+ * candidates, composed recovery strategies, the approval queue, conversations, the
+ * external-component security gate, and whether the scheduler is keeping to its declared
+ * cadence.
  *
  * Every state shown here is read from the server. Nothing on this page implies a
  * capability is live when it is not: the security-gate panel reports scanner
@@ -768,7 +769,130 @@ function SecurityGatePanel() {
   );
 }
 
-const TABS = ["actions", "queue", "recovery", "approvals", "conversations", "gate"];
+const SCHEDULE_TONE = {
+  on_schedule: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  failing: "bg-amber-50 text-amber-900 border-amber-200",
+  stalled: "bg-amber-50 text-amber-900 border-amber-200",
+  overdue: "bg-red-50 text-red-700 border-red-200",
+  never_run: "bg-red-50 text-red-700 border-red-200",
+  rejected: "bg-red-50 text-red-800 border-red-300",
+};
+
+const SCHEDULE_LABEL = {
+  on_schedule: "On schedule",
+  failing: "Failing",
+  stalled: "Stalled",
+  overdue: "Overdue",
+  never_run: "Never run",
+  rejected: "Secret rejected",
+};
+
+function when(value) {
+  if (!value) return "never";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function SchedulerPanel({ isAdmin }) {
+  const [evaluation, setEvaluation] = useState(null);
+  const [error, setError] = useState(null);
+  const [forbidden, setForbidden] = useState(false);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const { data } = await api.get("/cron/schedule");
+      setEvaluation(data);
+    } catch (e) {
+      setEvaluation({ jobs: [] });
+      if (e.response?.status === 403) {
+        setForbidden(true);
+        return;
+      }
+      setError(formatErr(e.response?.data?.detail) || "The scheduler status could not be read.");
+    }
+  }, []);
+
+  useEffect(() => { if (isAdmin) load(); }, [isAdmin, load]);
+
+  // The schedule spans every tenant's automation, so the server shows it only to the
+  // platform operator the deployment was seeded with -- not to every tenant admin.
+  if (!isAdmin || forbidden) {
+    return <SurfaceEmpty icon={Lock} title="Platform operator only"
+                         description="Scheduler health covers every tenant's automation, so only the platform operator can read it."
+                         testid="scheduler-operator-only" />;
+  }
+  if (evaluation === null) return <SurfaceLoading rows={2} testid="scheduler-loading" />;
+  if (error) return <SurfaceError title="Scheduler status unavailable" description={error} onRetry={load}
+                                  testid="scheduler-error" />;
+
+  const jobs = evaluation.jobs || [];
+  const count = (state) => jobs.filter((job) => job.status === state).length;
+  const neverCalled = jobs.length > 0 && jobs.every((job) => !job.last_called_at);
+
+  return (
+    <div data-testid="scheduler-panel">
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatTile label="On schedule" value={`${count("on_schedule")}/${jobs.length}`}
+                  tone={evaluation.healthy ? "text-emerald-700" : "text-[#0a1628]"} />
+        <StatTile label="Overdue" value={count("overdue") + count("never_run")}
+                  tone={count("overdue") + count("never_run") ? "text-red-700" : "text-[#0a1628]"} />
+        <StatTile label="Stalled or failing" value={count("stalled") + count("failing")}
+                  tone={count("stalled") + count("failing") ? "text-amber-700" : "text-[#0a1628]"} />
+        <StatTile label="Secret rejected" value={count("rejected")}
+                  tone={count("rejected") ? "text-red-700" : "text-[#0a1628]"} />
+      </div>
+
+      {neverCalled ? (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+             role="alert" data-testid="scheduler-never-called">
+          Production holds no record of any scheduled request. Recovery detection, the work
+          queue and inbound mail only run on demand until a scheduler is calling these endpoints
+          with the shared secret.
+        </div>
+      ) : null}
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="outline" onClick={load} data-testid="scheduler-refresh">
+          <RefreshCw className="mr-2 h-3.5 w-3.5" />Refresh
+        </Button>
+        <span className="text-[11px] text-slate-400">evaluated {when(evaluation.evaluated_at)}</span>
+      </div>
+
+      <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+        {jobs.map((job) => (
+          <div key={job.job} className="px-4 py-3" data-testid={`schedule-${job.job}`}>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge className={SCHEDULE_TONE[job.status] || SCHEDULE_TONE.overdue}>
+                {SCHEDULE_LABEL[job.status] || job.status}
+              </Badge>
+              <span className="text-sm font-semibold text-[#132038]">{job.job}</span>
+              <code className="text-[11px] text-slate-500">{job.cron}</code>
+            </div>
+            <div className="mt-0.5 text-xs leading-5 text-slate-500">{job.description}</div>
+            <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-400">
+              <span>last called {when(job.last_called_at)}</span>
+              <span>last succeeded {when(job.last_succeeded_at)}</span>
+              <span>next expected {when(job.next_expected_at)}</span>
+              {job.missed_ticks ? (
+                <span className="text-red-600">
+                  {job.missed_ticks}{job.missed_ticks_capped ? "+" : ""} missed tick{job.missed_ticks === 1 ? "" : "s"}
+                </span>
+              ) : null}
+              {job.stalled_runs?.length ? (
+                <span className="text-amber-700">{job.stalled_runs.length} stalled run(s)</span>
+              ) : null}
+              {job.last_error ? <span className="text-red-500">{job.last_error}</span> : null}
+              {job.last_rejected_at ? <span>last rejected {when(job.last_rejected_at)}</span> : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const TABS = ["actions", "queue", "recovery", "approvals", "conversations", "gate", "scheduler"];
 
 export default function Operations() {
   const { user } = useAuth();
@@ -816,6 +940,9 @@ export default function Operations() {
           <TabsTrigger value="gate" data-testid="tab-gate">
             <ShieldCheck className="mr-2 h-3.5 w-3.5" />Security gate
           </TabsTrigger>
+          <TabsTrigger value="scheduler" data-testid="tab-scheduler">
+            <Clock className="mr-2 h-3.5 w-3.5" />Scheduler
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="actions" className="mt-5">
@@ -833,6 +960,7 @@ export default function Operations() {
           <ConversationsPanel isAdmin={isAdmin} />
         </TabsContent>
         <TabsContent value="gate" className="mt-5"><SecurityGatePanel /></TabsContent>
+        <TabsContent value="scheduler" className="mt-5"><SchedulerPanel isAdmin={isAdmin} /></TabsContent>
       </Tabs>
     </div>
   );

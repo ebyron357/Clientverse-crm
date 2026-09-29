@@ -36,6 +36,7 @@ import attribution as attribution_service
 import conversations as conversation_service
 import crm_core
 import cron_ledger
+import cron_schedule
 import detectors
 import email_inbound
 import gmail_provider
@@ -3173,18 +3174,34 @@ async def reconcile_message(message_id: str, user=Depends(require_role("admin"))
     return reconciled
 
 
+def _is_platform_operator(user: dict) -> bool:
+    """The administrator the deployment itself was seeded with (`ADMIN_EMAIL`).
+
+    Registration is self-serve and makes every new user the admin of their own tenant,
+    so "an admin" is not a trust boundary for anything that spans tenants. The platform
+    operator is the one identity the deployment names explicitly.
+    """
+    operator = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
+    return bool(operator) and user.get("role") == "admin" and \
+        (user.get("email") or "").lower() == operator
+
+
 async def _authorize_cron_observer(request: Request) -> str:
-    """Let either the scheduler or a tenant admin read the scheduled-execution ledger.
+    """Let either the scheduler or the platform operator read the scheduled-execution ledger.
 
     The scheduler needs it so a workflow run can verify that production actually
-    recorded the request it just made, rather than trusting its own exit code. An admin
-    needs it because "is the recovery engine running at all?" is an operational
+    recorded the request it just made, rather than trusting its own exit code. The
+    operator needs it because "is the recovery engine running at all?" is an operational
     question, not a debugging one.
+
+    The ledger is global -- one row per scheduled request across every tenant, with job
+    results and error text -- so a tenant admin is refused. Any visitor can register and
+    become one.
     """
     if _cron_secret_matches(request):
         return "scheduler"
     user = await get_current_user(request)
-    if user.get("role") != "admin":
+    if not _is_platform_operator(user):
         raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
     return user["email"]
 
@@ -3212,7 +3229,27 @@ async def cron_health(request: Request, window_minutes: int = 120):
     never making a request. A scheduler is expected to fail its own run on this.
     """
     await _authorize_cron_observer(request)
-    return await cron_ledger.health(db, window_minutes=window_minutes)
+    health = await cron_ledger.health(db, window_minutes=window_minutes)
+    # Traffic in the window says the scheduler is reaching production; the schedule
+    # summary says whether every declared job is keeping to its cadence. A scheduler
+    # that drives only some endpoints passes the first and fails the second.
+    health["schedule"] = cron_schedule.summary(await cron_schedule.evaluate(db))
+    return health
+
+
+@api.get("/cron/schedule")
+async def cron_schedule_status(request: Request):
+    """The declared schedule, and every job judged against the ledger.
+
+    Misfire detection runs here, on read, from evidence production already holds, so it
+    still works when the scheduler itself is what has stopped. Each job reports
+    `on_schedule`, or the worst of `rejected` (called with a secret production refuses),
+    `never_run`, `overdue` (a scheduled tick past its grace produced no request),
+    `stalled` (accepted or started and never finished) and `failing` (latest run
+    raised), with the evidence behind the verdict.
+    """
+    await _authorize_cron_observer(request)
+    return await cron_schedule.evaluate(db)
 
 
 
