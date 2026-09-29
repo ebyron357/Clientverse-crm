@@ -35,6 +35,7 @@ from typing import Any, Optional
 import approval_queue
 import recovery_case
 import second_chance
+import work_queue
 
 COLLECTION = "recovery_strategies"
 
@@ -201,7 +202,8 @@ async def gather_context(db, tenant_id: str, candidate: dict) -> dict:
             {"tenant_id": tenant_id, "id": record_id}, {"_id": 0})
         if opportunity:
             context["company_id"] = context["company_id"] or opportunity.get("company_id")
-            context["contact_id"] = context["contact_id"] or opportunity.get("contact_id")
+            context["contact_id"] = context["contact_id"] or \
+                await second_chance.deal_contact(db, tenant_id, opportunity)
             context["owner"] = opportunity.get("owner") or opportunity.get("assignee")
             if context["owner"]:
                 facts.append(_fact("Opportunity owner", context["owner"],
@@ -792,6 +794,86 @@ def _risk_for(strategy: dict) -> str:
     return approval_queue.RISK_LOW
 
 
+# A case a person has not yet approved acting on. Past this point a person decided, and a
+# sweep does not undo that on its own.
+WITHDRAWABLE_CASE_STATES = (recovery_case.DETECTED, recovery_case.PLANNED,
+                            recovery_case.AWAITING_APPROVAL)
+CONDITION_CLEARED = "condition_cleared"
+
+
+async def withdraw_if_cleared(db, queue, tenant_id: str, item: dict, *,
+                              actor: str = "second-chance") -> bool:
+    """Withdraw a Second Chance detection whose cause has gone. True if it was withdrawn.
+
+    A detection used to outlive its cause: the deal was won, the item stayed open, and the
+    next composer run planned outreach to a client who had just bought, citing the stage
+    the deal had left. Now the record is re-read; if it no longer meets the rule, the work
+    item is resolved, the case is closed as withdrawn, and a plan still awaiting approval
+    is withdrawn with its approval.
+    """
+    payload = item.get("payload") or {}
+    kind = payload.get("record_kind") or "opportunity"
+    if await second_chance.condition_holds(db, tenant_id, kind, payload.get("record_id")):
+        return False
+    case_id = payload.get("recovery_case_id")
+    case = (await recovery_case.get_case(db, tenant_id, case_id)) if case_id else None
+    if case and case.get("state") not in WITHDRAWABLE_CASE_STATES + recovery_case.TERMINAL_STATES:
+        return False
+    try:
+        await queue.resolve(item["id"], tenant_id=tenant_id, actor=actor,
+                            resolution=CONDITION_CLEARED)
+    except work_queue.WorkQueueError:
+        # A worker holds it, or it moved; the next sweep looks again.
+        return False
+    if case and case.get("state") in WITHDRAWABLE_CASE_STATES:
+        await _withdraw_case(db, tenant_id, case, actor=actor)
+    return True
+
+
+async def _withdraw_case(db, tenant_id: str, case: dict, *, actor: str) -> None:
+    try:
+        await recovery_case.withdraw(db, tenant_id=tenant_id, case_id=case["id"],
+                                     reason=CONDITION_CLEARED, actor=actor)
+    except recovery_case.InvalidCaseTransition:
+        return  # moved concurrently; wherever it went, a person or another sweep put it
+    if not case.get("plan_reference"):
+        return
+    strategy = await db[COLLECTION].find_one(
+        {"tenant_id": tenant_id, "id": case["plan_reference"], "state": STATE_PROPOSED},
+        {"_id": 0, "id": 1, "approval_id": 1})
+    if not strategy:
+        return
+    if strategy.get("approval_id"):
+        try:
+            await approval_queue.cancel(
+                db, tenant_id=tenant_id, approval_id=strategy["approval_id"], actor=actor,
+                reason="Withdrawn: the condition that raised this recovery has cleared.")
+        except approval_queue.ApprovalError:
+            pass  # already decided or lapsed
+    await set_state(db, tenant_id, strategy["id"], state=STATE_WITHDRAWN, actor=actor)
+
+
+async def _internal_cause_cleared(db, tenant_id: str, case: dict) -> bool:
+    """For a case detected from a CRM record, whether that record has since moved on."""
+    if case.get("source") not in recovery_case.INTERNAL_SOURCES or \
+            case.get("state") not in WITHDRAWABLE_CASE_STATES:
+        return False
+    kind, _, record_id = str(case.get("source_event_id") or "").partition(":")
+    return not await second_chance.condition_holds(db, tenant_id, kind, record_id)
+
+
+async def withdraw_cleared(db, queue, tenant_id: str, *, actor: str = "second-chance",
+                           limit: int = 500) -> int:
+    """Withdraw every open detection of this tenant whose cause has gone."""
+    items = await queue.list_items(tenant_id=tenant_id, status="open",
+                                   queue=second_chance.QUEUE_NAME, limit=limit)
+    withdrawn = 0
+    for item in items:
+        if await withdraw_if_cleared(db, queue, tenant_id, item, actor=actor):
+            withdrawn += 1
+    return withdrawn
+
+
 async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recovery-composer",
                              limit: int = COMPOSE_LIMIT) -> dict:
     """Compose a strategy for every open candidate without one.
@@ -808,6 +890,9 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
     planned_case_ids: set[str] = set()
     for candidate in candidates:
         try:
+            if await withdraw_if_cleared(db, queue, tenant_id, candidate, actor=actor):
+                # Re-read the record before planning: it may have moved on since detection.
+                continue
             case_id = (candidate.get("payload") or {}).get("recovery_case_id")
             case = (await recovery_case.get_case(db, tenant_id, case_id)) if case_id else None
             if case and not _needs_plan(case):
@@ -832,6 +917,9 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
         if case["id"] in planned_case_ids:
             continue
         try:
+            if await _internal_cause_cleared(db, tenant_id, case):
+                await _withdraw_case(db, tenant_id, case, actor=actor)
+                continue
             composed.append(await compose_for_case(db, tenant_id, case, actor=actor,
                                                    channels=channels))
         except Exception as exc:  # one bad case must not stop the sweep

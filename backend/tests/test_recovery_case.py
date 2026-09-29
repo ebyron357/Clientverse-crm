@@ -648,7 +648,7 @@ def test_the_sweep_does_not_plan_the_same_case_twice(env):
     db, queue = env
     run(db.opportunities.insert_one({
         "id": "opp_sweep", "tenant_id": TENANT, "title": "Dormant deal",
-        "stage": "proposal", "value": 5000}))
+        "stage": "proposal", "value": 5000, "updated_at": "2020-01-01T00:00:00+00:00"}))
     run(second_chance.enqueue_detections(queue, [{
         "tenant_id": TENANT, "type": second_chance.TYPE_STALLED_LEAD,
         "record_id": "opp_sweep", "record_kind": "opportunity",

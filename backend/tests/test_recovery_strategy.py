@@ -289,6 +289,11 @@ def test_context_gathering_stays_inside_the_tenant(env):
 def test_sweep_composes_for_open_candidates_only(env):
     db, queue = env
     seed_owner_workspace(db)
+    # The record the candidate names must exist and still be stalled: the sweep re-reads
+    # it and withdraws a detection whose cause has gone.
+    run(db.opportunities.insert_one({"tenant_id": TENANT, "id": "opp_1", "name": "Acme renewal",
+                                     "stage": "proposal", "value": 40000,
+                                     "updated_at": "2020-01-01T00:00:00+00:00"}))
     run(queue.enqueue(tenant_id=TENANT, queue=second_chance.QUEUE_NAME,
                       item_type=second_chance.TYPE_STALLED_LEAD,
                       payload={"record_id": "opp_1", "record_kind": "opportunity",

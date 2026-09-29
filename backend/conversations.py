@@ -697,6 +697,68 @@ async def _preflight_blocks(db, tenant_id: str, message: dict, conversation: dic
     return blocks
 
 
+async def address_contact(db, *, tenant_id: str, conversation_id: str, contact_id: str,
+                          address: str, actor: str) -> dict:
+    """Record a contact's address on a thread that was opened before it was known.
+
+    Replaces an unaddressed contact participant, or adds one. A participant that already
+    has an address is left alone: re-pointing a thread at someone else is not this.
+    """
+    conversation = await get_conversation(db, tenant_id, conversation_id)
+    if not conversation:
+        raise ConversationNotFound("Conversation not found")
+    participants = list(conversation.get("participants") or [])
+    if any(p.get("kind") == PARTICIPANT_CONTACT and p.get("address") for p in participants):
+        return conversation
+    participants = [p for p in participants
+                    if not (p.get("kind") == PARTICIPANT_CONTACT and not p.get("address"))]
+    participants.append(_participant({"kind": PARTICIPANT_CONTACT, "id": contact_id,
+                                      "address": address}))
+    update: dict[str, Any] = {"participants": participants}
+    if not conversation.get("contact_id"):
+        update["contact_id"] = contact_id
+    return await _update_conversation(db, tenant_id, conversation_id, update,
+                                      _history("contact_addressed", actor,
+                                               {"contact_id": contact_id}))
+
+
+async def readdress(db, *, tenant_id: str, message_id: str, to_address: str,
+                    actor: str) -> dict:
+    """Give an unsent message the recipient it lacked, and return it to `draft`.
+
+    An approval a person already has in front of them names the recipient it was raised
+    with, so a pending one is withdrawn: the message must be approved again for the
+    address it will now actually go to. Only a message with no recipient is re-addressed.
+    """
+    message = await get_message(db, tenant_id, message_id)
+    if not message:
+        raise MessageNotFound("Message not found")
+    if message.get("to_address"):
+        return message
+    status = message.get("status")
+    if status == PENDING_APPROVAL and message.get("approval_id"):
+        try:
+            await approval_queue.cancel(
+                db, tenant_id=tenant_id, approval_id=message["approval_id"], actor=actor,
+                reason="Re-addressed: the message now has a recipient.")
+        except approval_queue.ApprovalError:
+            pass  # already decided or lapsed; the message is re-approved either way
+    if status == PENDING_APPROVAL:
+        return await _transition(db, tenant_id, message, DRAFT, actor,
+                                 extra={"to_address": to_address, "approval_id": None},
+                                 detail={"readdressed": True})
+    if status != DRAFT:
+        raise InvalidMessageTransition(f"A '{status}' message cannot be re-addressed")
+    updated = await db[MESSAGES].find_one_and_update(
+        {"id": message_id, "tenant_id": tenant_id, "status": DRAFT, "to_address": None},
+        {"$set": {"to_address": to_address},
+         "$push": {"history": _history("readdressed", actor, {})}},
+        return_document=True)
+    if not updated:
+        raise InvalidMessageTransition("Message changed concurrently")
+    return _public(updated)
+
+
 async def mark_approved(db, *, tenant_id: str, message_id: str, actor: str) -> dict:
     """Move a message to `approved` once its approval request was approved.
 

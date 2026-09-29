@@ -204,6 +204,37 @@ async def _run_internal_step(db, tenant_id: str, case: dict, step: dict, actor: 
             "task_id": task["id"]}
 
 
+async def _resume_draft(db, tenant_id: str, case: dict, message: dict, actor: str) -> dict:
+    """Finish what an earlier run of this step left undone, without drafting again.
+
+    Two things a re-run used to leave as they were. A run that died between drafting and
+    raising the approval left a draft nobody was asked about, and the retry reported it
+    as awaiting approval. And a draft made before the case knew its contact kept no
+    recipient even after an operator linked one.
+    """
+    if (message.get("channel") == conversations.CHANNEL_EMAIL
+            and not message.get("to_address")
+            # Not a blocked one: a person may have rejected it, and that decision stands.
+            and message.get("status") in (conversations.DRAFT, conversations.PENDING_APPROVAL)):
+        conversation = await conversations.get_conversation(
+            db, tenant_id, message["conversation_id"])
+        address = _email_recipient_of(conversation) if conversation else None
+        if not address and conversation and case.get("contact_id"):
+            address = await _contact_address(db, tenant_id, case["contact_id"])
+            if address:
+                await conversations.address_contact(
+                    db, tenant_id=tenant_id, conversation_id=conversation["id"],
+                    contact_id=case["contact_id"], address=address, actor=actor)
+        if address:
+            message = await conversations.readdress(
+                db, tenant_id=tenant_id, message_id=message["id"], to_address=address,
+                actor=actor)
+    if message.get("status") == conversations.DRAFT and not message.get("approval_id"):
+        message = await conversations.request_approval(
+            db, tenant_id=tenant_id, message_id=message["id"], actor=actor)
+    return message
+
+
 async def _run_outbound_step(db, tenant_id: str, case: dict, step: dict, index: int,
                              actor: str,
                              audit: Optional[Callable[..., Awaitable[Any]]]) -> dict:
@@ -214,6 +245,7 @@ async def _run_outbound_step(db, tenant_id: str, case: dict, step: dict, index: 
     """
     existing = await _existing_message_for_step(db, tenant_id, case["id"], index)
     if existing:
+        existing = await _resume_draft(db, tenant_id, case, existing, actor)
         return {"status": STEP_DRAFTED, "action": step["action"], "channel": step["channel"],
                 "message_id": existing["id"], "approval_id": existing.get("approval_id"),
                 "reused": True,

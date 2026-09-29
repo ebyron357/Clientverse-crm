@@ -377,6 +377,8 @@ async def open_case(db, event: dict, *, actor: str = "system",
         existing = await db[COLLECTION].find_one(
             {"tenant_id": tenant_id, "source": event["source"],
              "source_event_id": event["source_event_id"]})
+        if existing and existing.get("state") == CLOSED and existing.get("withdrawn_at"):
+            existing = await _reopen_withdrawn(db, existing, event, actor) or existing
         if existing:
             result = _public(existing)
             result["deduplicated"] = True
@@ -391,6 +393,41 @@ async def open_case(db, event: dict, *, actor: str = "system",
     result = _public(doc)
     result["deduplicated"] = False
     return result
+
+
+async def _reopen_withdrawn(db, existing: dict, event: dict, actor: str) -> Optional[dict]:
+    """The cause of a withdrawn case came back: open it again, with a fresh start.
+
+    A case is identified by its source event, so a deal that went quiet, recovered, and
+    went quiet again resolves to the same case. Withdrawal closed it because the cause had
+    gone (see `withdraw`); this is the one way out of `closed`, and it exists only for a
+    case nobody closed by decision. Its old plan and approval were withdrawn with it.
+    """
+    return await db[COLLECTION].find_one_and_update(
+        {"id": existing["id"], "tenant_id": existing["tenant_id"], "state": CLOSED,
+         "withdrawn_at": existing["withdrawn_at"]},
+        {"$set": {"state": DETECTED, "reason": event["reason"],
+                  "evidence": event.get("evidence") or existing.get("evidence") or {},
+                  "occurred_at": event.get("occurred_at") or existing.get("occurred_at"),
+                  "plan_reference": None, "approval_reference": None,
+                  "withdrawn_at": None, "withdrawn_reason": None,
+                  "updated_at": _iso(_now())},
+         "$push": {"history": _history("redetected", actor,
+                                       {"source_event_id": event["source_event_id"]})}},
+        return_document=True)
+
+
+async def withdraw(db, *, tenant_id: str, case_id: str, reason: str, actor: str = "system",
+                   audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
+    """Close a case whose cause went away before anyone approved acting on it.
+
+    Different from a person closing it: if the same cause is detected again the case is
+    reopened (`_reopen_withdrawn`) rather than left closed for good.
+    """
+    return await _transition(db, tenant_id=tenant_id, case_id=case_id, state=CLOSED,
+                             actor=actor, detail={"withdrawn": reason}, audit=audit,
+                             extra_set={"withdrawn_at": _iso(_now()),
+                                        "withdrawn_reason": reason})
 
 
 async def get_case(db, tenant_id: str, case_id: str) -> Optional[dict]:

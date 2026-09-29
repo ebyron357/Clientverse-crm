@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
+from contextlib import aclosing
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import crm_core
 import recovery_case
 
 QUEUE_NAME = "second_chance"
@@ -37,14 +39,60 @@ SOURCE_FOR_TYPE = {
 STALLED_LEAD_DAYS = int(os.environ.get("SECOND_CHANCE_STALLED_LEAD_DAYS", "14"))
 MISSED_FOLLOWUP_GRACE_HOURS = int(os.environ.get("SECOND_CHANCE_FOLLOWUP_GRACE_HOURS", "24"))
 DETECTION_LIMIT = int(os.environ.get("SECOND_CHANCE_DETECTION_LIMIT", "200"))
+# How many candidate records one lane reads per tenant per sweep. Detections are capped by
+# DETECTION_LIMIT; this caps the reading, so a tenant with a huge history costs a bounded
+# amount while its stalest records -- read first -- are still the ones examined.
+SCAN_LIMIT = int(os.environ.get("SECOND_CHANCE_SCAN_LIMIT", "5000"))
+SCAN_BATCH = 500
 
-# Opportunity stages that represent live revenue. Closed stages are out of scope for
-# the stalled-lead lane (a lost deal is a different, later recovery motion).
-OPEN_OPPORTUNITY_STAGES = ("new", "qualified", "discovery", "proposal", "negotiation")
+# Closed stages are out of scope for the stalled-lead lane (a lost deal is a different,
+# later recovery motion). These names are always closed; a tenant's own pipeline adds its
+# won and closed stages to them (`crm_core.stage_outcomes`).
 CLOSED_STAGES = ("closed_won", "closed_lost", "won", "lost")
 
 RESOLVED_COMMITMENT_STATUSES = ("met", "resolved", "closed", "cancelled", "done", "complete", "completed")
 DONE_TASK_STATUSES = ("done", "complete", "completed", "cancelled")
+
+
+def _any_case(values) -> list[str]:
+    """The spellings a status is stored in, for a query that must exclude all of them."""
+    return sorted({form for v in values for form in (v, v.upper(), v.capitalize())})
+
+
+async def closed_stages(db, tenant_id: str) -> set[str]:
+    """Every stage at which a deal is no longer live revenue, for this tenant.
+
+    The hard-coded names alone missed a tenant's own won and closed stages ("signed",
+    "churned"), so deals the client had already bought or left were chased as stalled.
+    """
+    _, closed = await crm_core.stage_outcomes(db, tenant_id)
+    return {s.lower() for s in closed} | set(CLOSED_STAGES)
+
+
+async def deal_contact(db, tenant_id: str, opportunity: dict) -> Optional[str]:
+    """The contact a deal's outreach should go to, from the contacts the deal names.
+
+    A deal stores `contact_ids`, a list; reading a singular `contact_id` (which only a
+    few older records carry) left every dormant-deal case with nobody to write to. The
+    first listed contact with an email address wins, preferring one at the deal's own
+    company, since that is who can be reached about this deal.
+    """
+    if opportunity.get("contact_id"):
+        return opportunity["contact_id"]
+    ids = [c for c in (opportunity.get("contact_ids") or []) if isinstance(c, str)][:100]
+    if not ids:
+        return None
+    rows = await db.contacts.find(
+        {"tenant_id": tenant_id, "id": {"$in": ids}, "archived_at": None},
+        {"_id": 0, "id": 1, "email": 1, "company_id": 1}).to_list(len(ids))
+    by_id = {row["id"]: row for row in rows}
+    ordered = [by_id[c] for c in ids if c in by_id]
+    company = opportunity.get("company_id")
+    for prefer_company in (True, False):
+        for row in ordered:
+            if row.get("email") and (not prefer_company or row.get("company_id") == company):
+                return row["id"]
+    return ordered[0]["id"] if ordered else None
 
 
 def _now() -> datetime:
@@ -98,61 +146,129 @@ async def ensure_indexes(db) -> None:
     await db.domain_events.create_index([("tenant_id", 1), ("resource_id", 1), ("timestamp", -1)])
 
 
+def _last_activity(opp: dict, activity: dict[str, datetime]) -> Optional[datetime]:
+    candidates = [
+        _parse(opp.get("stage_changed_at")),
+        _parse(opp.get("updated_at")),
+        _parse(opp.get("created_at")),
+        activity.get(opp.get("id")),
+    ]
+    return max([c for c in candidates if c], default=None)
+
+
+async def _scan(cursor, limit: int):
+    """Yield a cursor's documents in batches, reading at most `limit` of them."""
+    batch: list[dict] = []
+    read = 0
+    try:
+        async for doc in cursor:
+            batch.append(doc)
+            read += 1
+            if len(batch) >= SCAN_BATCH:
+                yield batch
+                batch = []
+            if read >= limit:
+                break
+        if batch:
+            yield batch
+    finally:
+        await cursor.close()
+
+
+def _open_deals_query(tenant_id: str, closed: set[str]) -> dict:
+    return {"tenant_id": tenant_id, "archived_at": None,
+            "stage": {"$nin": _any_case(closed)}}
+
+
 async def detect_stalled_leads(db, queue, tenant_id: str, *, actor: str = "second-chance",
                                threshold_days: int = STALLED_LEAD_DAYS) -> list[dict]:
     """An open opportunity with no qualifying progression or activity for N days.
 
     Qualifying activity is the most recent of: a domain event for the opportunity,
     an explicit stage change, or the record's own update/create timestamp.
+
+    Closed and archived deals are excluded in the query, and deals are read stalest
+    first. Cutting the newest 200 deals of any stage and filtering afterwards meant a
+    tenant with 200 recent wins never had its one genuinely stalled deal examined.
     """
     now = _now()
     cutoff_days = max(1, int(threshold_days))
+    closed = await closed_stages(db, tenant_id)
     detections: list[dict] = []
-    opportunities = await db.opportunities.find(
-        {"tenant_id": tenant_id}, {"_id": 0}
-    ).sort("created_at", -1).to_list(DETECTION_LIMIT)
-    activity = await _latest_activity_by_resource(
-        db, tenant_id, [o.get("id") for o in opportunities if o.get("id")])
-
-    for opp in opportunities:
-        stage = str(opp.get("stage") or "").lower()
-        if stage in CLOSED_STAGES:
-            continue
-        if OPEN_OPPORTUNITY_STAGES and stage and stage not in OPEN_OPPORTUNITY_STAGES:
-            # Unknown stage names are still treated as open revenue rather than skipped,
-            # but the reason records which stage triggered the detection.
-            pass
-
-        candidates = [
-            _parse(opp.get("stage_changed_at")),
-            _parse(opp.get("updated_at")),
-            _parse(opp.get("created_at")),
-            activity.get(opp.get("id")),
-        ]
-        last_activity = max([c for c in candidates if c], default=None)
-        if last_activity is None:
-            continue
-        idle_days = (now - last_activity).days
-        if idle_days < cutoff_days:
-            continue
-
-        detections.append({
-            "tenant_id": tenant_id,
-            "type": TYPE_STALLED_LEAD,
-            "record_id": opp.get("id"),
-            "title": opp.get("title") or opp.get("name") or "Untitled opportunity",
-            "reason": (
-                f"No qualifying activity for {idle_days} days while the opportunity is "
-                f"open at stage '{stage or 'unknown'}' (threshold {cutoff_days} days)."
-            ),
-            "idle_days": idle_days,
-            "stage": stage,
-            "value": opp.get("value") or opp.get("amount"),
-            "company_id": opp.get("company_id"),
-            "contact_id": opp.get("contact_id"),
-            "last_activity_at": last_activity.isoformat(),
-        })
+    cursor = db.opportunities.find(_open_deals_query(tenant_id, closed),
+                                   {"_id": 0}).sort("updated_at", 1)
+    async with aclosing(_scan(cursor, SCAN_LIMIT)) as batches:
+        async for batch in batches:
+            activity = await _latest_activity_by_resource(
+                db, tenant_id, [o.get("id") for o in batch if o.get("id")])
+            for opp in batch:
+                stage = str(opp.get("stage") or "").lower()
+                if stage in closed:
+                    continue
+                last_activity = _last_activity(opp, activity)
+                if last_activity is None:
+                    continue
+                idle_days = (now - last_activity).days
+                if idle_days < cutoff_days:
+                    continue
+                detections.append({
+                    "tenant_id": tenant_id,
+                    "type": TYPE_STALLED_LEAD,
+                    "record_id": opp.get("id"),
+                    "title": opp.get("title") or opp.get("name") or "Untitled opportunity",
+                    "reason": (
+                        f"No qualifying activity for {idle_days} days while the opportunity is "
+                        f"open at stage '{stage or 'unknown'}' (threshold {cutoff_days} days)."
+                    ),
+                    "idle_days": idle_days,
+                    "stage": stage,
+                    "value": opp.get("value") or opp.get("amount"),
+                    "currency": opp.get("currency"),
+                    "company_id": opp.get("company_id"),
+                    "contact_id": await deal_contact(db, tenant_id, opp),
+                    "last_activity_at": last_activity.isoformat(),
+                })
+                if len(detections) >= DETECTION_LIMIT:
+                    return detections
     return detections
+
+
+def _due_of(record: dict) -> Optional[datetime]:
+    return _parse(record.get("due_date") or record.get("due_at"))
+
+
+async def _overdue(collection, tenant_id: str, done: tuple, now: datetime,
+                   grace: timedelta):
+    """Open records of one collection whose due time has passed, oldest due first.
+
+    The finished statuses are excluded in the query rather than after a capped read, so
+    a history of completed work can no longer crowd an overdue item out of the sweep.
+    """
+    cursor = collection.find(
+        {"tenant_id": tenant_id, "archived_at": None, "status": {"$nin": _any_case(done)},
+         "$or": [{"due_date": {"$nin": [None, ""]}}, {"due_at": {"$nin": [None, ""]}}]},
+        {"_id": 0}).sort([("due_date", 1), ("due_at", 1)])
+    async with aclosing(_scan(cursor, SCAN_LIMIT)) as batches:
+        async for batch in batches:
+            for record in batch:
+                if str(record.get("status") or "").lower() in done:
+                    continue
+                due = _due_of(record)
+                if due is None or now < due + grace:
+                    continue
+                yield record, due
+
+
+async def _collect_overdue(collection, tenant_id: str, done: tuple, now: datetime,
+                           grace: timedelta, build) -> list[dict]:
+    found: list[dict] = []
+    async with aclosing(_overdue(collection, tenant_id, done, now, grace)) as overdue:
+        async for record, due in overdue:
+            found.append(build(record, due, str(record.get("status") or "").lower(),
+                               max(0, (now - due).days)))
+            if len(found) >= DETECTION_LIMIT:
+                break
+    return found
 
 
 async def detect_missed_followups(db, queue, tenant_id: str, *,
@@ -160,18 +276,9 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
     """A commitment or task that was due and has no qualifying completion."""
     now = _now()
     grace = timedelta(hours=max(0, int(grace_hours)))
-    detections: list[dict] = []
 
-    commitments = await db.commitments.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(DETECTION_LIMIT)
-    for cmt in commitments:
-        status = str(cmt.get("status") or "").lower()
-        if status in RESOLVED_COMMITMENT_STATUSES:
-            continue
-        due = _parse(cmt.get("due_date") or cmt.get("due_at"))
-        if due is None or now < due + grace:
-            continue
-        overdue_days = max(0, (now - due).days)
-        detections.append({
+    def commitment(cmt: dict, due: datetime, status: str, overdue_days: int) -> dict:
+        return {
             "tenant_id": tenant_id,
             "type": TYPE_MISSED_FOLLOWUP,
             "record_kind": "commitment",
@@ -185,18 +292,10 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
             "owner": cmt.get("owner"),
             "workspace_id": cmt.get("workspace_id"),
             "due_at": due.isoformat(),
-        })
+        }
 
-    tasks = await db.tasks.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(DETECTION_LIMIT)
-    for task in tasks:
-        status = str(task.get("status") or "").lower()
-        if status in DONE_TASK_STATUSES:
-            continue
-        due = _parse(task.get("due_date") or task.get("due_at"))
-        if due is None or now < due + grace:
-            continue
-        overdue_days = max(0, (now - due).days)
-        detections.append({
+    def task(task: dict, due: datetime, status: str, overdue_days: int) -> dict:
+        return {
             "tenant_id": tenant_id,
             "type": TYPE_MISSED_FOLLOWUP,
             "record_kind": "task",
@@ -210,8 +309,54 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
             "owner": task.get("assignee"),
             "workspace_id": task.get("workspace_id"),
             "due_at": due.isoformat(),
-        })
-    return detections
+        }
+
+    return (await _collect_overdue(db.commitments, tenant_id, RESOLVED_COMMITMENT_STATUSES,
+                                   now, grace, commitment)
+            + await _collect_overdue(db.tasks, tenant_id, DONE_TASK_STATUSES, now, grace,
+                                     task))
+
+
+async def condition_holds(db, tenant_id: str, record_kind: str, record_id: Optional[str], *,
+                          threshold_days: int = STALLED_LEAD_DAYS,
+                          grace_hours: int = MISSED_FOLLOWUP_GRACE_HOURS) -> bool:
+    """Is the record a detection was raised for still in the condition that raised it?
+
+    Read live, so a detection is withdrawn once its cause has gone -- the deal was won,
+    archived or moved; the task was done -- rather than planned from a stale snapshot.
+    """
+    if not record_id:
+        return False
+    now = _now()
+    if record_kind == "opportunity":
+        opp = await db.opportunities.find_one({"tenant_id": tenant_id, "id": record_id},
+                                              {"_id": 0})
+        if not opp or opp.get("archived_at"):
+            return False
+        if str(opp.get("stage") or "").lower() in await closed_stages(db, tenant_id):
+            return False
+        activity = await _latest_activity_by_resource(db, tenant_id, [record_id])
+        last = _last_activity(opp, activity)
+        return last is not None and (now - last).days >= max(1, int(threshold_days))
+    collection, done = {
+        "commitment": (db.commitments, RESOLVED_COMMITMENT_STATUSES),
+        "task": (db.tasks, DONE_TASK_STATUSES),
+    }.get(record_kind, (None, ()))
+    if collection is None:
+        # Not a record this module detects; nothing here can say it has cleared.
+        return True
+    record = await collection.find_one({"tenant_id": tenant_id, "id": record_id}, {"_id": 0})
+    if not record or record.get("archived_at"):
+        return False
+    if str(record.get("status") or "").lower() in done:
+        return False
+    due = _due_of(record)
+    return due is not None and now >= due + timedelta(hours=max(0, int(grace_hours)))
+
+
+def _currency_code(value) -> str:
+    code = str(value or "").strip().upper()
+    return code if len(code) == 3 and code.isalpha() else recovery_case.DEFAULT_CURRENCY
 
 
 def to_recovery_event(detection: dict) -> dict:
@@ -236,6 +381,8 @@ def to_recovery_event(detection: dict) -> dict:
         # The opportunity's own value is what *might* be recovered. It is recorded as
         # potential, with its provenance, and is never confirmed revenue.
         potential_value=detection.get("value"),
+        # The deal's own currency, so a 40,000 EUR deal is not recorded as 40,000 USD.
+        currency=_currency_code(detection.get("currency")),
         evidence={k: v for k, v in detection.items() if k not in ("tenant_id", "type")},
     )
 
@@ -305,6 +452,11 @@ async def enqueue_detections(queue, detections: list[dict], *, actor: str = "sec
 async def run_detection(db, queue, tenant_id: str, *, actor: str = "second-chance",
                         audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Run both lanes for one tenant and return an explainable summary."""
+    # Imported here: the planner imports this module, and withdrawing a detection means
+    # withdrawing the plan composed for it.
+    import recovery_strategy
+
+    withdrawn = await recovery_strategy.withdraw_cleared(db, queue, tenant_id, actor=actor)
     stalled = await detect_stalled_leads(db, queue, tenant_id, actor=actor)
     missed = await detect_missed_followups(db, queue, tenant_id)
     items = await enqueue_detections(queue, stalled + missed, actor=actor, db=db, audit=audit)
@@ -313,6 +465,7 @@ async def run_detection(db, queue, tenant_id: str, *, actor: str = "second-chanc
         "tenant_id": tenant_id,
         "stalled_leads_detected": len(stalled),
         "missed_followups_detected": len(missed),
+        "detections_withdrawn": withdrawn,
         "work_items_created": len(created),
         "work_items_deduplicated": len(items) - len(created),
         "recovery_cases_linked": len([i for i in items if i.get("recovery_case_id")]),
