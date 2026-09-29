@@ -679,7 +679,7 @@ async def run_worker_tick(
                                 lease_seconds=lease_seconds)
     processed, failed, lost = 0, 0, 0
     for item in claimed:
-        handler = handlers.get(item.get("type"))
+        handler = handlers.get(str(item.get("type") or ""))
         if handler is None:
             try:
                 await queue.fail(item["id"], tenant_id=item["tenant_id"],

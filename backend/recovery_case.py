@@ -43,7 +43,7 @@ import math
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, overload
 
 COLLECTION = "recovery_cases"
 
@@ -196,6 +196,14 @@ def _amount(value: Any, label: str) -> float:
 
 def _history(action: str, actor: str, detail: Optional[dict] = None) -> dict:
     return {"action": action, "actor": actor, "at": _iso(_now()), "detail": detail or {}}
+
+
+@overload
+def _public(doc: None) -> None: ...
+
+
+@overload
+def _public(doc: dict) -> dict: ...
 
 
 def _public(doc: Optional[dict]) -> Optional[dict]:

@@ -296,7 +296,7 @@ def select_lane(candidate: dict, context: dict) -> dict:
     record_kind = context.get("record_kind") or "opportunity"
 
     try:
-        value = float(evidence.get("value")) if evidence.get("value") is not None else None
+        value = float(evidence["value"]) if evidence.get("value") is not None else None
     except (TypeError, ValueError):
         value = None
 
@@ -513,7 +513,7 @@ def candidate_from_case(case: dict) -> dict:
     item_type = {
         recovery_case.SOURCE_DORMANT_DEAL: second_chance.TYPE_STALLED_LEAD,
         recovery_case.SOURCE_MISSED_FOLLOWUP: second_chance.TYPE_MISSED_FOLLOWUP,
-    }.get(case.get("source"))
+    }.get(str(case.get("source") or ""))
 
     return {
         "id": case["id"],
@@ -766,8 +766,8 @@ async def _approval_is_live(db, tenant_id: str, approval_id: Optional[str]) -> b
     if not approval_id:
         return False
     approval = await approval_queue.get(db, tenant_id, approval_id)
-    return bool(approval) and approval.get("status") in (approval_queue.REQUESTED,
-                                                         approval_queue.APPROVED)
+    return approval is not None and approval.get("status") in (approval_queue.REQUESTED,
+                                                               approval_queue.APPROVED)
 
 
 def _materially_changed(existing: dict, composed: dict) -> bool:
