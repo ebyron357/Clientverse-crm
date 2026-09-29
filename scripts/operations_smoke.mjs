@@ -313,6 +313,67 @@ async function main() {
   check('approval_summary_counts_blocked_requests',
         (approvalSummary.body?.awaiting_decision_blocked || 0) >= 1)
 
+  // ---- the plan decision reaches the case ---------------------------------------
+  // Approving a plan must approve the case it was composed for; the runner executes
+  // nothing else. This once recorded `approved` on the strategy only, so every approved
+  // recovery plan sat unrun with its case in `awaiting_approval`.
+  if (strategy && strategyApproval) {
+    const casesBefore = await call('/recovery-cases?state=all&limit=200', { token })
+    const planCase = (casesBefore.body || []).find((c) => c.plan_reference === strategy.id)
+    check('the_composed_plan_is_linked_to_a_case', !!planCase,
+          (casesBefore.body || []).map((c) => c.plan_reference))
+    record('plan_case_state_before_decision', planCase?.state)
+    check('the_case_awaits_the_plans_approval', planCase?.state === 'awaiting_approval',
+          planCase?.state)
+
+    const decided = await call(`/approval-queue/${strategyApproval.id}/decision`, {
+      method: 'POST', token, body: { decision: 'approved', rationale: `${PREFIX} plan` },
+    })
+    record('plan_decision_http', decided.status)
+    check('the_plan_can_be_approved', decided.status === 200, decided.body)
+
+    if (planCase) {
+      const after = await call(`/recovery-cases/${planCase.id}`, { token })
+      record('plan_case_state_after_decision', after.body?.state)
+      check('approving_the_plan_approves_the_case', after.body?.state === 'approved',
+            after.body?.state)
+
+      const runCase = await call(`/recovery-cases/${planCase.id}/run`, { method: 'POST', token })
+      record('plan_case_run_http', runCase.status)
+      check('an_approved_case_can_be_queued_to_run',
+            runCase.status === 200 && runCase.body?.queued === true, runCase.body)
+
+      if (cronSecret) {
+        // One tick processes a bounded batch across every tenant, so on a deployment with
+        // a backlog this run's job may need more than one. Drive up to five, each with its
+        // own delivery id, and stop as soon as the case has moved.
+        let executed = null
+        let ticks = 0
+        for (let tick = 0; tick < 5 && executed?.body?.state !== 'executing'; tick += 1) {
+          const response = await call('/cron/work-queue', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${cronSecret}`,
+                       'X-Webhook-Id': `${PREFIX}-run-${Date.now()}-${tick}` },
+          })
+          ticks += 1
+          record('plan_case_worker_tick_http', response.status)
+          for (let attempt = 0; attempt < 6; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 500))
+            executed = await call(`/recovery-cases/${planCase.id}`, { token })
+            if (executed.body?.state !== 'approved') break
+          }
+        }
+        record('plan_case_worker_ticks', ticks)
+        record('plan_case_state_after_run', executed?.body?.state)
+        // Executing, and no further: nothing can reach a client from a fresh tenant.
+        check('the_worker_runs_the_approved_case', executed?.body?.state === 'executing',
+              executed?.body?.state)
+      } else {
+        record('plan_case_worker_tick', 'skipped: CLIENTVERSE_CRON_SECRET not set')
+      }
+    }
+  }
+
   // ---- conversations and communication messages ---------------------------------
   // The point of this section is what does NOT happen. A message can be drafted and
   // approved, and it still cannot be sent, because approval does not authorise a channel.

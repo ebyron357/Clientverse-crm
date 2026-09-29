@@ -356,6 +356,46 @@ def test_a_crm_case_reaches_the_planner(env):
     assert linked["state"] == rc.AWAITING_APPROVAL
 
 
+def test_the_composer_sweep_links_a_second_chance_plan_to_its_case(env):
+    """The sweep is how production composes, and it composes a Second Chance detection
+    from its work item. It used to leave the case unplanned -- `detected`, no plan, no
+    approval -- so no stalled-lead or missed-follow-up recovery could ever be approved
+    or run. The test above calls `compose_for_case` directly, which is why it missed it."""
+    db, queue = env
+    seed_dormant_opportunity(db)
+    run(second_chance.run_detection(db, queue, TENANT))
+    summary = run(rs.compose_for_tenant(db, queue, TENANT))
+    assert summary["strategies_composed"] == 1, "one plan per recovery, not one per route"
+
+    case = run(rc.list_cases(db, TENANT))[0]
+    strategy = run(rs.list_strategies(db, TENANT))[0]
+    assert case["plan_reference"] == strategy["id"]
+    assert case["approval_reference"] == strategy["approval_id"]
+    assert case["state"] == rc.AWAITING_APPROVAL
+
+
+def test_re_sweeping_keeps_the_case_on_one_plan(env):
+    db, queue = env
+    seed_dormant_opportunity(db)
+    run(second_chance.run_detection(db, queue, TENANT))
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    first = run(rc.list_cases(db, TENANT))[0]["plan_reference"]
+    run(rs.compose_for_tenant(db, queue, TENANT))
+    assert run(rc.list_cases(db, TENANT))[0]["plan_reference"] == first
+    assert len(run(rs.list_strategies(db, TENANT))) == 1
+
+
+def test_the_sweep_does_not_plan_a_recovery_that_already_ended(env):
+    db, queue = env
+    seed_dormant_opportunity(db)
+    run(second_chance.run_detection(db, queue, TENANT))
+    case = run(rc.list_cases(db, TENANT))[0]
+    run(rc.set_state(db, tenant_id=TENANT, case_id=case["id"], state=rc.CLOSED))
+    summary = run(rs.compose_for_tenant(db, queue, TENANT))
+    assert summary["strategies_composed"] == 0
+    assert run(rs.list_strategies(db, TENANT)) == []
+
+
 def test_a_non_crm_case_reaches_the_planner_safely(env):
     """The success condition: a missed call plans without any CRM record behind it."""
     db, queue = env

@@ -517,16 +517,35 @@ async def compose_for_case(db, tenant_id: str, case: dict, *,
 
     strategy = await compose_for_candidate(db, tenant_id, candidate_from_case(case),
                                            actor=actor, channels=channels)
-    await recovery_case.attach(db, tenant_id=tenant_id, case_id=case["id"], actor=actor,
+    await _link_plan_to_case(db, tenant_id, case["id"], strategy, actor)
+    return strategy
+
+
+async def _link_plan_to_case(db, tenant_id: str, case_id: str, strategy: dict,
+                             actor: str) -> None:
+    """Point a case at the plan composed for it, and move it to match.
+
+    Shared by both composition routes. The queue route used to skip it: a Second Chance
+    detection composed its plan from the work item and never told the case, then marked
+    the case as planned so the case route skipped it too. The case stayed `detected`
+    with no plan, so no stalled-lead or missed-follow-up recovery could ever be approved
+    or run.
+    """
+    await recovery_case.attach(db, tenant_id=tenant_id, case_id=case_id, actor=actor,
                                plan_reference=strategy["id"],
                                approval_reference=strategy.get("approval_id"))
 
-    state_now = (await recovery_case.get_case(db, tenant_id, case["id"]) or {}).get("state")
-    target = (recovery_case.AWAITING_APPROVAL if strategy.get("approval_id")
-              else recovery_case.PLANNED)
+    state_now = (await recovery_case.get_case(db, tenant_id, case_id) or {}).get("state")
+    if strategy.get("state") == STATE_APPROVED:
+        # The sweep re-surfaced a plan already approved; the case should say so.
+        target = recovery_case.APPROVED
+    elif strategy.get("approval_id"):
+        target = recovery_case.AWAITING_APPROVAL
+    else:
+        target = recovery_case.PLANNED
     if state_now != target:
         try:
-            await recovery_case.set_state(db, tenant_id=tenant_id, case_id=case["id"],
+            await recovery_case.set_state(db, tenant_id=tenant_id, case_id=case_id,
                                           state=target, actor=actor,
                                           detail={"lane": strategy["lane"],
                                                   "rule": strategy["rule"]})
@@ -534,7 +553,6 @@ async def compose_for_case(db, tenant_id: str, case: dict, *,
             # A case already past planning is not dragged backwards by a recompose. Only
             # that is suppressed — a terminal case was refused above, before any write.
             pass
-    return strategy
 
 
 async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
@@ -716,10 +734,19 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
     planned_case_ids: set[str] = set()
     for candidate in candidates:
         try:
-            composed.append(await compose_for_candidate(db, tenant_id, candidate, actor=actor,
-                                                        channels=channels))
-            if candidate.get("payload", {}).get("recovery_case_id"):
-                planned_case_ids.add(candidate["payload"]["recovery_case_id"])
+            case_id = (candidate.get("payload") or {}).get("recovery_case_id")
+            case = (await recovery_case.get_case(db, tenant_id, case_id)) if case_id else None
+            if case and case.get("state") in recovery_case.TERMINAL_STATES:
+                # The recovery already ended; a fresh plan and approval for it would be
+                # work nobody is going to do. Same rule as the case route.
+                planned_case_ids.add(case_id)
+                continue
+            strategy = await compose_for_candidate(db, tenant_id, candidate, actor=actor,
+                                                   channels=channels)
+            composed.append(strategy)
+            if case:
+                await _link_plan_to_case(db, tenant_id, case["id"], strategy, actor)
+                planned_case_ids.add(case["id"])
         except Exception as exc:  # one bad candidate must not stop the sweep
             errors.append({"candidate_id": candidate.get("id"), "error": str(exc)[:300]})
 
