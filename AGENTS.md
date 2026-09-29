@@ -15,6 +15,15 @@
   `CLIENTVERSE_CRON_SECRET` against a local API as well as pytest.
 - Jev QC variables are unset in this environment (O-18): the gate fails closed, so do
   not report anything `VERIFIED_COMPLETE`.
+- **Read-only review subagents paid off**: three reviews (public intake, composer and
+  detectors, email path) found ~25 real defects, including one regression this branch
+  introduced. Verify every finding yourself before fixing, write the regression test
+  first, and prove it fails on the old code (`git stash push <files>` → run → pop).
+- Still unknown and only answerable with a real Gmail account: whether Gmail keeps the
+  `Message-ID` we set (OWNER_HANDOFF §8.5). The code no longer depends on the answer
+  for safety, only for how often reconciliation needs a human.
+- Watch for `pkill -f "uvicorn server:app"` inside a command whose own text contains
+  that string: it kills the calling shell (exit 144). Put it in a script file.
 
 ## Session state (2026-09-28)
 
