@@ -12,6 +12,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from html import escape as html_escape
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
@@ -146,10 +147,15 @@ async def lifespan(_: FastAPI):
         await db.domain_events.create_index([("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])
         await db.alerts.create_index([("tenant_id", 1), ("status", 1)])
         await db.alerts.create_index([("tenant_id", 1), ("type", 1), ("source_ref", 1)])
+        await db.alerts.create_index([("tenant_id", 1), ("open_key", 1)], unique=True,
+                                     partialFilterExpression={"open_key": {"$type": "string"}})
         await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
         await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
         await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
+        await db.commitments.create_index([("tenant_id", 1), ("status", 1), ("due_date", 1)])
+        await db.health_snapshots.create_index([("tenant_id", 1), ("workspace_id", 1), ("at", -1)])
         await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
+        await db.revoked_tokens.create_index("token_hash", unique=True)
         await db.login_lockouts.create_index("email", unique=True)
         await db.cron_runs.create_index("run_id", unique=True)
         await cron_ledger.ensure_indexes(db)
@@ -361,16 +367,20 @@ def _token_hash(token: str) -> str:
 async def _revoke_token(token: str):
     """Server-side revocation for stateless JWTs: record a hash (never the raw token) of
     the revoked token, checked on every subsequent request. A TTL index on `expires_at`
-    (see lifespan()) lets entries age out once the token would have expired anyway."""
-    expires_at = None
+    (see lifespan()) lets entries age out once the token would have expired anyway.
+
+    Only a token this server signed is recorded. Logout needs no session, so storing any
+    string sent to it let anyone grow the store that every request reads.
+    """
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG], options={"verify_exp": False})
-        if payload.get("exp"):
-            expires_at = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
     except jwt.InvalidTokenError:
-        pass
-    if expires_at is None:
-        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        return
+    if not payload.get("exp"):
+        return
+    expires_at = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        return  # already useless; nothing to revoke
     await db.revoked_tokens.update_one(
         {"token_hash": _token_hash(token)},
         {"$set": {"token_hash": _token_hash(token), "revoked_at": now_iso(), "expires_at": expires_at}},
@@ -446,6 +456,41 @@ def _parse_dt(value) -> Optional[datetime]:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
+async def _reserve_login_attempt(email: str) -> bool:
+    """Take one login attempt for `email`, atomically, before the password is checked.
+
+    Counting only after bcrypt had answered let concurrent guesses all pass the "is it
+    locked?" check first -- sixty simultaneous guesses were sixty checked passwords
+    against a limit of five. An attempt is now spent the moment it starts; a correct
+    password gives it back (`_reset_login_failures`). A lock that has run out, and
+    failures older than the window, are cleared first, so one typo after a lock no
+    longer re-locks the account for another window.
+    """
+    now = datetime.now(timezone.utc)
+    window_start = (now - timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+    await db.login_lockouts.update_one(
+        {"email": email, "$or": [
+            {"locked_until": {"$type": "string", "$lt": now.isoformat()}},
+            {"locked_until": None, "last_failure_at": {"$lt": window_start}}]},
+        {"$set": {"failed_count": 0, "locked_until": None}})
+    try:
+        record = await db.login_lockouts.find_one_and_update(
+            {"email": email, "locked_until": None,
+             "failed_count": {"$not": {"$gte": LOGIN_LOCKOUT_THRESHOLD}}},
+            {"$inc": {"failed_count": 1}, "$set": {"last_failure_at": now.isoformat()}},
+            upsert=True, return_document=True)
+    except Exception as exc:
+        if getattr(exc, "code", None) == 11000 or "E11000" in str(exc):
+            # The record exists but is locked or spent: the upsert found no match.
+            return False
+        raise
+    if record and record.get("failed_count", 0) >= LOGIN_LOCKOUT_THRESHOLD:
+        await db.login_lockouts.update_one(
+            {"email": email, "locked_until": None},
+            {"$set": {"locked_until": (now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()}})
+    return True
+
+
 async def _login_is_locked(email: str) -> bool:
     rec = await db.login_lockouts.find_one({"email": email})
     locked_until = _parse_dt(rec.get("locked_until")) if rec else None
@@ -481,7 +526,8 @@ async def register(inp: RegisterInput, response: Response):
     uid = new_id("user")
     await db.users.insert_one({
         "user_id": uid, "email": email, "name": inp.name, "role": "admin",
-        "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
+        "tenant_id": tenant_id,
+        "password_hash": await asyncio.to_thread(hash_password, inp.password),
         "picture": None, "created_at": now_iso(), "auth": "password",
     })
     await db.memberships.insert_one({
@@ -498,14 +544,14 @@ async def register(inp: RegisterInput, response: Response):
 @api.post("/auth/login")
 async def login(inp: LoginInput, response: Response):
     email = inp.email.lower()
-    if await _login_is_locked(email):
-        # Reject before even checking the password: a correct password must not bypass
-        # an active lockout, and the response must be indistinguishable from a plain
-        # wrong-password/no-such-account rejection.
+    if not await _reserve_login_attempt(email):
+        # Refused before the password is checked: a correct password must not bypass an
+        # active lockout, and the response is the same as a wrong password's.
         raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     user = await db.users.find_one({"email": email})
-    if not user or not user.get("password_hash") or not verify_password(inp.password, user["password_hash"]):
-        await _record_login_failure(email)
+    # bcrypt is deliberately slow; off the event loop it no longer stalls every request.
+    if not user or not user.get("password_hash") or not await asyncio.to_thread(
+            verify_password, inp.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     await _reset_login_failures(email)
     token = create_access_token(user["user_id"], email, user.get("password_version") or 0)
@@ -520,8 +566,10 @@ async def google_session(request: Request, response: Response):
     session_id = body.get("session_id")
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing session_id")
-    r = requests.get("https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-                     headers={"X-Session-ID": session_id}, timeout=15)
+    # In a thread: a blocking call here held the whole event loop for up to 15 seconds.
+    r = await asyncio.to_thread(
+        requests.get, "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+        headers={"X-Session-ID": session_id}, timeout=15)
     if r.status_code != 200:
         raise HTTPException(status_code=401, detail="Invalid session_id")
     data = r.json()
@@ -1237,6 +1285,8 @@ async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)
     await assert_workspace(user, inp.workspace_id)
     if inp.client_visible and user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Only an admin can share a commitment with the client")
+    # A due date nothing can parse was stored as given, and never evaluated.
+    inp.due_date = crm_core.parse_date(inp.due_date, "due_date")
     doc = {"id": new_id("cmt"), "tenant_id": user["tenant_id"], "created_at": now_iso(), **inp.model_dump()}
     await db.commitments.insert_one(doc)
     await record_event("commitment.created", "commitment", doc["id"], user["tenant_id"], user["email"], workspace_id=inp.workspace_id, payload={"title": inp.title})
@@ -1256,7 +1306,7 @@ async def update_commitment(cmt_id: str, inp: CommitmentPatch, user=Depends(get_
     if inp.status is not None:
         upd["status"] = inp.status
     if inp.due_date is not None:
-        upd["due_date"] = inp.due_date or None
+        upd["due_date"] = crm_core.parse_date(inp.due_date, "due_date") if inp.due_date else None
     if inp.client_visible is not None:
         if user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Only an admin can change what the client sees")
@@ -1272,34 +1322,61 @@ async def update_commitment(cmt_id: str, inp: CommitmentPatch, user=Depends(get_
 
 COMMITMENT_AT_RISK_HOURS = 48
 
+COMMITMENT_SWEEP_PER_TENANT = 5000
+
+
 async def evaluate_commitment_risk(tenant_id=None, actor="system"):
     """Flag open commitments as at_risk when their due date is near and breached when overdue.
-    Emits commitment.at_risk / commitment.breached domain events (audit + webhooks)."""
-    q = {"status": {"$in": ["open", "at_risk", "breached"]}, "due_date": {"$nin": [None, ""]}}
-    if tenant_id:
-        q["tenant_id"] = tenant_id
-    rows = await db.commitments.find(q, {"_id": 0}).to_list(5000)
+    Emits commitment.at_risk / commitment.breached domain events (audit + webhooks).
+
+    Tenant by tenant. One query across all tenants, capped and unsorted, let a single
+    tenant fill every slot (5,000 undated commitments) and switch the sweep off for
+    everyone else. Already-breached rows need nothing and are not re-read.
+    """
+    if not tenant_id:
+        tenant_ids = await db.commitments.distinct(
+            "tenant_id", {"status": {"$in": ["open", "at_risk"]}})
+        totals = {"scanned": 0, "flagged_at_risk": 0, "flagged_breached": 0,
+                  "at_risk_ids": [], "breached_ids": [], "tenants": len(tenant_ids),
+                  "threshold_hours": COMMITMENT_AT_RISK_HOURS}
+        for tid in tenant_ids:
+            try:
+                part = await evaluate_commitment_risk(tenant_id=tid, actor=actor)
+            except Exception:
+                logger.exception("Commitment risk sweep failed for one tenant")
+                continue
+            for key in ("scanned", "flagged_at_risk", "flagged_breached"):
+                totals[key] += part[key]
+            totals["at_risk_ids"].extend(part["at_risk_ids"][:100])
+            totals["breached_ids"].extend(part["breached_ids"][:100])
+        return totals
+    q = {"tenant_id": tenant_id, "status": {"$in": ["open", "at_risk"]},
+         "due_date": {"$nin": [None, ""]}}
+    rows = await db.commitments.find(q, {"_id": 0}).sort("due_date", 1).to_list(
+        COMMITMENT_SWEEP_PER_TENANT)
     now = datetime.now(timezone.utc)
     at_risk_ids, breached_ids = [], []
     flagged_at_risk, flagged_breached = 0, 0
     for c in rows:
         due = c.get("due_date")
         try:
-            due_dt = datetime.fromisoformat(due)
+            due_dt = datetime.fromisoformat(str(due).replace("Z", "+00:00"))
             if due_dt.tzinfo is None:
                 due_dt = due_dt.replace(tzinfo=timezone.utc)
         except Exception:
             continue
         if due_dt < now:
             if c.get("status") != "breached":
-                await db.commitments.update_one({"id": c["id"]}, {"$set": {"status": "breached"}})
+                await db.commitments.update_one({"id": c["id"], "tenant_id": c["tenant_id"]},
+                                                {"$set": {"status": "breached"}})
                 await record_event("commitment.breached", "commitment", c["id"], c["tenant_id"], actor,
                                    workspace_id=c.get("workspace_id"), payload={"title": c.get("title"), "due_date": due, "auto": True})
                 flagged_breached += 1
             breached_ids.append(c["id"])
         elif due_dt - now <= timedelta(hours=COMMITMENT_AT_RISK_HOURS):
             if c.get("status") == "open":
-                await db.commitments.update_one({"id": c["id"]}, {"$set": {"status": "at_risk"}})
+                await db.commitments.update_one({"id": c["id"], "tenant_id": c["tenant_id"]},
+                                                {"$set": {"status": "at_risk"}})
                 await record_event("commitment.at_risk", "commitment", c["id"], c["tenant_id"], actor,
                                    workspace_id=c.get("workspace_id"), payload={"title": c.get("title"), "due_date": due, "auto": True})
                 flagged_at_risk += 1
@@ -1868,8 +1945,11 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
 
     # idempotency
     if inp.idempotency_key:
+        # Bound to the tool: a key reused on a different tool returned the other tool's
+        # result. A write still waiting on its approval is the same request, not a new one.
         prior = await db.mcp_tool_invocations.find_one(
-            {"tenant_id": tenant, "idempotency_key": inp.idempotency_key, "status": "success"}, {"_id": 0})
+            {"tenant_id": tenant, "idempotency_key": inp.idempotency_key, "tool": inp.tool,
+             "status": {"$in": ["success", "pending_approval"]}}, {"_id": 0})
         if prior:
             return {**prior, "idempotent_replay": True}
 
@@ -2890,11 +2970,18 @@ async def run_reconcile_unknown_sweep(actor: str = "cron") -> dict:
     message where it is, because "I could not check" must never be recorded as "it was
     never sent".
     """
+    # Least recently checked first, and every examined message stamped: an unresolvable
+    # message stays `outcome_unknown`, so reading the first 200 in natural order kept
+    # re-asking about the same ones while every later tenant's waited indefinitely.
     stranded = await db[conversation_service.MESSAGES].find(
-        {"status": conversation_service.OUTCOME_UNKNOWN}, {"_id": 0}).to_list(200)
+        {"status": conversation_service.OUTCOME_UNKNOWN}, {"_id": 0}
+    ).sort("reconcile_checked_at", 1).to_list(200)
     totals = {"examined": 0, "resolved_sent": 0, "resolved_failed": 0, "unresolved": 0}
     for message in stranded:
         totals["examined"] += 1
+        await db[conversation_service.MESSAGES].update_one(
+            {"id": message["id"], "tenant_id": message["tenant_id"]},
+            {"$set": {"reconcile_checked_at": now_iso()}})
         provider = conversation_service.REGISTRY.get(message.get("channel"))
         locate = getattr(provider, "locate", None)
         if not locate:
@@ -3923,8 +4010,12 @@ async def cron_integration_sync(request: Request):
         return {"accepted": True, "duplicate": True, "run_id": run_id}
 
     async def _sweep():
-        actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
-        for c in actives[:200]:
+        # Least recently synced first, so a sweep that stops at 200 moves on next time
+        # instead of re-syncing the same connections while later tenants never sync.
+        actives = await db.integration_connections.find(
+            {"status": {"$in": ["active", "degraded"]}}, {"_id": 0}
+        ).sort("last_sync_at", 1).to_list(200)
+        for c in actives:
             try:
                 await run_sync(c["tenant_id"], c["provider"], "cron")
                 await evaluate_alerts(c["tenant_id"])
@@ -4107,15 +4198,24 @@ async def _upsert_alert(tenant_id, workspace_id, atype, severity, source, summar
         "type": atype, "severity": severity, "source": source, "summary": summary, "source_ref": source_ref,
         "first_seen_at": now_iso(), "last_seen_at": now_iso(), "occurrence_count": 1, "status": "open",
         "escalation_level": 0, "last_escalated_at": None,
-        "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None, "created_at": now_iso()}
-    await db.alerts.insert_one(dict(doc))
+        "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None, "created_at": now_iso(),
+        # Present while the alert is open; unique per tenant, so two evaluations racing
+        # past the read above cannot both raise (and both email) the same alert.
+        "open_key": f"{atype}|{source_ref}"}
+    try:
+        await db.alerts.insert_one(dict(doc))
+    except Exception as exc:
+        if getattr(exc, "code", None) == 11000 or "E11000" in str(exc):
+            return False
+        raise
     await notify_alert(doc, "critical" if severity == "critical" else "created")
     return True
 
 async def _resolve_alerts(tenant_id, atype, source_ref):
     res = await db.alerts.update_many({"tenant_id": tenant_id, "type": atype, "source_ref": source_ref,
                                        "status": {"$in": ["open", "acknowledged"]}},
-                                      {"$set": {"status": "resolved", "resolved_at": now_iso()}})
+                                      {"$set": {"status": "resolved", "resolved_at": now_iso()},
+                                       "$unset": {"open_key": ""}})
     if res.modified_count and atype.startswith("integration_"):
         await record_event("integration.recovered", "integration", source_ref.split(":")[-1], tenant_id, "system",
                            payload={"source_ref": source_ref})
@@ -4150,7 +4250,12 @@ async def evaluate_alerts(tenant_id):
         created += await _upsert_alert(tenant_id, cm.get("workspace_id"), "commitment_breach", "critical", "commitment",
                                        f"Commitment breached: {cm.get('title')}", f"commitment:{cm['id']}")
     for ws in await db.workspaces.find({"tenant_id": tenant_id, "status": {"$ne": "archived"}}, {"_id": 0}).to_list(500):
-        snap = await db.health_snapshots.find_one({"workspace_id": ws["id"]}, {"_id": 0}, sort=[("timestamp", -1)])
+        # The newest snapshot, by the field snapshots are written with (`at`): sorting
+        # on `timestamp`, which they do not carry, returned the oldest -- a workspace in
+        # critical health raised no alert while its first score had been healthy.
+        snap = await db.health_snapshots.find_one(
+            {"tenant_id": tenant_id, "workspace_id": ws["id"]}, {"_id": 0},
+            sort=[("at", -1)])
         score = (snap or {}).get("score", ws.get("health_score"))
         if score is not None and score < HEALTH_CRITICAL:
             created += await _upsert_alert(tenant_id, ws["id"], "health_critical", "critical", "health",
@@ -4186,7 +4291,7 @@ async def acknowledge_alert(alert_id: str, user=Depends(get_current_user)):
     a = await db.alerts.find_one({"id": alert_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Alert not found")
-    await db.alerts.update_one({"id": alert_id}, {"$set": {"status": "acknowledged", "acknowledged_by": user["email"], "acknowledged_at": now_iso()}})
+    await db.alerts.update_one({"id": alert_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": "acknowledged", "acknowledged_by": user["email"], "acknowledged_at": now_iso()}})
     await record_event("alert.acknowledged", "alert", alert_id, user["tenant_id"], user["email"], workspace_id=a.get("workspace_id"), payload={"type": a["type"]})
     await notify_alert({**a, "status": "acknowledged"}, "acknowledged")
     return {"ok": True}
@@ -4196,7 +4301,9 @@ async def resolve_alert(alert_id: str, user=Depends(get_current_user)):
     a = await db.alerts.find_one({"id": alert_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Alert not found")
-    await db.alerts.update_one({"id": alert_id}, {"$set": {"status": "resolved", "resolved_at": now_iso()}})
+    await db.alerts.update_one({"id": alert_id, "tenant_id": user["tenant_id"]},
+                               {"$set": {"status": "resolved", "resolved_at": now_iso()},
+                                "$unset": {"open_key": ""}})
     await record_event("alert.resolved", "alert", alert_id, user["tenant_id"], user["email"], workspace_id=a.get("workspace_id"), payload={"type": a["type"]})
     await notify_alert({**a, "status": "resolved"}, "resolved")
     return {"ok": True}
@@ -4313,8 +4420,22 @@ def _category(atype):
     if "integration" in atype or "sync" in atype or "webhook" in atype: return "integrations"
     return "critical"
 
-async def _admin_emails(tenant_id):
-    return [m["email"] for m in await db.memberships.find({"tenant_id": tenant_id, "role": "admin", "status": "active"}, {"_id": 0}).to_list(50)]
+async def _admin_emails(tenant_id, wants=None):
+    """The admins to email, each by their own notification preferences.
+
+    Only the tenant-wide preferences used to be read, so an admin who turned email or
+    the digest off for themselves kept receiving it.
+    """
+    members = await db.memberships.find(
+        {"tenant_id": tenant_id, "role": "admin", "status": "active"}, {"_id": 0}).to_list(50)
+    if wants is None:
+        return [m["email"] for m in members]
+    chosen = []
+    for member in members:
+        prefs = await get_prefs(tenant_id, member.get("user_id"))
+        if wants(prefs):
+            chosen.append(member["email"])
+    return chosen
 
 async def notify_alert(alert, transition):
     """In-app + email on meaningful state transitions. Deduplicated by (alert_id, transition[, level])."""
@@ -4353,11 +4474,19 @@ async def notify_alert(alert, transition):
             delivery.update(status="not_configured", failure_reason="email_not_configured")
             await record_event("notification.failed", "notification", alert["id"], tenant, "system", payload={"reason": "email_not_configured"})
         else:
-            recipients = await _admin_emails(tenant)
+            recipients = await _admin_emails(
+                tenant, wants=lambda p: bool((p.get("channels") or {}).get("email")) and p.get(cat, True))
             ok = 0; err = None
             for rc in recipients:
                 try:
-                    mid = await send_email(rc, f"[ClientVerse] {title}", f"<p>{alert.get('summary','')}</p><p style='color:#888'>Type: {alert['type']} · Severity: {alert['severity']}</p>")
+                    # Escaped: the summary carries user text (a commitment title), and
+                    # unescaped it put a stranger's HTML -- a phishing link -- into mail
+                    # sent from this platform.
+                    mid = await send_email(
+                        rc, f"[ClientVerse] {title}",
+                        f"<p>{html_escape(str(alert.get('summary', '')))}</p>"
+                        f"<p style='color:#888'>Type: {html_escape(str(alert['type']))} · "
+                        f"Severity: {html_escape(str(alert['severity']))}</p>")
                     ok += 1; delivery["provider_message_id"] = mid; delivery["recipient"] = rc
                 except Exception as e:
                     err = str(e)[:120]
@@ -4428,8 +4557,8 @@ async def maybe_ai_summary(digest):
 
 def render_digest_html(digest, ai_summary=None):
     c = digest["counts"]
-    rows = "".join(f"<tr><td style='padding:4px 8px;color:#555'>{k.replace('_',' ').title()}</td><td style='padding:4px 8px;font-weight:600'>{v}</td></tr>" for k, v in c.items())
-    ai = f"<p style='color:#333'>{ai_summary}</p>" if ai_summary else ""
+    rows = "".join(f"<tr><td style='padding:4px 8px;color:#555'>{html_escape(k.replace('_',' ').title())}</td><td style='padding:4px 8px;font-weight:600'>{html_escape(str(v))}</td></tr>" for k, v in c.items())
+    ai = f"<p style='color:#333'>{html_escape(str(ai_summary))}</p>" if ai_summary else ""
     return f"<div style='font-family:Arial'><h2>ClientVerse Daily Digest</h2>{ai}<table style='border-collapse:collapse'>{rows}</table><p style='color:#999;font-size:12px'>Generated {digest['generated_at']} — facts sourced from your CRM.</p></div>"
 
 async def deliver_digest(tenant_id, date_str, force=False):
@@ -4449,7 +4578,9 @@ async def deliver_digest(tenant_id, date_str, force=False):
         await db.digest_runs.update_one({"dedupe_key": dedupe}, {"$set": run}, upsert=True)
         return {"status": "not_configured", "digest": digest}
     prefs = await get_prefs(tenant_id)
-    recipients = await _admin_emails(tenant_id) if prefs.get("daily_digest", True) else []
+    recipients = await _admin_emails(
+        tenant_id, wants=lambda p: bool(p.get("daily_digest", True))
+        and bool((p.get("channels") or {}).get("email", True))) if prefs.get("daily_digest", True) else []
     ok = 0; err = None
     for rc in recipients:
         try:
@@ -4533,8 +4664,16 @@ async def set_tenant_preferences(inp: PrefsInput, user=Depends(require_role("adm
 async def digest_preview(user=Depends(require_role("admin"))):
     return await build_digest(user["tenant_id"])
 
+DIGEST_FORCED_PER_HOUR = 3
+
+
 @api.post("/digest/run")
 async def digest_run(user=Depends(require_role("admin"))):
+    # Forced runs skip the once-a-day dedupe, and registration does not verify an
+    # address: unthrottled, this sent platform mail to any address, as often as asked.
+    if not await recovery_intake._take(db, f"digest:force:{user['tenant_id']}",
+                                       DIGEST_FORCED_PER_HOUR, timedelta(hours=1)):
+        raise HTTPException(status_code=429, detail="The digest was sent recently; try again later")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return await deliver_digest(user["tenant_id"], today, force=True)
 
@@ -4550,14 +4689,18 @@ async def cron_daily_digest(request: Request):
         return {"accepted": True, "duplicate": True, "run_id": run_id}
 
     async def _sweep():
-        for t in await db.tenants.find({}, {"_id": 0, "tenant_id": 1}).to_list(500):
+        # Every tenant, and one clock for the whole sweep: a cap left tenants after the
+        # 500th without a digest, and reading the clock per tenant let a slow sweep move
+        # later tenants past their hour.
+        started = datetime.now(timezone.utc)
+        async for t in db.tenants.find({}, {"_id": 0, "tenant_id": 1}):
             tid = t["tenant_id"]
             try:
                 prefs = await get_prefs(tid)
                 if not prefs.get("daily_digest", True):
                     continue
                 tz = ZoneInfo(prefs.get("timezone", "UTC"))
-                local = datetime.now(tz)
+                local = started.astimezone(tz)
                 hour = int(str(prefs.get("digest_time", "08:00")).split(":")[0])
                 if local.hour == hour:
                     await run_escalations(tid)
@@ -4580,8 +4723,13 @@ recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, g
 _PORTAL_PATH = re.compile(r"(/portal/)[^/?#\s\"]+")
 
 
+# An invitation link carries its secret as `?token=` (the page and its lookup route).
+_TOKEN_QUERY = re.compile(r"([?&]token=)[^&\s\"]+")
+
+
 def redact_secret_paths(text: str) -> str:
-    return _PORTAL_PATH.sub(r"\1[redacted]", recovery_intake.redact_intake_path(text))
+    text = recovery_intake.redact_intake_path(text)
+    return _TOKEN_QUERY.sub(r"\1[redacted]", _PORTAL_PATH.sub(r"\1[redacted]", text))
 
 
 class _RedactIntakeSecrets(logging.Filter):

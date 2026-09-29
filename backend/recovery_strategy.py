@@ -951,22 +951,27 @@ async def release_lapsed(db, *, tenant_id: Optional[str] = None,
     Withdrawing it releases both: the candidate for a new proposal, and the case back to
     `planned` (see `_sync_case_with_decision`). Idempotent: only proposed plans are read.
     """
-    criteria: dict[str, Any] = {"state": STATE_PROPOSED, "approval_id": {"$type": "string"}}
+    # From the lapsed approvals, for the same reason as the message release: reading
+    # proposed plans first let one tenant's live ones crowd everyone else's out.
+    criteria: dict[str, Any] = {"status": approval_queue.EXPIRED,
+                                "subject_type": "recovery_strategy", "lapse_handled_at": None}
     if tenant_id:
         criteria["tenant_id"] = tenant_id
-    proposed = await db[COLLECTION].find(
-        criteria, {"_id": 0, "id": 1, "tenant_id": 1, "approval_id": 1}).to_list(int(limit))
+    lapsed = await db[approval_queue.COLLECTION].find(
+        criteria, {"_id": 0, "id": 1, "tenant_id": 1, "subject_id": 1}).to_list(int(limit))
     released = 0
-    for strategy in proposed:
-        approval = await db[approval_queue.COLLECTION].find_one(
-            {"id": strategy["approval_id"], "tenant_id": strategy["tenant_id"]},
-            {"_id": 0, "status": 1})
-        if (approval or {}).get("status") != approval_queue.EXPIRED:
-            continue
-        await set_state(db, strategy["tenant_id"], strategy["id"], state=STATE_WITHDRAWN,
-                        actor=actor)
-        released += 1
-    return {"examined": len(proposed), "released": released}
+    for approval in lapsed:
+        strategy = await db[COLLECTION].find_one(
+            {"id": approval.get("subject_id"), "tenant_id": approval["tenant_id"],
+             "state": STATE_PROPOSED, "approval_id": approval["id"]}, {"_id": 0, "id": 1})
+        if strategy:
+            await set_state(db, approval["tenant_id"], strategy["id"], state=STATE_WITHDRAWN,
+                            actor=actor)
+            released += 1
+        await db[approval_queue.COLLECTION].update_one(
+            {"id": approval["id"], "tenant_id": approval["tenant_id"]},
+            {"$set": {"lapse_handled_at": datetime.now(timezone.utc).isoformat()}})
+    return {"examined": len(lapsed), "released": released}
 
 
 async def summary(db, tenant_id: str) -> dict:

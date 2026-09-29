@@ -272,3 +272,36 @@ def test_no_fabricated_confidence_is_emitted(db_env):
     item = run(nba.list_recommendations(db_env, TENANT))[0]
     assert "confidence" not in item
     assert "score" not in item
+
+
+def test_a_retired_recommendation_reopens_when_its_condition_returns(db_env):
+    """Retired as condition_cleared, it stayed `completed` when the commitment was
+    breached again -- no open recommendation for a breached commitment."""
+    run(db_env.commitments.insert_one({
+        "id": "cmt_back", "tenant_id": TENANT, "title": "Ship", "status": "at_risk",
+        "workspace_id": "ws_1", "due_date": iso(1)}))
+    run(nba.generate(db_env, TENANT))
+    run(db_env.commitments.update_one({"id": "cmt_back"}, {"$set": {"status": "open",
+                                                                    "due_date": iso(9)}}))
+    run(nba.generate(db_env, TENANT))
+    retired = run(db_env[nba.COLLECTION].find_one({"dedupe_key": {"$regex": "cmt_back"}}))
+    assert retired["state"] == nba.STATE_COMPLETED
+    run(db_env.commitments.update_one({"id": "cmt_back"}, {"$set": {"status": "breached"}}))
+    run(nba.generate(db_env, TENANT))
+    reopened = run(db_env[nba.COLLECTION].find_one({"dedupe_key": {"$regex": "cmt_back"}}))
+    assert reopened["state"] == nba.STATE_NEW
+    assert reopened["title"].startswith("Resolve breached commitment")
+
+
+def test_a_rule_that_reads_its_cap_does_not_retire_what_it_could_not_see(db_env, monkeypatch):
+    monkeypatch.setattr(nba, "RULE_QUERY_CAP", 2)
+    for n in range(3):
+        run(db_env.commitments.insert_one({
+            "id": f"cmt_cap{n}", "tenant_id": TENANT, "title": f"C{n}", "status": "breached",
+            "workspace_id": "ws_1", "due_date": iso(-1)}))
+    run(db_env[nba.COLLECTION].insert_one({
+        "id": "nba_unseen", "tenant_id": TENANT, "dedupe_key": "resolve_commitment:cmt_unseen",
+        "state": nba.STATE_NEW, "title": "t"}))
+    summary = run(nba.generate(db_env, TENANT))
+    assert summary.get("retirement_skipped") is True
+    assert run(db_env[nba.COLLECTION].find_one({"id": "nba_unseen"}))["state"] == nba.STATE_NEW

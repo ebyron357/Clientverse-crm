@@ -164,6 +164,8 @@ async def ensure_indexes(db) -> None:
     await collection.create_index([("tenant_id", 1), ("status", 1), ("created_at", -1)])
     await collection.create_index([("tenant_id", 1), ("expires_at", 1)])
     await collection.create_index([("tenant_id", 1), ("subject_type", 1), ("subject_id", 1)])
+    # The expiry sweep reads lapsed approvals it has not yet handled, across tenants.
+    await collection.create_index([("status", 1), ("subject_type", 1), ("lapse_handled_at", 1)])
 
 
 @overload

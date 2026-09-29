@@ -29,6 +29,11 @@ STATE_SNOOZED = "snoozed"
 STATES = (STATE_NEW, STATE_ACCEPTED, STATE_DISMISSED, STATE_COMPLETED, STATE_SNOOZED)
 OPEN_STATES = (STATE_NEW, STATE_ACCEPTED, STATE_SNOOZED)
 
+# How many source rows one rule reads. A rule that reads this many may have missed some,
+# and a recommendation it missed is not a condition that cleared: retirement is skipped
+# for that run rather than retiring everything past the cap.
+RULE_QUERY_CAP = 1000
+
 # Lower number = more urgent. Fixed bands keep ordering explainable: a user can be
 # told why one item outranks another without reading code.
 PRIORITY_CRITICAL = 10
@@ -104,7 +109,7 @@ async def _from_commitments(db, tenant_id: str) -> list[dict]:
     out = []
     commitments = await db.commitments.find(
         {"tenant_id": tenant_id, "status": {"$in": ["breached", "at_risk", "open"]}}, {"_id": 0}
-    ).to_list(200)
+    ).to_list(RULE_QUERY_CAP)
     now = _now()
     for cmt in commitments:
         status = str(cmt.get("status") or "").lower()
@@ -139,7 +144,7 @@ async def _from_approvals(db, tenant_id: str) -> list[dict]:
     out = []
     approvals = await db.approvals.find(
         {"tenant_id": tenant_id, "status": "requested"}, {"_id": 0}
-    ).to_list(200)
+    ).to_list(RULE_QUERY_CAP)
     for apr in approvals:
         out.append(_recommendation(
             tenant_id=tenant_id,
@@ -161,7 +166,7 @@ async def _from_tasks(db, tenant_id: str) -> list[dict]:
     tasks = await db.tasks.find(
         {"tenant_id": tenant_id, "status": {"$nin": ["done", "complete", "completed", "cancelled"]}},
         {"_id": 0},
-    ).to_list(200)
+    ).to_list(RULE_QUERY_CAP)
     for task in tasks:
         due = _parse(task.get("due_date") or task.get("due_at"))
         if due is None or due >= now:
@@ -191,7 +196,7 @@ async def _from_work_queue(db, tenant_id: str) -> list[dict]:
          "status": {"$in": ["queued", "claimed", "processing", "retry_scheduled", "completed"]},
          "resolved_at": None},
         {"_id": 0},
-    ).to_list(200)
+    ).to_list(RULE_QUERY_CAP)
     for item in items:
         payload = item.get("payload") or {}
         if item.get("type") == "second_chance.stalled_lead":
@@ -249,7 +254,7 @@ async def _from_client_health(db, tenant_id: str) -> list[dict]:
     meant this rule could never fire for a real unhealthy workspace.
     """
     out = []
-    workspaces = await db.workspaces.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(200)
+    workspaces = await db.workspaces.find({"tenant_id": tenant_id}, {"_id": 0}).to_list(RULE_QUERY_CAP)
     for ws in workspaces:
         snapshot = await db.health_snapshots.find_one(
             {"tenant_id": tenant_id, "workspace_id": ws.get("id")},
@@ -292,9 +297,13 @@ async def generate(db, tenant_id: str, *, actor: str = "system") -> dict:
     """
     candidates: list[dict] = []
     failed_rules: list[str] = []
+    truncated_rules: list[str] = []
     for rule in RULES:
         try:
-            candidates.extend(await rule(db, tenant_id))
+            produced = await rule(db, tenant_id)
+            if len(produced) >= RULE_QUERY_CAP:
+                truncated_rules.append(rule.__name__)
+            candidates.extend(produced)
         except Exception as exc:
             # A single failing rule must not void the whole queue — and, critically,
             # must not let the retirement pass below conclude that the conditions it
@@ -326,11 +335,23 @@ async def generate(db, tenant_id: str, *, actor: str = "system") -> dict:
             created += 1
         else:
             refreshed += 1
+            # Retired because its condition cleared, and the condition is back: it is
+            # open again. Left `completed`, the recommendation never reappeared.
+            await db[COLLECTION].update_one(
+                {"tenant_id": tenant_id, "dedupe_key": key, "state": STATE_COMPLETED,
+                 "outcome": "condition_cleared"},
+                {"$set": {"state": STATE_NEW, "outcome": None, "state_changed_at": now,
+                          "state_changed_by": actor},
+                 "$push": {"history": {"action": "reopened", "actor": actor, "at": now,
+                                       "detail": {"reason": "source condition present again"}}}})
 
     # Retire open recommendations whose source condition no longer holds — but only
     # when every rule actually ran. If a rule failed, its conditions are unknown, not
     # cleared, and retiring them would silently erase real work.
     retired = 0
+    if truncated_rules:
+        failed_rules = failed_rules + [f"{name}: read {RULE_QUERY_CAP} rows; more may exist"
+                                       for name in truncated_rules]
     if failed_rules:
         return {"tenant_id": tenant_id, "created": created, "refreshed": refreshed,
                 "retired": 0, "evaluated": len(seen), "failed_rules": failed_rules,

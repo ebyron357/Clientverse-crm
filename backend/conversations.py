@@ -734,27 +734,34 @@ async def release_lapsed_approvals(db, *, tenant_id: Optional[str] = None,
     request that can no longer be decided. `blocked` is the honest state -- the approval
     precondition failed -- and from it a fresh approval can be requested.
     """
-    criteria: dict[str, Any] = {"status": PENDING_APPROVAL,
-                                "approval_id": {"$type": "string"}}
+    # Start from the lapsed approvals, not the waiting messages: reading the first N
+    # waiting messages across all tenants let one tenant's unexpired requests fill the
+    # window, and nobody else's lapsed approval was ever released. Each approval is
+    # marked once handled, so the scan does not grow with history.
+    criteria: dict[str, Any] = {"status": approval_queue.EXPIRED,
+                                "subject_type": "communication_message",
+                                "lapse_handled_at": None}
     if tenant_id:
         criteria["tenant_id"] = tenant_id
-    waiting = await db[MESSAGES].find(
-        criteria, {"_id": 0, "id": 1, "tenant_id": 1, "approval_id": 1}).to_list(int(limit))
+    lapsed = await db[approval_queue.COLLECTION].find(
+        criteria, {"_id": 0, "id": 1, "tenant_id": 1, "subject_id": 1}).to_list(int(limit))
     released = 0
-    for message in waiting:
-        approval = await db[approval_queue.COLLECTION].find_one(
-            {"id": message["approval_id"], "tenant_id": message["tenant_id"]},
-            {"_id": 0, "status": 1})
-        if (approval or {}).get("status") != approval_queue.EXPIRED:
-            continue
-        try:
-            await mark_refused(db, tenant_id=message["tenant_id"], message_id=message["id"],
-                               actor=actor, reason=REFUSAL_APPROVAL,
-                               detail="The approval request expired before anyone decided it.")
-        except InvalidMessageTransition:
-            continue
-        released += 1
-    return {"examined": len(waiting), "released": released}
+    for approval in lapsed:
+        message = await db[MESSAGES].find_one(
+            {"id": approval.get("subject_id"), "tenant_id": approval["tenant_id"],
+             "status": PENDING_APPROVAL, "approval_id": approval["id"]}, {"_id": 0, "id": 1})
+        if message:
+            try:
+                await mark_refused(db, tenant_id=approval["tenant_id"], message_id=message["id"],
+                                   actor=actor, reason=REFUSAL_APPROVAL,
+                                   detail="The approval request expired before anyone decided it.")
+                released += 1
+            except InvalidMessageTransition:
+                pass
+        await db[approval_queue.COLLECTION].update_one(
+            {"id": approval["id"], "tenant_id": approval["tenant_id"]},
+            {"$set": {"lapse_handled_at": _iso(_now())}})
+    return {"examined": len(lapsed), "released": released}
 
 
 async def _note_case_contact(db, tenant_id: str, conversation: dict, message: dict,
