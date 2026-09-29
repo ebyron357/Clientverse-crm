@@ -25,6 +25,9 @@ load_dotenv(ROOT_DIR / '.env')
 
 from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
@@ -200,6 +203,33 @@ CONTENT_SECURITY_POLICY = "; ".join([
     "base-uri 'self'",
     "form-action 'self'",
 ])
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_response(request: Request, exc: RequestValidationError):
+    """FastAPI's own 422, unless the rejected input cannot be written back as JSON.
+
+    The default response echoes each rejected value. When that value is `Infinity` or
+    `NaN` -- which a model correctly refuses -- echoing it raises, and a correct
+    rejection turned into an HTTP 500. The fallback keeps where and why, drops the echo.
+    """
+    try:
+        return await request_validation_exception_handler(request, exc)
+    except ValueError:
+        return JSONResponse(status_code=422, content={"detail": [
+            {"loc": list(error.get("loc", ())), "msg": error.get("msg"),
+             "type": error.get("type")} for error in exc.errors()]})
+
+
+@app.middleware("http")
+async def bound_public_intake_body(request: Request, call_next):
+    """The public intake door accepts a few hundred bytes of form fields. Refuse a larger
+    declared body before anything reads it."""
+    if request.url.path.startswith("/api/intake/public/"):
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > recovery_intake.MAX_PUBLIC_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "Enquiry too large"})
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def production_security_headers(request: Request, call_next):
@@ -4213,6 +4243,20 @@ async def cron_daily_digest(request: Request):
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
 recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+
+
+class _RedactIntakeSecrets(logging.Filter):
+    """The path form of the public intake route carries a secret. Hashing it at rest is
+    no use if the access log writes it out in plain text on every submission."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(recovery_intake.redact_intake_path(arg)
+                                if isinstance(arg, str) else arg for arg in record.args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactIntakeSecrets())
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:

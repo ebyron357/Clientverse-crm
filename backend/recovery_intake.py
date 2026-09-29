@@ -27,25 +27,65 @@ Two doors, and they are different on purpose:
 
 Every intake path is idempotent on the caller's own `external_id` where one is given,
 so a phone system retrying a webhook does not produce two missed calls.
+
+THE WEBSITE DOOR IS AN OPEN DOOR
+
+Its token sits in a public page, so anyone can use it, and everything it accepts is
+treated as a stranger's claim:
+
+* **Rate limited.** A per-token daily cap and a per-client hourly cap; past either the
+  answer is 429. Without them a script could file unlimited enquiries, each becoming a
+  recovery case a day later, and push every real enquiry out of the detector's window.
+* **A visitor's stated value is not a potential value.** It is kept, bounded, as
+  `visitor_stated_value` for a person to read, and never feeds the buyer-facing
+  "open potential" figure. An unbounded float there once let one request store `inf`
+  and turn the enquiry list and the proof report into HTTP 500s.
+* **Its own dedupe namespace.** A public `external_id` is stored as `public:<id>`, so a
+  visitor who guesses the tenant's own form ids cannot pre-empt -- and silently
+  swallow -- the real lead the tenant's backend files later. A deduplicated public
+  submission is answered exactly like a new one, so the door does not confirm which ids
+  exist.
+* **The secret stays out of logs.** It may be sent as the `X-Intake-Token` header, and
+  the path form is redacted from the access log (see `redact_intake_path`).
+* **Enquiries can be marked spam or closed**, which removes them from detection.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
+import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
 import detectors
 
 INTAKE_TOKENS = "intake_tokens"
+INTAKE_RATE = "intake_rate"
 
 # A web form is an open door, so what comes through it is bounded hard.
 MAX_MESSAGE = 4000
 MAX_FIELD = 300
+# The largest amount any intake accepts. Finite by construction: `inf` and `nan` are
+# refused by the models below, and nothing larger than this is a real enquiry.
+MAX_VALUE = 1_000_000_000
+# A public enquiry is a few hundred bytes of form fields; anything much larger is not one.
+MAX_PUBLIC_BODY_BYTES = 16 * 1024
+PUBLIC_DAILY_LIMIT = int(os.environ.get("INTAKE_PUBLIC_DAILY_LIMIT", "200"))
+PUBLIC_HOURLY_PER_CLIENT = int(os.environ.get("INTAKE_PUBLIC_HOURLY_PER_CLIENT", "20"))
+PUBLIC_ID_PREFIX = "public:"
+ENQUIRY_STATUSES = ("new", "responded", "closed", "spam")
+
+_PUBLIC_PATH = re.compile(r"(/intake/public/)[^/\s?]+(?=/)")
+
+
+def redact_intake_path(text: str) -> str:
+    """Remove an intake secret from a request path before it is logged."""
+    return _PUBLIC_PATH.sub(r"\1[redacted]", text)
 
 
 def _now_iso() -> str:
@@ -59,6 +99,38 @@ def _hash(token: str) -> str:
 async def ensure_indexes(db) -> None:
     await db[INTAKE_TOKENS].create_index("token_hash", unique=True)
     await db[INTAKE_TOKENS].create_index([("tenant_id", 1), ("status", 1)])
+    await db[INTAKE_RATE].create_index("key", unique=True)
+    try:
+        await db[INTAKE_RATE].create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
+        pass
+
+
+async def _take(db, key: str, limit: int, window: timedelta) -> bool:
+    """Count one use against `key` for the current window; False once over the limit."""
+    now = datetime.now(timezone.utc)
+    update = {"$inc": {"count": 1}, "$setOnInsert": {"expires_at": now + window}}
+    try:
+        doc = await db[INTAKE_RATE].find_one_and_update(
+            {"key": key}, update, upsert=True, return_document=True)
+    except Exception as exc:
+        # Two first requests in the same window both tried to create the counter; the
+        # loser simply counts against the one that won.
+        if getattr(exc, "code", None) != 11000 and "E11000" not in str(exc):
+            raise
+        doc = await db[INTAKE_RATE].find_one_and_update(
+            {"key": key}, update, upsert=True, return_document=True)
+    return int((doc or {}).get("count", 1)) <= limit
+
+
+def _client_address(request: Request) -> str:
+    """The address that reached us. Behind Railway's edge that is the last hop it appended
+    to X-Forwarded-For; a value a client wrote there itself comes earlier in the list."""
+    forwarded = [part.strip() for part in
+                 (request.headers.get("x-forwarded-for") or "").split(",") if part.strip()]
+    if forwarded:
+        return forwarded[-1]
+    return request.client.host if request.client else "unknown"
 
 
 class CallLogInput(BaseModel):
@@ -80,8 +152,13 @@ class WebEnquiryInput(BaseModel):
     phone: Optional[str] = Field(default=None, max_length=40)
     message: Optional[str] = Field(default=None, max_length=MAX_MESSAGE)
     source_page: Optional[str] = Field(default=None, max_length=1000)
-    estimated_value: Optional[float] = Field(default=None, ge=0)
+    estimated_value: Optional[float] = Field(default=None, ge=0, le=MAX_VALUE,
+                                             allow_inf_nan=False)
     external_id: Optional[str] = Field(default=None, max_length=200)
+
+
+class EnquiryStatusInput(BaseModel):
+    status: str = Field(pattern="^(new|responded|closed|spam)$")
 
 
 class ExternalEventInput(BaseModel):
@@ -94,7 +171,7 @@ class ExternalEventInput(BaseModel):
     contact_email: Optional[str] = Field(default=None, max_length=MAX_FIELD)
     contact_phone: Optional[str] = Field(default=None, max_length=40)
     external_contact_id: Optional[str] = Field(default=None, max_length=200)
-    value: Optional[float] = Field(default=None, ge=0)
+    value: Optional[float] = Field(default=None, ge=0, le=MAX_VALUE, allow_inf_nan=False)
     currency: Optional[str] = Field(default=None, max_length=8)
 
 
@@ -161,18 +238,26 @@ def register_intake_routes(router, db, new_id, now_iso, record_event,
 
     async def _file_enquiry(tenant_id: str, inp: WebEnquiryInput, *, actor: str,
                             channel: str) -> dict:
+        public = channel == "public_form"
+        external_id = inp.external_id
+        if public and external_id:
+            external_id = f"{PUBLIC_ID_PREFIX}{external_id}"
         doc = {
             "id": new_id("enq"), "tenant_id": tenant_id,
             "name": inp.name, "email": (str(inp.email).lower() if inp.email else None),
             "phone": inp.phone, "message": inp.message, "source_page": inp.source_page,
-            "estimated_value": inp.estimated_value, "external_id": inp.external_id,
+            # A signed-in caller's estimate is the tenant's own; a visitor's is a claim,
+            # kept for a person to read and never used as potential value.
+            "estimated_value": None if public else inp.estimated_value,
+            "visitor_stated_value": inp.estimated_value if public else None,
+            "external_id": external_id,
             "status": "new", "received_at": _now_iso(), "received_via": channel,
             "received_by": actor, "contact_id": None, "company_id": None,
             "created_at": _now_iso(),
         }
         result = await _insert_idempotent(
             detectors.WEB_ENQUIRIES, doc,
-            {"tenant_id": tenant_id, "external_id": inp.external_id})
+            {"tenant_id": tenant_id, "external_id": external_id})
         if not result.get("deduplicated"):
             await record_event("web_enquiry.received", "web_enquiry", result["id"],
                                tenant_id, actor, payload={"via": channel})
@@ -183,17 +268,18 @@ def register_intake_routes(router, db, new_id, now_iso, record_event,
         return await _file_enquiry(user["tenant_id"], inp, actor=user["email"],
                                    channel="authenticated")
 
-    @router.post("/intake/public/{token}/web-enquiries")
-    async def record_public_web_enquiry(token: str, inp: WebEnquiryInput):
+    async def _public_enquiry(token: str, inp: WebEnquiryInput, request: Request) -> dict:
         """The website door.
 
         The token identifies the tenant and authorises exactly this one write. It reads
-        nothing, returns nothing that was not just supplied, and cannot open a recovery
-        case -- the detector sweep does that later, inside the tenant, on the same terms
-        as every other source.
+        nothing and cannot open a recovery case -- the detector sweep does that later,
+        inside the tenant, on the same terms as every other source.
         """
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > MAX_PUBLIC_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Enquiry too large")
         record = await db[INTAKE_TOKENS].find_one(
-            {"token_hash": _hash(token), "status": "active"}, {"_id": 0})
+            {"token_hash": _hash(token or ""), "status": "active"}, {"_id": 0})
         if not record:
             # The same answer for a revoked token, a wrong token and a token that never
             # existed: anything else confirms which.
@@ -201,15 +287,50 @@ def register_intake_routes(router, db, new_id, now_iso, record_event,
         if not (inp.email or inp.phone or inp.message):
             raise HTTPException(status_code=422,
                                 detail="An enquiry needs at least an email, a phone number or a message")
-        result = await _file_enquiry(record["tenant_id"], inp,
-                                     actor=f"intake_token:{record['id']}",
-                                     channel="public_form")
+        now = datetime.now(timezone.utc)
+        day = now.strftime("%Y-%m-%d")
+        hour = now.strftime("%Y-%m-%dT%H")
+        client = _client_address(request)
+        if not await _take(db, f"token:{record['id']}:client:{client}:{hour}",
+                           PUBLIC_HOURLY_PER_CLIENT, timedelta(hours=2)) or \
+                not await _take(db, f"token:{record['id']}:day:{day}",
+                                PUBLIC_DAILY_LIMIT, timedelta(days=2)):
+            raise HTTPException(status_code=429, detail="Too many enquiries; try again later")
+        await _file_enquiry(record["tenant_id"], inp,
+                            actor=f"intake_token:{record['id']}", channel="public_form")
         await db[INTAKE_TOKENS].update_one(
             {"id": record["id"]},
             {"$set": {"last_used_at": _now_iso()}, "$inc": {"use_count": 1}})
-        # Deliberately thin: the caller learns it was accepted and nothing about the
-        # tenant behind the token.
-        return {"accepted": True, "id": result["id"]}
+        # Deliberately thin, and identical for a new and a deduplicated submission: the
+        # caller learns it was accepted and nothing about what the tenant already holds.
+        return {"accepted": True}
+
+    @router.post("/intake/public/web-enquiries")
+    async def record_public_web_enquiry_by_header(
+            inp: WebEnquiryInput, request: Request,
+            x_intake_token: Optional[str] = Header(default=None)):
+        """Preferred form: the secret travels in `X-Intake-Token`, not the URL."""
+        return await _public_enquiry(x_intake_token or "", inp, request)
+
+    @router.post("/intake/public/{token}/web-enquiries")
+    async def record_public_web_enquiry(token: str, inp: WebEnquiryInput, request: Request):
+        """Path form, kept for forms already embedding it. The access log redacts it."""
+        return await _public_enquiry(token, inp, request)
+
+    @router.patch("/intake/web-enquiries/{enquiry_id}")
+    async def set_web_enquiry_status(enquiry_id: str, inp: EnquiryStatusInput,
+                                     user=Depends(get_current_user)):
+        """Mark an enquiry responded, closed or spam. Anything but `new` leaves detection."""
+        updated = await db[detectors.WEB_ENQUIRIES].find_one_and_update(
+            {"id": enquiry_id, "tenant_id": user["tenant_id"]},
+            {"$set": {"status": inp.status, "status_set_by": user["email"],
+                      "status_set_at": _now_iso()}},
+            projection={"_id": 0}, return_document=True)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Not found")
+        await record_event("web_enquiry.status_set", "web_enquiry", enquiry_id,
+                           user["tenant_id"], user["email"], payload={"status": inp.status})
+        return updated
 
     @router.get("/intake/web-enquiries")
     async def list_web_enquiries(status: Optional[str] = None, limit: int = 100,

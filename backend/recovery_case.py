@@ -81,6 +81,8 @@ IDENTITY_EXTERNAL_ID = "external_id"
 IDENTITY_KINDS = (IDENTITY_PHONE, IDENTITY_EMAIL, IDENTITY_EXTERNAL_ID)
 
 DEFAULT_CURRENCY = "USD"
+# Any single amount above this is refused (see `_amount`).
+MAX_AMOUNT = 1_000_000_000_000
 
 # -------------------------------------------------------------------- states
 
@@ -185,6 +187,10 @@ def _amount(value: Any, label: str) -> float:
         raise RecoveryCaseError(f"{label} must be a finite number")
     if amount < 0:
         raise RecoveryCaseError(f"{label} cannot be negative")
+    # Finite is not the same as usable: two values near the float maximum still sum to
+    # infinity in every aggregate, and nothing this system recovers is that large.
+    if amount > MAX_AMOUNT:
+        raise RecoveryCaseError(f"{label} is implausibly large")
     return amount
 
 
