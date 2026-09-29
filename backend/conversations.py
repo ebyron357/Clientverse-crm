@@ -726,6 +726,37 @@ async def mark_refused(db, *, tenant_id: str, message_id: str, actor: str,
                              detail={"reason": reason, "detail": detail})
 
 
+async def release_lapsed_approvals(db, *, tenant_id: Optional[str] = None,
+                                  actor: str = "approval-expiry", limit: int = 500) -> dict:
+    """Block messages whose approval expired undecided, naming why.
+
+    Left alone, such a message sat in `pending_approval` indefinitely, waiting on a
+    request that can no longer be decided. `blocked` is the honest state -- the approval
+    precondition failed -- and from it a fresh approval can be requested.
+    """
+    criteria: dict[str, Any] = {"status": PENDING_APPROVAL,
+                                "approval_id": {"$type": "string"}}
+    if tenant_id:
+        criteria["tenant_id"] = tenant_id
+    waiting = await db[MESSAGES].find(
+        criteria, {"_id": 0, "id": 1, "tenant_id": 1, "approval_id": 1}).to_list(int(limit))
+    released = 0
+    for message in waiting:
+        approval = await db[approval_queue.COLLECTION].find_one(
+            {"id": message["approval_id"], "tenant_id": message["tenant_id"]},
+            {"_id": 0, "status": 1})
+        if (approval or {}).get("status") != approval_queue.EXPIRED:
+            continue
+        try:
+            await mark_refused(db, tenant_id=message["tenant_id"], message_id=message["id"],
+                               actor=actor, reason=REFUSAL_APPROVAL,
+                               detail="The approval request expired before anyone decided it.")
+        except InvalidMessageTransition:
+            continue
+        released += 1
+    return {"examined": len(waiting), "released": released}
+
+
 async def _note_case_contact(db, tenant_id: str, conversation: dict, message: dict,
                              actor: str) -> None:
     """Tell the recovery case this thread belongs to that its counterparty was reached.

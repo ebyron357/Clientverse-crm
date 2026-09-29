@@ -2310,8 +2310,22 @@ async def cron_approval_expiry(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "approval-expiry", run_id, lambda: approval_service.expire_due(db), entry_id))
+        "approval-expiry", run_id, run_approval_expiry_sweep, entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+async def run_approval_expiry_sweep() -> dict:
+    """Lapse undecided approvals, then release what was waiting on any lapsed approval.
+
+    The release runs over every lapsed approval, not only the ones this sweep expired:
+    expiry is also applied lazily on read paths, which never told the plan or message
+    waiting on it.
+    """
+    expired = await approval_service.expire_due(db)
+    plans = await recovery_service.release_lapsed(db)
+    messages = await conversation_service.release_lapsed_approvals(db)
+    return {**expired, "plans_released": plans["released"],
+            "messages_released": messages["released"]}
 
 # ============================================================================
 #  LIVE INTEGRATIONS V1 — providers, secure credential storage, sync engine

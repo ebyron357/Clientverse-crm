@@ -797,7 +797,69 @@ async def set_state(db, tenant_id: str, strategy_id: str, *, state: str, actor: 
     )
     if not updated:
         raise RecoveryStrategyError("Strategy not found")
+    await _sync_case_with_decision(db, tenant_id, updated, state, actor)
     return {k: v for k, v in updated.items() if k not in ("_id", "active_candidate_key")}
+
+
+async def _sync_case_with_decision(db, tenant_id: str, strategy: dict, state: str,
+                                   actor: str) -> None:
+    """Carry the plan's approval decision onto the case it was composed for.
+
+    Composition moves a case to `awaiting_approval`; until this existed, nothing moved it
+    on. The strategy recorded `approved` and the case stayed where it was -- and the
+    runner only executes `approved` cases, so an approved recovery plan was never run.
+
+    Only the case whose *current* plan and approval are this strategy's is touched: a
+    case that has since been recomposed points at a newer plan, and an old decision must
+    not move it. An approved plan makes the case `approved`; a rejected or withdrawn one
+    returns it to `planned`, from which a later sweep may propose afresh.
+    """
+    target = {STATE_APPROVED: recovery_case.APPROVED,
+              STATE_REJECTED: recovery_case.PLANNED,
+              STATE_WITHDRAWN: recovery_case.PLANNED}.get(state)
+    if not target:
+        return
+    case = await db[recovery_case.COLLECTION].find_one(
+        {"tenant_id": tenant_id, "plan_reference": strategy["id"],
+         "approval_reference": strategy.get("approval_id")},
+        {"_id": 0, "id": 1, "state": 1})
+    if not case or case.get("state") != recovery_case.AWAITING_APPROVAL:
+        return
+    try:
+        await recovery_case.set_state(
+            db, tenant_id=tenant_id, case_id=case["id"], state=target, actor=actor,
+            detail={"plan": strategy["id"], "decision": state})
+    except recovery_case.InvalidCaseTransition:
+        # Moved concurrently; the case is wherever a person or another decision put it.
+        pass
+
+
+async def release_lapsed(db, *, tenant_id: Optional[str] = None,
+                         actor: str = "approval-expiry", limit: int = 500) -> dict:
+    """Withdraw proposed plans whose approval expired before anyone decided it.
+
+    Expiry is applied lazily -- on most read paths as well as by the hourly sweep -- and
+    none of those paths told the plan. It stayed `proposed`, still holding its candidate
+    so no fresh plan could be composed, and its case stayed `awaiting_approval` for good.
+    Withdrawing it releases both: the candidate for a new proposal, and the case back to
+    `planned` (see `_sync_case_with_decision`). Idempotent: only proposed plans are read.
+    """
+    criteria: dict[str, Any] = {"state": STATE_PROPOSED, "approval_id": {"$type": "string"}}
+    if tenant_id:
+        criteria["tenant_id"] = tenant_id
+    proposed = await db[COLLECTION].find(
+        criteria, {"_id": 0, "id": 1, "tenant_id": 1, "approval_id": 1}).to_list(int(limit))
+    released = 0
+    for strategy in proposed:
+        approval = await db[approval_queue.COLLECTION].find_one(
+            {"id": strategy["approval_id"], "tenant_id": strategy["tenant_id"]},
+            {"_id": 0, "status": 1})
+        if (approval or {}).get("status") != approval_queue.EXPIRED:
+            continue
+        await set_state(db, strategy["tenant_id"], strategy["id"], state=STATE_WITHDRAWN,
+                        actor=actor)
+        released += 1
+    return {"examined": len(proposed), "released": released}
 
 
 async def summary(db, tenant_id: str) -> dict:

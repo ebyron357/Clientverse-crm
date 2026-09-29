@@ -8,10 +8,14 @@ Run end to end, the loop broke in two places:
 * The runner opened a contact-backed case's thread with the contact's id and no address,
   so the email adapter -- correctly refusing to guess -- rejected every automated
   recovery email.
+* Approving a recovery plan updated the *strategy* and never the *case*, which stayed
+  `awaiting_approval`. The runner only executes `approved` cases, so no approved plan
+  was ever run.
 * Nothing in the running system moved a case from `executing` to `engaged` when its
   counterparty was reached. `engaged` is the only state a recovery can be confirmed from,
   so an outcome the ledger rightly attributed still failed to mark the case recovered.
-  The existing tests walked cases to `engaged` by hand, which is why none noticed.
+  The existing tests set `approved` and walked cases to `engaged` by hand, which is why
+  none noticed.
 
 These tests drive the real modules in order, with only the provider's network replaced.
 """
@@ -99,6 +103,24 @@ def registry():
     return registry
 
 
+def decide_plan(db, strategy, decision):
+    """Decide a plan's approval the way the product does: the queue records the decision,
+    then the decision route's follow-through records it on the strategy
+    (`server._apply_approval_side_effects` -> `recovery_strategy.set_state`)."""
+    run(aq.decide(db, tenant_id=TENANT, approval_id=strategy["approval_id"],
+                  decision=decision, actor="admin@example.com"))
+    state = {aq.APPROVED: rs.STATE_APPROVED, aq.REJECTED: rs.STATE_REJECTED}[decision]
+    run(rs.set_state(db, TENANT, strategy["id"], state=state, actor="admin@example.com"))
+
+
+def open_contact_case(db, source_event_id="opportunity:opp_2"):
+    case = run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_DORMANT_DEAL, source_event_id=source_event_id,
+        reason="No activity for 30 days.", title="Acme expansion", potential_value=9000,
+        evidence={"idle_days": 30})))
+    return case, run(rs.compose_for_case(db, TENANT, case))
+
+
 def executing_case(db):
     """A contact-backed case, planned, approved and run -- the state production reaches."""
     run(db.companies.insert_one({"tenant_id": TENANT, "id": "co_1", "name": "Acme"}))
@@ -116,10 +138,9 @@ def executing_case(db):
         opportunity_id="opp_1", potential_value=40000,
         evidence={"idle_days": 30, "stage": "proposal", "value": 40000})))
     strategy = run(rs.compose_for_case(db, TENANT, case))
-    run(aq.decide(db, tenant_id=TENANT, approval_id=strategy["approval_id"],
-                  decision=aq.APPROVED, actor="admin@example.com"))
-    run(rc.set_state(db, tenant_id=TENANT, case_id=case["id"], state=rc.APPROVED,
-                     actor="admin@example.com"))
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.AWAITING_APPROVAL
+    decide_plan(db, strategy, aq.APPROVED)
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.APPROVED
     result = run(runner.run_case(db, tenant_id=TENANT, case_id=case["id"]))
     drafted = [s for s in result["steps"] if s["status"] == runner.STEP_DRAFTED
                and s["channel"] == cv.CHANNEL_EMAIL]
@@ -136,6 +157,41 @@ def approve_and_consent(db, message_id):
                   decision=aq.APPROVED, actor="admin@example.com"))
     return run(cv.mark_approved(db, tenant_id=TENANT, message_id=message_id,
                                 actor="admin@example.com"))
+
+
+# ------------------------------------------------------------------ the plan decision
+
+def test_approving_the_plan_approves_the_case_so_the_runner_can_run_it(db):
+    case, strategy = open_contact_case(db)
+    decide_plan(db, strategy, aq.APPROVED)
+    approved = run(rc.get_case(db, TENANT, case["id"]))
+    assert approved["state"] == rc.APPROVED
+    assert approved["history"][-1]["detail"] == {"plan": strategy["id"],
+                                                 "decision": rs.STATE_APPROVED}
+
+
+def test_rejecting_the_plan_returns_the_case_to_planning(db):
+    case, strategy = open_contact_case(db)
+    decide_plan(db, strategy, aq.REJECTED)
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.PLANNED
+
+
+def test_a_decision_on_a_superseded_plan_does_not_move_the_case(db):
+    """The case was recomposed; its current plan is another one. An old decision must
+    not approve a plan nobody reviewed."""
+    case, strategy = open_contact_case(db)
+    run(db[rc.COLLECTION].update_one({"id": case["id"], "tenant_id": TENANT},
+                                     {"$set": {"plan_reference": "rcv_newer"}}))
+    decide_plan(db, strategy, aq.APPROVED)
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.AWAITING_APPROVAL
+
+
+def test_a_plan_decision_never_reaches_another_tenants_case(db):
+    case, strategy = open_contact_case(db)
+    run(db[rc.COLLECTION].update_one({"id": case["id"]}, {"$set": {"tenant_id": "ten_x"}}))
+    decide_plan(db, strategy, aq.APPROVED)
+    moved = run(db[rc.COLLECTION].find_one({"id": case["id"]}, {"_id": 0, "state": 1}))
+    assert moved["state"] == rc.AWAITING_APPROVAL
 
 
 # ------------------------------------------------------------------ the recipient
@@ -296,3 +352,49 @@ def test_a_recovery_can_run_from_approval_to_confirmed_revenue(db, registry):
     assert recovered["confirmed_value"] == 12500.0
     # Potential and confirmed stay separate figures.
     assert recovered["potential_value"] == 40000
+
+
+# ------------------------------------------------------------------ lapsed approvals
+
+def _lapse(db, approval_id):
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    run(db[aq.COLLECTION].update_one({"id": approval_id, "tenant_id": TENANT},
+                                     {"$set": {"expires_at": past}}))
+    run(aq.expire_due(db, tenant_id=TENANT))
+    assert run(aq.get(db, TENANT, approval_id))["status"] == aq.EXPIRED
+
+
+def test_a_plan_whose_approval_lapsed_releases_its_case_for_a_fresh_proposal(db):
+    case, strategy = open_contact_case(db)
+    _lapse(db, strategy["approval_id"])
+    # Before the release, the plan still holds the case -- the jam this fixes.
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.AWAITING_APPROVAL
+
+    released = run(rs.release_lapsed(db, tenant_id=TENANT))
+    assert released["released"] == 1
+    assert run(rs.get_strategy(db, TENANT, strategy["id"]))["state"] == rs.STATE_WITHDRAWN
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.PLANNED
+    # Idempotent.
+    assert run(rs.release_lapsed(db, tenant_id=TENANT))["released"] == 0
+
+
+def test_a_plan_still_awaiting_a_live_approval_is_left_alone(db):
+    case, strategy = open_contact_case(db)
+    assert run(rs.release_lapsed(db, tenant_id=TENANT))["released"] == 0
+    assert run(rs.get_strategy(db, TENANT, strategy["id"]))["state"] == rs.STATE_PROPOSED
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.AWAITING_APPROVAL
+
+
+def test_a_message_whose_approval_lapsed_is_blocked_with_the_reason(db):
+    _, message_id = executing_case(db)
+    message = run(cv.get_message(db, TENANT, message_id))
+    assert message["status"] == cv.PENDING_APPROVAL
+    _lapse(db, message["approval_id"])
+
+    assert run(cv.release_lapsed_approvals(db, tenant_id=TENANT))["released"] == 1
+    blocked = run(cv.get_message(db, TENANT, message_id))
+    assert blocked["status"] == cv.BLOCKED
+    assert blocked["blocked_reason"] == cv.REFUSAL_APPROVAL
+    assert "expired" in blocked["blocked_detail"]
+    # From blocked, a fresh approval can be requested.
+    assert cv.PENDING_APPROVAL in cv.MESSAGE_TRANSITIONS[cv.BLOCKED]
