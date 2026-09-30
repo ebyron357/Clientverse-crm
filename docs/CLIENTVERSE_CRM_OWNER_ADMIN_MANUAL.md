@@ -320,8 +320,8 @@ to bottom:
    - **"Won revenue"**
    - **"Active clients"**
    - **"Delivery risk"**
-2. **"Set up your client operations workspace"** — a 4-step setup checklist. Once you dismiss it
-   with **X**, it cannot be brought back.
+2. **"Set up your client operations workspace"** — a 4-step setup checklist. Dismissing it with **X**
+   hides it in this browser only. It reappears in another browser, or after clearing site data.
 3. **"Next actions"** — up to five ranked follow-ups, each with a link.
 4. **"Next best actions"** — ranked recommendations across all clients, with **"Accept"**,
    **"Done"**, **"Snooze"** and **"Not relevant"**.
@@ -412,13 +412,15 @@ Verified (code). With the connection active, the CRM:
 
 - **reads Gmail** — the 25 most recent messages' headers (sender, recipients, subject, labels and
   snippet), matched to your contacts by email address. They appear on a client's **Client 360** →
-  **Activity** → **"Recent email threads"**.
+  **Activity** → **"Recent email threads"** — **only when** the matched contact belongs to a
+  company that has a Client 360 workspace.
 - **captures replies** — every 30 minutes (at :10 and :40 past the hour) it checks the inbox for
   the last 7 days and attaches replies to the conversations they answer ([§6](#6-email-production-verification)).
 - **sends email** — only messages a human approved, and only through the connected mailbox
   ([§6](#6-email-production-verification)).
 - **reads Google Calendar** — the next 25 events, matched to contacts by attendee email. They
-  appear under **Client 360** → **Activity** → **"Upcoming meetings"**.
+  appear under **Client 360** → **Activity** → **"Upcoming meetings"**, with the same
+  company-and-workspace condition.
 
 Only **admins** can connect, re-authorize, sync or disconnect. Members see **"Admin manages"**.
 
@@ -462,7 +464,7 @@ older than the send feature; the connection now also carries send permission ([�
 | Registries badge | Settings label | Meaning | Buttons (admin) | Your action |
 |---|---|---|---|---|
 | **"Not connected"** | Not connected | No Google permission is stored | **"Connect"** | [§5.5](#55-connect-google-first-time) |
-| **"Connecting…"** | Connecting… | A consent was started and never finished — for example cancelled at Google | **"Sync"**, **"Disconnect"** | If still shown after 10 minutes: full reset ([§5.7](#57-disconnect-safely-and-when-it-is-required)) |
+| **"Connecting…"** | Connecting… | A sync is running (it shows briefly during every sync), or a consent was started and never finished — for example cancelled at Google | **"Sync"**, **"Disconnect"** | If still shown after 10 minutes: full reset ([§5.7](#57-disconnect-safely-and-when-it-is-required)) |
 | **"Connected"** | Connected | The permission is active | **"Sync"**, **"Disconnect"** | None. Confirm send permission ([§5.8](#58-verify-that-gmailsend-was-actually-granted)) |
 | **"Degraded"** | Needs attention | The last sync failed for a non-permission reason | **"Sync"**, **"Disconnect"** | **"Sync"** once. If still degraded, escalate. |
 | **"Needs auth"** + **"Re-authorize"** tag | Needs auth | Google refused to refresh the permission (expired or revoked) | **"Re-authorize"**, **"Sync"**, **"Disconnect"** | [§5.6](#56-re-authorize-google) |
@@ -511,6 +513,8 @@ Other parts of the card:
 8. On the Gmail card, click **"Sync"**.
    - **Check:** the message **"Synced Gmail: N record(s) matched"**, and **"Last sync …"** on the card.
    - N can be 0. That only means none of the 25 newest emails involve a contact's address.
+   - N counts matches to contacts. An email shows on Client 360 only when that contact's company
+     has a workspace.
 9. Verify send permission ([§5.8](#58-verify-that-gmailsend-was-actually-granted)).
 
 **If it fails**
@@ -551,9 +555,13 @@ If the cards return to **"Needs auth"** within about a week, see
 2. On the **Gmail** card, click **"Disconnect"**. **Check:** **"Disconnected Gmail"**.
 3. On the **Google Calendar** card, click **"Disconnect"**. **Check:**
    **"Disconnected Google Calendar"**.
-   - **Why both:** both cards share one saved Google permission. The CRM deletes it only when
-     *both* are disconnected. Disconnecting one card revokes the permission at Google, but leaves
-     the other card holding it.
+   - **Why both:** both cards share one saved Google permission. Disconnecting either card
+     revokes it at Google.
+     - The CRM deletes its saved copy when you disconnect a card while the other card is **not**
+       **"Connected"**.
+     - If the other card is still **"Connected"**, the saved copy stays (already revoked) until you
+       disconnect that card too.
+     - Disconnecting both cards always leaves a clean slate.
 4. (Recommended for a stale or looping permission.) Open **Google Account** → **Security** →
    **"Your connections to third-party apps & services"**. Find your ClientVerse app and remove its
    access. ClientVerse already asks Google to revoke on Disconnect; this confirms it.
@@ -607,9 +615,11 @@ Work down this list. Each check is stronger than the one before it.
 - **It returns roughly every 7 days:** the consent screen is almost certainly in **Testing**. That
   is an owner decision in Google Cloud — publish the app (Gmail scopes may need Google's
   verification), or accept a weekly re-authorization.
-- **It fails again immediately after a fresh reconnect:** the `GOOGLE_CLIENT_SECRET` in Railway
-  probably no longer matches Google Cloud. Escalate: the owner updates the Railway variable with
-  engineering.
+- **The reconnect itself ends in "Error"** (`token_exchange_failed`): the `GOOGLE_CLIENT_SECRET`
+  in Railway, or the redirect URI, no longer matches Google Cloud. Escalate: the owner updates the
+  Railway variable with engineering.
+  - A reconnect that *succeeds* proves the secret matches, because connecting uses the same
+    secret as refreshing.
 
 **Reconnect loop** — you connect, return, and the cards stay on **"Connecting…"** or go straight
 to **"Error"**.
@@ -706,7 +716,7 @@ mirror of the inbox.
    (**granted**, basis "Owner's own test mailbox"), draft a short message, and request approval.
 2. **Owner:** open **Operations** → **"Approvals"**. Find the row titled
    **"Send email message: \<subject\>"**.
-   1. Read the summary: it is the exact text that will be sent.
+   1. Read the summary: it shows the exact text that will be sent (cut at 500 characters).
    2. If the row says **"Approving this will not unblock it — …"**, note the reason. The send will
       be refused (BLOCKED).
    3. Click **"Approve"**. **Check:** **"Approved"**.
@@ -761,8 +771,8 @@ proves the guarantee you can see.
 |---|---|---|
 | **Operations** → **"Approvals"** row | **"Approving this will not unblock it — …"** | A prerequisite blocks the send (not connected, consent, certification) |
 | **Operations** → **"Conversations"** | Tile **"Blocked messages"** above 0; the message badge **"blocked"**, with the reason | The CRM refused before contacting Google, and named why |
-| Same, badge **"failed"** | e.g. *"Gmail rejected the message with HTTP 403…"* | Google refused. Usually the send permission is missing — full reset ([§5.7](#57-disconnect-safely-and-when-it-is-required)) |
-| Same, badge **"outcome unknown"** | Google did not confirm either way | **Never re-send.** The reconcile sweep (:10/:40) asks Gmail. Escalate if it persists after 1 hour. |
+| Same, badge **"failed"** | Only the badge. The screen does not show Google's reason; an engineer reads it from the message's `error` field (`GET /api/messages/<id>`) — e.g. *"Gmail rejected the message with HTTP 403…"* | Google refused. A 403 usually means the send permission is missing — full reset ([§5.7](#57-disconnect-safely-and-when-it-is-required)) |
+| Same, badge **"outcome unknown"** | Only the badge. Google did not confirm either way | **Never re-send.** The reconcile sweep (:10/:40) asks Gmail. Escalate if it persists after 1 hour. |
 | **Registries** → Gmail card, red line | e.g. `token_refresh_failed:400` | Permission problem ([§5.9](#59-google-troubleshooting)) |
 | **Operations** → **"Recovery strategies"** amber box | **"EMAIL — …"** | Channel not authorised ([§5.8](#58-verify-that-gmailsend-was-actually-granted)) |
 | **Automation & Audit** | `communication_message.refused` | A send was refused; the reason is on the message |
@@ -800,7 +810,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   - Treating empty cards as a fault.
   - Expecting **"Connection Health"** to show for members — it is admin-only.
 - **Saved when:** **"Alert scan complete (N new)"**; recommendation buttons change the list, and
-  only failures show a message (**"Could not record that decision"**).
+  only failures show a message (the server's reason, or **"Something went wrong."**).
 - **Cosmetic:** the card text may read "opportunityies". That is a display typo, not a data problem.
 
 ### 7.2 Contacts and Companies (Directory)
@@ -825,8 +835,10 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      - company record tabs: **"Overview"**, **"Contacts"**, **"Revenue"**, **"Client 360"**
      - contact record tabs: **"Overview"**, **"Opportunities"**, **"Client 360"**
 - **Common mistakes:**
-  - **Records cannot be edited, archived or deleted from the screens.** The server supports it,
-    but no button exists. Type carefully. For a correction, ask engineering.
+  - **Records cannot be edited, archived or deleted from the screens.** Type carefully.
+    - Engineering can edit and archive or restore contacts, companies and deals through the
+      server.
+    - Nothing can be deleted at all.
   - Creating the same company twice — search first.
   - Leaving out a contact's email, which stops email and calendar matching.
   - Each list shows at most **200** records. Beyond that, older ones are not visible in the
@@ -917,7 +929,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   1. **"+ Commitment"**:
      - **"Title"**, **"Owner"** (an email address), **"Due date"**
      - then **"Add commitment"**
-  2. The ledger shows **"due in Nd"** or **"overdue Nd"**, with a status badge.
+  2. The ledger shows a due label and a status badge. The label is **"overdue Nd"**,
+     **"due in Nd"** (within 2 days), or **"due \<date\>"**.
   3. Change status with the menu: `open`, `at_risk`, `breached`, `fulfilled`.
   4. **"Run SLA check"** runs the risk check now across your **whole organization**, not only this
      workspace:
@@ -966,8 +979,11 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
     - filter by source and severity
     - page with **"Prev"** / **"Next"**
     - **"Ack"** or **"Resolve"** an alert
-- **Common mistakes:** expecting email on Activity before Google is connected and synced. Its empty
-  state says to connect from **Registries → Integrations**.
+- **Common mistakes:**
+  - Expecting email on Activity before Google is connected and synced. Its empty state says to
+    connect from **Registries → Integrations**.
+  - Expecting email or meetings for a contact with no company, or whose company has no workspace.
+    Link the contact to the client's company.
 - **Saved when:** **"Alert acknowledged"** / **"Alert resolved"**.
 
 ### 7.9 Action Center and notifications
@@ -984,6 +1000,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      - then **"Save my preferences"**
   3. Admin: **"Team defaults"** tab → **"Save team defaults"**. Admin: **"Send digest"** sends a
      digest now.
+     - The scheduled daily digest follows the **Team defaults** hour and timezone, and goes to
+       active admins. A personal **"Digest hour"** in **"My preferences"** does not change it.
   4. **Bell:** the unread count (checked every 30 seconds), **"Mark all read"**; click an item to
      open it.
 - **Email notifications are not active.** An amber banner reads **"Email delivery is not
@@ -1016,7 +1034,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Common mistakes:**
   - **Approving without reading.** **"Approve"** takes effect on one click, with no confirmation.
-    The summary on the row is exactly what will run or be sent.
+    The summary on the row shows what will run or be sent (message text is cut at 500
+    characters).
   - Expecting **"Conversations"** to compose or send email. It cannot ([§6.1](#61-read-this-first--current-status)).
   - Expecting a consent button. Consent is recorded only by an admin through the API.
   - The **"Security gate"** shows **"Scanners not configured"** until the owner supplies scanner
@@ -1092,7 +1111,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 ### 7.14 Automation & Audit
 
 - **Purpose:** the organization's record of every significant change, including approvals, sends,
-  sign-in denials and team changes.
+  permission denials (`authz.denied`) and team changes. Failed sign-ins are **not** recorded here.
 - **Where:** sidebar → **Platform** → **"Automation & Audit"**.
 - **Common actions:** read the newest 200 events. Each shows its type, actor and time. Admin:
   **"Undo"** on an approved AI-tool write, within the undo window (default 60 minutes), with a
@@ -1140,7 +1159,7 @@ These are verified behaviours of the deployed code. None loses data.
 1. **No editing, archiving or deleting** of companies, contacts, deals or workspaces.
 2. **No compose, send or consent screen** for email ([§6.1](#61-read-this-first--current-status)).
 3. **Closed-lost deals leave the board** and cannot be reopened in the screens.
-4. **Lists show at most 200 records** per type.
+4. **Company, contact and deal lists show at most 200 records** each.
 5. **No message on some failures:** workspace status menus, the commitment form and outcome
    updates. Refresh to confirm the change saved.
 6. **A session that expires mid-use does not redirect** to the sign-in page. Pages show
@@ -1301,7 +1320,7 @@ invitation for the same email ([§8.2](#82-invite-a-user)).
 | Delete a user, or change a user's email address | No screen or API |
 | Reset a **member's** forgotten password | No reset feature exists ([§9.2](#92-forgotten-password)) |
 | Change `ADMIN_EMAIL` | It would create a new, empty organization |
-| Edit, archive, restore or delete records; import or export data | Server-only functions |
+| Edit, archive or restore contacts, companies and deals; import or export data | API only, no screen. Deleting records, and editing workspaces, are not possible even through the API. |
 | Revoke a client portal link | No revoke button |
 | Certify outbound email | Certification record ([§6.1](#61-read-this-first--current-status)) |
 
@@ -1488,7 +1507,8 @@ claiming work is complete. It is **not** a CRM feature, and it never touches CRM
 - **Verify:**
   - **"Send test"** → **"Test event → {status}"**.
   - **"Delivery Log"** lists every attempt.
-  - Failed deliveries retry 3 times, then go to the dead-letter list, marked **"· DLQ"**.
+  - Each delivery gets up to 3 attempts in total. After the last one fails, it goes to the
+    dead-letter list, marked **"· DLQ"**.
   - **"Replay"** re-sends one.
 - **Secrets:**
   - admin **"Verify"** reveals the signing secret, to give to the receiving system privately
@@ -1540,7 +1560,7 @@ claiming work is complete. It is **not** a CRM feature, and it never touches CRM
 | `/api/cron/next-best-actions` | Recomputes ranked next best actions | `0,30 * * * *` |
 | `/api/cron/inbound-email` | Checks connected Gmail inboxes for replies and bounces | `10,40 * * * *` — :10 and :40 |
 | `/api/cron/reconcile-unknown` | Asks Gmail about messages whose outcome is unknown. **Never re-sends.** | `10,40 * * * *` |
-| `/api/cron/daily-digest` | Sends each user's daily digest at their chosen hour (email needs `EMERGENT_EMAIL_KEY`) | `5 * * * *` — hourly at :05 |
+| `/api/cron/daily-digest` | At the organization's **Team defaults** digest hour and timezone: runs alert escalations and sends one organization digest to active admins (email needs `EMERGENT_EMAIL_KEY`) | `5 * * * *` — hourly at :05 |
 | `/api/cron/second-chance` | Second Chance detection of stalled and lost revenue | `5 * * * *` |
 | `/api/cron/detect-recovery` | Runs every other recovery detector (for example missed calls) | `5 * * * *` |
 | `/api/cron/recovery-strategies` | Composes a recovery strategy for each open candidate | `5 * * * *` |
@@ -1595,7 +1615,7 @@ Railway → service → **Deployments** → the active deployment → **View log
 | **401 Unauthorized** | The shared secret is missing or different at one end (GitHub vs Railway). Production records the refusal. | Make both `WEBHOOK_CRON_SECRET` values identical ([§11.8](#118-rotate-or-fix-the-scheduler-secret)) |
 | **403** on `/api/cron/health` in your browser | You are signed in as a member, not an admin | Sign in as an admin |
 | **"Scheduler not configured"** — *Missing repository secret(s)* | `CLIENTVERSE_PRODUCTION_URL` or `WEBHOOK_CRON_SECRET` is not set in GitHub | Owner adds the secret(s) (§11.3) |
-| **"No request reached production"** / HTTP `000` | Production did not answer | Check `/api/health` and Railway ([§2.3](#23-if-the-site-does-not-load)) |
+| **"No request reached production"** | None of the calls returned 200 | Read the **HTTP** column of the run summary: `000` = production unreachable (check `/api/health` and Railway, [§2.3](#23-if-the-site-does-not-load)); `401` = secret mismatch ([§11.8](#118-rotate-or-fix-the-scheduler-secret)); `404` = wrong `CLIENTVERSE_PRODUCTION_URL` |
 | **404** from the cron endpoints | `CLIENTVERSE_PRODUCTION_URL` points to the wrong address | Fix the GitHub secret |
 | **"Run not recorded"** / **"Ledger unreadable"** | Calls were accepted, but the ledger check failed | Escalate |
 | Every job fails in 2–4 seconds with no log | A GitHub account-level Actions problem (billing, spending limit, Actions disabled) — as from 2026-09-27 22:35 until 2026-09-30 | Owner: GitHub → **Settings** → **Billing and plans**; repository **Settings** → **Actions** → **General** |
@@ -1654,10 +1674,10 @@ workflow; manual runs.
 | **Google sign-in fails** ("Continue with Google") | Unsupported third-party sign-in | Use email + password (§3.1, §9.6) | Someone ended up in a stray organization |
 | **Google connection fails** — "Google authorization failed" | Consent cancelled or refused, redirect URI mismatch, not a test user | Full reset (§5.7), then connect within 10 minutes and tick every box (§5.5) | It fails twice after a full reset |
 | **Google reconnect loop** — stuck "Connecting…" or back to "Error" | Abandoned consent; secret or redirect mismatch | Disconnect **both** cards, remove app access in the Google account, connect again (§5.7, §5.9) | `token_exchange_failed` or `redirect_uri_mismatch` persists |
-| **Google token refresh 400** — "Needs auth", `token_refresh_failed:400` | Permission revoked or expired; consent screen in Testing (7-day expiry); client secret rotated | **"Re-authorize"** (§5.6) | It recurs within a week (Testing mode), or fails right after reconnecting (secret mismatch) |
+| **Google token refresh 400** — "Needs auth", `token_refresh_failed:400` | Permission revoked or expired; consent screen in Testing (7-day expiry); client secret rotated | **"Re-authorize"** (§5.6) | It recurs within a week (Testing mode), or the reconnect itself ends in "Error" / `token_exchange_failed` (secret or redirect mismatch) |
 | **Integration says disconnected** — "Not connected" | Never connected, or someone disconnected it | Admin → **"Connect"** (§5.5). Check **Automation & Audit** for `integration.disconnected` to see who. | Connect fails |
 | **Gmail send fails** — message "blocked" | Not connected, no consent, certification gate | Read the reason on the message. Fix the connection (§5.6). Certification needs engineering (§6.1). | The reason mentions certification, consent or a provider |
-| **Gmail send fails** — message "failed", HTTP 403 | Send permission not actually granted | Full reset, and tick **send** on consent (§5.7, §5.8) | It still fails after that |
+| **Gmail send fails** — message "failed" (the engineer finds HTTP 403 in the message's `error` field) | Send permission not actually granted | Full reset, and tick **send** on consent (§5.7, §5.8) | It still fails after that |
 | **Gmail send** — "outcome unknown" | Google did not confirm | **Do not re-send.** Wait for the :10 / :40 reconcile. | Still unknown after 1 hour |
 | **Inbound reply missing** | Sweep not run yet; Gmail not Connected; reply ambiguous (parked) | Wait up to 35 minutes, or **"Run workflow"** with `inbound-email` (§11.7). Check the Gmail card is "Connected". | Missing after 35 minutes with a healthy scheduler — engineering checks the unmatched queue (Appendix C) |
 | **Scheduled job failed** — red run | See §11.5 | Open the run and match its message in §11.5 | Unexplained, or 3 red runs in a row |
