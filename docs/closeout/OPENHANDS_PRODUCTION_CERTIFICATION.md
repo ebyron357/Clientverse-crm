@@ -1,5 +1,7 @@
 # ClientVerse CRM v1 — OpenHands Production Certification
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](../CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. Its Render-era §4 owner actions and 2026-08-31 configuration gate rows are superseded by the manual. This remains a historical certification record.
+
 **Certification timestamp:** 2026-08-31 UTC
 **Agent:** OpenHands (autonomous closeout execution)
 **Repository:** [ebyron357/Clientverse-crm](https://github.com/ebyron357/Clientverse-crm)

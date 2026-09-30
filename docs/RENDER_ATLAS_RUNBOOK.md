@@ -1,5 +1,7 @@
 # ClientVerse Production Runbook: Render and MongoDB Atlas
 
+> **Superseded — do not follow for production.** Render is no longer used: production runs on Railway ([RAILWAY_RUNBOOK.md](RAILWAY_RUNBOOK.md)). Never run a Render service against the production database. For owner/admin instructions see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) (2026-09-30), the official owner/admin source of truth. Kept as history only.
+
 ## Purpose
 
 This runbook provisions the verified ClientVerse Docker image as one Render Web Service and connects it to a managed MongoDB Atlas cluster. The production process keeps all credentials in provider secret managers, creates no fictional demo CRM data, and uses the application health endpoint for release verification.

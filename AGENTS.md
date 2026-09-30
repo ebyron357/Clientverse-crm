@@ -1,5 +1,29 @@
 # ClientVerse CRM — Agent Memory
 
+## Session state (2026-09-30)
+
+- **Owner/admin procedures live in one place:**
+  `docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md` (Issue #33). It is registered as the owner
+  source of truth in the governing document, v1.11 §0.5. Change the manual in the same commit
+  as any change to a screen label, route, sign-in rule, Google scope or cron job. Do not write
+  new owner instructions anywhere else.
+- **GitHub Actions is running again, and the scheduler reaches production.** Scheduled-jobs runs
+  #3551–#3555 were green from 16:11Z, with Railway `200` on all twelve `/api/cron/*` endpoints.
+  Earlier runs #3544–#3550 failed on `401` (a cron secret mismatch, since fixed). The 2026-09-28
+  and 2026-09-21 notes below saying Actions runs nothing and the scheduler never ran are **stale**.
+- **The Google grant needs owner re-authorization.** The 16:08Z `integration-sync` got `400` from
+  Google's token endpoint.
+- **Outbound email has two further blockers**, besides `gmail.send`:
+  - The tenant's Gmail `integrations` catalogue record is `REQUIRES_CONFIGURATION`, so
+    `authorized_channels` refuses email. Only a database change clears it; that is a
+    certification decision.
+  - No UI composes, sends, or records consent.
+
+  See governing document M-01 and §8 #27–#28.
+- Production is on `main@8f23f63` (application code identical to `c9f5a6e`). The production
+  host still refuses CONNECT (403) from agent sessions; Railway MCP tools and GitHub Actions
+  records work.
+
 ## Session state (2026-09-28)
 
 - **Running application code is `main@c9f5a6e`** (the recovery-engine merge). Railway

@@ -1,5 +1,7 @@
 # ClientVerse CRM — Managed FastAPI + MongoDB Deployment Guide
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. Its owner steps and admin-password rotation note are superseded by the manual. Production runs on Railway ([RAILWAY_RUNBOOK.md](RAILWAY_RUNBOOK.md)).
+
 ## Purpose
 
 This guide deploys the existing ClientVerse release candidate as one container: the FastAPI application serves `/api`, and the compiled React application is served from the same HTTPS origin. This avoids browser CORS ambiguity, keeps authentication cookies predictable, and preserves the verified tenant-scoped implementation.

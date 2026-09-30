@@ -1,5 +1,7 @@
 # ClientVerse — Owner Handoff
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. In this document, §2 (application access and password handoff), §5 (Google reconnect — the controls are on **Registries → Integrations**, not inside Settings), §8 (owner actions) and §10 (health checks) are superseded by the manual.
+
 **Prepared:** 2026-09-21 · **Release state updated:** 2026-09-28
 **Branch this describes:** `claude/trusting-brahmagupta-lj26xf` — **merged to `main` as `c9f5a6e`**
 **Running application code:** `main@c9f5a6e` — this branch **is** now in production (see §1)

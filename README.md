@@ -9,6 +9,32 @@ ClientVerse manages the complete client lifecycle — **WIN → ONBOARD → SERV
 
 ---
 
+## Owner/Admin Manual — start here if you run the CRM
+
+**[docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** is the
+official owner/admin handoff guide and the single source of truth for operating production:
+
+- where to sign in and how
+- what each module does
+- connecting and re-authorizing Google/Gmail
+- verifying email end to end
+- users and roles
+- account recovery
+- checking the scheduler
+- troubleshooting and escalation
+
+If any other document gives different owner instructions, the manual wins.
+
+| | |
+|---|---|
+| Production | https://clientverse-crm-production-production.up.railway.app (sign in at `/login` with email + password) |
+| Health | `/api/health` |
+| Product scope and capability status | [docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md](docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) |
+
+The sections below are developer documentation.
+
+---
+
 ## 1. Local installation
 
 ```bash
@@ -108,7 +134,7 @@ building — it is baked into the bundle at build time.
 Two methods, both issue an httpOnly `access_token` cookie (7-day) with an `Authorization: Bearer` fallback; `get_current_user` accepts either:
 
 - **JWT email/password** — `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout`. Passwords hashed with bcrypt. Multi-tenant; roles: `admin` / `member`.
-- **Emergent-managed Google login** — `POST /api/auth/google/session` exchanges an Emergent `session_id` for a session token.
+- **Emergent-managed Google login** — `POST /api/auth/google/session` exchanges an Emergent `session_id` for a session token. The login page's "Continue with Google" button sends users to `auth.emergentagent.com`. That is a leftover from the prototyping platform, and not the owner's Google OAuth client (which serves only the Gmail/Calendar integration). An unknown Google address gets a new, separate tenant. Production behaviour is unverified, and owners sign in with email + password — see the [Owner/Admin Manual §3.1](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#31-supported-sign-in-methods).
 
 Every tenant-owned record is tenant-scoped; server-side authorization is enforced on all routes (UI hiding is not authorization).
 
@@ -139,7 +165,7 @@ Commitments carry an optional `due_date`. The platform continuously keeps the **
   - due within **48h** and still `open` → flipped to **`at_risk`** (`commitment.at_risk` event)
   - past due → flipped to **`breached`** (`commitment.breached` event)
   It returns `{scanned, flagged_at_risk, flagged_breached, at_risk_ids, breached_ids}`. A **"Run SLA check"** button on the workspace Commitment Ledger triggers it on demand.
-- **Scheduled sweep**: `.emergent/crons.yml` defines the `commitment-sla` cron (every 15 min) calling **`POST /api/cron/commitment-risk`**. The cron endpoint requires `Authorization: Bearer $WEBHOOK_CRON_SECRET`, is idempotent on `X-Webhook-Id`, acks `2xx` immediately, and backgrounds the sweep across all tenants. Set `WEBHOOK_CRON_SECRET` in `backend/.env`.
+- **Scheduled sweep**: in production, the GitHub Actions workflow `.github/workflows/scheduled-jobs.yml` ("Scheduled jobs") calls **`POST /api/cron/commitment-risk`** every 15 min, along with the other eleven cron endpoints. `.emergent/crons.yml` is a legacy file from the prototyping platform and does not run on Railway. The cadences and health checks are in the [Owner/Admin Manual §11](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#11-scheduler--automations). The cron endpoint requires `Authorization: Bearer $WEBHOOK_CRON_SECRET`, is idempotent on `X-Webhook-Id`, acks `2xx` immediately, and backgrounds the sweep across all tenants. Set `WEBHOOK_CRON_SECRET` in `backend/.env`.
 - Emitted `commitment.at_risk` / `commitment.breached` events flow into the **Audit feed**, recompute **explainable health**, and fan out to subscribed **webhooks** (e.g. `commitment.*`).
 - The UI shows each commitment's due countdown (`due in Nd` / `overdue Nd`) and a status badge; a dialog captures title, owner, and due date on creation, and due dates are editable via `PATCH /api/commitments/{id}`.
 
@@ -148,11 +174,14 @@ Commitments carry an optional `due_date`. The platform continuously keeps the **
 Real, tenant-scoped, admin-managed provider connections that feed **normalized** data into the CRM. Provider logic is isolated behind a shared adapter contract (`SYNC_FUNCS`, `normalize_*`), so new providers can be added without touching CRM core.
 
 - **Secure credentials**: OAuth tokens are encrypted at rest with Fernet using `INTEGRATION_ENC_KEY` (server-side only). Tokens are **never** returned by any API, logged, or placed in audit payloads (`SAFE_CONN_FIELDS` strips `enc`/`oauth_state`/`code_verifier`). Credential rotation is versioned (`credential_version`).
-- **Google OAuth foundation** (`/api/integrations/google/connect` → `/callback`): authorization-code flow with `state` + **PKCE (S256)**, offline refresh tokens, auto-refresh, revocation on disconnect, 10-min single-use state. Read-only scopes only: `gmail.readonly`, `calendar.readonly`, `userinfo.email`. Requires `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`; redirect URI = `<PUBLIC_BACKEND_URL>/api/integrations/google/callback`.
-- **Gmail adapter** (read-only): recent message/thread metadata, from/to, subject, labels, snippet — matched to CRM contacts by email and surfaced in the matched workspace. No sending.
+- **Google OAuth foundation** (`/api/integrations/google/connect` → `/callback`): authorization-code flow with `state` + **PKCE (S256)**, offline refresh tokens, auto-refresh, revocation on disconnect, 10-min single-use state. Scopes requested (`GOOGLE_SCOPES` in `backend/server.py`): `gmail.readonly`, `gmail.send`, `calendar.readonly`, `userinfo.email`, `openid`. Requires `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`; redirect URI = `<PUBLIC_BACKEND_URL>/api/integrations/google/callback`.
+- **Gmail sync** (read-only mirror): recent message/thread metadata, from/to, subject, labels and snippet, matched to CRM contacts by email and shown in the matched workspace.
+- **Gmail send/receive** (`backend/gmail_provider.py`, `backend/email_inbound.py`): sends only human-approved `CommunicationMessage`s, with a deterministic Message-ID and a pre-send duplicate check. Replies are captured by `POST /api/cron/inbound-email`.
+  - Outbound also requires the tenant's Gmail catalogue record to be certified (`recovery_strategy.authorized_channels`).
+  - No UI composes or sends yet. See the [Owner/Admin Manual §6](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#6-email-production-verification).
 - **Calendar adapter** (read-only): upcoming events, attendees, organizer, conferencing link — matched to CRM contacts. No writes.
 - **Stripe adapter** (read-only, test mode via `STRIPE_API_KEY`): customers, invoices (+status/amount/currency), subscriptions (+status), matched to companies/contacts. No charges/refunds/subscription writes.
-- **Sync engine** (`run_sync`): manual (`POST /api/integrations/{provider}/sync`) + scheduled (`.emergent/crons.yml` → `POST /api/cron/integration-sync`, every 30 min). Bounded (capped page sizes, max 3 retries with backoff), idempotent upserts keyed by `external_id`, rate-limit aware (429 backoff), partial-failure tolerant, per-tenant sync logs.
+- **Sync engine** (`run_sync`): manual (`POST /api/integrations/{provider}/sync`) + scheduled (GitHub Actions "Scheduled jobs" → `POST /api/cron/integration-sync`, every 30 min). Bounded (capped page sizes, max 3 retries with backoff), idempotent upserts keyed by `external_id`, rate-limit aware (429 backoff), partial-failure tolerant, per-tenant sync logs.
 - **Registry** (`GET /api/integrations/connections`): provider, status, connected account, scopes, connected_by/at, last_sync_at, last_success_at, last_error, revoked_at, credential/adapter version. Statuses: disconnected / connecting / active / degraded / expired / revoked / error — never faked.
 - **Client workspace**: `GET /api/integrations/workspaces/{id}/activity` returns matched email, meetings, billing + connection health. UI (`Activity` tab) tags every item as **External**, flags stale data + failing connections, and links to source records.
 - **Permissions**: only admins connect/disconnect/reauthorize/sync/rotate (server-side `require_role("admin")`, 403 for members). Members may view integration-derived CRM data. Audit: integration.connected/disconnected, sync_started/completed/failed, plus authz.denied.
@@ -178,7 +207,7 @@ See `docs/PRODUCTION.md` for the full variable table. Minimum core production va
 | `JWT_SECRET` | Strong secret (`openssl rand -hex 32`); startup refuses weak/placeholder values |
 | `FRONTEND_URL` / `CORS_ORIGINS` | Browser origin allowlist (comma-separated) |
 | `PUBLIC_BACKEND_URL` | Public API URL (OAuth redirect derivation, docs) |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Initial admin seed (rotate immediately after first login) |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Initial admin seed. Rotate the password by changing `ADMIN_PASSWORD` in Railway and redeploying: it is re-applied at every boot, and there is no in-app password change. Never change `ADMIN_EMAIL`, which would seed a new, empty tenant. |
 | `WEBHOOK_CRON_SECRET` | Auth for cron endpoints |
 
 Optional: `INTEGRATION_ENC_KEY`, Google OAuth, `STRIPE_API_KEY`, `EMERGENT_LLM_KEY`, `EMERGENT_EMAIL_KEY`.

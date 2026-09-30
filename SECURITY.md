@@ -25,7 +25,10 @@ public disclosure.
 - Generate a strong `JWT_SECRET` (`openssl rand -hex 32`). Startup refuses weak
   or placeholder values; never set `ALLOW_INSECURE_JWT` outside disposable local
   environments.
-- Rotate `ADMIN_PASSWORD` immediately after the first login.
+- Rotate the owner password by changing `ADMIN_PASSWORD` in Railway and redeploying,
+  immediately after the first login and whenever it has left the Railway dashboard. It is
+  re-applied at every boot, and there is no in-app password change. See
+  [docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) §9.2 and §13.
 - Leave `DEMO_MEMBER_EMAIL` / `DEMO_MEMBER_PASSWORD` unset in production — no
   demo account is seeded unless both are provided.
 - Set `CORS_ORIGINS` to the exact browser origins of your deployment.

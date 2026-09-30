@@ -1,5 +1,7 @@
 # ClientVerse CRM — Railway Production Runbook
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. In this document, §6 (scheduler: the full list of twelve jobs, cadences and health checks is in manual §11) and the admin-password text in §7 are superseded by the manual. Deployment mechanics in this runbook remain current for engineering.
+
 Single-service deployment: one Railway service builds the root `Dockerfile` (React build
 stage + FastAPI runtime) and serves the SPA and API from one HTTPS origin. No Railway
 database plugin is created or required — production data lives in the existing MongoDB
@@ -100,9 +102,11 @@ worker — this is a configuration step, not a code deficiency.
 
 **The repository ships a driver for this.** `.github/workflows/scheduled-jobs.yml`
 calls every endpoint below on its documented cadence once two repository secrets are
-set: `CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET`. Until both exist the
-workflow exits without calling anything, so an unconfigured repository produces neither
-failing runs nor silently skipped work. Configure exactly one scheduler: if you prefer a
+set: `CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET`. If either is missing the
+workflow **fails** ("Scheduler not configured"); it also fails when no request reaches
+production or production has no ledger entry for the run. Both secrets are set and the
+workflow has run green since 2026-09-30 16:11Z; the complete twelve-job table and owner
+health checks are in the Owner/Admin Manual §11. Configure exactly one scheduler: if you prefer a
 dedicated service, disable that workflow rather than running both.
 
 Wire an external scheduler (Railway Cron, n8n, or any HTTP-capable scheduler) to call, on
@@ -146,10 +150,10 @@ sending the header) — no ClientVerse code changes are needed for this.
   live secret does.
 - **`ADMIN_PASSWORD` rotation is not durable if done only in the app.** `seed()` re-syncs
   the admin account's password hash from the `ADMIN_PASSWORD` environment variable on
-  every boot (see `backend/server.py`). If you only change the password through the
-  product UI/API, the next redeploy or restart silently reverts it back to whatever
-  `ADMIN_PASSWORD` is still set to in Railway. **Always update the Railway variable in the
-  same action** as any admin password rotation (which will trigger a redeploy).
+  every boot (see `backend/server.py`). There is no product UI or API for changing a
+  password, so the Railway variable is the only way to rotate the owner password: change
+  `ADMIN_PASSWORD` in Railway and let it redeploy (Owner/Admin Manual §9.2). Never change
+  `ADMIN_EMAIL` — a new value seeds a new, empty tenant.
 - **Google OAuth setup is owner-only.** Creating/verifying the OAuth consent screen and
   Web OAuth client in Google Cloud Console, registering the callback URL above, and
   setting `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` in Railway all require the owner's
