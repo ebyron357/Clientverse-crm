@@ -1218,6 +1218,19 @@ Possible refusals:
 If it says *"You're signed in as X, but this invite is for Y"*, click **"Switch account"** and sign
 in with the invited email.
 
+**Warning — an account belongs to one organization at a time.** Accepting an invitation *moves* the
+account into the inviting organization. Verified (code): `accept_invitation` replaces the
+account's organization and role. After that, the account no longer opens its previous
+organization. The screens offer no way to switch back.
+
+- Accepting with a brand-new account, or with the throw-away personal organization that
+  **"Create one"** makes, is harmless.
+- **Do not accept with an account already used for another real organization.** Invite a
+  different email address instead, or ask engineering first.
+- **Owner: never accept an invitation from any other organization with your owner account** (the
+  `ADMIN_EMAIL` address). The owner account would leave **"ClientVerse HQ"**, and a restart would
+  not bring it back. Only engineering could repair it.
+
 ### 8.4 Resend an invitation
 
 In **"Pending invitations"**, click **"Resend"** on the row.
@@ -1929,50 +1942,60 @@ Never paste a real token into a ticket or log.
      Record it in the governing document before changing the record.
 3. `GET /api/recovery-strategies/channel-authority` shows `email.authorized: true`.
 
+**Secret handling in this procedure.** Run it in `bash`. The password is typed at a hidden
+prompt, never on a command line. The session token is held only in the shell, and is passed to
+`curl` through a configuration on a file descriptor, so it does not appear in process arguments,
+shell history or output. Nothing below prints the password or the token.
+
 ```bash
 BASE=https://clientverse-crm-production-production.up.railway.app
-# 1. Admin session (token is returned in the JSON "token" field; keep it in memory only)
-curl -sS -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
-  -d '{"email":"<admin email>","password":"<from Railway>"}'
-AUTH="Authorization: Bearer <token>"
+
+# 1. Admin session: hidden password prompt; the token stays in this shell only.
+read -r  -p "Admin email: " CV_EMAIL
+read -rs -p "Admin password (from Railway, not shown): " CV_PASSWORD; echo
+TOKEN=$(CV_EMAIL="$CV_EMAIL" CV_PASSWORD="$CV_PASSWORD" python3 -c \
+  'import json,os; print(json.dumps({"email": os.environ["CV_EMAIL"], "password": os.environ["CV_PASSWORD"]}))' \
+  | curl -sS -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' --data-binary @- \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))')
+unset CV_PASSWORD
+if [ -n "$TOKEN" ]; then echo "signed in"; else echo "sign-in failed"; fi
+# cv = curl that sends the session token without exposing it
+cv() { curl -sS -K <(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN") "$@"; }
 
 # 2. Conversation on the email channel with the test contact
-curl -sS -X POST "$BASE/api/conversations" -H "$AUTH" -H 'Content-Type: application/json' \
+cv -X POST "$BASE/api/conversations" -H 'Content-Type: application/json' \
   -d '{"channel":"email","subject":"ClientVerse email verification","contact_id":"<contact id>",
        "participants":[{"kind":"contact","id":"<contact id>","address":"<test mailbox>"}]}'
 
 # 3. Consent (admin only; "granted" requires a basis)
-curl -sS -X POST "$BASE/api/conversations/<conversation id>/consent" -H "$AUTH" \
-  -H 'Content-Type: application/json' \
+cv -X POST "$BASE/api/conversations/<conversation id>/consent" -H 'Content-Type: application/json' \
   -d '{"state":"granted","basis":"Owner-controlled test mailbox","source":"owner verification"}'
 
 # 4. Draft
-curl -sS -X POST "$BASE/api/conversations/<conversation id>/messages" -H "$AUTH" \
-  -H 'Content-Type: application/json' \
+cv -X POST "$BASE/api/conversations/<conversation id>/messages" -H 'Content-Type: application/json' \
   -d '{"body":"ClientVerse production email test. Please reply to this message.",
        "subject":"ClientVerse email verification","to_address":"<test mailbox>"}'
 
 # 5. Request approval  ->  the OWNER approves in Operations -> Approvals (manual §6.4 step 2)
-curl -sS -X POST "$BASE/api/messages/<message id>/request-approval" -H "$AUTH" \
-  -H 'Content-Type: application/json' -d '{}'
+cv -X POST "$BASE/api/messages/<message id>/request-approval" -H 'Content-Type: application/json' -d '{}'
 
 # 6. Send (after approval): expect status "sent", provider_message_id, rfc822_message_id
-curl -sS -X POST "$BASE/api/messages/<message id>/send" -H "$AUTH"
+cv -X POST "$BASE/api/messages/<message id>/send"
 
 # 7. Duplicate test: same call again -> HTTP 409 message_not_dispatchable
-curl -sS -X POST "$BASE/api/messages/<message id>/send" -H "$AUTH"
+cv -X POST "$BASE/api/messages/<message id>/send"
 
 # 8. After the owner replies and the :10/:40 sweep runs: inbound message with status "received"
-curl -sS "$BASE/api/conversations/<conversation id>/messages" -H "$AUTH"
+cv "$BASE/api/conversations/<conversation id>/messages"
 
 # 9. If the reply is missing: ambiguous replies are parked here, with the reason
-curl -sS "$BASE/api/inbound/unmatched" -H "$AUTH"
+cv "$BASE/api/inbound/unmatched"
 
 # 10. Contact timeline entry (activity outcome "reply_received")
-curl -sS "$BASE/api/contacts/<contact id>/timeline" -H "$AUTH"
+cv "$BASE/api/contacts/<contact id>/timeline"
 
-# 11. End the session
-curl -sS -X POST "$BASE/api/auth/logout" -H "$AUTH"
+# 11. End the session: revoke the token on the server, then forget it locally
+cv -X POST "$BASE/api/auth/logout"; unset TOKEN
 ```
 
 Record the results against [§14](#14-production-verification-checklist) rows 12–15, and in the
