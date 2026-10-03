@@ -1,5 +1,7 @@
 # ClientVerse CRM — Stripe Test-Mode Certification
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. The Render-era "Exact Owner Setup Required" section below is superseded by manual §10.3. This remains the certification record.
+
 **Certification timestamp:** 2026-08-28 EDT
 **Certified implementation:** `fb43beb21b21596c5ee7b5110315dfb5d700dc57`
 **CI:** [run 33232865874](https://github.com/ebyron357/Clientverse-crm/actions/runs/33232865874) — backend and frontend jobs **PASS**
