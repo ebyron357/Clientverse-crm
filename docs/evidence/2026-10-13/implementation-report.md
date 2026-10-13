@@ -35,9 +35,17 @@ The new regression cases exercise partial/empty/full consent and authorization-d
 
 Production bundle comparison against a separate clean build of the base commit: JavaScript adds 885 gzip bytes (0.252%); CSS adds 299 gzip bytes. No new runtime dependency or media request is introduced. These are local bundle measurements, not a production Core Web Vitals certification. [Exact comparison](bundle-comparison.json).
 
+## CI-discovered dependency repair
+
+Initial PR run [38427696213](https://github.com/ebyron357/Clientverse-crm/actions/runs/38427696213) passed the full Backend API tests job (including CRM release smoke) and frontend build. Its dependency scan identified four existing vulnerabilities in pinned PyMongo 4.6.3: CVE-2026-88029, CVE-2026-96747, CVE-2026-96748 and CVE-2026-96749.
+
+The security follow-up pins PyMongo 4.18.3 and Motor 3.7.1 together. [Motor's official requirements](https://github.com/mongodb/motor/blob/3.7.1/requirements.txt) permit PyMongo >=4.9,<5.0; the old Motor 3.3.1 is incompatible with PyMongo's newer internals. [PyMongo 4.18.3's official release](https://www.mongodb.com/community/forums/t/pymongo-4-18-3-released/344145) also fixes CVE-2026-106435. No audit exception, suppression or scanner gate was added.
+
+With the upgraded drivers, 64 focused tests pass, pip reports no broken requirements, and `pip-audit -r backend/requirements.txt` reports no known vulnerabilities. CI runs against MongoDB 7. Production server version was not retrieved; confirm MongoDB >=4.4 before the separately authorized release because PyMongo 4.18 drops older server support. This is a driver version update, not a database migration or an async architecture rewrite.
+
 ## Limits and next actions
 
-- The full local backend suite was stopped by automatic approval review because a test unexpectedly attempted an untrusted external webhook. That call was not retried or bypassed. The focused deterministic suite above passed. A separate local-only webhook harness is needed before claiming the entire suite passed.
+- The full local backend suite was stopped by automatic approval review because a test unexpectedly attempted an untrusted external webhook. That call was not retried or bypassed. The focused deterministic suite above passed. The initial PR CI independently passed the full Backend API tests job; the local suite remains unverified and a separate local-only webhook harness is needed for local completion.
 - Jev QC was not run: its endpoint and token are unavailable in the execution environment. No `VERIFIED COMPLETE` or live-provider certification claim is made.
 - Live OAuth consent, Gmail sending, Calendar sync and Stripe operations were not performed. Tenant connection state is not proven by service-variable presence.
 - Production is still on the base SHA. Railway's main-branch deployment and Vercel's main production deployment were verified; no production deployment, merge, secret change or database mutation was performed.
