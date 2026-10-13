@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from cryptography.fernet import Fernet
 from pymongo.errors import DuplicateKeyError
 
@@ -342,7 +343,12 @@ def test_run_sync_token_failure_stops_retry_and_marks_expired(monkeypatch):
     assert state_updates[-1][2]["status"] == "expired"
 
 
-def test_google_callback_reconnect_preserves_existing_refresh_token(monkeypatch):
+@pytest.mark.parametrize("granted_scope", [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    " ".join(server.GOOGLE_SCOPES),
+    "",
+])
+def test_google_callback_preserves_refresh_token_and_actual_grant(monkeypatch, granted_scope):
     oauth_states = CaptureCollection(find_one_results=[{
         "state": "state_1",
         "tenant_id": "ten_a",
@@ -365,8 +371,10 @@ def test_google_callback_reconnect_preserves_existing_refresh_token(monkeypatch)
     monkeypatch.setattr(server, "dec_secret", lambda _value: {"refresh_token": "existing-refresh"})
     monkeypatch.setattr(server, "enc_secret", lambda value: deepcopy(value))
 
-    async def fake_set_conn(*args, **kwargs):
-        return None
+    connections = []
+
+    async def fake_set_conn(tenant_id, provider, **fields):
+        connections.append((tenant_id, provider, fields))
 
     async def fake_record_event(*args, **kwargs):
         return None
@@ -377,7 +385,7 @@ def test_google_callback_reconnect_preserves_existing_refresh_token(monkeypatch)
         post_responses=[FakeResponse(200, {
             "access_token": "new-access",
             "expires_in": 3600,
-            "scope": "scope-a scope-b",
+            "scope": granted_scope,
         })],
         get_responses=[FakeResponse(200, {"email": "owner@example.com"})],
     )
@@ -390,6 +398,10 @@ def test_google_callback_reconnect_preserves_existing_refresh_token(monkeypatch)
     persisted = credentials.updated[0][1]["$set"]
     assert persisted["credential_version"] == 3
     assert persisted["enc"]["refresh_token"] == "existing-refresh"
+    assert persisted["enc"]["scopes"] == granted_scope.split()
+    assert {provider for _, provider, _ in connections} == {"gmail", "google_calendar"}
+    assert all(tenant == "ten_a" and fields["scopes"] == granted_scope.split()
+               for tenant, _, fields in connections)
     assert oauth_states.deleted == [{"state": "state_1"}]
 
 

@@ -1,0 +1,14 @@
+{
+  "js": {
+    "baseline_gzip_bytes": 351787,
+    "changed_gzip_bytes": 352672,
+    "delta_bytes": 885,
+    "delta_percent": 0.252
+  },
+  "css": {
+    "baseline_gzip_bytes": 15122,
+    "changed_gzip_bytes": 15421,
+    "delta_bytes": 299,
+    "delta_percent": 1.977
+  }
+}
