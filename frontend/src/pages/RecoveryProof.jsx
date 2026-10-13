@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
+import ReportJourney from "@/components/ReportJourney";
 import { BadgeCheck, ChevronLeft, FileSearch, Mail, MailCheck, Reply, ShieldQuestion, Timer } from "lucide-react";
 
 /**
@@ -16,6 +17,12 @@ import { BadgeCheck, ChevronLeft, FileSearch, Mail, MailCheck, Reply, ShieldQues
 
 const money = (value, currency) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 }).format(value || 0);
+
+const REPORT_SECTIONS = [
+  { id: "proof-revenue", label: "Revenue" },
+  { id: "proof-delivery", label: "Delivery" },
+  { id: "proof-cases", label: "Cases" },
+];
 
 const BASIS_LABEL = {
   reply_after_contact: "Client replied after we made contact",
@@ -189,7 +196,7 @@ export default function RecoveryProof() {
   }
 
   return (
-    <div>
+    <div className="cv-page">
       <div className="mb-6">
         <h1 className="font-display text-3xl font-bold">Recovery Proof</h1>
         <p className="mt-1 text-sm text-gray-500">
@@ -201,8 +208,8 @@ export default function RecoveryProof() {
       {!report ? <SurfaceLoading rows={3} testid="proof-loading" /> : selected ? (
         <CaseProof caseId={selected} onBack={() => setSelected(null)} />
       ) : (
-        <>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3" data-testid="proof-revenue">
+        <ReportJourney sections={REPORT_SECTIONS}>
+          <section id="proof-revenue" tabIndex={-1} aria-label="Revenue evidence" className="grid grid-cols-1 gap-4 md:grid-cols-3" data-testid="proof-revenue">
             <CurrencyBlock
               title="Open potential"
               tone="border-slate-200 bg-slate-50 text-slate-800"
@@ -221,8 +228,9 @@ export default function RecoveryProof() {
               byCurrency={report.revenue.unattributed_outcome_value_by_currency}
               note="Real revenue this system does not claim to have caused. Shown so the figure beside it has a denominator."
             />
-          </div>
+          </section>
 
+          <section id="proof-delivery" tabIndex={-1} aria-label="Delivery evidence">
           <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-4">
             <Counter icon={FileSearch} label="Cases detected" value={report.cases.detected} note={`${report.cases.not_yet_worked} not yet worked`} />
             <Counter icon={BadgeCheck} label="Cases worked" value={report.cases.worked} note={`${report.cases.awaiting_approval} awaiting approval`} />
@@ -240,8 +248,9 @@ export default function RecoveryProof() {
               note={report.time_to_recovery.measured_entries ? `over ${report.time_to_recovery.measured_entries} recovered case(s)` : "Not measurable yet"}
             />
           </div>
+          </section>
 
-          <div className="mt-6 rounded-xl border border-gray-200 bg-white shadow-sm">
+          <section id="proof-cases" tabIndex={-1} aria-label="Recovery cases" className="mt-6 rounded-xl border border-gray-200 bg-white shadow-sm">
             <h2 className="font-display border-b border-gray-100 px-6 py-4 text-lg font-bold text-[#0a1628]">Cases</h2>
             {cases && cases.length > 0 ? (
               <div className="divide-y divide-gray-100">
@@ -250,10 +259,10 @@ export default function RecoveryProof() {
                     key={item.id}
                     type="button"
                     onClick={() => setSelected(item.id)}
-                    className="flex w-full items-center gap-4 px-6 py-3.5 text-left hover:bg-gray-50"
+                    className="flex w-full flex-wrap items-center gap-4 px-4 py-3.5 text-left hover:bg-gray-50 sm:flex-nowrap sm:px-6"
                     data-testid={`proof-case-row-${item.id}`}
                   >
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 basis-full sm:flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-semibold text-[#0a1628]">{item.title || item.reason}</span>
                         <Badge className="border-gray-200 bg-gray-100 text-gray-600">{item.state}</Badge>
@@ -282,8 +291,8 @@ export default function RecoveryProof() {
                 />
               </div>
             )}
-          </div>
-        </>
+          </section>
+        </ReportJourney>
       )}
     </div>
   );

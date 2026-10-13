@@ -1,0 +1,108 @@
+{
+  "scope": "Local production build, local synthetic API fixtures, no provider or production requests",
+  "results": [
+    {
+      "name": "desktop",
+      "width": 1440,
+      "height": 900,
+      "motion": "no-preference",
+      "layout": {
+        "width": 1440,
+        "scrollWidth": 1440,
+        "linkHeights": [
+          44,
+          44,
+          44
+        ]
+      },
+      "casesPosition": {
+        "top": 150,
+        "navBottom": 134,
+        "scroll": 583
+      },
+      "animations": [
+        "proof-revenue",
+        "proof-delivery",
+        "proof-cases"
+      ],
+      "axeNavigationViolations": 0,
+      "longTasks": [
+        {
+          "duration": 55,
+          "start": 163.10000000149012
+        }
+      ],
+      "externalRequestsBlocked": [
+        "https://fonts.googleapis.com",
+        "https://api.fontshare.com"
+      ],
+      "caseDetailAndBack": true,
+      "keyboardFocus": true,
+      "consoleErrors": []
+    },
+    {
+      "name": "mobile",
+      "width": 390,
+      "height": 844,
+      "motion": "no-preference",
+      "layout": {
+        "width": 390,
+        "scrollWidth": 390,
+        "linkHeights": [
+          44,
+          44,
+          44
+        ]
+      },
+      "casesPosition": {
+        "top": 148.1285400390625,
+        "navBottom": 134,
+        "scroll": 1535
+      },
+      "animations": [
+        "proof-revenue",
+        "proof-delivery",
+        "proof-cases"
+      ],
+      "axeNavigationViolations": 0,
+      "longTasks": [],
+      "externalRequestsBlocked": [
+        "https://fonts.googleapis.com",
+        "https://api.fontshare.com"
+      ],
+      "caseDetailAndBack": true,
+      "keyboardFocus": true,
+      "consoleErrors": []
+    },
+    {
+      "name": "narrow-reduced",
+      "width": 320,
+      "height": 740,
+      "motion": "reduce",
+      "layout": {
+        "width": 320,
+        "scrollWidth": 320,
+        "linkHeights": [
+          44,
+          44,
+          44
+        ]
+      },
+      "casesPosition": {
+        "top": 148,
+        "navBottom": 134,
+        "scroll": 1575
+      },
+      "animations": [],
+      "axeNavigationViolations": 0,
+      "longTasks": [],
+      "externalRequestsBlocked": [
+        "https://fonts.googleapis.com",
+        "https://api.fontshare.com"
+      ],
+      "caseDetailAndBack": true,
+      "keyboardFocus": true,
+      "consoleErrors": []
+    }
+  ]
+}

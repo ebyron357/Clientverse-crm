@@ -2634,14 +2634,10 @@ async def run_reconcile_unknown_sweep(actor: str = "cron") -> dict:
         key = conversation_service.dispatch_key(message)
         try:
             found_id = await locate(tenant_id=message["tenant_id"], idempotency_key=key)
-        except conversation_service.DeliveryRejected as exc:
-            # The provider answered definitively that it cannot hold this message.
-            await conversation_service.reconcile_unknown(
-                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
-                found=False, detail={"lookup": str(exc)[:300]})
-            totals["resolved_failed"] += 1
-            continue
         except Exception:
+            # A rejected lookup (including revoked OAuth) says nothing about whether
+            # an earlier dispatch reached the provider. Only a successful lookup
+            # returning no message proves absence; otherwise keep the retry guard.
             logger.warning("Could not reconcile message %s; leaving it unresolved",
                            message["id"])
             totals["unresolved"] += 1
@@ -2955,7 +2951,9 @@ async def google_callback(state: str = Query(None), code: str = Query(None), err
     await db.google_credentials.update_one({"tenant_id": tenant_id},
         {"$set": {"enc": enc_secret(creds), "account_email": email, "credential_version": version, "updated_at": now_iso()}}, upsert=True)
     for p in ("gmail", "google_calendar"):
-        await set_conn(tenant_id, p, status="active", account_identity=email, scopes=GOOGLE_SCOPES,
+        # Consent can be partial. Publish the provider's grant, never the requested
+        # scopes: the Gmail delivery guard relies on this record for send authority.
+        await set_conn(tenant_id, p, status="active", account_identity=email, scopes=creds["scopes"],
                        connected_by=actor, connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version)
         await record_event("integration.connected", "integration", p, tenant_id, actor, payload={"provider": p, "account": email})
     return RedirectResponse(url=f"{dest}&oauth=connected")

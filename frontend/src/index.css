@@ -118,6 +118,25 @@
   }
 
   .cv-status-dot { @apply inline-block h-1.5 w-1.5 rounded-full; }
+
+  .cv-report-nav {
+    @apply sticky z-10 mb-5 flex flex-wrap gap-1 rounded-xl border border-border bg-background p-1 shadow-sm;
+    top: 80px;
+  }
+
+  .cv-report-nav a {
+    @apply flex min-h-11 flex-1 items-center justify-center rounded-lg px-3 text-sm font-semibold text-muted-foreground;
+  }
+
+  .cv-report-nav a[aria-current="location"] {
+    @apply bg-primary text-primary-foreground;
+  }
+
+  .cv-report-journey > section { scroll-margin-top: 148px; }
+  .cv-report-journey > section:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 4px;
+  }
 }
 
 @layer utilities {
