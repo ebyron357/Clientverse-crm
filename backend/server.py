@@ -875,7 +875,7 @@ class OppInput(BaseModel):
     company_id: Optional[str] = None
     # A deal's value is money: never negative, and finite -- `ge=0` alone admits
     # Infinity, which then breaks every JSON response that lists the deal.
-    value: float = Field(default=0, ge=0, allow_inf_nan=False)
+    value: float = Field(default=0, ge=0, le=crm_core.MAX_DEAL_VALUE, allow_inf_nan=False)
     stage: str = "lead"
     owner: Optional[str] = None
     # ISO 4217, stored uppercase. A deal in "us dollars" or "$" cannot be totalled with
@@ -1282,7 +1282,8 @@ async def list_events(limit: int = Query(200), user=Depends(get_current_user)):
 @api.get("/dashboard")
 async def dashboard(user=Depends(get_current_user)):
     t = user["tenant_id"]
-    opps = await db.opportunities.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
+    # Archived deals are out of the pipeline, as they are on the board.
+    opps = await db.opportunities.find({"tenant_id": t, "archived_at": None}, {"_id": 0}).to_list(2000)
     workspaces = await db.workspaces.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     commitments = await db.commitments.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     # Money is grouped by currency and never summed across it: £40,000 plus $40,000 is not
@@ -1297,7 +1298,7 @@ async def dashboard(user=Depends(get_current_user)):
             amount = float(o.get("value") or 0)
         except (TypeError, ValueError):
             continue
-        if not math.isfinite(amount):
+        if not math.isfinite(amount) or amount < 0:
             continue
         cur = recovery_case_service.normalize_currency(o.get("currency")) or recovery_case_service.DEFAULT_CURRENCY
         outcome = crm_core.classify_stage(o.get("stage"), classes)

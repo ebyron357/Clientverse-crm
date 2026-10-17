@@ -215,6 +215,14 @@ async def _run_outbound_step(db, tenant_id: str, case: dict, step: dict, index: 
             "reused": False, "blocked_reason": step.get("blocked_reason")}
 
 
+async def _ended(db, tenant_id: str, case_id: str) -> Optional[dict]:
+    """The case if it is no longer open (a stand-in if it no longer exists), else None."""
+    case = await recovery_case.get_case(db, tenant_id, case_id)
+    if case is None:
+        return {"id": case_id, "state": "missing"}
+    return case if case["state"] in recovery_case.TERMINAL_STATES else None
+
+
 async def run_case(db, *, tenant_id: str, case_id: str, actor: str = "recovery-runner",
                    audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Execute one approved Recovery Case as far as it is permitted to go.
@@ -264,11 +272,28 @@ async def run_case(db, *, tenant_id: str, case_id: str, actor: str = "recovery-r
 
     results = []
     for index, step in enumerate(strategy.get("steps") or []):
+        # Re-read before every step: reconciliation, an outcome or an operator can close
+        # the case while this run is drafting, and nothing more should be created for it.
+        if await _ended(db, tenant_id, case_id):
+            break
         if step["channel"] == conversations.CHANNEL_INTERNAL:
             results.append(await _run_internal_step(db, tenant_id, case, step, actor, audit))
         else:
             results.append(
                 await _run_outbound_step(db, tenant_id, case, step, index, actor, audit))
+
+    ended = await _ended(db, tenant_id, case_id)
+    if ended:
+        # Closed mid-run: the close withdrew what existed then, so withdraw what this run
+        # drafted after it, or those messages could still be approved and sent.
+        withdrawn = (await recovery_lifecycle.withdraw_pending_work(
+            db, tenant_id=tenant_id, case=ended,
+            reason=ended.get("close_reason") or ended["state"], actor=actor)
+            if ended["state"] != "missing" else None)
+        return {"case_id": case_id, "skipped": True,
+                "reason": f"The case became '{ended['state']}' during the run.",
+                "steps": results, "outbound_drafted": 0, "outbound_sent": 0,
+                "withdrawn": withdrawn}
 
     drafted = [r for r in results if r["status"] == STEP_DRAFTED]
     if drafted:
