@@ -367,3 +367,27 @@ def test_older_assignment_notices_stay_with_the_person_they_name(client):
     legacy = find_one(client, "notifications", {"tenant_id": owner["tenant_id"],
                                                 "type": "assignment"})
     assert legacy["read"] is False, "marking my notices read leaves someone else's alone"
+
+
+# --------------------------------------------------------- next best action
+
+def test_an_overdue_task_recommendation_links_to_the_task(client):
+    owner = register(client)
+    task = new_task(client, owner, title="Send the CMA", due_date=iso(-timedelta(days=2)))
+    assert client.post("/api/next-best-actions/generate",
+                       headers=owner["headers"]).status_code == 200
+    items = client.get("/api/next-best-actions", headers=owner["headers"]).json()
+    advance = next(i for i in items if i["action_type"] == "advance_task")
+    assert advance["deep_link"] == f"/tasks?task={task['id']}"
+
+    # Following the link is navigation: the recommendation's own state is untouched by a
+    # regeneration that adds or refreshes it.
+    client.patch(f"/api/next-best-actions/{advance['id']}", headers=owner["headers"],
+                 json={"state": "accepted"})
+    call(client, server.db.next_best_actions.update_one, {"id": advance["id"]},
+         {"$unset": {"deep_link": ""}})
+    client.post("/api/next-best-actions/generate", headers=owner["headers"])
+    again = next(i for i in client.get("/api/next-best-actions", headers=owner["headers"]).json()
+                 if i["id"] == advance["id"])
+    assert again["state"] == "accepted"
+    assert again["deep_link"] == f"/tasks?task={task['id']}"
