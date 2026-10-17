@@ -19,6 +19,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, Copy, ExternalLink, FlaskConical, Globe, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { describeLeadStep } from "@/lib/leadSteps";
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const slug = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
@@ -451,7 +452,7 @@ function EmbedTab({ form, isAdmin, onChanged }) {
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
             <div className="font-semibold">Worked end to end.</div>
             <ul className="mt-2 space-y-1">
-              {(result.lead.automation || []).map((step, index) => <li key={index}>{step.step}: {step.result}</li>)}
+              {(result.lead.automation || []).map((step, index) => <li key={index}>✓ {describeLeadStep(step)}</li>)}
             </ul>
             <Link className="mt-2 inline-block font-semibold text-[#127b96]" to={`/leads?lead=${result.lead.id}`}>Open the test lead</Link>
           </div>
