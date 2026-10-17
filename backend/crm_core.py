@@ -606,6 +606,29 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     # --------------------------------------------------------------------------- deals
 
+    # Registered before `/opportunities/{deal_id}` so the path is not read as a deal id.
+    @router.get("/opportunities/owner-options")
+    async def deal_owner_options(user=Depends(get_current_user)):
+        """The people a deal can be given to: this tenant's active members.
+
+        Names and emails only. A member needs this to hand a deal to a colleague; roles,
+        status and invitations stay on the admin-only team page.
+        """
+        tenant = tenant_of(user)
+        members = await db.memberships.find(
+            {"tenant_id": tenant, "status": "active"},
+            {"_id": 0, "user_id": 1, "email": 1}).sort("created_at", 1).to_list(500)
+        user_ids = [m["user_id"] for m in members if m.get("user_id")]
+        people = await db.users.find(
+            {"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "name": 1}
+        ).to_list(len(user_ids) or 1)
+        names = {person["user_id"]: person.get("name") for person in people}
+        options = [{"email": m["email"], "name": names.get(m.get("user_id")) or None}
+                   for m in members if m.get("email")]
+        if not any(option["email"] == user["email"] for option in options):
+            options.insert(0, {"email": user["email"], "name": user.get("name")})
+        return {"items": options}
+
     @router.get("/opportunities/{deal_id}")
     async def get_deal(deal_id: str, user=Depends(get_current_user)):
         deal = await load(DEALS, deal_id, user)

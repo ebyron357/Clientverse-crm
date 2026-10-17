@@ -210,6 +210,58 @@ def test_a_deal_cannot_be_moved_into_a_stage_the_pipeline_does_not_have(tenant):
     assert response.status_code == 400
 
 
+def test_moving_a_deal_to_won_says_whether_a_client_workspace_was_created():
+    fresh = Tenant("crm_won")
+    won = fresh.patch(f"/opportunities/{fresh.deal_id}/stage", {"stage": "closed_won"})
+    assert won["outcome"] == "won"
+    assert won["workspace_created"] is True and won["workspace_id"]
+    assert any(w["id"] == won["workspace_id"] and w["opportunity_id"] == fresh.deal_id
+               for w in fresh.get("/workspaces"))
+
+    # Winning it a second time finds the same workspace rather than announcing a new one.
+    fresh.patch(f"/opportunities/{fresh.deal_id}/stage", {"stage": "negotiation"})
+    again = fresh.patch(f"/opportunities/{fresh.deal_id}/stage", {"stage": "closed_won"})
+    assert again["workspace_created"] is False
+    assert again["workspace_id"] == won["workspace_id"]
+
+    # A deal with no company -- every website lead -- is won without a workspace, and the
+    # response must not let the screen claim one was created.
+    buyer = fresh.post("/opportunities", {"name": f"Buyer-{fresh.tag}", "value": 9000})
+    moved = fresh.patch(f"/opportunities/{buyer['id']}/stage", {"stage": "closed_won"})
+    assert moved == {"ok": True, "stage": "closed_won", "outcome": "won",
+                     "workspace_created": False, "workspace_id": None}
+    lost = fresh.patch(f"/opportunities/{buyer['id']}/stage", {"stage": "closed_lost"})
+    assert lost["outcome"] == "lost" and lost["workspace_created"] is False
+
+
+def test_a_renamed_won_stage_still_wins_the_deal():
+    fresh = Tenant("crm_signed")
+    stages = [s for s in fresh.get("/pipelines/default")["stages"] if s["key"] != "closed_won"]
+    stages.append({"key": "signed", "label": "Signed", "probability": 100,
+                   "is_closed": True, "is_won": True})
+    fresh.put("/pipelines/default", {"stages": stages})
+    moved = fresh.patch(f"/opportunities/{fresh.deal_id}/stage", {"stage": "signed"})
+    assert moved["outcome"] == "won" and moved["workspace_created"] is True
+
+
+def test_the_deal_list_can_carry_contact_names_for_the_board(tenant):
+    deal = tenant.post("/opportunities", {"name": f"Board-{tenant.tag}",
+                                          "contact_ids": [tenant.contact_id]})
+    plain = {d["id"]: d for d in tenant.get("/opportunities")}
+    assert "contacts" not in plain[deal["id"]], "the default list shape is unchanged"
+    expanded = {d["id"]: d for d in tenant.get("/opportunities?expand=contacts")}
+    assert expanded[deal["id"]]["contacts"] == [
+        {"id": tenant.contact_id, "name": f"Person-{tenant.tag}"}]
+
+
+def test_owner_options_list_this_tenants_people_and_no_one_else(tenant, other):
+    options = tenant.get("/opportunities/owner-options")["items"]
+    emails = [option["email"] for option in options]
+    assert tenant.email in emails
+    assert other.email not in emails
+    assert all(set(option) == {"email", "name"} for option in options)
+
+
 # -------------------------------------------------------------------------------- tasks
 
 def test_a_follow_up_can_be_created_against_a_deal_and_completed(tenant):
