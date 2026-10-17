@@ -366,6 +366,17 @@ async def _reconcile(db: Any, tenant_id: str, *, sources: Optional[tuple], actor
                         {"attribution_entry_id": entry.get("id"),
                          "recorded_on_case": case["id"]})
 
+    # 0. An open case that already has an outcome in the ledger. Before outcomes closed
+    #    their case, recording one left the case open, so the same money was counted in
+    #    open potential and in an outcome bucket. Close those first.
+    with_outcome = await db[attribution.COLLECTION].find(
+        {"tenant_id": tenant_id, "case_id": {"$in": list(open_ids)}},
+        {"_id": 0, "id": 1, "case_id": 1}).to_list(len(open_ids) + 10)
+    for entry in with_outcome:
+        case = next((c for c in cases if c["id"] == entry["case_id"]), None)
+        if case:
+            await close(case, "outcome_recorded", {"attribution_entry_id": entry["id"]})
+
     # 1. Engagement: a drafted message that has since been sent makes its case engaged.
     contact = await recovery_lifecycle.last_contact_by_case(db, tenant_id, list(open_ids))
     for case in cases:

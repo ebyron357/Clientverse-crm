@@ -542,6 +542,11 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
     existing = await _existing_for_sale(db, tenant_id, case_id=case_id, sale_key=sale_key,
                                         kind=kind, record_id=record_id)
     if existing:
+        # A replay changes nothing -- except that an entry recorded before outcomes closed
+        # their case may have left this one open, its money in two places at once.
+        await recovery_lifecycle.close_if_open(
+            db, tenant_id=tenant_id, case_id=case_id, reason="outcome_recorded",
+            actor=actor, detail={"attribution_entry_id": existing.get("id")}, audit=audit)
         return existing
 
     derived = await derive_basis(db, tenant_id=tenant_id, case_id=case_id,

@@ -230,6 +230,14 @@ async def run_case(db, *, tenant_id: str, case_id: str, actor: str = "recovery-r
     if not case:
         raise RecoveryRunnerError("Recovery case not found")
 
+    if case["state"] in recovery_case.TERMINAL_STATES:
+        # Closed (or recovered) after the run was queued -- by reconciliation, an outcome
+        # or an operator. There is nothing left to do, and that is not a failure: raising
+        # would retry the job until it dead-lettered over a case that ended correctly.
+        return {"case_id": case_id, "skipped": True,
+                "reason": f"The case is '{case['state']}'; nothing to run.",
+                "steps": [], "outbound_drafted": 0, "outbound_sent": 0}
+
     if case["state"] not in (recovery_case.APPROVED, recovery_case.EXECUTING):
         raise RecoveryRunnerError(
             f"Only an approved case can be run; this one is '{case['state']}'")

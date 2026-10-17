@@ -343,6 +343,33 @@ def test_a_contact_only_case_relates_to_a_deal_its_contact_is_on(env):
     assert entry["sale_key"] == f"deal:{deal['id']}"
 
 
+def test_a_legacy_outcome_left_on_an_open_case_is_taken_out_of_open_potential(env):
+    """Before the fix an outcome left its case open: the money counted twice."""
+    db, _ = env
+    _, deal = seed_buyer(db, value=6000.0, currency="USD", stage="closed_won")
+    replayed = run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_DORMANT_DEAL, source_event_id="opportunity:a",
+        reason="r", opportunity_id=deal["id"], potential_value=6000.0)))
+    swept = run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_MISSED_CALL, source_event_id="call:legacy",
+        reason="r", potential_value=300.0)))
+    for case, kind, record_id, amount in ((replayed, "deal_won", deal["id"], 6000.0),
+                                          (swept, "operator_confirmed", "cash-1", 300.0)):
+        run(db[attribution.COLLECTION].insert_one({
+            "id": f"attr_{case['id']}", "tenant_id": TENANT, "case_id": case["id"],
+            "outcome": {"kind": kind, "record_id": record_id, "amount": amount},
+            "claim": attribution.CLAIM_UNATTRIBUTED, "currency": "USD",
+            "recorded_at": now()}))
+    assert money(db)[0] == {"USD": 6300.0} and money(db)[2] == {"USD": 6300.0}
+
+    again = run(attribution.record_outcome(db, tenant_id=TENANT, case_id=replayed["id"],
+                                           kind=attribution.OUTCOME_DEAL_WON,
+                                           record_id=deal["id"], actor="ops"))
+    assert again["deduplicated"] is True
+    run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert money(db) == ({}, {}, {"USD": 6300.0})
+
+
 def test_legacy_duplicate_entries_are_counted_once(env):
     db, _ = env
     for i in range(3):
@@ -888,6 +915,18 @@ def test_closing_a_case_in_execution_stops_its_drafted_message(env, app_server):
     assert run(rs.get_strategy(db, TENANT, strategy["id"]))["state"] == rs.STATE_APPROVED
 
 
+def test_a_run_queued_before_the_case_closed_is_a_no_op_not_a_failure(env, app_server):
+    db, queue = env
+    _, case, strategy = _planned_case(db, queue)
+    approval = run(aq.decide(db, tenant_id=TENANT, approval_id=strategy["approval_id"],
+                             decision=aq.APPROVED, actor=ADMIN["email"]))
+    run(app_server._apply_approval_side_effects(approval, ADMIN))
+    run(recovery_lifecycle.close_case(db, tenant_id=TENANT, case_id=case["id"],
+                                      reason="resolved"))
+    result = run(recovery_runner.run_case(db, tenant_id=TENANT, case_id=case["id"]))
+    assert result["skipped"] is True and result["outbound_drafted"] == 0
+
+
 def test_closing_a_proposed_case_withdraws_its_strategy(env):
     db, queue = env
     _, case, strategy = _planned_case(db, queue)
@@ -919,6 +958,31 @@ def test_the_dashboard_never_sums_money_across_currencies(env, app_server):
     assert data["pipeline_value_by_currency"] == {"USD": 1000.0, "GBP": 2000.0}
     assert data["won_value_by_currency"] == {"GBP": 500.0}
     assert data["pipeline_value"] is None, "no single figure is true across two currencies"
+
+
+def test_the_outcome_route_refuses_a_second_booking_with_409_and_an_unrelated_one_with_422(
+        env, app_server):
+    from fastapi import HTTPException
+    db, _ = env
+    _, deal = seed_buyer(db, value=40000.0, currency="GBP", stage="closed_won")
+    _, other_deal = seed_buyer(db, stage="closed_won")
+    first, second = (run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_WEB_ENQUIRY, source_event_id=f"web_enquiry:{i}",
+        reason="r", opportunity_id=deal["id"]))) for i in range(2))
+
+    def post(case, record_id):
+        inp = app_server.RecordOutcomeInput(case_id=case["id"], kind="deal_won",
+                                            record_id=record_id)
+        return run(app_server.record_attribution_outcome(inp, user=ADMIN))
+
+    assert post(first, deal["id"])["claim"] == attribution.CLAIM_UNATTRIBUTED
+    with pytest.raises(HTTPException) as duplicate:
+        post(second, deal["id"])
+    assert duplicate.value.status_code == 409
+    assert duplicate.value.detail["case_id"] == first["id"]
+    with pytest.raises(HTTPException) as unrelated:
+        post(second, other_deal["id"])
+    assert unrelated.value.status_code == 422
 
 
 def test_a_negative_or_infinite_deal_value_is_refused(app_server):

@@ -841,6 +841,37 @@ def sale_key_for_evidence(evidence: Optional[dict]) -> Optional[str]:
     return None
 
 
+async def confirmed_totals(db, tenant_id: str, *,
+                           limit: int = OPEN_POTENTIAL_SCAN_LIMIT) -> dict:
+    """Confirmed recovered value per currency, and how many cases it comes from.
+
+    Counted once per sale, and a case counts as recovered whenever its confirmed value is
+    included -- `recovered`, and `recovered` then `closed`, alike. Counting only the
+    `recovered` state dropped every recovery an operator later closed out.
+    """
+    by_currency: dict[str, float] = {}
+    recovered_cases = 0
+    seen_sales: set[str] = set()
+    rows = await db[COLLECTION].find(
+        {"tenant_id": tenant_id, "confirmed_value": {"$type": "number"}},
+        {"_id": 0, "id": 1, "currency": 1, "confirmed_value": 1,
+         "confirmed_value_evidence": 1},
+    ).to_list(int(limit) + 1)
+    for row in rows[:limit]:
+        value = row.get("confirmed_value")
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            continue
+        sale = sale_key_for_evidence(row.get("confirmed_value_evidence")) or f"case:{row['id']}"
+        if sale in seen_sales:
+            continue
+        seen_sales.add(sale)
+        recovered_cases += 1
+        currency = normalize_currency(row.get("currency")) or DEFAULT_CURRENCY
+        by_currency[currency] = round(by_currency.get(currency, 0.0) + float(value), 2)
+    return {"by_currency": by_currency, "recovered_cases": recovered_cases,
+            "truncated": len(rows) > limit}
+
+
 async def summary(db, tenant_id: str) -> dict:
     """Counts and value, with potential and confirmed kept strictly apart."""
     by_state: dict[str, int] = {}
@@ -863,28 +894,9 @@ async def summary(db, tenant_id: str) -> dict:
     potential = await open_potential(db, tenant_id)
     potential_by_currency: dict[str, float] = potential["by_currency"]
 
-    # Confirmed value is counted once per sale, and a case counts as recovered whenever
-    # its confirmed value is included -- `recovered` or `recovered` then `closed` alike.
-    confirmed_by_currency: dict[str, float] = {}
-    recovered_cases = 0
-    seen_sales: set[str] = set()
-    confirmed_rows = await db[COLLECTION].find(
-        {"tenant_id": tenant_id, "confirmed_value": {"$type": "number"}},
-        {"_id": 0, "id": 1, "currency": 1, "confirmed_value": 1,
-         "confirmed_value_evidence": 1},
-    ).to_list(int(OPEN_POTENTIAL_SCAN_LIMIT))
-    for row in confirmed_rows:
-        value = row.get("confirmed_value")
-        if not isinstance(value, (int, float)) or not math.isfinite(value):
-            continue
-        sale = sale_key_for_evidence(row.get("confirmed_value_evidence")) or f"case:{row['id']}"
-        if sale in seen_sales:
-            continue
-        seen_sales.add(sale)
-        recovered_cases += 1
-        currency = normalize_currency(row.get("currency")) or DEFAULT_CURRENCY
-        confirmed_by_currency[currency] = round(
-            confirmed_by_currency.get(currency, 0.0) + float(value), 2)
+    confirmed = await confirmed_totals(db, tenant_id)
+    confirmed_by_currency: dict[str, float] = confirmed["by_currency"]
+    recovered_cases = confirmed["recovered_cases"]
 
     currencies = sorted(set(potential_by_currency) | set(confirmed_by_currency))
     # The scalar figures stay, because one currency is the ordinary case and callers read
@@ -906,6 +918,7 @@ async def summary(db, tenant_id: str) -> dict:
         "open_cases_collapsed": potential["cases_collapsed"],
         "open_opportunity_groups": potential["opportunity_groups"],
         "potential_scan_truncated": potential["truncated"],
+        "confirmed_scan_truncated": confirmed["truncated"],
         "confirmed_recovered_value_by_currency": confirmed_by_currency,
         "potential_value_open": (
             potential_by_currency.get(single, 0.0) if single is not None

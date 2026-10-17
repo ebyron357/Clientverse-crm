@@ -269,10 +269,13 @@ function CaseProof({ caseId, onBack, onChanged }) {
 }
 
 export default function RecoveryProof() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [report, setReport] = useState(null);
   const [cases, setCases] = useState(null);
   const [selected, setSelected] = useState(null);
   const [loadError, setLoadError] = useState("");
+  const [recheck, setRecheck] = useState({ busy: false, note: "" });
 
   const load = useCallback(() => {
     setLoadError("");
@@ -285,18 +288,40 @@ export default function RecoveryProof() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // Re-reads every open case's source and closes what has resolved. The detection sweeps
+  // do this on schedule; this is the explicit, on-demand version for an admin.
+  const recheckSources = () => {
+    setRecheck({ busy: true, note: "" });
+    api.post("/recovery-cases/reconcile")
+      .then(({ data }) => {
+        const closed = Object.values(data.closed || {}).reduce((sum, count) => sum + count, 0);
+        const outcomes = (data.outcomes || []).length;
+        setRecheck({ busy: false, note: `Checked ${data.examined} open case(s): ${closed} closed, ${outcomes} outcome(s) recorded.` });
+        load();
+      })
+      .catch((e) => setRecheck({ busy: false, note: formatErr(e.response?.data?.detail) || "Sources could not be re-checked." }));
+  };
+
   if (loadError) {
     return <div className="cv-page"><SurfaceError title="Recovery report unavailable" description={String(loadError)} onRetry={load} testid="proof-error" /></div>;
   }
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="font-display text-3xl font-bold">Recovery Proof</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          What was recovered, and the records that say so. Potential value and confirmed recovered value are
-          reported as separate figures and are never added together.
-        </p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-3xl font-bold">Recovery Proof</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            What was recovered, and the records that say so. Potential value and confirmed recovered value are
+            reported as separate figures and are never added together.
+          </p>
+          {recheck.note ? <p className="mt-1 text-xs text-gray-500" data-testid="proof-recheck-note">{recheck.note}</p> : null}
+        </div>
+        {isAdmin ? (
+          <Button size="sm" variant="outline" onClick={recheckSources} disabled={recheck.busy} data-testid="proof-recheck">
+            {recheck.busy ? "Re-checking…" : "Re-check sources"}
+          </Button>
+        ) : null}
       </div>
 
       {!report ? <SurfaceLoading rows={3} testid="proof-loading" /> : selected ? (

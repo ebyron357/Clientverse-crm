@@ -220,7 +220,7 @@ async def portfolio(db: Any, tenant_id: str) -> dict:
             closed_by_reason[reason] = closed_by_reason.get(reason, 0) + 1
     # Each underlying opportunity once, however many cases point at it.
     potential = await recovery_case_service.open_potential(db, tenant_id)
-    case_summary = await recovery_case_service.summary(db, tenant_id)
+    confirmed = await recovery_case_service.confirmed_totals(db, tenant_id)
 
     case_ids = [case["id"] for case in cases]
     conversations = await db[conversation_service.CONVERSATIONS].find(
@@ -290,7 +290,7 @@ async def portfolio(db: Any, tenant_id: str) -> dict:
             "engaged": by_state.get(recovery_case_service.ENGAGED, 0),
             # Every case whose confirmed value is included in the recovered figure:
             # `recovered`, and `recovered` then `closed`, alike -- once per sale.
-            "recovered": case_summary["recovered_cases"],
+            "recovered": confirmed["recovered_cases"],
             "closed": by_state.get(recovery_case_service.CLOSED, 0),
             "closed_by_reason": closed_by_reason,
             "failed": by_state.get(recovery_case_service.FAILED, 0),
