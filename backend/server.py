@@ -6,6 +6,7 @@ import json as _json
 import logging
 import math
 import os
+import re
 import secrets
 import time
 import uuid
@@ -4310,9 +4311,22 @@ async def deliver_digest(tenant_id, date_str, force=False):
 
 # ---- Endpoints ----
 
+def _notification_scope(user):
+    """The notifications one person sees: the ones addressed to them, and team-wide ones.
+
+    Team-wide means no `user_id`. Task-assignment notices stored before they were
+    addressed to a user also have none, but they do name their `recipient`; those stay
+    with the person they name instead of telling everyone "a task was assigned to you".
+    """
+    recipient = {"$regex": f"^{re.escape(str(user.get('email') or ''))}$", "$options": "i"}
+    return {"tenant_id": user["tenant_id"],
+            "$or": [{"user_id": user["user_id"]},
+                    {"user_id": None, "type": {"$ne": "assignment"}},
+                    {"user_id": None, "type": "assignment", "recipient": recipient}]}
+
 @api.get("/notifications")
 async def list_notifications(user=Depends(get_current_user)):
-    q = {"tenant_id": user["tenant_id"], "$or": [{"user_id": None}, {"user_id": user["user_id"]}]}
+    q = _notification_scope(user)
     rows = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
     unread = await db.notifications.count_documents({**q, "read": False})
     active_alerts = await db.alerts.find(
@@ -4337,14 +4351,15 @@ async def list_notifications(user=Depends(get_current_user)):
 
 @api.post("/notifications/{nid}/read")
 async def mark_notification_read(nid: str, user=Depends(get_current_user)):
-    r = await db.notifications.update_one({"id": nid, "tenant_id": user["tenant_id"]}, {"$set": {"read": True}})
+    # Only a notification this person can see: someone else's is "not found", not "read".
+    r = await db.notifications.update_one({"id": nid, **_notification_scope(user)}, {"$set": {"read": True}})
     if not r.matched_count:
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
 
 @api.post("/notifications/read-all")
 async def mark_all_read(user=Depends(get_current_user)):
-    await db.notifications.update_many({"tenant_id": user["tenant_id"], "$or": [{"user_id": None}, {"user_id": user["user_id"]}], "read": False}, {"$set": {"read": True}})
+    await db.notifications.update_many({**_notification_scope(user), "read": False}, {"$set": {"read": True}})
     return {"ok": True}
 
 @api.get("/notifications/preferences")
@@ -4423,8 +4438,15 @@ async def _after_activity_logged(activity: dict) -> None:
     await lead_pipeline.recognise_activity(activity)
 
 
+async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: str) -> None:
+    # A call-back task ticked off on the Tasks page is the lead's response, so the lead
+    # pipeline hears about it at once. `lead_pipeline` is created just below.
+    await lead_pipeline.task_status_changed(task, previous, actor)
+
+
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
-                                  on_activity_logged=_after_activity_logged)
+                                  on_activity_logged=_after_activity_logged,
+                                  on_task_status_changed=_lead_task_status_changed)
 # Website forms: the public door an agent's website posts leads through, and the
 # automation that turns each lead into a contact, an owner, a deal, a call-back task and
 # an alert within seconds. The legacy intake-token door runs through the same pipeline.

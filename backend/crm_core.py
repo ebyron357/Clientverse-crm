@@ -89,7 +89,8 @@ SORTABLE = {
     CONTACTS: ("created_at", "updated_at", "name", "owner"),
     COMPANIES: ("created_at", "updated_at", "name", "owner"),
     DEALS: ("created_at", "updated_at", "name", "value", "stage", "expected_close_date", "owner"),
-    TASKS: ("created_at", "updated_at", "due_date", "status", "assignee", "title"),
+    TASKS: ("created_at", "updated_at", "due_date", "status", "assignee", "title",
+            "completed_at"),
 }
 
 MAX_PAGE = 200
@@ -435,14 +436,17 @@ class ImportInput(BaseModel):
 def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                              get_current_user, require_role,
                              on_activity_logged: Optional[
-                                 Callable[[dict], Awaitable[Any]]] = None):
+                                 Callable[[dict], Awaitable[Any]]] = None,
+                             *, on_task_status_changed=None):
     """Attach the baseline CRM routes, using the application's own helpers.
 
     Injection rather than import keeps this module free of a circular dependency on
     `server`, and keeps every audit event flowing through the one `record_event` the
     rest of the application uses. `on_activity_logged` is told about every activity a
     person logs, after it is stored, so work that depends on it (a lead's speed-to-lead
-    clock) moves at once instead of on the next sweep.
+    clock) moves at once instead of on the next sweep. `on_task_status_changed(task,
+    previous_status, actor)` is awaited after a task changes status through
+    `PATCH /crm/tasks/{id}`.
     """
 
     # ------------------------------------------------------------------ shared helpers
@@ -929,27 +933,114 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         await assert_exists(collection, related_id, user, f"{related_type} id")
         return related_type, related_id
 
+    def same_person(first: Optional[str], second: Optional[str]) -> bool:
+        return bool(first and second) and str(first).strip().lower() == str(second).strip().lower()
+
+    def email_match(email: str) -> dict:
+        # Assignees are typed by people and written by automation, so the case an address
+        # was stored in says nothing about who it belongs to.
+        return {"$regex": f"^{re.escape(email.strip())}$", "$options": "i"}
+
+    async def attach_related(user, tasks: list[dict]) -> list[dict]:
+        """Say what each task is about, in a form a person can act on.
+
+        A row reading "related_type: contact, related_id: c_91f2" is not something an agent
+        can call back. Each task gets a `related` summary: the record's name, the person
+        to call (the contact itself, or a deal's first contact) with their phone, and --
+        for a website lead's call-back task -- the lead it came from. One tenant-scoped
+        query per collection, however many tasks there are.
+        """
+        tenant = tenant_of(user)
+        wanted: dict[str, set[str]] = {collection: set() for collection in RELATABLE.values()}
+        for task in tasks:
+            collection = RELATABLE.get(task.get("related_type") or "")
+            if collection and task.get("related_id"):
+                wanted[collection].add(task["related_id"])
+        projection = {"_id": 0, "id": 1, "name": 1, "phone": 1, "email": 1, "contact_ids": 1}
+
+        async def fetch(collection: str) -> dict[str, dict]:
+            ids = sorted(wanted[collection])
+            if not ids:
+                return {}
+            rows = await db[collection].find({"tenant_id": tenant, "id": {"$in": ids}},
+                                             projection).to_list(len(ids))
+            return {row["id"]: row for row in rows}
+
+        found = {collection: await fetch(collection)
+                 for collection in (DEALS, COMPANIES, "workspaces")}
+        for deal in found[DEALS].values():
+            if deal.get("contact_ids"):
+                wanted[CONTACTS].add(deal["contact_ids"][0])
+        found[CONTACTS] = await fetch(CONTACTS)
+
+        def person(contact_id: Optional[str]) -> Optional[dict]:
+            contact = found[CONTACTS].get(contact_id or "")
+            if not contact:
+                return None
+            return {"id": contact["id"], "name": contact.get("name"),
+                    "phone": contact.get("phone"), "email": contact.get("email")}
+
+        for task in tasks:
+            related_type = task.get("related_type")
+            record = found.get(RELATABLE.get(related_type or "", ""), {}).get(
+                task.get("related_id") or "")
+            if related_type == "contact":
+                contact = person(task.get("related_id"))
+            elif related_type == "deal" and record and record.get("contact_ids"):
+                contact = person(record["contact_ids"][0])
+            else:
+                contact = None
+            source = task.get("source")
+            lead_id = None
+            if isinstance(source, dict) and source.get("kind") == "website_form":
+                lead_id = source.get("enquiry_id")
+            task["related"] = {
+                "type": related_type, "id": task.get("related_id"),
+                "name": (record or {}).get("name"), "contact": contact, "lead_id": lead_id,
+            }
+        return tasks
+
     @router.get("/tasks")
     async def list_tasks(
         q: Optional[str] = None,
         status: Optional[str] = None,
         assignee: Optional[str] = None,
+        mine: bool = False,
+        include_unassigned: bool = False,
         related_type: Optional[str] = None,
         related_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         due_before: Optional[str] = None,
         due_after: Optional[str] = None,
+        include_undated: bool = False,
+        completed_after: Optional[str] = None,
+        expand: Optional[str] = None,
         sort: Optional[str] = "due_date",
         order: Optional[str] = "asc",
         limit: int = 50,
         offset: int = 0,
         user=Depends(get_current_user),
     ):
-        """Every task in the tenant, not just the ones inside a delivery workspace."""
+        """Every task in the tenant, not just the ones inside a delivery workspace.
+
+        The Tasks page reads its tabs from here. `mine` narrows to the caller's own work,
+        and `include_unassigned` keeps the tasks nobody owns yet beside it -- a website
+        lead that no one was assigned is everyone's call to make, and hiding it from every
+        "My tasks" view is how a call-back goes unmade. `status` takes a comma-separated
+        set ("todo,in_progress,blocked" is "still open"); a due window can keep undated
+        tasks with `include_undated`; `expand=related` says what each task is about.
+        """
         query: dict[str, Any] = {**text_filter(TASKS, q)}
+        clauses: list[dict] = []
         if status:
-            query["status"] = status
-        if assignee:
+            statuses = [value.strip() for value in status.split(",") if value.strip()]
+            query["status"] = statuses[0] if len(statuses) == 1 else {"$in": statuses}
+        if mine:
+            owned: list[dict] = [{"assignee": email_match(user["email"])}]
+            if include_unassigned:
+                owned += [{"assignee": None}, {"assignee": ""}]
+            clauses.append({"$or": owned})
+        elif assignee:
             query["assignee"] = assignee
         if related_type:
             query["related_type"] = related_type
@@ -962,10 +1053,25 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             due["$lte"] = _parse_date(due_before, "due_before") or ""
         if due_after:
             due["$gte"] = _parse_date(due_after, "due_after") or ""
-        if due:
+        if due and include_undated:
+            clauses.append({"$or": [{"due_date": due}, {"due_date": None}]})
+        elif due:
             query["due_date"] = due
-        return await listing(TASKS, user, query=query, sort=sort, order=order,
+        if completed_after:
+            query["completed_at"] = {"$gte": _parse_date(completed_after, "completed_after")}
+        if clauses:
+            query["$and"] = clauses
+        page = await listing(TASKS, user, query=query, sort=sort, order=order,
                              limit=limit, offset=offset)
+        if expand == "related":
+            await attach_related(user, page["items"])
+        return page
+
+    @router.get("/crm/tasks/{task_id}")
+    async def get_crm_task(task_id: str, user=Depends(get_current_user)):
+        """One task with what it is about, for a link that names it (`/tasks?task=`)."""
+        task = await load(TASKS, task_id, user)
+        return (await attach_related(user, [task]))[0]
 
     @router.post("/crm/tasks")
     async def create_crm_task(inp: TaskCreate, user=Depends(get_current_user)):
@@ -996,22 +1102,34 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                            user["email"], workspace_id=workspace_id,
                            payload={"title": inp.title, "assignee": inp.assignee,
                                     "related_type": related_type, "related_id": related_id})
-        if inp.assignee and inp.assignee != user["email"]:
+        if inp.assignee and not same_person(inp.assignee, user["email"]):
             await notify_assignment(user, doc)
         return _public(doc)
 
     async def notify_assignment(user, task: dict) -> None:
-        """Tell someone a task landed on them.
+        """Tell someone a task landed on them -- and only them.
 
-        An assignment nobody is told about is not an assignment.
+        An assignment nobody is told about is not an assignment, and one the whole team
+        is told about is noise: a notice with no `user_id` is a team-wide one, which is
+        how every user used to read "a task was assigned to you". So it is addressed to
+        the assignee's own user. Someone who is not an active member here has no bell to
+        ring, and nothing is stored for them.
         """
+        assignee = str(task.get("assignee") or "").strip()
+        if not assignee:
+            return
+        member = await db.memberships.find_one(
+            {"tenant_id": tenant_of(user), "email": email_match(assignee), "status": "active"},
+            {"_id": 0, "user_id": 1})
+        if not (member or {}).get("user_id"):
+            return
         await db.notifications.insert_one({
-            "id": new_id("ntf"), "tenant_id": tenant_of(user), "user_id": None,
-            "recipient": task.get("assignee"), "workspace_id": task.get("workspace_id"),
-            "type": "assignment", "severity": "info", "source": "crm",
-            "title": "A task was assigned to you",
+            "id": new_id("ntf"), "tenant_id": tenant_of(user), "user_id": member["user_id"],
+            "recipient": assignee, "workspace_id": task.get("workspace_id"),
+            "type": "assignment", "severity": "info", "source": "crm", "category": "tasks",
+            "task_id": task["id"], "title": "A task was assigned to you",
             "body": f"{user['email']} assigned you \"{task['title']}\"",
-            "deep_link": f"/tasks/{task['id']}", "read": False, "created_at": now_iso(),
+            "deep_link": f"/tasks?task={task['id']}", "read": False, "created_at": now_iso(),
         })
 
     @router.patch("/crm/tasks/{task_id}")
@@ -1032,7 +1150,12 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             await record_event("task.completed", "task", task_id, tenant_of(user),
                                user["email"], workspace_id=before.get("workspace_id"),
                                payload={"title": before.get("title")})
-        if changes.get("assignee") and changes["assignee"] != before.get("assignee"):
+        if updated.get("status") != before.get("status") and on_task_status_changed:
+            # Whatever else hangs off a task -- a website lead's response clock -- moves
+            # with it now, not on the next sweep.
+            await on_task_status_changed(updated, before.get("status"), user["email"])
+        if changes.get("assignee") and changes["assignee"] != before.get("assignee") \
+                and not same_person(changes["assignee"], user["email"]):
             await notify_assignment(user, updated)
         return updated
 
