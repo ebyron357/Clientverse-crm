@@ -396,6 +396,125 @@ def test_a_logged_call_counts_as_a_response(client):
     assert find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})["status"] == "responded"
 
 
+def log_activity(client, owner, contact_id, **body):
+    response = client.post("/api/activities", headers=owner["headers"],
+                           json={"related_type": "contact", "related_id": contact_id, **body})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_a_call_logged_on_the_contact_marks_its_lead_contacted_at_once(client):
+    owner = register(client)
+    form = create_form(client, owner)
+    lead_id = browser_submit(client, form, lead()).json()["id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})
+    log_activity(client, owner, stored["contact_id"], type="call", outcome="left_voicemail",
+                 body="Left a message about Saturday")
+    # No sweep: the contact record's "Log a call" must move the lead straight away,
+    # exactly as "Mark contacted" in the inbox does.
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})
+    assert stored["status"] == "responded"
+    assert stored["sla"]["responded_via"] == "activity_call"
+    assert stored["responded_by"] == owner["email"]
+    assert find_one(client, "tasks", {"id": stored["task_id"]})["status"] == "done"
+    shown = client.get(f"/api/leads/{lead_id}", headers=owner["headers"]).json()
+    assert shown["status"] == "responded"
+
+
+def test_a_logged_text_counts_as_a_response(client):
+    owner = register(client)
+    form = create_form(client, owner)
+    lead_id = browser_submit(client, form, lead()).json()["id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})
+    log_activity(client, owner, stored["contact_id"], type="text", body="Texted a time")
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})
+    assert stored["status"] == "responded" and stored["sla"]["responded_via"] == "activity_text"
+
+
+def test_a_note_is_not_a_response(client):
+    owner = register(client)
+    form = create_form(client, owner)
+    lead_id = browser_submit(client, form, lead()).json()["id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})
+    log_activity(client, owner, stored["contact_id"], type="note", body="Looks keen")
+    call(client, server.lead_pipeline.sweep, owner["tenant_id"])
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})
+    assert stored["status"] == "new"
+    assert find_one(client, "tasks", {"id": stored["task_id"]})["status"] == "todo"
+
+
+def test_the_leads_own_email_reply_does_not_stop_its_clock(client):
+    owner = register(client)
+    form = create_form(client, owner)
+    lead_id = browser_submit(client, form, lead()).json()["id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})
+    # What an inbound reply writes on the contact (server._on_inbound_reply).
+    call(client, server.db.crm_activities.insert_one, {
+        "id": f"act_{uuid.uuid4().hex[:8]}", "tenant_id": owner["tenant_id"], "type": "email",
+        "related_type": "contact", "related_id": stored["contact_id"],
+        "subject": "Re: Thanks for reaching out", "body": "Is Saturday ok?",
+        "occurred_at": datetime.now(timezone.utc).isoformat(), "direction": "inbound",
+        "outcome": "reply_received", "actor": "jane.buyer@example.com"})
+    call(client, server.lead_pipeline.sweep, owner["tenant_id"])
+    assert find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})["status"] == "new"
+
+
+def test_a_fault_after_logging_never_loses_the_logged_call(client, monkeypatch):
+    owner = register(client)
+    form = create_form(client, owner)
+    lead_id = browser_submit(client, form, lead()).json()["id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})
+
+    async def broken(activity):
+        raise RuntimeError("lead store unavailable")
+
+    monkeypatch.setattr(server.lead_pipeline, "recognise_activity", broken)
+    logged = log_activity(client, owner, stored["contact_id"], type="call")
+    assert find_one(client, "crm_activities", {"id": logged["id"]})
+    monkeypatch.undo()
+    # The watcher still recognises it on its next pass.
+    call(client, server.lead_pipeline.sweep, owner["tenant_id"])
+    assert find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})["status"] == "responded"
+
+
+def test_a_contacts_website_requests_can_be_listed_inside_the_tenant(client):
+    owner = register(client)
+    other = register(client, name="Other")
+    form = create_form(client, owner)
+    jane = browser_submit(client, form, lead()).json()["id"]
+    sam = browser_submit(client, form, lead(email="sam.seller@example.com",
+                                            phone="555-010-0222")).json()["id"]
+    jane_contact = find_one(client, detectors.WEB_ENQUIRIES, {"id": jane})["contact_id"]
+    mine = client.get("/api/leads", headers=owner["headers"],
+                      params={"contact_id": jane_contact}).json()
+    assert [item["id"] for item in mine["items"]] == [jane] and mine["total"] == 1
+    assert sam not in {item["id"] for item in mine["items"]}
+    # Another tenant naming this contact's id sees nothing of it.
+    theirs = client.get("/api/leads", headers=other["headers"],
+                        params={"contact_id": jane_contact}).json()
+    assert theirs["items"] == [] and theirs["total"] == 0
+
+
+def test_leads_name_their_agent_and_only_from_inside_the_tenant(client):
+    owner = register(client, name="Dana Agent")
+    outsider = register(client, name="Outside Agent")
+    form = create_form(client, owner, settings={
+        "assignment": {"mode": "specific", "users": [owner["email"]]}})
+    lead_id = browser_submit(client, form, lead()).json()["id"]
+    listed = client.get("/api/leads", headers=owner["headers"]).json()["items"][0]
+    assert listed["assigned_to"] == owner["email"] and listed["assigned_name"] == "Dana Agent"
+    assert client.get(f"/api/leads/{lead_id}",
+                      headers=owner["headers"]).json()["assigned_name"] == "Dana Agent"
+    patched = client.patch(f"/api/leads/{lead_id}", headers=owner["headers"],
+                           json={"status": "closed"}).json()
+    assert patched["assigned_name"] == "Dana Agent"
+    # An address that belongs to a user in another tenant is never resolved to a name.
+    call(client, server.db[detectors.WEB_ENQUIRIES].update_one,
+         {"id": lead_id}, {"$set": {"assigned_to": outsider["email"]}})
+    shown = client.get(f"/api/leads/{lead_id}", headers=owner["headers"]).json()
+    assert shown["assigned_to"] == outsider["email"] and shown["assigned_name"] is None
+
+
 def test_marking_a_lead_responded_closes_its_call_back_task(client):
     owner = register(client)
     form = create_form(client, owner)

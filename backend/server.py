@@ -1006,6 +1006,7 @@ async def create_company(inp: CompanyInput, user=Depends(get_current_user)):
 class ContactInput(BaseModel):
     name: str
     email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(default=None, max_length=60)
     role: Optional[str] = None
     company_id: Optional[str] = None
     influence: Optional[str] = "medium"
@@ -1033,6 +1034,7 @@ async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
     payload = inp.model_dump()
     if payload.get("email") is not None:
         payload["email"] = str(payload["email"])
+    payload["phone"] = (payload.get("phone") or "").strip() or None
     if payload.get("company_id"):
         known = await db.companies.find_one(
             {"id": payload["company_id"], "tenant_id": user["tenant_id"]}, {"_id": 1})
@@ -1042,7 +1044,9 @@ async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
             raise HTTPException(status_code=422, detail="Unknown company_id")
     doc = {"id": new_id("ct"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
            "updated_at": now_iso(), "archived_at": None, "owner": user["email"],
-           "phone": None, "title": None,
+           "title": None,
+           # Matched against website leads, so a lead from this person finds this record.
+           "phone_digits": crm_core.phone_digits(payload["phone"]) or None,
            "history": [crm_core.created_history(user["email"])],
            **payload}
     await db.contacts.insert_one(doc)
@@ -4385,7 +4389,17 @@ async def cron_daily_digest(request: Request):
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
-crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+
+
+async def _after_activity_logged(activity: dict) -> None:
+    # A call, email, meeting or text logged on a lead's contact is the response its
+    # speed-to-lead clock is waiting for. `lead_pipeline` is created just below and is
+    # looked up when an activity is logged, by which time it always exists.
+    await lead_pipeline.recognise_activity(activity)
+
+
+crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
+                                  on_activity_logged=_after_activity_logged)
 # Website forms: the public door an agent's website posts leads through, and the
 # automation that turns each lead into a contact, an owner, a deal, a call-back task and
 # an alert within seconds. The legacy intake-token door runs through the same pipeline.
