@@ -719,12 +719,17 @@ async def sync_case_with_strategy(db, tenant_id: str, strategy: dict, *,
         return case
 
     if state == STATE_REJECTED:
-        # `closer` is injected (the application passes the lifecycle's close, which also
-        # resolves the case's work item) because the lifecycle module imports this one.
-        close = closer or recovery_case.close_case
-        return await close(db, tenant_id=tenant_id, case_id=case["id"],
-                           reason="strategy_rejected", actor=actor, note=rationale,
-                           detail=detail, audit=audit)
+        # The lifecycle's close, which also withdraws what is still pending on the case
+        # (drafted messages, the work item). Imported here, not at the top, because the
+        # lifecycle module imports this one. Every caller gets it, injected or not: the
+        # composer's own rejected path used to close with the bare case close and leave
+        # the drafts behind.
+        if closer is None:
+            import recovery_lifecycle
+            closer = recovery_lifecycle.close_case
+        return await closer(db, tenant_id=tenant_id, case_id=case["id"],
+                            reason="strategy_rejected", actor=actor, note=rationale,
+                            detail=detail, audit=audit)
 
     if state == STATE_WITHDRAWN and case["state"] == recovery_case.AWAITING_APPROVAL:
         return await recovery_case.set_state(

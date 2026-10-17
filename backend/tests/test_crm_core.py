@@ -360,6 +360,25 @@ def test_importing_deals_validates_stages_against_this_tenants_pipeline(tenant):
     assert result["rejected"] == 1
 
 
+def test_importing_or_editing_a_deal_refuses_a_value_or_currency_that_is_not_money(tenant):
+    """A deal saved with -5, inf, nan or "$" used to be accepted, and every later win of
+    it could not be booked -- the recovery sweep re-raised the error on every run."""
+    tag = tenant.tag
+    result = tenant.post("/import/deals", {"csv": (
+        "name,value,currency\n"
+        f"Neg-{tag},-5,USD\nInf-{tag},inf,USD\nNaN-{tag},nan,USD\nHuge-{tag},1e12,USD\n"
+        f"Sign-{tag},100,$\nLower-{tag},100,gbp\n")})
+    assert result["created"] == 1 and result["rejected"] == 5, result
+    imported = [d for d in tenant.get("/opportunities") if d["name"] == f"Lower-{tag}"]
+    assert [d["currency"] for d in imported] == ["GBP"]
+
+    for bad in ({"currency": "$"}, {"currency": "pounds"}, {"value": -1}, {"value": 1e12}):
+        response = tenant.raw("PATCH", f"/opportunities/{tenant.deal_id}", json=bad)
+        assert response.status_code == 422, (bad, response.text)
+    assert tenant.patch(f"/opportunities/{tenant.deal_id}", {"currency": "eur"})["currency"] == "EUR"
+    tenant.patch(f"/opportunities/{tenant.deal_id}", {"currency": "USD"})
+
+
 # ------------------------------------------------------------------- tenant isolation
 
 @pytest.mark.parametrize("path_for", [

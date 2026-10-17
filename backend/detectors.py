@@ -83,6 +83,7 @@ DETECTION_LIMIT = int(os.environ.get("RECOVERY_DETECTION_LIMIT", "500"))
 # A call that was answered is not a missed one.
 MISSED_CALL_OUTCOMES = ("missed", "no_answer", "voicemail", "abandoned", "unanswered")
 ANSWERED_CALL_OUTCOMES = ("answered", "connected", "completed")
+ANSWERED_OUTCOME_PATTERN = r"^\s*(" + "|".join(ANSWERED_CALL_OUTCOMES) + r")\s*$"
 
 # Document kinds that represent a priced offer awaiting a decision.
 QUOTE_KINDS = ("quote", "proposal", "pricing")
@@ -291,11 +292,14 @@ async def callbacks_by_number(db: Any, tenant_id: str) -> dict[str, datetime]:
     digits, so "+1 555 010 0199" and "(555) 010-0199" are the same caller.
     """
     reached: dict[str, datetime] = {}
-    answered = await db[CALL_LOGS].find(
+    # Outcomes are matched the way the missed-call detector reads them -- trimmed, any
+    # case -- or an "Answered" callback would leave its missed call open for ever.
+    answered = [call for call in await db[CALL_LOGS].find(
         {"tenant_id": tenant_id, "direction": "inbound",
-         "outcome": {"$in": list(ANSWERED_CALL_OUTCOMES)}},
-        {"_id": 0, "from_number": 1, "occurred_at": 1},
+         "outcome": {"$regex": ANSWERED_OUTCOME_PATTERN, "$options": "i"}},
+        {"_id": 0, "from_number": 1, "occurred_at": 1, "outcome": 1},
     ).sort("occurred_at", -1).to_list(DETECTION_LIMIT * 4)
+        if _status(call.get("outcome")) in ANSWERED_CALL_OUTCOMES]
     outbound = await db[CALL_LOGS].find(
         {"tenant_id": tenant_id, "direction": "outbound"},
         {"_id": 0, "to_number": 1, "occurred_at": 1},

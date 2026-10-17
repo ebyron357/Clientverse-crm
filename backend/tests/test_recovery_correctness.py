@@ -992,3 +992,414 @@ def test_a_negative_or_infinite_deal_value_is_refused(app_server):
         with pytest.raises(ValidationError):
             app_server.OppInput(**bad)
     assert app_server.OppInput(name="x", currency="gbp").currency == "GBP"
+
+
+# ============================================== review round two: the regressions
+#
+# Each test below reproduces a defect an adversarial review of the first round of fixes
+# found, and asserts the money a buyer would read.
+
+@pytest.mark.parametrize("order", [("second_chance", "detectors"),
+                                   ("detectors", "second_chance")])
+def test_a_shared_deals_win_goes_to_the_same_case_whichever_sweep_runs_first(env, order):
+    """The two sweeps reconcile different sources. Choosing the claimant from only the
+    running sweep's cases booked the win against the dormant-deal case or the enquiry
+    whose outreach actually reached the client, depending on which cron fired first."""
+    db, queue = env
+    contact, deal = seed_buyer(db)
+    insert(db, detectors.WEB_ENQUIRIES, {
+        "email": "sam@buyer.test", "status": "new", "received_at": ago(days=3),
+        "contact_id": contact["id"], "opportunity_id": deal["id"],
+        "estimated_value": 40000.0, "currency": "GBP"})
+    run(second_chance.run_detection(db, queue, TENANT))
+    run(detectors.run_detection(db, queue, TENANT))
+    walk_to_engaged(db, case_for(db, rc.SOURCE_WEB_ENQUIRY))
+    win(db, deal)
+
+    sweeps = {"second_chance": second_chance.run_detection,
+              "detectors": detectors.run_detection}
+    for name in order:
+        run(sweeps[name](db, queue, TENANT))
+    assert case_for(db, rc.SOURCE_WEB_ENQUIRY)["state"] == rc.RECOVERED
+    assert case_for(db, rc.SOURCE_DORMANT_DEAL)["close_reason"] == \
+        "sale_recorded_on_another_case"
+    assert money(db) == ({}, {"GBP": 40000.0}, {})
+
+
+def test_a_contact_only_case_groups_with_the_deal_its_contact_is_on(env):
+    """A deal stores its people as `contact_ids`; the dormant-deal case for it knows no
+    contact, and an older enquiry from the same buyer knows only the contact. One buyer,
+    one deal: £40,000 of open potential, not £80,000."""
+    db, queue = env
+    contact, deal = seed_buyer(db)
+    colleague = insert(db, "contacts", {"name": "Alex Colleague"})
+    run(db.opportunities.update_one({"id": deal["id"]},
+                                    {"$push": {"contact_ids": colleague["id"]}}))
+    insert(db, detectors.WEB_ENQUIRIES, {
+        "email": "sam@buyer.test", "status": "new", "received_at": ago(days=5),
+        "contact_id": contact["id"], "estimated_value": 40000.0, "currency": "GBP"})
+    run(second_chance.run_detection(db, queue, TENANT))
+    run(detectors.run_detection(db, queue, TENANT))
+    assert case_for(db, rc.SOURCE_DORMANT_DEAL).get("contact_id") is None
+    assert money(db)[0] == {"GBP": 40000.0}
+
+
+def test_confirmed_value_is_labelled_in_the_currency_the_money_arrived_in(env):
+    """A missed call carries no value, so its case is in the default USD; the deal it led
+    to was won in pounds. The confirmed £40,000 was reported as $40,000."""
+    db, _ = env
+    contact, deal = seed_buyer(db)
+    case = run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_MISSED_CALL, source_event_id="call:1",
+        reason="missed", contact_id=contact["id"])))
+    assert case["currency"] == "USD"
+    walk_to_engaged(db, case)
+    win(db, deal)
+    entry = run(attribution.record_outcome(db, tenant_id=TENANT, case_id=case["id"],
+                                           kind=attribution.OUTCOME_DEAL_WON,
+                                           record_id=deal["id"], actor="ops"))
+    assert entry["claim"] == attribution.CLAIM_ATTRIBUTED
+    stored = run(db[attribution.COLLECTION].find_one({"id": entry["id"]}, {"_id": 0}))
+    assert "confirming_since" not in stored, "a finished confirmation is not in flight"
+
+    assert run(rc.get_case(db, TENANT, case["id"]))["confirmed_currency"] == "GBP"
+    assert run(rc.summary(db, TENANT))["confirmed_recovered_value_by_currency"] == \
+        {"GBP": 40000.0}
+    value = run(recovery_proof.case_proof(db, TENANT, case["id"]))["value"]
+    assert (value["confirmed_currency"], value["confirmed_recovered_value"]) == \
+        ("GBP", 40000.0)
+    assert money(db)[1] == {"GBP": 40000.0}
+    # A confirmation written before the field existed: the evidence names the currency.
+    run(db[rc.COLLECTION].update_one({"id": case["id"]},
+                                     {"$unset": {"confirmed_currency": ""}}))
+    assert run(rc.summary(db, TENANT))["confirmed_recovered_value_by_currency"] == \
+        {"GBP": 40000.0}
+
+
+def test_an_operator_confirmation_and_the_deals_later_win_are_one_sale(env):
+    """Keyed on the operator's free-text reference, the deal's win booked the same £40,000
+    again as unattributed outcome value."""
+    db, _ = env
+    contact, deal = seed_buyer(db)
+    worked = run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_DORMANT_DEAL,
+        source_event_id=f"opportunity:{deal['id']}", reason="dormant",
+        opportunity_id=deal["id"], potential_value=40000.0, currency="GBP")))
+    run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_WEB_ENQUIRY, source_event_id="web_enquiry:e1",
+        reason="enquiry", opportunity_id=deal["id"], contact_id=contact["id"],
+        potential_value=40000.0, currency="GBP")))
+    walk_to_engaged(db, worked)
+    entry = run(attribution.record_outcome(
+        db, tenant_id=TENANT, case_id=worked["id"],
+        kind=attribution.OUTCOME_OPERATOR_CONFIRMED, record_id="signed contract",
+        amount=40000.0, currency="GBP", actor="ops"))
+    assert entry["sale_key"] == f"deal:{deal['id']}"
+
+    win(db, deal)
+    summary = run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert summary["outcomes"] == [] and summary["errors"] == []
+    assert money(db) == ({}, {"GBP": 40000.0}, {})
+
+
+def test_two_jobs_paid_in_one_client_workspace_are_two_sales(env):
+    """A client's workspace was created from the deal they first signed. Inferring that
+    deal for every invoice in the workspace folded the second job into the first sale."""
+    db, queue = env
+    deal = insert(db, "opportunities", {"name": "Original", "stage": "closed_won",
+                                        "value": 1000.0, "currency": "USD",
+                                        "created_at": ago(days=400)})
+    workspace = insert(db, "workspaces", {"name": "Client", "opportunity_id": deal["id"]})
+    estimates = [insert(db, "estimates", {
+        "title": f"Job {i}", "status": "sent", "total": 7000.0 + i, "currency": "USD",
+        "workspace_id": workspace["id"], "created_at": ago(days=20), "sent_at": ago(days=20)})
+        for i in (1, 2)]
+    run(detectors.run_detection(db, queue, TENANT))
+    for estimate in estimates:
+        insert(db, "invoices", {"estimate_id": estimate["id"],
+                                "workspace_id": workspace["id"], "total": estimate["total"],
+                                "currency": "USD", "status": "paid", "paid_at": now()})
+    run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert money(db) == ({}, {}, {"USD": 14003.0})
+
+
+def test_a_woken_deal_that_is_re_priced_shows_its_current_value(env):
+    db, queue = env
+    _, deal = seed_buyer(db)
+    run(second_chance.run_detection(db, queue, TENANT))
+    assert money(db)[0] == {"GBP": 40000.0}
+    # The deal wakes up -- so it is no longer detected -- and is re-priced.
+    run(db.opportunities.update_one({"id": deal["id"]},
+                                    {"$set": {"value": 4000.0, "updated_at": now()}}))
+    run(second_chance.run_detection(db, queue, TENANT))
+    assert money(db)[0] == {"GBP": 4000.0}
+    history = case_for(db, rc.SOURCE_DORMANT_DEAL)["history"]
+    assert any(h["action"] == "potential_value_refreshed" for h in history)
+
+
+def test_a_dormant_deal_case_recorded_in_the_wrong_currency_takes_its_deals(env):
+    """Cases opened before they carried the deal's currency said USD on a sterling deal."""
+    db, _ = env
+    _, deal = seed_buyer(db)
+    run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_DORMANT_DEAL,
+        source_event_id=f"opportunity:{deal['id']}", reason="dormant",
+        opportunity_id=deal["id"], potential_value=40000.0, currency="USD")))
+    assert money(db)[0] == {"USD": 40000.0}
+    run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert money(db)[0] == {"GBP": 40000.0}
+
+
+@pytest.mark.parametrize("stage, expected", [
+    ("closed_won", ({}, {}, {"GBP": 40000.0})),
+    ("closed_lost", ({}, {}, {})),
+])
+def test_a_contact_only_case_settles_with_its_contacts_only_deal(env, stage, expected):
+    """The enquiry knew only the contact. When the contact's one deal closed, the enquiry
+    stayed open: the same £40,000 was open potential and an outcome at once."""
+    db, queue = env
+    contact, deal = seed_buyer(db)
+    insert(db, detectors.WEB_ENQUIRIES, {
+        "email": "sam@buyer.test", "status": "new", "received_at": ago(days=5),
+        "contact_id": contact["id"], "estimated_value": 40000.0, "currency": "GBP"})
+    run(second_chance.run_detection(db, queue, TENANT))
+    run(detectors.run_detection(db, queue, TENANT))
+    win(db, deal, stage=stage)
+    run(detectors.run_detection(db, queue, TENANT))  # the enquiry's own sweep alone
+    assert case_for(db, rc.SOURCE_WEB_ENQUIRY)["state"] == rc.CLOSED
+    assert case_for(db, rc.SOURCE_DORMANT_DEAL)["state"] == rc.CLOSED
+    assert money(db) == expected
+
+
+def test_recording_a_no_show_confirms_the_case_rather_than_closing_it(env):
+    db, queue = env
+    contact = insert(db, "contacts", {"name": "Pat"})
+    appointment = insert(db, "appointments", {
+        "title": "Consult", "status": "scheduled", "contact_id": contact["id"],
+        "start_at": ago(hours=30), "end_at": ago(hours=29)})
+    run(detectors.run_detection(db, queue, TENANT))
+    case = case_for(db, rc.SOURCE_APPOINTMENT_NO_SHOW)
+    # The operator records what happened: the client did not turn up.
+    run(db.appointments.update_one({"id": appointment["id"]}, {"$set": {"status": "no_show"}}))
+    run(detectors.run_detection(db, queue, TENANT))
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.DETECTED
+
+    # The client books again: that resolves it.
+    later = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    insert(db, "appointments", {"title": "Consult", "status": "scheduled",
+                                "contact_id": contact["id"], "start_at": later})
+    run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    closed = run(rc.get_case(db, TENANT, case["id"]))
+    assert (closed["state"], closed["close_reason"]) == (rc.CLOSED, "source_resolved")
+
+
+def test_a_legacy_invoice_entry_and_a_new_win_of_its_deal_are_one_sale(env):
+    """An entry written before entries carried a sale key was matched only on its own
+    kind and record, so the deal's win booked the invoice's money a second time."""
+    db, _ = env
+    deal = insert(db, "opportunities", {
+        "name": "Fit-out", "stage": "closed_won", "value": 5000.0, "currency": "USD",
+        "created_at": ago(days=200), "stage_history": [{"to": "closed_won", "at": ago(days=1)}]})
+    invoice = insert(db, "invoices", {"total": 5000.0, "currency": "USD", "status": "paid",
+                                      "paid_at": ago(days=1), "opportunity_id": deal["id"]})
+    run(db[attribution.COLLECTION].insert_one({
+        "id": "attr_legacy", "tenant_id": TENANT, "case_id": "rc_old",
+        "outcome": {"kind": "invoice_paid", "record_id": invoice["id"], "amount": 5000.0},
+        "claim": attribution.CLAIM_UNATTRIBUTED, "basis": "no_contact", "currency": "USD",
+        "recorded_at": ago(days=1)}))
+    case = run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_DORMANT_DEAL,
+        source_event_id=f"opportunity:{deal['id']}", reason="dormant",
+        opportunity_id=deal["id"], potential_value=5000.0)))
+    run(db[rc.COLLECTION].update_one({"id": case["id"]}, {"$set": {"created_at": ago(days=30)}}))
+
+    for _ in range(2):
+        assert run(recovery_reconcile.reconcile_tenant(db, TENANT))["outcomes"] == []
+    assert run(rc.get_case(db, TENANT, case["id"]))["close_reason"] == \
+        "sale_recorded_on_another_case"
+    assert money(db) == ({}, {}, {"USD": 5000.0})
+
+
+def test_an_estimate_paid_after_it_was_invoiced_is_recorded_once(env):
+    """Converting an estimate into an invoice closed its case, so the payment, when it
+    came, was recorded against nothing."""
+    db, queue = env
+    workspace = insert(db, "workspaces", {"name": "Client"})
+    estimate = insert(db, "estimates", {
+        "title": "Job", "status": "sent", "total": 7000.0, "currency": "USD",
+        "workspace_id": workspace["id"], "created_at": ago(days=20), "sent_at": ago(days=20)})
+    run(detectors.run_detection(db, queue, TENANT))
+    case = case_for(db, rc.SOURCE_UNANSWERED_ESTIMATE)
+    invoice = insert(db, "invoices", {"estimate_id": estimate["id"],
+                                      "workspace_id": workspace["id"], "total": 7000.0,
+                                      "currency": "USD", "status": "draft",
+                                      "created_at": now()})
+    run(db.estimates.update_one({"id": estimate["id"]},
+                                {"$set": {"invoice_id": invoice["id"], "status": "approved"}}))
+    run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.DETECTED, \
+        "accepted and invoiced, the case waits for the money"
+    assert money(db)[0] == {"USD": 7000.0}
+
+    run(db.invoices.update_one({"id": invoice["id"]},
+                               {"$set": {"status": "paid", "paid_at": now()}}))
+    first = run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    second = run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert [(o["kind"], o["claim"]) for o in first["outcomes"]] == \
+        [(attribution.OUTCOME_INVOICE_PAID, attribution.CLAIM_UNATTRIBUTED)]
+    assert second["outcomes"] == []
+    assert money(db) == ({}, {}, {"USD": 7000.0})
+
+
+def test_a_win_that_cannot_be_booked_is_refused_once_not_on_every_sweep(env):
+    """A deal saved with currency "$" before currencies were validated: its win made the
+    ledger raise on every sweep, for ever, while the case stayed open."""
+    db, queue = env
+    _, deal = seed_buyer(db, currency="$")
+    run(second_chance.run_detection(db, queue, TENANT))
+    case = case_for(db, rc.SOURCE_DORMANT_DEAL)
+    win(db, deal)
+    first = run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert first["errors"] == []
+    assert [r["case_id"] for r in first["refused"]] == [case["id"]]
+    assert "currency" in first["refused"][0]["reason"]
+    assert run(rc.get_case(db, TENANT, case["id"]))["close_reason"] == "outcome_refused"
+    second = run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert second["errors"] == [] and "refused" not in second and second["examined"] == 0
+
+
+def test_reconciliation_leaves_a_case_alone_while_its_outcome_is_being_confirmed(env):
+    """`record_outcome` writes its entry unattributed and then confirms the case. A sweep
+    that closed the case in between made the confirmation fail, and attributed revenue
+    was booked as unattributed for good."""
+    db, queue = env
+    _, deal = seed_buyer(db)
+    run(second_chance.run_detection(db, queue, TENANT))
+    case = case_for(db, rc.SOURCE_DORMANT_DEAL)
+    walk_to_engaged(db, case)
+    run(db[attribution.COLLECTION].insert_one({
+        "id": "attr_in_flight", "tenant_id": TENANT, "case_id": case["id"],
+        "sale_key": f"deal:{deal['id']}", "claim": attribution.CLAIM_UNATTRIBUTED,
+        "case_updated": False, "currency": "GBP",
+        "outcome": {"kind": attribution.OUTCOME_DEAL_WON, "record_id": deal["id"],
+                    "amount": 40000.0},
+        "recorded_at": now(), "confirming_since": now()}))
+    summary = run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert summary["skipped_in_flight"] == 1
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.ENGAGED
+
+    # A confirmation that never finished does not shield its case for ever.
+    run(db[attribution.COLLECTION].update_one({"id": "attr_in_flight"},
+                                              {"$set": {"confirming_since": ago(hours=1)}}))
+    run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert run(rc.get_case(db, TENANT, case["id"]))["close_reason"] == "outcome_recorded"
+
+
+def test_an_answered_callback_is_recognised_however_its_outcome_is_written(env):
+    db, queue = env
+    insert(db, detectors.CALL_LOGS, {"direction": "inbound", "from_number": "+44 1632 970002",
+                                     "outcome": "missed", "occurred_at": ago(hours=8)})
+    run(detectors.run_detection(db, queue, TENANT))
+    case = case_for(db, rc.SOURCE_MISSED_CALL)
+    insert(db, detectors.CALL_LOGS, {"direction": "inbound", "from_number": "01632 970002",
+                                     "outcome": " Answered ", "occurred_at": ago(hours=2)})
+    run(recovery_reconcile.reconcile_tenant(db, TENANT))
+    assert run(rc.get_case(db, TENANT, case["id"]))["close_reason"] == "source_resolved"
+
+
+def test_an_operator_cannot_close_a_recovered_case(env):
+    """Its confirmed value stays counted, so closing it as "not recoverable" would leave
+    the report contradicting itself."""
+    from fastapi import APIRouter, HTTPException
+
+    import operations_routes
+    db, _ = env
+    contact, deal = seed_buyer(db)
+    case = run(rc.open_case(db, rc.normalize_event(
+        tenant_id=TENANT, source=rc.SOURCE_WEB_ENQUIRY, source_event_id="web_enquiry:w1",
+        reason="enquiry", opportunity_id=deal["id"], contact_id=contact["id"])))
+    walk_to_engaged(db, case)
+    win(db, deal)
+    run(attribution.record_outcome(db, tenant_id=TENANT, case_id=case["id"],
+                                   kind=attribution.OUTCOME_DEAL_WON, record_id=deal["id"],
+                                   actor="ops"))
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.RECOVERED
+
+    async def record_event(*args, **kwargs):
+        return None
+
+    router = APIRouter()
+    operations_routes.register_operations_routes(router, db, record_event, lambda: ADMIN,
+                                                 lambda role: (lambda: ADMIN))
+    close = next(route.endpoint for route in router.routes
+                 if route.path == "/recovery-cases/{case_id}/close")
+    with pytest.raises(HTTPException) as refused:
+        run(close(case["id"], operations_routes.CaseCloseInput(reason="not_recoverable"),
+                  user=ADMIN))
+    assert refused.value.status_code == 409
+    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.RECOVERED
+
+
+def test_a_case_closed_while_its_run_is_drafting_gets_nothing_more(env, app_server,
+                                                                   monkeypatch):
+    db, queue = env
+    _, case, strategy = _planned_case(db, queue)
+    approval = run(aq.decide(db, tenant_id=TENANT, approval_id=strategy["approval_id"],
+                             decision=aq.APPROVED, actor=ADMIN["email"]))
+    run(app_server._apply_approval_side_effects(approval, ADMIN))
+
+    original = recovery_runner._run_outbound_step
+
+    async def closed_just_before_drafting(*args, **kwargs):
+        # Reconciliation closes the case between the run's check and its draft.
+        await recovery_lifecycle.close_if_open(db, tenant_id=TENANT, case_id=case["id"],
+                                               reason="source_resolved")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(recovery_runner, "_run_outbound_step", closed_just_before_drafting)
+    result = run(recovery_runner.run_case(db, tenant_id=TENANT, case_id=case["id"]))
+    assert result["skipped"] is True
+    drafted = [step for step in result["steps"] if step.get("message_id")]
+    assert len(drafted) == 1 and result["steps"][-1] is drafted[0], \
+        "the run stopped at the close instead of drafting the rest of the plan"
+    message = run(cv.get_message(db, TENANT, drafted[0]["message_id"]))
+    assert message["status"] == cv.BLOCKED
+    assert run(aq.get(db, TENANT, message["approval_id"]))["status"] == aq.CANCELLED
+
+
+def test_a_rejected_plan_closes_its_case_through_the_lifecycle_by_default(env):
+    """The composer's own rejected path called the sync without the lifecycle's close, so
+    the case closed and its pending approval stayed open to be decided."""
+    db, queue = env
+    _, case, strategy = _planned_case(db, queue)
+    closed = run(rs.sync_case_with_strategy(db, TENANT,
+                                            {**strategy, "state": rs.STATE_REJECTED}))
+    assert closed["close_reason"] == "strategy_rejected"
+    assert "withdrawn" in closed
+    assert run(aq.get(db, TENANT, strategy["approval_id"]))["status"] == aq.CANCELLED
+
+
+def test_the_dashboard_leaves_out_archived_and_negative_deals(env, app_server):
+    db, _ = env
+    insert(db, "opportunities", {"name": "live", "value": 1000.0, "currency": "USD",
+                                 "stage": "proposal"})
+    insert(db, "opportunities", {"name": "archived", "value": 9000.0, "currency": "USD",
+                                 "stage": "proposal", "archived_at": now()})
+    insert(db, "opportunities", {"name": "negative", "value": -500.0, "currency": "USD",
+                                 "stage": "closed_won"})
+    data = run(app_server.dashboard(user={"tenant_id": TENANT}))
+    assert data["pipeline_value_by_currency"] == {"USD": 1000.0}
+    assert data["won_value_by_currency"] == {}
+
+
+def test_a_deal_edit_must_carry_real_money(app_server):
+    from pydantic import ValidationError
+
+    import crm_core
+    for bad in ({"currency": "$"}, {"currency": "pounds"}, {"value": -1},
+                {"value": math.inf}, {"value": 2e10}):
+        with pytest.raises(ValidationError):
+            crm_core.DealPatch(**bad)
+    assert crm_core.DealPatch(currency=" gbp ").currency == "GBP"
+    with pytest.raises(ValidationError):
+        app_server.OppInput(name="x", value=2e10)

@@ -404,14 +404,17 @@ def _case_source_record(case: dict) -> tuple[Optional[str], Optional[str]]:
     return (kind or None, record_id or None)
 
 
-async def _deal_for_invoice(db: Any, tenant_id: str, invoice: dict) -> Optional[str]:
+async def _deal_for_invoice(db: Any, tenant_id: str, invoice: dict, *,
+                            via_workspace: bool = True) -> Optional[str]:
     """The deal an invoice was raised for, when the records say so.
 
     Read in order of directness: the invoice's own `opportunity_id`, then the estimate it
-    was converted from, then the client workspace it lives in -- a workspace is created
-    from the deal that was won. That last link is the conservative choice: an invoice in
-    a won deal's workspace is treated as part of that deal's sale, so a later invoice in
-    the same workspace is under-counted rather than the original sale counted twice.
+    was converted from, then (when `via_workspace`) the client workspace it lives in -- a
+    workspace is created from the deal that was won. That last link is an inference, and
+    the conservative one: an invoice in a won deal's workspace is treated as part of that
+    deal's sale, so a later invoice there is under-counted rather than the original sale
+    counted twice -- except where the invoice was raised from a case's own estimate (see
+    `_invoice_sale_key`).
     """
     if invoice.get("opportunity_id"):
         return str(invoice["opportunity_id"])
@@ -421,7 +424,7 @@ async def _deal_for_invoice(db: Any, tenant_id: str, invoice: dict) -> Optional[
             {"_id": 0, "opportunity_id": 1})
         if estimate and estimate.get("opportunity_id"):
             return str(estimate["opportunity_id"])
-    if invoice.get("workspace_id"):
+    if via_workspace and invoice.get("workspace_id"):
         workspace = await db.workspaces.find_one(
             {"tenant_id": tenant_id, "id": invoice["workspace_id"]},
             {"_id": 0, "opportunity_id": 1})
@@ -451,12 +454,16 @@ async def _sale_and_relation(db: Any, tenant_id: str, case: dict, *, kind: str,
       contact is on;
     * an invoice: one raised from the estimate the case was opened on, or one belonging
       to a deal related to the case as above;
-    * an operator confirmation: the operator's own statement, keyed on their reference.
+    * an operator confirmation: the operator's own statement. It is keyed on the case's
+      deal (or the estimate it was opened on) when there is one, because that is the sale
+      being confirmed -- keyed on the operator's free-text reference, the deal's later win
+      booked the same money a second time. Only a case with neither falls back to the
+      operator's reference.
 
     Returns the sale key; raises `AttributionError` (a 422 at the API) otherwise.
     """
     if kind == OUTCOME_OPERATOR_CONFIRMED:
-        return f"operator:{record_id}"
+        return _operator_sale_key(case, record_id)
 
     case_deal = case.get("opportunity_id")
     case_contact = case.get("contact_id")
@@ -482,21 +489,54 @@ async def _sale_and_relation(db: Any, tenant_id: str, case: dict, *, kind: str,
 
     invoice = await db.invoices.find_one({"tenant_id": tenant_id, "id": record_id},
                                          {"_id": 0}) or {}
-    deal_id = await _deal_for_invoice(db, tenant_id, invoice)
-    source_kind, source_id = _case_source_record(case)
-    estimate_id = invoice.get("estimate_id")
-    from_case_estimate = bool(estimate_id) and source_kind == "estimate" and \
-        source_id == estimate_id
-    if not from_case_estimate and not await deal_relates(deal_id):
+    from_case_estimate = _raised_from_case_estimate(case, invoice)
+    if not from_case_estimate and \
+            not await deal_relates(await _deal_for_invoice(db, tenant_id, invoice)):
         raise AttributionError(
             f"Invoice {record_id} is not related to recovery case {case['id']}: it was not "
             "raised from the case's estimate and does not belong to the case's deal. "
             "Record the outcome against the case it belongs to.")
-    if deal_id:
-        return f"deal:{deal_id}"
+    return await _invoice_sale_key(db, tenant_id, invoice,
+                                   from_case_estimate=from_case_estimate)
+
+
+def _operator_sale_key(case: dict, record_id: str) -> str:
+    if case.get("opportunity_id"):
+        return f"deal:{case['opportunity_id']}"
+    source_kind, source_id = _case_source_record(case)
+    if source_kind == "estimate" and source_id:
+        return f"estimate:{source_id}"
+    return f"operator:{record_id}"
+
+
+def _raised_from_case_estimate(case: dict, invoice: dict) -> bool:
+    source_kind, source_id = _case_source_record(case)
+    return bool(invoice.get("estimate_id")) and source_kind == "estimate" and \
+        source_id == invoice.get("estimate_id")
+
+
+async def _invoice_sale_key(db: Any, tenant_id: str, invoice: dict, *,
+                            from_case_estimate: bool) -> str:
+    """The sale an invoice belongs to.
+
+    A deal the invoice or its estimate names outright comes first. An invoice raised from
+    the very estimate a case was opened on is that estimate's sale: inferring a deal from
+    the client workspace there would fold a client's repeat business into the original
+    deal they signed, and the new job would be booked as nothing. Otherwise the workspace's
+    deal is used, as the conservative reading (see `_deal_for_invoice`).
+    """
+    explicit = await _deal_for_invoice(db, tenant_id, invoice, via_workspace=False)
+    if explicit:
+        return f"deal:{explicit}"
+    estimate_id = invoice.get("estimate_id")
+    if from_case_estimate and estimate_id:
+        return f"estimate:{estimate_id}"
+    inferred = await _deal_for_invoice(db, tenant_id, invoice)
+    if inferred:
+        return f"deal:{inferred}"
     if estimate_id:
         return f"estimate:{estimate_id}"
-    return f"invoice:{record_id}"
+    return f"invoice:{invoice.get('id')}"
 
 
 # --------------------------------------------------------------------- the ledger
@@ -575,6 +615,11 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
         "attribution_window_days": await attribution_window_days(db, tenant_id),
         "case_updated": False,
     }
+    if contact:
+        # In flight: written unattributed, about to be confirmed. Reconciliation leaves a
+        # case alone while one of these is fresh -- closing it in this window used to make
+        # the confirmation fail and book attributed revenue as unattributed for good.
+        entry["confirming_since"] = entry["recorded_at"]
     try:
         await db[COLLECTION].insert_one(dict(entry))
     except Exception as exc:
@@ -602,7 +647,8 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
                 evidence={"attribution_entry_id": entry["id"], "basis": derived["basis"],
                           "sale_key": sale_key, "outcome": outcome,
                           "records": derived["evidence"]},
-                actor=actor, audit=audit)
+                # The money's currency, which is not necessarily the case's own.
+                currency=outcome["currency"], actor=actor, audit=audit)
             update = {"claim": CLAIM_ATTRIBUTED, "attributed_amount": outcome["amount"],
                       "case_updated": True}
         except recovery_case_service.RecoveryCaseError as exc:
@@ -624,10 +670,10 @@ async def record_outcome(db: Any, *, tenant_id: str, case_id: str, kind: str,
             audit=audit)
         update["case_closed"] = bool(closed)
 
-    if update:
-        await db[COLLECTION].update_one({"id": entry["id"], "tenant_id": tenant_id},
-                                        {"$set": update})
-        entry.update(update)
+    await db[COLLECTION].update_one({"id": entry["id"], "tenant_id": tenant_id},
+                                    {"$set": update, "$unset": {"confirming_since": ""}})
+    entry.update(update)
+    entry.pop("confirming_since", None)
     return {**entry, "deduplicated": False}
 
 
@@ -635,15 +681,20 @@ async def _existing_for_sale(db: Any, tenant_id: str, *, case_id: str, sale_key:
                              kind: str, record_id: str) -> Optional[dict]:
     """The entry already recording this sale, returned on this case or refused on another.
 
-    Entries written before `sale_key` existed are matched on their outcome record, so a
-    replay of an old outcome is still recognised.
+    Entries written before `sale_key` existed are matched on the sale they resolve to
+    (`resolve_legacy_sale_keys`): a legacy invoice entry is the same sale as a new deal
+    entry for the deal that invoice was raised for, not merely the same kind and record.
     """
     existing = await db[COLLECTION].find_one({"tenant_id": tenant_id, "sale_key": sale_key},
                                              {"_id": 0})
     if not existing:
-        existing = await db[COLLECTION].find_one(
+        legacy = await db[COLLECTION].find(
             {"tenant_id": tenant_id, "sale_key": {"$exists": False},
-             "outcome.kind": kind, "outcome.record_id": record_id}, {"_id": 0})
+             "$or": [{"resolved_sale_key": sale_key},
+                     {"resolved_sale_key": {"$exists": False}}]},
+            {"_id": 0}).to_list(TOTALS_SCAN_LIMIT)
+        await resolve_legacy_sale_keys(db, tenant_id, legacy)
+        existing = next((e for e in legacy if e.get("resolved_sale_key") == sale_key), None)
     if not existing:
         return None
     if existing.get("case_id") == case_id:
@@ -683,6 +734,7 @@ async def totals(db: Any, tenant_id: str) -> dict:
     rows = await db[COLLECTION].find({"tenant_id": tenant_id}, {"_id": 0}).sort(
         "recorded_at", 1).to_list(TOTALS_SCAN_LIMIT + 1)
     truncated = len(rows) > TOTALS_SCAN_LIMIT
+    await resolve_legacy_sale_keys(db, tenant_id, rows[:TOTALS_SCAN_LIMIT])
     entries = _one_per_sale(rows[:TOTALS_SCAN_LIMIT])
 
     attributed: dict[str, float] = {}
@@ -735,10 +787,51 @@ def _counted_amount(entry: dict) -> float:
 
 
 def _entry_sale_key(entry: dict) -> str:
-    if entry.get("sale_key"):
-        return str(entry["sale_key"])
+    if entry.get("sale_key") or entry.get("resolved_sale_key"):
+        return str(entry.get("sale_key") or entry.get("resolved_sale_key"))
     return (recovery_case_service.sale_key_for_evidence({"outcome": entry.get("outcome")})
             or f"entry:{entry.get('id')}")
+
+
+async def resolve_legacy_sale_keys(db: Any, tenant_id: str, entries: list[dict]) -> None:
+    """Name the sale behind every entry written before entries carried a `sale_key`.
+
+    Resolved by the same rules a new entry is keyed by -- a paid invoice is the sale of the
+    deal it was raised for, an operator confirmation the sale of its case's deal -- so a
+    legacy invoice entry and a new deal entry for the same sale collapse into one. The
+    answer is cached on the entry as `resolved_sale_key` (never as `sale_key`, which is
+    unique: legacy duplicates must stay readable). Reads are correct without the cache;
+    it only saves re-reading the same invoice on every call.
+    """
+    for entry in entries:
+        if entry.get("sale_key") or entry.get("resolved_sale_key"):
+            continue
+        key = await _legacy_sale_key(db, tenant_id, entry)
+        entry["resolved_sale_key"] = key
+        await db[COLLECTION].update_one({"tenant_id": tenant_id, "id": entry.get("id")},
+                                        {"$set": {"resolved_sale_key": key}})
+
+
+async def _legacy_sale_key(db: Any, tenant_id: str, entry: dict) -> str:
+    outcome = entry.get("outcome") or {}
+    kind, record_id = outcome.get("kind"), outcome.get("record_id")
+    if not record_id:
+        return f"entry:{entry.get('id')}"
+    if kind == OUTCOME_DEAL_WON:
+        return f"deal:{record_id}"
+    case = await db[recovery_case_service.COLLECTION].find_one(
+        {"tenant_id": tenant_id, "id": entry.get("case_id")},
+        {"_id": 0, "opportunity_id": 1, "source_event_id": 1}) or {}
+    if kind == OUTCOME_INVOICE_PAID:
+        invoice = await db.invoices.find_one({"tenant_id": tenant_id, "id": record_id},
+                                             {"_id": 0})
+        if not invoice:
+            return f"invoice:{record_id}"
+        return await _invoice_sale_key(
+            db, tenant_id, invoice, from_case_estimate=_raised_from_case_estimate(case, invoice))
+    if kind == OUTCOME_OPERATOR_CONFIRMED:
+        return _operator_sale_key(case, str(record_id))
+    return f"entry:{entry.get('id')}"
 
 
 def _one_per_sale(entries: list[dict]) -> list[dict]:
@@ -764,10 +857,11 @@ async def time_to_recovery(db: Any, tenant_id: str) -> dict:
     Reported only over entries that carry both dates. An average computed over cases
     that are missing one would be a number about the data, not about the business.
     """
-    entries = _one_per_sale([
-        entry for entry in await db[COLLECTION].find(
-            {"tenant_id": tenant_id, "claim": CLAIM_ATTRIBUTED}, {"_id": 0}).to_list(5000)
-        if is_counted_as_attributed(entry)])
+    attributed = [entry for entry in await db[COLLECTION].find(
+        {"tenant_id": tenant_id, "claim": CLAIM_ATTRIBUTED}, {"_id": 0}).to_list(5000)
+        if is_counted_as_attributed(entry)]
+    await resolve_legacy_sale_keys(db, tenant_id, attributed)
+    entries = _one_per_sale(attributed)
     durations: list[float] = []
     for entry in entries:
         case = await db[recovery_case_service.COLLECTION].find_one(

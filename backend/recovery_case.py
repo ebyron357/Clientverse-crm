@@ -153,7 +153,8 @@ SYSTEM_CLOSE_REASONS = (
     "deal_won_before_case",            # the deal was already won when the case opened
     "outcome_recorded",                # an outcome was recorded that is not attributed
     "sale_recorded_on_another_case",   # the same sale already counts on another case
-    "strategy_rejected",               # an operator rejected the recovery strategy
+    "outcome_refused",                 # the outcome's record cannot be booked (bad value)
+    "strategy_rejected",              # an operator rejected the recovery strategy
     "attribution_window_elapsed",      # contact made, nothing followed within the window
 )
 CLOSE_REASONS = OPERATOR_CLOSE_REASONS + SYSTEM_CLOSE_REASONS
@@ -473,6 +474,33 @@ async def _refresh_from_event(db, case: dict, event: dict, *, actor: str) -> dic
     return _public(updated) or case
 
 
+async def refresh_from_source(db, case: dict, *, value: Any, currency: Any,
+                              basis: Optional[str], references: Optional[dict] = None,
+                              actor: str = "system") -> dict:
+    """Refresh an open case from its source record outside a detection sweep.
+
+    Re-detection only re-reads a record while it still qualifies -- a dormant deal that
+    woke up is no longer detected, so its case kept the value it was first seen with. The
+    reconciler calls this with the record as it is now. The value is sanitised exactly as
+    a detection's is, the change is written to the case's history, and a reference is only
+    filled when the record it names exists in this tenant.
+    """
+    clean = sanitize_value(value, currency)
+    filled: dict[str, Any] = {}
+    for field, ref in (references or {}).items():
+        if field in REFERENCE_COLLECTIONS and ref and not case.get(field):
+            try:
+                await _assert_owned(db, case["tenant_id"], field, ref)
+            except CrossTenantReference:
+                continue
+            filled[field] = ref
+    event = {"source": case["source"], "source_event_id": case["source_event_id"],
+             "potential_value": clean["value"], "currency": clean["currency"],
+             "potential_value_basis": basis if clean["value"] is not None else None,
+             **filled}
+    return await _refresh_from_event(db, case, event, actor=actor)
+
+
 async def open_case(db, event: dict, *, actor: str = "system",
                     audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Create the Recovery Case for a normalized event, or return the one that exists.
@@ -680,25 +708,48 @@ async def set_state(db, *, tenant_id: str, case_id: str, state: str, actor: str 
 
 async def confirm_recovery(db, *, tenant_id: str, case_id: str, amount: float,
                            evidence: dict, actor: str = "system",
+                           currency: Optional[str] = None,
                            audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     """Record revenue actually recovered, with the evidence that says so.
 
     Confirmed value is a separate field from potential value and can never be derived from
     it. An estimate is not a recovery, and this refuses to record one without something to
     point at.
+
+    `currency` is the currency the *money that arrived* is in, which need not be the
+    case's own: a missed call has no value and so defaults to USD, while the deal it led to
+    was won in pounds. It is stored as `confirmed_currency` in the same write; every reader
+    of `confirmed_value` labels it with that (see `confirmed_currency_of`).
     """
     amount = _amount(amount, "Confirmed amount")
     if not evidence:
         raise RecoveryCaseError(
             "Confirming recovered revenue requires evidence of the recovery")
+    code = normalize_currency(currency) if currency else None
+    if currency and code is None:
+        raise RecoveryCaseError("currency must be a 3-letter ISO 4217 code")
 
     # One write. Splitting this would let the case reach `recovered` with no confirmed
     # value and no way back — `recovered -> recovered` is not an allowed transition, so a
     # retry could not repair it.
     return await _transition(
         db, tenant_id=tenant_id, case_id=case_id, state=RECOVERED, actor=actor,
-        detail={"confirmed_value": amount}, audit=audit,
-        extra_set={"confirmed_value": amount, "confirmed_value_evidence": evidence})
+        detail={"confirmed_value": amount, "confirmed_currency": code}, audit=audit,
+        extra_set={"confirmed_value": amount, "confirmed_value_evidence": evidence,
+                   "confirmed_currency": code})
+
+
+def confirmed_currency_of(case: dict) -> str:
+    """The currency a case's confirmed value is in.
+
+    Its own `confirmed_currency` where recorded; for confirmations written before that
+    field existed, the outcome's currency carried in the evidence; only then the case's
+    currency.
+    """
+    outcome = (case.get("confirmed_value_evidence") or {}).get("outcome") or {}
+    return (normalize_currency(case.get("confirmed_currency"))
+            or normalize_currency(outcome.get("currency"))
+            or normalize_currency(case.get("currency")) or DEFAULT_CURRENCY)
 
 
 async def close_case(db, *, tenant_id: str, case_id: str, reason: str,
@@ -744,7 +795,8 @@ def _usable_value(case: dict) -> Optional[float]:
     return float(value)
 
 
-def group_open_potential(cases: list[dict]) -> dict:
+def group_open_potential(cases: list[dict],
+                         deal_contacts: Optional[dict[str, set[str]]] = None) -> dict:
     """Count each underlying opportunity once, however many cases point at it.
 
     One buyer reaches a business several ways -- two web enquiries, a missed call, a
@@ -753,9 +805,12 @@ def group_open_potential(cases: list[dict]) -> dict:
     £160,000 of potential. So cases are grouped by what they are *about*:
 
     1. the deal (`opportunity_id`) when the case knows it;
-    2. otherwise the contact -- joined to that contact's deal when exactly one open case
-       links the contact to a deal, and kept separate when the contact has several deals,
-       because two genuinely different deals must not be collapsed into one;
+    2. otherwise the contact -- joined to that contact's deal when the contact is on
+       exactly one of the deals the open cases are about, and kept separate when it is on
+       several, because two genuinely different deals must not be collapsed into one.
+       Who is on a deal comes from the case links *and* from the deal records themselves
+       (`deal_contacts`: deal id -> its `contact_ids`), because a deal stores its people
+       as a list and a dormant-deal case does not always carry one;
     3. otherwise the case alone, which is its own source record. An unresolved phone
        number or email is deliberately *not* a grouping key: until identity resolution
        ties it to a contact, two cases sharing one are not known to be one buyer.
@@ -769,6 +824,11 @@ def group_open_potential(cases: list[dict]) -> dict:
     for case in cases:
         if case.get("contact_id") and case.get("opportunity_id"):
             contact_deals.setdefault(case["contact_id"], set()).add(case["opportunity_id"])
+    open_deals = {case["opportunity_id"] for case in cases if case.get("opportunity_id")}
+    for deal_id, contacts in (deal_contacts or {}).items():
+        if deal_id in open_deals:
+            for contact_id in contacts:
+                contact_deals.setdefault(contact_id, set()).add(deal_id)
 
     groups: dict[str, list[dict]] = {}
     for case in cases:
@@ -816,9 +876,27 @@ async def open_potential(db, tenant_id: str, *,
          "potential_value": 1, "currency": 1, "created_at": 1},
     ).sort("created_at", -1).to_list(int(limit) + 1)
     truncated = len(rows) > limit
-    result = group_open_potential(rows[:limit])
+    rows = rows[:limit]
+    result = group_open_potential(rows, await deal_contacts_for(
+        db, tenant_id, list({r["opportunity_id"] for r in rows if r.get("opportunity_id")})))
     result["truncated"] = truncated
     result["scan_limit"] = int(limit)
+    return result
+
+
+async def deal_contacts_for(db, tenant_id: str, deal_ids: list[str]) -> dict[str, set[str]]:
+    """deal id -> the contacts the deal record names (`contact_ids`, and `contact_id`)."""
+    if not deal_ids:
+        return {}
+    deals = await db[REFERENCE_COLLECTIONS["opportunity_id"]].find(
+        {"tenant_id": tenant_id, "id": {"$in": deal_ids}},
+        {"_id": 0, "id": 1, "contact_ids": 1, "contact_id": 1}).to_list(len(deal_ids) + 10)
+    result: dict[str, set[str]] = {}
+    for deal in deals:
+        contacts = {str(c) for c in (deal.get("contact_ids") or []) if c}
+        if deal.get("contact_id"):
+            contacts.add(str(deal["contact_id"]))
+        result[deal["id"]] = contacts
     return result
 
 
@@ -854,7 +932,7 @@ async def confirmed_totals(db, tenant_id: str, *,
     seen_sales: set[str] = set()
     rows = await db[COLLECTION].find(
         {"tenant_id": tenant_id, "confirmed_value": {"$type": "number"}},
-        {"_id": 0, "id": 1, "currency": 1, "confirmed_value": 1,
+        {"_id": 0, "id": 1, "currency": 1, "confirmed_value": 1, "confirmed_currency": 1,
          "confirmed_value_evidence": 1},
     ).to_list(int(limit) + 1)
     for row in rows[:limit]:
@@ -866,7 +944,8 @@ async def confirmed_totals(db, tenant_id: str, *,
             continue
         seen_sales.add(sale)
         recovered_cases += 1
-        currency = normalize_currency(row.get("currency")) or DEFAULT_CURRENCY
+        # The money's own currency, not the case's (see `confirmed_currency_of`).
+        currency = confirmed_currency_of(row)
         by_currency[currency] = round(by_currency.get(currency, 0.0) + float(value), 2)
     return {"by_currency": by_currency, "recovered_cases": recovered_cases,
             "truncated": len(rows) > limit}

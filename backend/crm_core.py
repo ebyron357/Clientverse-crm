@@ -29,18 +29,25 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Query, Response
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 # --------------------------------------------------------------------------- constants
 
 CONTACTS = "contacts"
 COMPANIES = "companies"
 DEALS = "opportunities"
+
+# A deal's money: finite, never negative, below an absurd ceiling, in an ISO 4217 code.
+# The same bounds a recovery case puts on a potential value, so a deal that saves here
+# can always be booked when it is won.
+MAX_DEAL_VALUE = 1e10
+CURRENCY_PATTERN = r"^[A-Z]{3}$"
 TASKS = "tasks"
 ACTIVITIES = "crm_activities"
 PIPELINES = "pipelines"
@@ -285,11 +292,18 @@ class DealPatch(BaseModel):
     contact_ids: Optional[list[str]] = None
     # Finite as well as non-negative: `ge=0` alone admits Infinity, which no JSON
     # response can carry, so one bad patch would break every listing of this deal.
-    value: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
-    currency: Optional[str] = Field(default=None, max_length=8)
+    value: Optional[float] = Field(default=None, ge=0, le=MAX_DEAL_VALUE, allow_inf_nan=False)
+    # ISO 4217, stored uppercase. "$" saved here used to make every later win of the deal
+    # unbookable, and the recovery sweep re-raised that error on every run.
+    currency: Optional[str] = Field(default=None, pattern=CURRENCY_PATTERN)
     owner: Optional[str] = Field(default=None, max_length=200)
     expected_close_date: Optional[str] = None
     description: Optional[str] = Field(default=None, max_length=4000)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _uppercase_currency(cls, value):
+        return value.strip().upper() if isinstance(value, str) else value
 
 
 class TaskCreate(BaseModel):
@@ -1041,9 +1055,21 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 row.setdefault("stage", valid_stages[0])
                 if row.get("value"):
                     try:
-                        row["value"] = float(row["value"])
+                        amount = float(row["value"])
                     except ValueError:
                         errors.append({"row": index, "error": "value must be a number"})
+                        continue
+                    row["value"] = amount
+                    if not math.isfinite(amount) or not 0 <= amount <= MAX_DEAL_VALUE:
+                        errors.append({"row": index, "error": (
+                            "value must be a finite amount from 0 to "
+                            f"{MAX_DEAL_VALUE:,.0f}")})
+                        continue
+                if row.get("currency"):
+                    row["currency"] = str(row["currency"]).strip().upper()
+                    if not re.match(CURRENCY_PATTERN, row["currency"]):
+                        errors.append({"row": index, "error": (
+                            "currency must be a 3-letter ISO 4217 code")})
                         continue
                 if row.get("expected_close_date"):
                     try:

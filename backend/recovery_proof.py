@@ -155,6 +155,10 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
                                       or (case.get("evidence") or {}).get("value_basis")),
             "potential_value_note": (case.get("evidence") or {}).get("value_rejected"),
             "confirmed_recovered_value": case.get("confirmed_value"),
+            # The money's own currency: a missed call (no value, so USD by default) can
+            # lead to a deal won in pounds.
+            "confirmed_currency": (recovery_case_service.confirmed_currency_of(case)
+                                   if case.get("confirmed_value") is not None else None),
             "confirmed_recovered_value_evidence": case.get("confirmed_value_evidence"),
             "note": ("Potential value is what this opportunity might be worth. Confirmed "
                      "recovered value is money a record says arrived. They are different "
@@ -377,9 +381,11 @@ async def traceability(db: Any, tenant_id: str) -> dict:
                                       f"= '{conversation_service.INBOUND}'"),
         "revenue.potential_value_open_by_currency": (
             f"potential_value over {recovery_case_service.COLLECTION} in an open state, "
-            "grouped into opportunities (by opportunity_id, else contact_id, else external "
-            "identity, else the case itself) and taking ONE value per opportunity -- the "
-            "most authoritative, most recent -- then summed per currency"),
+            "grouped into opportunities (by opportunity_id; else by contact_id, joined to "
+            "that contact's deal when the contact is on exactly one open deal; else the case "
+            "itself -- an unresolved phone number or email is not a grouping key) and taking "
+            "ONE value per opportunity -- the most authoritative, most recent -- then summed "
+            "per currency"),
         "revenue.open_cases_without_value": (
             "open cases with no usable potential_value; they add nothing to open potential"),
         "revenue.open_cases_collapsed": (

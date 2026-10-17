@@ -609,6 +609,14 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
             raise HTTPException(
                 status_code=422,
                 detail=f"reason must be one of {', '.join(recovery_case.OPERATOR_CLOSE_REASONS)}")
+        current = await recovery_case.get_case(db, user["tenant_id"], case_id)
+        if current and current.get("state") == recovery_case.RECOVERED:
+            # Its confirmed value stays counted whatever the case says, so closing it as
+            # "not recoverable" or "spam" would leave the report contradicting itself.
+            raise HTTPException(
+                status_code=409,
+                detail="This case's recovery is confirmed by a record; it cannot be closed "
+                       f"as '{inp.reason}'.")
         try:
             closed = await recovery_lifecycle.close_case(
                 db, tenant_id=user["tenant_id"], case_id=case_id, reason=inp.reason,
