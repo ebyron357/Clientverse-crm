@@ -205,6 +205,11 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
         status = str(task.get("status") or "").lower()
         if status in DONE_TASK_STATUSES:
             continue
+        if (task.get("source") or {}).get("kind") == "website_form":
+            # A website lead's call-back task is that lead's first response. The web-enquiry
+            # lane already follows the lead, with its value; a second case for the same
+            # unanswered person would show one lost lead as two.
+            continue
         due = _parse(task.get("due_date") or task.get("due_at"))
         if due is None or now < due + grace:
             continue
@@ -216,8 +221,8 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
             "record_id": task.get("id"),
             "title": task.get("title") or "Untitled task",
             "reason": (
-                f"Delivery task was due {overdue_days} day(s) ago and remains "
-                f"'{status or 'open'}'."
+                f"Task was due {overdue_days} day(s) ago and is still "
+                f"{'open' if status in ('', 'todo') else status.replace('_', ' ')}."
             ),
             "overdue_days": overdue_days,
             "owner": task.get("assignee"),

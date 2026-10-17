@@ -4,7 +4,8 @@ import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
-import { BadgeCheck, ChevronLeft, FileSearch, Mail, MailCheck, Reply, ShieldQuestion, Timer } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ArrowRight, BadgeCheck, ChevronLeft, FileSearch, Mail, MailCheck, Reply, ShieldQuestion, Timer } from "lucide-react";
 
 /**
  * The buyer-facing recovery report.
@@ -38,6 +39,46 @@ const CLOSE_REASON_LABEL = {
   strategy_rejected: "Strategy rejected",
   attribution_window_elapsed: "No outcome within the window",
 };
+// What went quiet, in the words an agent uses. The raw source stays on the case record.
+const SOURCE_LABEL = {
+  web_enquiry: "Website lead not answered",
+  missed_followup: "Follow-up overdue",
+  dormant_deal: "Deal gone quiet",
+  missed_call: "Missed call",
+  unanswered_quote: "Quote not answered",
+  unanswered_estimate: "Estimate not answered",
+  no_response: "Client stopped replying",
+  appointment_cancelled: "Appointment cancelled",
+  appointment_no_show: "No-show",
+  external_crm_event: "From another CRM",
+};
+const sourceLabel = (source) => SOURCE_LABEL[source] || source;
+
+const STATE_LABEL = {
+  detected: "Not worked yet",
+  planned: "Plan ready",
+  awaiting_approval: "Waiting for approval",
+  approved: "Approved",
+  executing: "In progress",
+  engaged: "Client engaged",
+  recovered: "Recovered",
+  closed: "Closed",
+  failed: "Failed",
+};
+const stateLabel = (state) => STATE_LABEL[state] || state;
+
+// Where the record behind a case lives in the app, from its `kind:id` source reference.
+const SOURCE_RECORD_LINK = {
+  web_enquiry: { path: (id) => `/leads?lead=${id}`, label: "Open the lead" },
+  opportunity: { path: (id) => `/deals?deal=${id}`, label: "Open the deal" },
+  task: { path: (id) => `/tasks?task=${id}`, label: "Open the task" },
+};
+function sourceRecordLink(sourceEventId) {
+  const [kind, id] = String(sourceEventId || "").split(":");
+  const target = SOURCE_RECORD_LINK[kind];
+  return target && id ? { to: target.path(id), label: target.label } : null;
+}
+
 const OPERATOR_CLOSE_REASONS = ["not_recoverable", "duplicate", "resolved", "spam", "no_longer_relevant"];
 const closeLabel = (reason) => CLOSE_REASON_LABEL[reason] || reason;
 
@@ -173,8 +214,8 @@ function CaseProof({ caseId, onBack, onChanged }) {
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="font-display text-2xl font-bold text-[#0a1628]">{proof.case.title || "Recovery case"}</h2>
-          <Badge className="bg-gray-100 text-gray-600 border-gray-200">{proof.case.state}</Badge>
-          <Badge className="bg-slate-100 text-slate-600 border-slate-200">{proof.case.source}</Badge>
+          <Badge className="bg-gray-100 text-gray-600 border-gray-200">{stateLabel(proof.case.state)}</Badge>
+          <Badge className="bg-slate-100 text-slate-600 border-slate-200">{sourceLabel(proof.case.source)}</Badge>
           {proof.case.close_reason ? (
             <Badge className="border-amber-200 bg-amber-50 text-amber-800" data-testid="proof-case-close-reason-badge">
               Closed: {closeLabel(proof.case.close_reason)}
@@ -190,7 +231,18 @@ function CaseProof({ caseId, onBack, onChanged }) {
         <dl className="mt-4 grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
           <div><dt className="text-xs uppercase tracking-wide text-gray-400">Detected</dt><dd className="mt-1 text-gray-700">{proof.case.detected_at ? new Date(proof.case.detected_at).toLocaleString() : "—"}</dd></div>
           <div><dt className="text-xs uppercase tracking-wide text-gray-400">Owner</dt><dd className="mt-1 text-gray-700">{proof.case.owner || "Unassigned"}</dd></div>
-          <div><dt className="text-xs uppercase tracking-wide text-gray-400">Source record</dt><dd className="mt-1 font-mono text-xs text-gray-600">{proof.source_record ? `${proof.source_record.collection}/${proof.source_record.id}` : proof.case.source_event_id || "—"}</dd></div>
+          <div>
+            <dt className="text-xs uppercase tracking-wide text-gray-400">Source record</dt>
+            <dd className="mt-1">
+              {sourceRecordLink(proof.case.source_event_id) ? (
+                <Link to={sourceRecordLink(proof.case.source_event_id).to} className="inline-flex items-center gap-1 text-sm font-semibold text-[#0a6177] hover:underline" data-testid="proof-case-source-link">
+                  {sourceRecordLink(proof.case.source_event_id).label}<ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              ) : (
+                <span className="font-mono text-xs text-gray-600">{proof.source_record ? `${proof.source_record.collection}/${proof.source_record.id}` : proof.case.source_event_id || "—"}</span>
+              )}
+            </dd>
+          </div>
           <div className="md:col-span-3"><dt className="text-xs uppercase tracking-wide text-gray-400">Why it was detected</dt><dd className="mt-1 leading-6 text-gray-700">{proof.case.reason_detected}</dd></div>
         </dl>
         {isAdmin && OPEN_STATES.includes(proof.case.state) ? (
@@ -308,13 +360,14 @@ export default function RecoveryProof() {
   }
 
   return (
-    <div>
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+    <div className="cv-page" data-testid="proof-page">
+      <div className="cv-page-header">
         <div>
-          <h1 className="font-display text-3xl font-bold">Recovery Proof</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            What was recovered, and the records that say so. Potential value and confirmed recovered value are
-            reported as separate figures and are never added together.
+          <div className="cv-eyebrow">Lost revenue</div>
+          <h1 className="cv-page-title">Recovery Proof</h1>
+          <p className="cv-page-description">
+            Leads, follow-ups and deals that went quiet, what they could be worth, and what was won back. Potential
+            value and confirmed recovered value are reported as separate figures and are never added together.
           </p>
           {recheck.note ? <p className="mt-1 text-xs text-gray-500" data-testid="proof-recheck-note">{recheck.note}</p> : null}
         </div>
@@ -384,8 +437,8 @@ export default function RecoveryProof() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-semibold text-[#0a1628]">{item.title || item.reason}</span>
-                        <Badge className="border-gray-200 bg-gray-100 text-gray-600">{item.state}</Badge>
-                        <Badge className="border-slate-200 bg-slate-50 text-slate-600">{item.source}</Badge>
+                        <Badge className="border-gray-200 bg-gray-100 text-gray-600">{stateLabel(item.state)}</Badge>
+                        <Badge className="border-slate-200 bg-slate-50 text-slate-600">{sourceLabel(item.source)}</Badge>
                         {item.close_reason ? <Badge className="border-amber-200 bg-amber-50 text-amber-800">{closeLabel(item.close_reason)}</Badge> : null}
                       </div>
                       <div className="mt-1 truncate text-xs text-gray-500">{item.reason}</div>

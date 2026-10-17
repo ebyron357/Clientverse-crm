@@ -155,6 +155,19 @@ def test_overdue_task_is_a_missed_followup(env):
     }))
     detections = run(second_chance.detect_missed_followups(db, queue, TENANT))
     assert [d["record_kind"] for d in detections] == ["task"]
+    assert detections[0]["reason"] == "Task was due 3 day(s) ago and is still open."
+
+
+def test_website_lead_call_back_task_is_left_to_the_web_enquiry_lane(env):
+    # The lead itself is detected as an unanswered web enquiry, with its value. Its
+    # call-back task must not open a second case for the same person.
+    db, queue = env
+    run(db.tasks.insert_one({
+        "id": "task_lead", "tenant_id": TENANT, "title": "Call new lead now: Dana (Home value)",
+        "status": "todo", "assignee": "agent@example.com", "workspace_id": None,
+        "due_date": iso(-3), "source": {"kind": "website_form", "enquiry_id": "enq_1"},
+    }))
+    assert run(second_chance.detect_missed_followups(db, queue, TENANT)) == []
 
 
 # ---------------------------------------------------------- queue behaviour
