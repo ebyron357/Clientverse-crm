@@ -47,6 +47,7 @@ import recovery_lifecycle
 import recovery_proof
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
+import scheduler
 import second_chance as second_chance_service
 import security_gate as security_gate_service
 import website_forms
@@ -186,9 +187,14 @@ async def lifespan(_: FastAPI):
     # The speed-to-lead clock runs inside the API: a new lead must not wait on an
     # external scheduler to be escalated. `/api/cron/lead-sla` runs the same sweep.
     lead_pipeline.start_watcher()
+    # The same reasoning for every other scheduled job: the external scheduler has never
+    # reached production, so the API runs the `/api/cron/*` jobs itself, once per window
+    # across replicas (see scheduler.py). IN_PROCESS_SCHEDULER=0 turns it off.
+    job_scheduler.start()
     try:
         yield
     finally:
+        await job_scheduler.stop()
         await lead_pipeline.stop_watcher()
         mclient.close()
 
@@ -2257,15 +2263,16 @@ async def _begin_cron(request: Request, job: str):
     return run_id, entry_id
 
 
-# The actor a job's audit events carry when an HTTP request runs it.
+# The actor a job's audit events carry when an HTTP request ran it. The in-process
+# scheduler runs the same jobs as `scheduler.ACTOR`.
 CRON_ACTOR = "cron"
 
 
 def _cron_job(job: str, run_id: str):
     """What `/api/cron/<job>` runs, as the factory `_run_cron_job` takes.
 
-    The work is looked up in `CRON_JOBS`, so every route runs from one table rather than
-    from a lambda of its own.
+    The work is looked up in `CRON_JOBS`, the table the in-process scheduler runs from as
+    well, so a route and the scheduler cannot run different code for the same job.
     """
     return lambda: CRON_JOBS[job](run_id, CRON_ACTOR)
 
@@ -4379,8 +4386,9 @@ async def run_second_chance_sweep(actor: str = "cron") -> dict:
 
 
 # What every scheduled job runs, keyed by its `/api/cron/<path>`. Each entry takes the run
-# id and the actor to record. The routes run from this one table (through `_cron_job`).
-CRON_JOBS: dict = {
+# id and the actor to record. The routes (through `_cron_job`) and the in-process
+# scheduler both run from this one table, so neither can drift into its own copy.
+CRON_JOBS: dict[str, scheduler.JobFn] = {
     "commitment-risk": lambda run_id, actor: evaluate_commitment_risk(tenant_id=None, actor=actor),
     # Each tick gets a distinct worker identity so lease-ownership checks can tell a
     # stale tick apart from the one that replaced it.
@@ -4401,6 +4409,9 @@ CRON_JOBS: dict = {
     "integration-sync": lambda run_id, actor: run_integration_sync_sweep(actor=actor),
     "daily-digest": lambda run_id, actor: run_daily_digest_sweep(),
 }
+
+# Started and stopped by `lifespan()`, beside the lead watcher.
+job_scheduler = scheduler.InProcessScheduler(db, CRON_JOBS)
 
 
 def resolve_git_sha() -> Optional[str]:

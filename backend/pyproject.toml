@@ -119,6 +119,6 @@ ignore_missing_imports = true
 # does not already catch.
 module = ["attribution", "cron_ledger", "detectors", "email_inbound",
           "gmail_provider", "recovery_lifecycle", "recovery_proof",
-          "recovery_reconcile"]
+          "recovery_reconcile", "scheduler"]
 disallow_incomplete_defs = true
 warn_return_any = true

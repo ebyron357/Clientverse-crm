@@ -8,11 +8,18 @@ which would otherwise mean the suite simply does not run there.
 When `MONGO_URL` uses the `mongomock://` scheme — a scheme no real deployment can
 use, so production can never land here — the motor client is swapped for the
 in-process `mongomock_motor` client. Nothing else changes: the same tests, the
-same assertions, the same application code. Against a reachable mongod the file
-is inert.
+same assertions, the same application code. Against a reachable mongod the driver
+swap is inert; only the in-process scheduler default below applies.
 """
 
 import os
+
+# The API runs its scheduled jobs in-process by default. Under test they would sweep the
+# same database the tests are asserting on, at times no test controls, so the harness
+# turns them off -- as `LEAD_SLA_WATCHER=0` does for the lead watcher. A test that wants
+# the scheduler builds its own (`tests/test_scheduler.py`) or sets the variable itself.
+# `setdefault`, so an explicit value in the environment still wins.
+os.environ.setdefault("IN_PROCESS_SCHEDULER", "0")
 
 _MONGO_URL = os.environ.get("MONGO_URL", "")
 
