@@ -979,6 +979,8 @@ class LeadPipeline:
     async def ensure_indexes(self) -> None:
         db = self.db
         await db[FORMS].create_index("public_key", unique=True)
+        await db[FORMS].create_index("server_key_hash", unique=True,
+                                     partialFilterExpression={"server_key_hash": {"$type": "string"}})
         await db[FORMS].create_index([("tenant_id", 1), ("status", 1)])
         await db[ATTEMPTS].create_index("at", expireAfterSeconds=86400)
         await db[ATTEMPTS].create_index([("form_id", 1), ("visitor", 1), ("at", -1)])
@@ -2441,6 +2443,8 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
         await record_event("website_form.server_key_created", "website_form", form["id"],
                            user["tenant_id"], user["email"], payload={"hint": key[-4:]})
         return {"key": key, "hint": key[-4:],
+                # One address for every website server; the key says which form.
+                "intake_url": f"{pipeline.public_base_url}/api/intake/leads",
                 "submit_url": embed_snippets(form, pipeline.public_base_url)["api"]["url"],
                 "note": "Store this now. It is hashed at rest and cannot be shown again."}
 
@@ -2669,6 +2673,24 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
         return HTMLResponse(hosted_page(form),
                             headers={"Content-Security-Policy": HOSTED_PAGE_CSP,
                                      "Cache-Control": "no-store"})
+
+    @router.post("/intake/leads")
+    async def server_intake(request: Request):
+        """The server-to-server lead intake: one address, the key names the form.
+
+        This is the interface a website's own backend was built against
+        (`POST /api/intake/leads`, `Authorization: Bearer <key>`). It is the same trusted
+        path as a keyed post to the form's own submit URL.
+        """
+        scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return JSONResponse(status_code=401, content={"detail": "A server key is required"})
+        form = await db[FORMS].find_one(
+            {"server_key_hash": _sha(token.strip()), "status": "active"}, {"_id": 0})
+        if not form:
+            # Wrong, revoked, or for a paused form: the same answer for each.
+            return JSONResponse(status_code=401, content={"detail": "Invalid server key"})
+        return await pipeline._handle_server_submission(request, with_defaults(form))
 
     @router.post("/public/forms/{public_key}/submit")
     async def public_form_submit(public_key: str, request: Request):

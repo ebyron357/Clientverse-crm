@@ -108,8 +108,9 @@ being briefly down. This is stronger than GoHighLevel's usual fire-and-forget we
    stored hashed. **Replace key** rotates it and the old key stops working at once; **Revoke**
    turns it off.
 2. Put the three values shown into the website's hosting environment and redeploy:
-   `CRM_PROVIDER=clientverse`, `CLIENTVERSE_INTAKE_URL=…/api/public/forms/{key}/submit`,
-   `CLIENTVERSE_API_KEY=cvsk_…`.
+   `CRM_PROVIDER=clientverse`, `CLIENTVERSE_INTAKE_URL=https://<crm>/api/intake/leads`,
+   `CLIENTVERSE_API_KEY=cvsk_…`. One intake address serves every website: the key identifies the
+   form, and so the workspace. A keyed post to the form's own `/submit` URL works the same way.
 3. The website's server sends `POST` with `Authorization: Bearer cvsk_…` and a JSON body.
 
 **What the CRM accepts on this path:**

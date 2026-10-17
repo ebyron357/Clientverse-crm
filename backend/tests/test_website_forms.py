@@ -784,3 +784,21 @@ def test_a_buyer_guide_price_range_becomes_a_commission_value(client):
     assert stored["fields"]["price_min"] == 400000.0 and stored["fields"]["price_max"] == 500000.0
     assert stored["fields"]["pre_approved"] == "Yes" and stored["fields"]["lead_type"] == "Buying"
     assert stored["estimated_value"] == 12500.0  # 2.5% of the top of the range
+
+
+def test_one_intake_address_for_every_website_server(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    minted = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()
+    assert minted["intake_url"].endswith("/api/intake/leads")
+    response = client.post("/api/intake/leads", json=server_body(),
+                           headers={"Authorization": f"Bearer {minted['key']}"})
+    assert response.status_code == 200, response.text
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": response.json()["id"]})
+    assert stored["form_id"] == form["id"] and stored["tenant_id"] == owner["tenant_id"]
+    assert client.post("/api/intake/leads", json=server_body()).status_code == 401
+    assert client.post("/api/intake/leads", json=server_body(),
+                       headers={"Authorization": "Bearer cvsk_nope"}).status_code == 401
+    client.patch(f"/api/website-forms/{form['id']}", headers=owner["headers"], json={"status": "paused"})
+    assert client.post("/api/intake/leads", json=server_body(idempotencyKey="p1"),
+                       headers={"Authorization": f"Bearer {minted['key']}"}).status_code == 401

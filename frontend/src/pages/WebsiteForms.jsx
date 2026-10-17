@@ -401,7 +401,7 @@ function ServerConnection({ form, isAdmin, onChanged }) {
     catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
     finally { setBusy(false); }
   };
-  const settings = minted ? `CRM_PROVIDER=clientverse\nCLIENTVERSE_INTAKE_URL=${minted.submit_url}\nCLIENTVERSE_API_KEY=${minted.key}` : "";
+  const settings = minted ? `CRM_PROVIDER=clientverse\nCLIENTVERSE_INTAKE_URL=${minted.intake_url}\nCLIENTVERSE_API_KEY=${minted.key}` : "";
   return (
     <Section title="Server connection (recommended for custom-built websites)" description="For a website with its own form backend — a Next.js or custom site, or a form plugin that posts from the server. The website keeps its own form design, saves each lead first, and delivers it here with this key, retrying until it is accepted. Nothing is lost if either side is briefly down.">
       <div className="flex flex-wrap items-center gap-2 text-sm">
