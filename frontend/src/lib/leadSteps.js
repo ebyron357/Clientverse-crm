@@ -1,17 +1,20 @@
-// What the lead automation did, in plain words. The server records each step as
-// `{step, result, detail}` (backend/website_forms.py `LeadPipeline._log`).
-const STEP_TEXT = {
-  "contact:created": () => "New contact created",
-  "contact:matched": () => "Matched to an existing contact",
-  "assignment:assigned": (detail) => (detail ? `Assigned to ${detail}` : "Assigned"),
-  "assignment:unassigned": () => "Not assigned: every admin was alerted",
-  "opportunity:created": () => "Deal created in your pipeline",
-  "opportunity:linked": () => "Linked to their open deal",
-  "task:created": () => "Call-back task created",
-  "automation:failed": () => "Automation stopped early. The lead is still saved in Leads",
+// What the lead automation did, as sentences. The server records each step as
+// `{step, result, detail}` (backend/website_forms.py `LeadPipeline._log`); its details
+// are record ids and addresses, which mean nothing to the person reading the lead, so
+// only the step's meaning is shown.
+const SENTENCES = {
+  "contact:created": () => "Added them as a new contact",
+  "contact:matched": () => "Matched them to a contact you already had",
+  "assignment:assigned": (assignee) => `Assigned the lead to ${assignee || "an agent"}`,
+  "assignment:unassigned": () => "No agent is set up for this form, so every admin was alerted",
+  "opportunity:created": () => "Opened a deal",
+  "opportunity:linked": () => "Added it to their open deal",
+  "task:created": () => "Created a call-back task",
+  "automation:failed": () => "Something went wrong after the lead was saved. The lead is safe here; check the contact and deal by hand.",
 };
 
-export function describeLeadStep({ step, result, detail } = {}) {
-  const text = STEP_TEXT[`${step}:${result}`];
-  return text ? text(detail) : [step, result].filter(Boolean).join(": ");
+export function describeLeadStep(step = {}, { assignee } = {}) {
+  const sentence = SENTENCES[`${step.step}:${step.result}`];
+  if (sentence) return sentence(assignee || (step.step === "assignment" ? step.detail : ""));
+  return `${step.step} · ${step.result}`.replace(/_/g, " ");
 }

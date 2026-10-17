@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlarmClock, CheckCircle2, Clock3, Download, Globe, Mail, Phone, RefreshCw, Search, ShieldAlert, Timer, Zap } from "lucide-react";
+import { describeLeadStep } from "@/lib/leadSteps";
 
 const STATUS_TABS = [
   { key: "new", label: "New" },
@@ -62,22 +63,6 @@ function ago(iso) {
   if (minutes < 60) return `${minutes} min ago`;
   if (minutes < 60 * 24) return `${Math.floor(minutes / 60)} h ago`;
   return new Date(iso).toLocaleDateString();
-}
-
-// The automation's own log, as sentences. Its details are record ids and addresses,
-// which mean nothing to the person reading the lead, so only the step's meaning is shown.
-function automationStep(step, lead) {
-  const sentences = {
-    "contact:created": "Added them as a new contact",
-    "contact:matched": "Matched them to a contact you already had",
-    "assignment:assigned": `Assigned the lead to ${lead.assigned_name || lead.assigned_to || "an agent"}`,
-    "assignment:unassigned": "No agent is set up for this form, so every admin was alerted",
-    "opportunity:created": "Opened a deal",
-    "opportunity:linked": "Added it to their open deal",
-    "task:created": "Created a call-back task",
-    "automation:failed": "Something went wrong after the lead was saved. The lead is safe here; check the contact and deal by hand.",
-  };
-  return sentences[`${step.step}:${step.result}`] || `${step.step} · ${step.result}`.replace(/_/g, " ");
 }
 
 function SlaBadge({ lead }) {
@@ -187,7 +172,7 @@ function LeadDetail({ lead, onStatus, busy, refreshKey }) {
         </dl>
         {lead.automation?.length > 0 && (
           <ol className="mt-3 space-y-1 text-xs text-slate-500">
-            {lead.automation.map((step, index) => <li key={index} className="flex gap-1.5">{step.result === "failed" ? <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-red-500" /> : <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-slate-400" />}{automationStep(step, lead)}</li>)}
+            {lead.automation.map((step, index) => <li key={index} className="flex gap-1.5">{step.result === "failed" ? <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-red-500" /> : <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-slate-400" />}{describeLeadStep(step, { assignee: lead.assigned_name || lead.assigned_to })}</li>)}
           </ol>
         )}
       </section>

@@ -452,7 +452,7 @@ function EmbedTab({ form, isAdmin, onChanged }) {
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
             <div className="font-semibold">Worked end to end.</div>
             <ul className="mt-2 space-y-1">
-              {(result.lead.automation || []).map((step, index) => <li key={index}>✓ {describeLeadStep(step)}</li>)}
+              {(result.lead.automation || []).map((step, index) => <li key={index}>✓ {describeLeadStep(step, { assignee: result.lead.assigned_name })}</li>)}
             </ul>
             <Link className="mt-2 inline-block font-semibold text-[#127b96]" to={`/leads?lead=${result.lead.id}`}>Open the test lead</Link>
           </div>
