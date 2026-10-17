@@ -4206,7 +4206,17 @@ async def cron_daily_digest(request: Request):
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
-crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+
+
+async def _after_activity_logged(activity: dict) -> None:
+    # A call, email, meeting or text logged on a lead's contact is the response its
+    # speed-to-lead clock is waiting for. `lead_pipeline` is created just below and is
+    # looked up when an activity is logged, by which time it always exists.
+    await lead_pipeline.recognise_activity(activity)
+
+
+crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
+                                  on_activity_logged=_after_activity_logged)
 # Website forms: the public door an agent's website posts leads through, and the
 # automation that turns each lead into a contact, an owner, a deal, a call-back task and
 # an alert within seconds. The legacy intake-token door runs through the same pipeline.

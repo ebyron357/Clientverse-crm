@@ -1779,11 +1779,21 @@ class LeadPipeline:
                                 payload={"via": via, "response_minutes": minutes})
         return True
 
-    async def sync_responses(self, tenant_id: Optional[str] = None) -> int:
-        """Recognise responses that happened elsewhere in the CRM."""
+    async def sync_responses(self, tenant_id: Optional[str] = None,
+                             contact_id: Optional[str] = None) -> int:
+        """Recognise responses that happened elsewhere in the CRM.
+
+        A response is the call-back task being completed, or a call, email, meeting or
+        text logged on the lead's contact after the lead arrived. An email the lead sent
+        *in* (a reply to the automatic reply, say) is logged on the contact too, but it
+        is the lead reaching the agent, not the agent reaching the lead, so it never
+        stops the clock.
+        """
         query: dict[str, Any] = {"status": "new"}
         if tenant_id:
             query["tenant_id"] = tenant_id
+        if contact_id:
+            query["contact_id"] = contact_id
         open_leads = await self.db[detectors.WEB_ENQUIRIES].find(
             query, {"_id": 0}).to_list(2000)
         count = 0
@@ -1800,13 +1810,31 @@ class LeadPipeline:
                 activity = await self.db.crm_activities.find_one(
                     {"tenant_id": lead["tenant_id"], "related_type": "contact",
                      "related_id": lead["contact_id"],
-                     "type": {"$in": ["call", "email", "meeting"]},
+                     "type": {"$in": list(crm_core.OUTREACH_TYPES)},
+                     "direction": {"$ne": "inbound"},
                      "occurred_at": {"$gte": lead["received_at"]}},
-                    {"_id": 0, "occurred_at": 1, "type": 1}, sort=[("occurred_at", 1)])
+                    {"_id": 0, "occurred_at": 1, "type": 1, "actor": 1},
+                    sort=[("occurred_at", 1)])
                 if activity:
                     count += await self.mark_responded(
-                        lead, via=f"activity_{activity['type']}", at=activity["occurred_at"])
+                        lead, via=f"activity_{activity['type']}", at=activity["occurred_at"],
+                        actor=activity.get("actor") or SYSTEM_ACTOR)
         return count
+
+    async def recognise_activity(self, activity: dict) -> int:
+        """Stop the clock on a lead the moment someone logs reaching its contact.
+
+        The watcher would notice within a minute, but an agent who logs a call from the
+        contact record should see the lead marked contacted, and its call-back task
+        done, straight away -- the same as pressing "Mark contacted" in the inbox.
+        """
+        if (activity.get("related_type") != "contact"
+                or activity.get("type") not in crm_core.OUTREACH_TYPES
+                or activity.get("direction") == "inbound"
+                or not activity.get("tenant_id") or not activity.get("related_id")):
+            return 0
+        return await self.sync_responses(activity["tenant_id"],
+                                          contact_id=activity["related_id"])
 
     async def escalate_overdue(self, tenant_id: Optional[str] = None) -> int:
         now = self.now_iso()

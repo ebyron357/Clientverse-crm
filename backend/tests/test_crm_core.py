@@ -289,7 +289,7 @@ def test_assigning_a_task_to_someone_else_notifies_them(tenant):
 
 # --------------------------------------------------------------------------- activities
 
-@pytest.mark.parametrize("activity_type", ["note", "call", "meeting", "email"])
+@pytest.mark.parametrize("activity_type", ["note", "call", "meeting", "email", "text"])
 def test_ordinary_crm_activity_types_can_be_logged(tenant, activity_type):
     logged = tenant.post("/activities", {
         "type": activity_type, "related_type": "contact", "related_id": tenant.contact_id,

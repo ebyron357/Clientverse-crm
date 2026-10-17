@@ -29,14 +29,17 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, EmailStr, Field, field_validator
+
+logger = logging.getLogger("clientverse.crm_core")
 
 # --------------------------------------------------------------------------- constants
 
@@ -65,7 +68,10 @@ DEFAULT_STAGES = [
     {"key": "closed_lost", "label": "Closed lost", "probability": 0, "is_closed": True, "is_won": False},
 ]
 
-ACTIVITY_TYPES = ("note", "call", "meeting", "email", "status_change")
+ACTIVITY_TYPES = ("note", "call", "meeting", "email", "text", "status_change")
+# The activity types that mean somebody reached out to the person. A note is a person
+# writing something down; it is not contact, and it must never stop a lead's clock.
+OUTREACH_TYPES = ("call", "email", "meeting", "text")
 TASK_STATUSES = ("todo", "in_progress", "blocked", "done", "cancelled")
 
 # What a search or filter is allowed to reach. Anything not listed is not queryable,
@@ -413,12 +419,16 @@ class ImportInput(BaseModel):
 # ------------------------------------------------------------------------ registration
 
 def register_crm_core_routes(router, db, new_id, now_iso, record_event,
-                             get_current_user, require_role):
+                             get_current_user, require_role,
+                             on_activity_logged: Optional[
+                                 Callable[[dict], Awaitable[Any]]] = None):
     """Attach the baseline CRM routes, using the application's own helpers.
 
     Injection rather than import keeps this module free of a circular dependency on
     `server`, and keeps every audit event flowing through the one `record_event` the
-    rest of the application uses.
+    rest of the application uses. `on_activity_logged` is told about every activity a
+    person logs, after it is stored, so work that depends on it (a lead's speed-to-lead
+    clock) moves at once instead of on the next sweep.
     """
 
     # ------------------------------------------------------------------ shared helpers
@@ -940,11 +950,12 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     @router.post("/activities")
     async def log_activity(inp: ActivityCreate, user=Depends(get_current_user)):
-        """Log something that happened: a note, a call, a meeting, an email already sent.
+        """Log something that happened: a note, a call, a meeting, an email or a text
+        already sent.
 
-        This records history. It sends nothing and schedules nothing -- an email logged
-        here is one a person already sent, which is a different fact from one this
-        system delivered, and the two are never merged.
+        This records history. It sends nothing and schedules nothing -- an email or text
+        logged here is one a person already sent from their own phone or mailbox, which
+        is a different fact from one this system delivered, and the two are never merged.
         """
         if inp.type not in ACTIVITY_TYPES:
             raise HTTPException(status_code=422,
@@ -968,6 +979,14 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         await record_event(f"activity.{inp.type}_logged", related_type, related_id,
                            tenant_of(user), user["email"],
                            payload={"activity_id": doc["id"], "subject": inp.subject})
+        if on_activity_logged:
+            try:
+                await on_activity_logged(dict(doc))
+            except Exception:
+                # The activity is stored and on the record's timeline. A fault in what
+                # follows from it must not turn a logged call into a failed request; the
+                # periodic sweep recognises it later all the same.
+                logger.exception("Follow-up for activity %s failed", doc["id"])
         return _public(doc)
 
     @router.get("/activities")
