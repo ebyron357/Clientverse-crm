@@ -205,7 +205,8 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
         status = str(task.get("status") or "").lower()
         if status in DONE_TASK_STATUSES:
             continue
-        if (task.get("source") or {}).get("kind") == "website_form":
+        source = task.get("source")
+        if isinstance(source, dict) and source.get("kind") == "website_form":
             # A website lead's call-back task is that lead's first response. The web-enquiry
             # lane already follows the lead, with its value; a second case for the same
             # unanswered person would show one lost lead as two.

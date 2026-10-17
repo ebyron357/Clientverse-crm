@@ -286,3 +286,16 @@ def test_a_case_follows_its_record_to_a_new_work_item(env):
     # The case points at the live item, not the resolved one.
     case = run(db.recovery_cases.find_one({"id": case_id}))
     assert case["work_item_reference"] == second["id"]
+
+
+def test_a_task_whose_source_is_plain_text_is_still_read(env):
+    # Other features record a task's source as a bare string ("playbook", "nba"). The
+    # website-lead check must not assume a structured source.
+    db, queue = env
+    run(db.tasks.insert_one({
+        "id": "task_playbook", "tenant_id": TENANT, "title": "Send onboarding pack",
+        "status": "todo", "assignee": "csm@example.com", "workspace_id": "ws_3",
+        "due_date": iso(-3), "source": "playbook",
+    }))
+    detections = run(second_chance.detect_missed_followups(db, queue, TENANT))
+    assert [d["record_id"] for d in detections] == ["task_playbook"]
