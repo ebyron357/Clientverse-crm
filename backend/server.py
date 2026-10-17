@@ -47,6 +47,7 @@ import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
+import website_forms
 from client_value import register_client_value_routes
 from operations_routes import register_operations_routes
 from work_queue import WorkQueue, run_worker_tick
@@ -148,6 +149,7 @@ async def lifespan(_: FastAPI):
         await attribution_service.ensure_indexes(db)
         await detectors.ensure_indexes(db)
         await recovery_intake.ensure_indexes(db)
+        await lead_pipeline.ensure_indexes()
         await WorkQueue(db).ensure_indexes()
         await nba_service.ensure_indexes(db)
         await second_chance_service.ensure_indexes(db)
@@ -169,9 +171,13 @@ async def lifespan(_: FastAPI):
         await db.stripe_webhook_events.create_index("event_id", unique=True)
     except Exception as exc:
         raise RuntimeError("Stripe webhook event uniqueness index is unavailable") from exc
+    # The speed-to-lead clock runs inside the API: a new lead must not wait on an
+    # external scheduler to be escalated. `/api/cron/lead-sla` runs the same sweep.
+    lead_pipeline.start_watcher()
     try:
         yield
     finally:
+        await lead_pipeline.stop_watcher()
         mclient.close()
 
 
@@ -203,7 +209,11 @@ async def production_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    # The hosted website-form page is the one document meant to be framed by an
+    # agent's website. It carries its own CSP (`frame-ancestors *`) and holds no
+    # session-backed content, so it is exempt from the same-origin framing rule.
+    if not website_forms.HOSTED_PAGE_PATH.match(request.url.path):
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
     if request.url.scheme == "https":
@@ -2246,6 +2256,21 @@ async def cron_detect_recovery(request: Request):
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
+@api.post("/cron/lead-sla")
+async def cron_lead_sla(request: Request):
+    """Recognise responses to website leads and escalate the ones nobody answered.
+
+    The API runs this sweep itself every minute; this entry point lets the external
+    scheduler run it too. Escalation is a conditional update, so running both never
+    notifies twice.
+    """
+    run_id, entry_id = await _begin_cron(request, "lead-sla")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job("lead-sla", run_id, lambda: lead_pipeline.sweep(), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
 @api.post("/cron/second-chance")
 async def cron_second_chance(request: Request):
     """Second Chance detection sweep across every tenant."""
@@ -4126,7 +4151,16 @@ async def cron_daily_digest(request: Request):
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
-recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+# Website forms: the public door an agent's website posts leads through, and the
+# automation that turns each lead into a contact, an owner, a deal, a call-back task and
+# an alert within seconds. The legacy intake-token door runs through the same pipeline.
+lead_pipeline = website_forms.register_website_form_routes(
+    api, db, new_id=new_id, now_iso=now_iso, record_event=record_event,
+    get_current_user=get_current_user, require_role=require_role, spawn=spawn_background,
+    send_email=send_email, email_configured=email_configured, get_prefs=get_prefs,
+    public_base_url=FRONTEND_URL)
+recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user,
+                                       require_role, lead_pipeline=lead_pipeline)
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
@@ -4302,6 +4336,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added after (so outside) the credentialed CORS policy above: agents' websites may call
+# the public form paths from any origin, never with credentials. Adding those websites
+# to CORS_ORIGINS instead would let their scripts act as a signed-in CRM user, because
+# the session cookie is SameSite=None.
+app.add_middleware(website_forms.PublicFormCORSMiddleware)
 
 # Production containers build the React application into this directory. Mounting
 # it last preserves explicit API routes while supporting direct SPA deep links.
