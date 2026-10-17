@@ -377,12 +377,13 @@ class ImportInput(BaseModel):
 # ------------------------------------------------------------------------ registration
 
 def register_crm_core_routes(router, db, new_id, now_iso, record_event,
-                             get_current_user, require_role):
+                             get_current_user, require_role, *, on_task_status_changed=None):
     """Attach the baseline CRM routes, using the application's own helpers.
 
     Injection rather than import keeps this module free of a circular dependency on
     `server`, and keeps every audit event flowing through the one `record_event` the
-    rest of the application uses.
+    rest of the application uses. `on_task_status_changed(task, previous_status, actor)`
+    is awaited after a task changes status through `PATCH /crm/tasks/{id}`.
     """
 
     # ------------------------------------------------------------------ shared helpers
@@ -973,6 +974,10 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             await record_event("task.completed", "task", task_id, tenant_of(user),
                                user["email"], workspace_id=before.get("workspace_id"),
                                payload={"title": before.get("title")})
+        if updated.get("status") != before.get("status") and on_task_status_changed:
+            # Whatever else hangs off a task -- a website lead's response clock -- moves
+            # with it now, not on the next sweep.
+            await on_task_status_changed(updated, before.get("status"), user["email"])
         if changes.get("assignee") and changes["assignee"] != before.get("assignee") \
                 and not same_person(changes["assignee"], user["email"]):
             await notify_assignment(user, updated)

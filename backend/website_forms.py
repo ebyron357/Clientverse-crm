@@ -1779,6 +1779,42 @@ class LeadPipeline:
                                 payload={"via": via, "response_minutes": minutes})
         return True
 
+    async def task_status_changed(self, task: dict, previous: Optional[str],
+                                  actor: str = SYSTEM_ACTOR) -> None:
+        """Keep a lead in step with its call-back task, both ways.
+
+        Ticking the task off is the agent saying "I called them", so the lead is marked
+        responded there and then -- timed from the moment it was ticked -- instead of on
+        the next sweep. Un-ticking it withdraws exactly that and nothing more: only a
+        response this task recorded goes back to "new", so a lead marked contacted another
+        way (from the lead itself, or by a logged call) keeps its response. The sweep
+        still catches a completion this misses, so a failure here never fails the edit.
+        """
+        try:
+            lead = await self.db[detectors.WEB_ENQUIRIES].find_one(
+                {"tenant_id": task["tenant_id"], "task_id": task["id"]}, {"_id": 0})
+            if not lead:
+                return
+            status = task.get("status")
+            if status == "done" and previous != "done":
+                await self.mark_responded(lead, via="task_completed",
+                                          at=task.get("completed_at"), actor=actor)
+                return
+            if previous != "done" or status in ("done", "cancelled"):
+                return
+            reopened = await self.db[detectors.WEB_ENQUIRIES].update_one(
+                {"id": lead["id"], "tenant_id": lead["tenant_id"], "status": "responded",
+                 "sla.responded_via": "task_completed"},
+                {"$set": {"status": "new", "sla.first_response_at": None,
+                          "sla.response_minutes": None, "sla.responded_via": None,
+                          "responded_by": None}})
+            if reopened.modified_count:
+                await self.record_event("lead.reopened", "web_enquiry", lead["id"],
+                                        lead["tenant_id"], actor,
+                                        payload={"via": "task_reopened", "task_id": task["id"]})
+        except Exception:
+            logger.exception("Could not update the lead behind task %s", task.get("id"))
+
     async def sync_responses(self, tenant_id: Optional[str] = None) -> int:
         """Recognise responses that happened elsewhere in the CRM."""
         query: dict[str, Any] = {"status": "new"}
@@ -2619,6 +2655,16 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
                 {"id": lead_id, "tenant_id": user["tenant_id"]},
                 {"$set": {"status": inp.status, "status_changed_by": user["email"],
                           "status_changed_at": now_iso()}})
+            if inp.status == "new" and lead.get("task_id"):
+                # Reopening a lead reopens its call-back task. Left finished, the next sweep
+                # reads the task as the response and marks the lead contacted again; left
+                # cancelled (by "spam"), the lead has no call-back on anyone's list.
+                await db.tasks.update_one(
+                    {"id": lead["task_id"], "tenant_id": user["tenant_id"],
+                     "status": {"$in": ["done", "cancelled"]}},
+                    {"$set": {"status": "todo", "completed_at": None, "updated_at": now_iso()},
+                     "$push": {"history": crm_core._history_entry(
+                         "reopened", user["email"], {"via": "lead_reopened"})}})
             if inp.status == "spam" and lead.get("created_contact"):
                 # The contact and deal exist only because of this submission, so they go
                 # with it -- archived, never deleted, and restorable.

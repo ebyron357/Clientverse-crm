@@ -233,6 +233,73 @@ def test_tasks_and_what_they_point_at_stay_inside_the_tenant(client):
                              "related_id": secret["id"]}).status_code == 422
 
 
+# ------------------------------------------- the call-back task and its lead
+
+def test_ticking_off_a_call_back_task_marks_the_lead_responded_at_once(client):
+    owner = register(client)
+    lead = submit_lead(client, owner)
+    response = client.patch(f"/api/crm/tasks/{lead['task_id']}", headers=owner["headers"],
+                            json={"status": "done"})
+    assert response.status_code == 200, response.text
+
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead["id"]})
+    assert stored["status"] == "responded", "no sweep needed: the tick is the response"
+    assert stored["sla"]["responded_via"] == "task_completed"
+    assert stored["sla"]["first_response_at"] == response.json()["completed_at"]
+    assert stored["responded_by"] == owner["email"]
+
+
+def test_un_ticking_the_task_withdraws_the_response_it_recorded(client):
+    owner = register(client)
+    lead = submit_lead(client, owner)
+    path = f"/api/crm/tasks/{lead['task_id']}"
+    client.patch(path, headers=owner["headers"], json={"status": "done"})
+    client.patch(path, headers=owner["headers"], json={"status": "todo"})
+
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead["id"]})
+    assert stored["status"] == "new"
+    assert stored["sla"]["first_response_at"] is None
+    assert stored["sla"]["response_minutes"] is None
+    assert find_one(client, "domain_events", {"tenant_id": owner["tenant_id"],
+                                              "event_type": "lead.reopened",
+                                              "resource_id": lead["id"]})
+    # The open task is not a response, so the sweep leaves the lead waiting...
+    call(client, server.lead_pipeline.sweep, owner["tenant_id"])
+    assert find_one(client, detectors.WEB_ENQUIRIES, {"id": lead["id"]})["status"] == "new"
+    # ...and ticking it again records the response afresh.
+    client.patch(path, headers=owner["headers"], json={"status": "done"})
+    assert find_one(client, detectors.WEB_ENQUIRIES, {"id": lead["id"]})["status"] == "responded"
+
+
+def test_reopening_the_task_keeps_a_response_recorded_another_way(client):
+    owner = register(client)
+    lead = submit_lead(client, owner)
+    client.patch(f"/api/leads/{lead['id']}", headers=owner["headers"],
+                 json={"status": "responded"})
+    assert find_one(client, "tasks", {"id": lead["task_id"]})["status"] == "done"
+    client.patch(f"/api/crm/tasks/{lead['task_id']}", headers=owner["headers"],
+                 json={"status": "todo"})
+
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead["id"]})
+    assert stored["status"] == "responded", (
+        "the lead was contacted from the lead itself; reopening a follow-up does not undo that")
+    assert stored["sla"]["responded_via"] == "marked_in_inbox"
+
+
+def test_reopening_a_lead_reopens_its_call_back_task(client):
+    owner = register(client)
+    lead = submit_lead(client, owner)
+    client.patch(f"/api/leads/{lead['id']}", headers=owner["headers"],
+                 json={"status": "responded"})
+    client.patch(f"/api/leads/{lead['id']}", headers=owner["headers"], json={"status": "new"})
+
+    task = find_one(client, "tasks", {"id": lead["task_id"]})
+    assert task["status"] == "todo" and task["completed_at"] is None
+    call(client, server.lead_pipeline.sweep, owner["tenant_id"])
+    assert find_one(client, detectors.WEB_ENQUIRIES, {"id": lead["id"]})["status"] == "new", (
+        "a finished call-back task left behind used to mark the reopened lead contacted again")
+
+
 # ------------------------------------------------------- assignment notices
 
 def notices(client, who):
