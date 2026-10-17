@@ -99,18 +99,59 @@ function FieldsTab({ draft, setDraft, catalog, readOnly }) {
         <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
           {draft.fields.map((field, index) => {
             const base = byKey[field.key];
+            const label = field.label || base?.label || field.key;
+            // A field can depend on any choice-type field above it.
+            const sources = draft.fields.slice(0, index).filter((candidate) => {
+              const type = candidate.type || byKey[candidate.key]?.type;
+              return type === "select" || type === "checkbox";
+            });
+            const source = field.show_if && draft.fields.find((candidate) => candidate.key === field.show_if.field);
+            const sourceType = source && (source.type || byKey[source.key]?.type);
+            const sourceOptions = sourceType === "checkbox" ? ["Yes", "No"] : (source?.options || byKey[source?.key]?.options || []);
+            const toggleValue = (value) => {
+              const values = new Set(field.show_if?.values || []);
+              if (values.has(value)) values.delete(value); else values.add(value);
+              update(index, { show_if: { field: field.show_if.field, values: [...values] } });
+            };
             return (
-              <li key={field.key} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
-                <div className="flex shrink-0 gap-1">
-                  <Button size="icon" variant="ghost" className="h-8 w-8" disabled={readOnly || index === 0} onClick={() => move(index, -1)} aria-label="Move up"><ArrowUp className="h-4 w-4" /></Button>
-                  <Button size="icon" variant="ghost" className="h-8 w-8" disabled={readOnly || index === draft.fields.length - 1} onClick={() => move(index, 1)} aria-label="Move down"><ArrowDown className="h-4 w-4" /></Button>
+              <li key={field.key} className="p-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <div className="flex shrink-0 gap-1">
+                    <Button size="icon" variant="ghost" className="h-8 w-8" disabled={readOnly || index === 0} onClick={() => move(index, -1)} aria-label="Move up"><ArrowUp className="h-4 w-4" /></Button>
+                    <Button size="icon" variant="ghost" className="h-8 w-8" disabled={readOnly || index === draft.fields.length - 1} onClick={() => move(index, 1)} aria-label="Move down"><ArrowDown className="h-4 w-4" /></Button>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <Input value={field.label ?? ""} placeholder={base?.label || field.key} disabled={readOnly} onChange={(event) => update(index, { label: event.target.value })} className="h-9" />
+                    <div className="mt-1 text-[11px] text-slate-400">{field.key} · {field.type || base?.type || "text"}</div>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+                    Step
+                    <Select value={String(field.step || 1)} onValueChange={(value) => update(index, { step: Number(value) })} disabled={readOnly}>
+                      <SelectTrigger className="h-8 w-16" aria-label={`${label} step`}><SelectValue /></SelectTrigger>
+                      <SelectContent>{[1, 2, 3, 4, 5].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">Required<Switch aria-label={`${label} is required`} checked={Boolean(field.required)} disabled={readOnly} onCheckedChange={(value) => update(index, { required: value })} /></div>
+                  <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" disabled={readOnly} onClick={() => remove(index)} aria-label="Remove field"><Trash2 className="h-4 w-4" /></Button>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <Input value={field.label ?? ""} placeholder={base?.label || field.key} disabled={readOnly} onChange={(event) => update(index, { label: event.target.value })} className="h-9" />
-                  <div className="mt-1 text-[11px] text-slate-400">{field.key} · {field.type || base?.type || "text"}</div>
-                </div>
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">Required<Switch aria-label={`${field.label || base?.label || field.key} is required`} checked={Boolean(field.required)} disabled={readOnly} onCheckedChange={(value) => update(index, { required: value })} /></div>
-                <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" disabled={readOnly} onClick={() => remove(index)} aria-label="Remove field"><Trash2 className="h-4 w-4" /></Button>
+                {(sources.length > 0 || field.show_if) && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 pl-0 text-xs text-slate-600 sm:pl-[4.5rem]">
+                    <span className="font-semibold">Show</span>
+                    <Select value={field.show_if?.field || "always"} disabled={readOnly}
+                      onValueChange={(value) => update(index, { show_if: value === "always" ? null : { field: value, values: [] } })}>
+                      <SelectTrigger className="h-8 w-56" aria-label={`When to show ${label}`}><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="always">Always</SelectItem>
+                        {sources.map((candidate) => <SelectItem key={candidate.key} value={candidate.key}>Only when “{candidate.label || byKey[candidate.key]?.label || candidate.key}” is…</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    {field.show_if && sourceOptions.map((option) => (
+                      <label key={option} className="flex items-center gap-1 rounded-full border border-slate-200 px-2 py-1">
+                        <input type="checkbox" checked={(field.show_if.values || []).includes(option)} disabled={readOnly} onChange={() => toggleValue(option)} />{option}
+                      </label>
+                    ))}
+                  </div>
+                )}
               </li>
             );
           })}
@@ -142,7 +183,7 @@ function FieldsTab({ draft, setDraft, catalog, readOnly }) {
   );
 }
 
-function SettingsTab({ draft, setDraft, readOnly }) {
+function SettingsTab({ draft, setDraft, readOnly, captchaSecret, setCaptchaSecret }) {
   const s = draft.settings;
   const set = (patch) => setDraft((current) => ({ ...current, settings: { ...current.settings, ...patch } }));
   const setIn = (group, patch) => setDraft((current) => ({ ...current, settings: { ...current.settings, [group]: { ...current.settings[group], ...patch } } }));
@@ -193,6 +234,26 @@ function SettingsTab({ draft, setDraft, readOnly }) {
         <Field label="Email consent wording">
           <Textarea value={s.consent.email_text} disabled={readOnly} rows={2} onChange={(event) => setIn("consent", { email_text: event.target.value })} />
         </Field>
+        <Toggle label="Remember returning visitors" hint="Pre-fills name, email and phone for someone who already submitted a form on your site (stored in their browser). Leave off for open-house kiosks and shared computers." checked={s.remember_visitor} disabled={readOnly} onChange={(value) => set({ remember_visitor: value })} />
+      </Section>
+      <Section title="Spam protection" description="Every form already blocks bots with a hidden trap field, a minimum fill time and rate limits. Add Cloudflare Turnstile for a visible challenge.">
+        <Field label="CAPTCHA">
+          <Select value={s.captcha.provider} onValueChange={(provider) => setIn("captcha", { provider })} disabled={readOnly}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="none">Built-in protection only</SelectItem><SelectItem value="turnstile">Cloudflare Turnstile</SelectItem></SelectContent>
+          </Select>
+        </Field>
+        {s.captcha.provider === "turnstile" && (
+          <>
+            <Field label="Turnstile site key" hint="From the Cloudflare dashboard → Turnstile. Add your website's domain to the widget there.">
+              <Input value={s.captcha.site_key || ""} disabled={readOnly} onChange={(event) => setIn("captcha", { site_key: event.target.value })} />
+            </Field>
+            <Field label="Turnstile secret key" hint={s.captcha.secret_configured ? "A secret is saved (encrypted). Enter a new one only to replace it." : "Stored encrypted and never shown again."}>
+              <Input type="password" autoComplete="off" value={captchaSecret} disabled={readOnly} placeholder={s.captcha.secret_configured ? "•••••••• saved" : ""} onChange={(event) => setCaptchaSecret(event.target.value)} />
+            </Field>
+            <p className="text-xs leading-5 text-amber-700">A CAPTCHA form only accepts browser submissions. Use a separate form for Zapier or a form plugin's webhook.</p>
+          </>
+        )}
       </Section>
     </div>
   );
@@ -225,10 +286,19 @@ function AutomationTab({ draft, setDraft, members, stages, readOnly }) {
             <div className="max-h-48 space-y-1 overflow-auto rounded-xl border border-slate-200 p-2">
               {members.length === 0 && <p className="p-2 text-xs text-slate-500">Team members are visible to admins only.</p>}
               {members.filter((member) => member.status === "active").map((member) => (
-                <label key={member.email} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-slate-50">
-                  <input type="checkbox" checked={s.assignment.users.includes(member.email)} disabled={readOnly} onChange={() => toggleAgent(member.email)} />
-                  <span>{member.name || member.email}</span><span className="text-xs text-slate-400">{member.email}</span>
-                </label>
+                <div key={member.email} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-slate-50">
+                  <label className="flex min-w-0 items-center gap-2">
+                    <input type="checkbox" checked={s.assignment.users.includes(member.email)} disabled={readOnly} onChange={() => toggleAgent(member.email)} />
+                    <span>{member.name || member.email}</span><span className="truncate text-xs text-slate-400">{member.email}</span>
+                  </label>
+                  {s.assignment.mode === "round_robin" && s.assignment.users.includes(member.email) && (
+                    <Select value={String(s.assignment.weights?.[member.email] || 1)} disabled={readOnly}
+                      onValueChange={(value) => setIn("assignment", { weights: { ...(s.assignment.weights || {}), [member.email]: Number(value) } })}>
+                      <SelectTrigger className="h-8 w-24 text-xs" aria-label={`${member.email} share of leads`}><SelectValue /></SelectTrigger>
+                      <SelectContent>{[1, 2, 3, 4, 5].map((n) => <SelectItem key={n} value={String(n)}>{n}× share</SelectItem>)}</SelectContent>
+                    </Select>
+                  )}
+                </div>
               ))}
             </div>
           </Field>
@@ -361,14 +431,20 @@ function EmbedTab({ form, isAdmin }) {
 function FormEditor({ form, catalog, members, stages, isAdmin, onBack, onSaved }) {
   const [draft, setDraft] = useState(() => clone(form));
   const [saving, setSaving] = useState(false);
+  const [captchaSecret, setCaptchaSecret] = useState("");
   useEffect(() => { setDraft(clone(form)); }, [form]);
-  const dirty = useMemo(() => JSON.stringify({ n: draft.name, s: draft.status, f: draft.fields, t: draft.settings }) !== JSON.stringify({ n: form.name, s: form.status, f: form.fields, t: form.settings }), [draft, form]);
+  const dirty = useMemo(() => Boolean(captchaSecret.trim()) || JSON.stringify({ n: draft.name, s: draft.status, f: draft.fields, t: draft.settings }) !== JSON.stringify({ n: form.name, s: form.status, f: form.fields, t: form.settings }), [draft, form, captchaSecret]);
   const readOnly = !isAdmin;
   const save = async () => {
     setSaving(true);
     try {
-      const fields = draft.fields.map(({ key, required, label, type, options, placeholder }) => ({ key, required, label: label || null, type: type || null, options: options || null, placeholder: placeholder || null }));
-      const { data } = await api.patch(`/website-forms/${form.id}`, { name: draft.name, status: draft.status, fields, settings: draft.settings });
+      const fields = draft.fields.map(({ key, required, label, type, options, placeholder, show_if: showIf, step }) => ({ key, required, label: label || null, type: type || null, options: options || null, placeholder: placeholder || null, show_if: showIf && showIf.values?.length ? showIf : null, step: step || 1 }));
+      const unfinished = draft.fields.find((field) => field.show_if && !field.show_if.values?.length);
+      if (unfinished) { toast.error(`Choose when "${unfinished.label || unfinished.key}" should show, or set it to Always`); setSaving(false); return; }
+      const settings = clone(draft.settings);
+      if (captchaSecret.trim()) settings.captcha = { ...settings.captcha, secret: captchaSecret.trim() };
+      const { data } = await api.patch(`/website-forms/${form.id}`, { name: draft.name, status: draft.status, fields, settings });
+      setCaptchaSecret("");
       toast.success("Form saved");
       onSaved(data);
     } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
@@ -394,7 +470,7 @@ function FormEditor({ form, catalog, members, stages, isAdmin, onBack, onSaved }
           <TabsTrigger value="embed">Embed &amp; test</TabsTrigger>
         </TabsList>
         <TabsContent value="fields"><FieldsTab draft={draft} setDraft={setDraft} catalog={catalog} readOnly={readOnly} /></TabsContent>
-        <TabsContent value="settings"><SettingsTab draft={draft} setDraft={setDraft} readOnly={readOnly} /></TabsContent>
+        <TabsContent value="settings"><SettingsTab draft={draft} setDraft={setDraft} readOnly={readOnly} captchaSecret={captchaSecret} setCaptchaSecret={setCaptchaSecret} /></TabsContent>
         <TabsContent value="automation"><AutomationTab draft={draft} setDraft={setDraft} members={members} stages={stages} readOnly={readOnly} /></TabsContent>
         <TabsContent value="reply"><ReplyTab form={form} draft={draft} setDraft={setDraft} catalog={catalog} readOnly={readOnly} isAdmin={isAdmin} onApproved={() => onSaved(null)} /></TabsContent>
         <TabsContent value="embed"><EmbedTab form={form} isAdmin={isAdmin} /></TabsContent>

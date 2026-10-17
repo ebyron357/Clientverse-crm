@@ -585,3 +585,110 @@ def test_the_test_button_runs_the_real_pipeline(client):
     assert stored["is_test"] is True and stored["contact_id"] and stored["task_id"]
     summary = client.get("/api/leads/summary", headers=owner["headers"]).json()
     assert summary["total"] == 0  # tests never count in reporting
+
+
+# ------------------------------------------------- form-builder parity options
+
+def test_a_conditional_field_is_required_only_when_it_shows(client):
+    owner = register(client)
+    response = client.post("/api/website-forms", headers=owner["headers"], json={
+        "name": "Buy or sell", "preset": "custom",
+        "fields": [{"key": "first_name", "required": True}, {"key": "email", "required": True},
+                   {"key": "lead_type", "required": True},
+                   {"key": "property_address", "required": True,
+                    "show_if": {"field": "lead_type", "values": ["Selling", "Buying and selling"]}}]})
+    assert response.status_code == 200, response.text
+    form = response.json()
+    buyer = browser_submit(client, form, lead(lead_type="Buying", property_address="stale answer"))
+    assert buyer.status_code == 200
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": buyer.json()["id"]})
+    assert "property_address" not in stored["fields"]  # hidden answers are not kept
+    seller = browser_submit(client, form, lead(email="seller@example.com", phone="5550400001",
+                                               lead_type="Selling", property_address=""))
+    assert seller.status_code == 422 and "property_address" in seller.json()["errors"]
+
+
+def test_conditions_and_steps_must_make_sense(client):
+    owner = register(client)
+    later = client.post("/api/website-forms", headers=owner["headers"], json={
+        "name": "Bad", "preset": "custom",
+        "fields": [{"key": "email", "show_if": {"field": "lead_type", "values": ["Selling"]}},
+                   {"key": "lead_type"}]})
+    assert later.status_code == 422
+    gap = client.post("/api/website-forms", headers=owner["headers"], json={
+        "name": "Bad", "preset": "custom",
+        "fields": [{"key": "email", "step": 1}, {"key": "phone", "step": 3}]})
+    assert gap.status_code == 422
+
+
+def test_a_multi_step_form_tells_the_embed_its_steps(client):
+    owner = register(client)
+    form = client.post("/api/website-forms", headers=owner["headers"], json={
+        "name": "Two steps", "preset": "custom",
+        "fields": [{"key": "first_name", "required": True, "step": 1},
+                   {"key": "email", "required": True, "step": 1},
+                   {"key": "timeline", "step": 2}, {"key": "pre_approved", "step": 2}],
+        "settings": {"remember_visitor": True}}).json()
+    config = client.get(f"/api/public/forms/{form['public_key']}/config").json()
+    assert config["steps"] == 2 and config["remember_visitor"] is True
+    assert [f["step"] for f in config["fields"]] == [1, 1, 2, 2]
+
+
+def test_weighted_round_robin(client):
+    owner = register(client)
+    alice = add_member(client, owner["tenant_id"])
+    bob = add_member(client, owner["tenant_id"])
+    form = create_form(client, owner, settings={
+        "assignment": {"mode": "round_robin", "users": [alice, bob], "weights": {alice: 2}}})
+    owners = []
+    for i in range(6):
+        response = browser_submit(client, form, lead(email=f"w{i}@example.com", phone=f"555050{i:04d}"))
+        owners.append(find_one(client, detectors.WEB_ENQUIRIES, {"id": response.json()["id"]})["assigned_to"])
+    assert owners == [alice, alice, bob, alice, alice, bob]
+
+
+def test_turnstile_captcha_is_enforced_and_its_secret_never_leaves(client, monkeypatch):
+    owner = register(client)
+    half = client.post("/api/website-forms", headers=owner["headers"], json={
+        "name": "Captcha", "preset": "contact",
+        "settings": {"captcha": {"provider": "turnstile", "site_key": "0x4AAAAAAAsitekey"}}})
+    assert half.status_code == 422  # turning it on needs the secret too
+    plain = create_form(client, owner, preset="contact", name="Captcha")
+    refused = client.patch(f"/api/website-forms/{plain['id']}", headers=owner["headers"],
+                           json={"settings": {"captcha": {"provider": "turnstile",
+                                                          "site_key": "0x4AAAAAAAsitekey"}}})
+    assert refused.status_code == 422
+    saved = client.patch(f"/api/website-forms/{plain['id']}", headers=owner["headers"],
+                         json={"settings": {"captcha": {"provider": "turnstile",
+                                                        "site_key": "0x4AAAAAAAsitekey",
+                                                        "secret": "0x4AAAAAAAsecretkey"}}})
+    assert saved.status_code == 200, saved.text
+    form = saved.json()
+    assert "0x4AAAAAAAsecretkey" not in saved.text and "captcha_secret_enc" not in form
+    assert form["settings"]["captcha"]["secret_configured"] is True
+    config = client.get(f"/api/public/forms/{form['public_key']}/config").json()
+    assert config["captcha"] == {"provider": "turnstile", "site_key": "0x4AAAAAAAsitekey"}
+
+    seen = []
+
+    async def fake_verify(secret, token, ip):
+        seen.append(secret)
+        return token == "good-token"
+
+    monkeypatch.setattr(server.lead_pipeline, "verify_turnstile", fake_verify)
+    assert browser_submit(client, form, lead()).status_code == 422
+    assert browser_submit(client, form, lead(**{"cf-turnstile-response": "bad"})).status_code == 422
+    ok = browser_submit(client, form, lead(**{"cf-turnstile-response": "good-token"}))
+    assert ok.status_code == 200
+    assert seen[-1] == "0x4AAAAAAAsecretkey"  # decrypted only to verify
+
+
+def test_leads_export_as_csv_without_running_formulas(client):
+    owner = register(client)
+    form = create_form(client, owner)
+    browser_submit(client, form, lead(first_name="=HYPERLINK(\"http://x\")", last_name=""))
+    response = client.get("/api/leads/export", headers=owner["headers"])
+    assert response.status_code == 200 and "text/csv" in response.headers["content-type"]
+    lines = response.text.strip().splitlines()
+    assert lines[0].startswith("received_at,status,name,email,phone")
+    assert "'=HYPERLINK" in response.text and ",=HYPERLINK" not in response.text

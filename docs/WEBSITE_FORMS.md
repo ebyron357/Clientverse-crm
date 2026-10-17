@@ -186,9 +186,11 @@ GHL behaviour is taken from GHL's help-centre and tutorial material:
 | Hidden fields / URL capture (UTM, source, page) | ✅ | Automatic: page, referrer, landing page, UTM ×5, gclid, fbclid; listing prefill from the page or URL |
 | T&C / SMS consent checkbox | ✅ | Wording configurable; stored with evidence (time, IP, page, user agent) |
 | Styling | 🟡 | Button colour and 1/2-column layout; inherits the site's fonts. No custom CSS editor |
-| Conditional logic / multi-step / surveys | ❌ | Next |
+| Conditional logic | ✅ | Show a field only when an earlier answer matches (e.g. the address only for sellers). Hidden answers are neither required nor stored |
+| Multi-step forms | ✅ | Up to 5 steps with progress, Back/Next, and per-step validation. A server error jumps back to the right step |
+| Surveys with scoring / disqualification | ❌ | Next |
 | File upload | ❌ | Deliberately not accepted on a public form (malware/PII risk) until storage scanning exists |
-| CAPTCHA | 🟡 | Honeypot + minimum fill time + per-visitor/per-form rate limits instead; reCAPTCHA/Turnstile option is next |
+| CAPTCHA | ✅ | Cloudflare Turnstile per form, with its secret encrypted at rest and never returned. Always on as well: honeypot, minimum fill time, per-visitor and per-form rate limits |
 
 ### On submit and duplicates
 
@@ -197,7 +199,7 @@ GHL behaviour is taken from GHL's help-centre and tutorial material:
 | Thank-you message or redirect | ✅ | |
 | Fire a pixel on submit | 🟡 | Redirect to your own thank-you page, or listen for the `clientverse:lead` event |
 | Allow duplicate contacts on/off | ✅ | Per form, not location-wide |
-| Sticky contact (pre-fill a known visitor) | ❌ | Next; stores PII in the visitor's browser, so it will be opt-in |
+| Sticky contact (pre-fill a known visitor) | ✅ | Opt-in per form ("Remember returning visitors"). Off by default because it keeps details in the visitor's browser |
 
 ### Embedding
 
@@ -218,7 +220,7 @@ GHL behaviour is taken from GHL's help-centre and tutorial material:
 |---|---|---|
 | Create / update contact | ✅ | |
 | Add tags | ✅ | |
-| Assign user / round-robin | ✅ | Equal split; weighted split is next |
+| Assign user / round-robin | ✅ | Equal or weighted split (1×–5× share per agent) |
 | Create opportunity (pipeline, stage, value) | ✅ | Value can be expected commission (GCI) |
 | Internal notification | ✅ | In-app and email; SMS via the `lead.received` webhook |
 | Create task | ✅ | Speed-to-lead task due in minutes |
@@ -234,7 +236,7 @@ GHL behaviour is taken from GHL's help-centre and tutorial material:
 
 | GHL option | ClientVerse | Notes |
 |---|---|---|
-| Submissions list per form | ✅ | Leads inbox with filters and search |
+| Submissions list per form | ✅ | Leads inbox with filters, search and CSV export (formula-safe) |
 | Form views and conversion rate | ✅ | |
 | Response-time reporting | ✅ | Median, share inside 5 minutes, escalations |
 | Lead source attribution | ✅ | By UTM source or referrer |

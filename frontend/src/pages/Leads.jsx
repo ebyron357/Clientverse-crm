@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlarmClock, CheckCircle2, Clock3, Globe, Mail, Phone, RefreshCw, Search, ShieldAlert, Timer, Zap } from "lucide-react";
+import { AlarmClock, CheckCircle2, Clock3, Download, Globe, Mail, Phone, RefreshCw, Search, ShieldAlert, Timer, Zap } from "lucide-react";
 
 const STATUS_TABS = [
   { key: "new", label: "New" },
@@ -251,6 +251,19 @@ export default function Leads() {
     finally { setBusy(false); }
   };
 
+  const exportCsv = async () => {
+    try {
+      const params = {};
+      if (status !== "all") params.status = status;
+      if (formId !== "all") params.form_id = formId;
+      const response = await api.get("/leads/export", { params, responseType: "blob" });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = url; link.download = "leads.csv"; link.click();
+      URL.revokeObjectURL(url);
+    } catch { toast.error("The export could not be downloaded."); }
+  };
+
   const responseHint = useMemo(() => {
     if (!summary?.responded) return "No responses recorded yet";
     return `${summary.within_5_minutes} of ${summary.responded} within 5 min`;
@@ -266,6 +279,7 @@ export default function Leads() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" asChild><Link to="/website-forms"><Globe className="mr-1.5 h-4 w-4" />Website forms</Link></Button>
+          <Button variant="outline" onClick={exportCsv}><Download className="mr-1.5 h-4 w-4" />Export CSV</Button>
           <Button variant="outline" onClick={load} data-testid="leads-refresh"><RefreshCw className="mr-1.5 h-4 w-4" />Refresh</Button>
         </div>
       </div>

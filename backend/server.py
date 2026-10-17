@@ -4158,7 +4158,7 @@ lead_pipeline = website_forms.register_website_form_routes(
     api, db, new_id=new_id, now_iso=now_iso, record_event=record_event,
     get_current_user=get_current_user, require_role=require_role, spawn=spawn_background,
     send_email=send_email, email_configured=email_configured, get_prefs=get_prefs,
-    public_base_url=FRONTEND_URL)
+    public_base_url=FRONTEND_URL, encrypt=enc_secret, decrypt=dec_secret)
 recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user,
                                        require_role, lead_pipeline=lead_pipeline)
 

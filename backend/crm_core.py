@@ -97,6 +97,19 @@ def _history_entry(action: str, actor: str, detail: Optional[dict] = None) -> di
     return {"action": action, "actor": actor, "at": _iso(), "detail": detail or {}}
 
 
+def csv_safe(value: Any) -> Any:
+    """Neutralise a cell a spreadsheet would execute as a formula.
+
+    Website visitors can now put text into contacts and leads, and a name like
+    `=HYPERLINK(...)` would run when an agent opens the export in Excel or Sheets.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 def _escape_regex(value: str) -> str:
     return re.escape(value.strip())[:200]
 
@@ -920,7 +933,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            writer.writerow({column: row.get(column, "") for column in columns})
+            writer.writerow({column: csv_safe(row.get(column, "")) for column in columns})
         await record_event("data.exported", entity, entity, tenant_of(user),
                            user["email"], payload={"rows": len(rows)})
         return Response(

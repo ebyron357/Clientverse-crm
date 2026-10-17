@@ -63,8 +63,10 @@ owner's direction (2026-10-17), recorded in the canonical governing document.
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
 import html
+import io
 import json
 import logging
 import os
@@ -75,6 +77,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
@@ -443,7 +446,8 @@ def normalise_submission(raw: dict, form: dict) -> dict:
     for raw_key, value in (raw or {}).items():
         key = str(raw_key).strip()
         lowered = key.lower()
-        if lowered in ("_hp", "_sid", "_elapsed_ms", "_format", "external_id"):
+        if lowered in ("_hp", "_sid", "_elapsed_ms", "_format", "external_id",
+                       "cf-turnstile-response"):
             control[lowered] = value
             continue
         if lowered.startswith("_"):
@@ -499,8 +503,24 @@ def normalise_submission(raw: dict, form: dict) -> dict:
     if fields.get("name") and not fields.get("first_name"):
         fields["first_name"] = fields["name"].split(" ")[0][:MAX_TEXT]
 
+    def shown(spec: dict) -> bool:
+        """A conditional field counts only when the answer it depends on matches."""
+        condition = spec.get("show_if")
+        if not condition:
+            return True
+        answer = fields.get(condition["field"])
+        if isinstance(answer, bool):
+            answer = "Yes" if answer else "No"
+        return str(answer) in condition["values"] if answer not in (None, "") else False
+
     for spec in form.get("fields") or []:
         key = spec["key"]
+        if not shown(spec):
+            # Hidden from the visitor, so neither required nor kept: a stale answer to
+            # a question that no longer applied must not reach the record.
+            fields.pop(key, None)
+            errors.pop(key, None)
+            continue
         if not spec.get("required") or key in errors:
             continue
         present = fields.get(key)
@@ -534,7 +554,8 @@ def _default_settings(preset_key: str) -> dict:
         "allowed_origins": [],
         "duplicate_policy": "update_existing",
         "tags": ["website-lead", preset_key.replace("_", "-")],
-        "assignment": {"mode": "unassigned", "users": [], "keep_existing_owner": True},
+        "assignment": {"mode": "unassigned", "users": [], "keep_existing_owner": True,
+                       "weights": {}},
         "opportunity": {"enabled": preset["create_opportunity"], "stage": None,
                         "value_mode": "fixed", "fixed_value": 0.0,
                         "commission_rate": 2.5, "currency": "USD"},
@@ -546,6 +567,12 @@ def _default_settings(preset_key: str) -> dict:
                        "template_sha256": None},
         "consent": {"sms_text": DEFAULT_SMS_CONSENT, "email_text": DEFAULT_EMAIL_CONSENT},
         "theme": {"primary_color": "#1a9fbf", "layout": "stacked"},
+        # Pre-fill name, email and phone for a visitor who already submitted a form on
+        # this website ("sticky contact"). Off by default: it keeps those details in the
+        # visitor's browser, which is wrong on a shared computer.
+        "remember_visitor": False,
+        # Optional CAPTCHA. The secret is stored encrypted on the form, never here.
+        "captcha": {"provider": "none", "site_key": None, "secret_configured": False},
     }
 
 
@@ -560,6 +587,8 @@ def _field_definition(spec: dict) -> dict:
         "options": spec.get("options") or base.get("options"),
         "placeholder": spec.get("placeholder"),
         "autocomplete": base.get("autocomplete"),
+        "show_if": spec.get("show_if"),
+        "step": int(spec.get("step") or 1),
     }
 
 
@@ -570,6 +599,10 @@ class FieldSpec(BaseModel):
     type: Optional[str] = Field(default=None, max_length=20)
     options: Optional[list[str]] = None
     placeholder: Optional[str] = Field(default=None, max_length=200)
+    # Conditional display: {"field": "<earlier field key>", "values": ["Selling", ...]}.
+    show_if: Optional[dict] = None
+    # Multi-step forms: the page this field is on, 1-based.
+    step: Optional[int] = Field(default=None, ge=1, le=10)
 
 
 class FormCreate(BaseModel):
@@ -613,11 +646,33 @@ def validate_fields(specs: list[FieldSpec]) -> list[dict]:
             raise HTTPException(status_code=422,
                                 detail=f"Custom field type must be one of {', '.join(CUSTOM_FIELD_TYPES)}")
         options = [str(o).strip()[:120] for o in (spec.options or []) if str(o).strip()][:50]
+        show_if = None
+        if spec.show_if:
+            target = str(spec.show_if.get("field") or "").strip().lower()
+            values = [str(v).strip()[:120] for v in spec.show_if.get("values") or []
+                      if str(v).strip()][:20]
+            if target not in seen or target == key:
+                raise HTTPException(status_code=422,
+                                    detail=f"Field '{key}' can only depend on a field above it")
+            if not values:
+                raise HTTPException(status_code=422,
+                                    detail=f"Field '{key}' needs at least one value to show on")
+            show_if = {"field": target, "values": values}
         out.append({"key": key, "required": spec.required,
                     "label": (spec.label or "").strip() or None,
                     "type": (spec.type if CUSTOM_KEY.match(key) else None),
                     "options": options or None,
-                    "placeholder": (spec.placeholder or "").strip() or None})
+                    "placeholder": (spec.placeholder or "").strip() or None,
+                    "show_if": show_if, "step": spec.step or 1})
+    steps = sorted({f["step"] for f in out})
+    if steps != list(range(1, len(steps) + 1)):
+        raise HTTPException(status_code=422,
+                            detail="Steps must be numbered 1, 2, 3 … with no gaps")
+    for field in out:
+        depends_on = (field.get("show_if") or {}).get("field")
+        if depends_on and next(f["step"] for f in out if f["key"] == depends_on) > field["step"]:
+            raise HTTPException(status_code=422,
+                                detail=f"Field '{field['key']}' depends on a field on a later step")
     if not any(f["key"] in ("email", "phone") for f in out):
         raise HTTPException(status_code=422,
                             detail="A form needs an email or a phone field, or no one can "
@@ -667,6 +722,19 @@ def merge_settings(current: dict, patch: dict) -> dict:
                             detail="assignment.mode must be unassigned, specific or round_robin")
     assignment["users"] = [str(u).strip().lower() for u in assignment.get("users") or []
                            if str(u).strip()][:25]
+    weights = {}
+    for user, weight in (assignment.get("weights") or {}).items():
+        key = str(user).strip().lower()
+        if key not in assignment["users"]:
+            continue
+        try:
+            weight = int(weight)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="Round-robin weights must be whole numbers")
+        if not 1 <= weight <= 10:
+            raise HTTPException(status_code=422, detail="Round-robin weights must be between 1 and 10")
+        weights[key] = weight
+    assignment["weights"] = weights
     if assignment["mode"] != "unassigned" and not assignment["users"]:
         raise HTTPException(status_code=422, detail="Choose at least one agent to assign leads to")
     opportunity = merged["opportunity"]
@@ -698,7 +766,34 @@ def merge_settings(current: dict, patch: dict) -> dict:
     merged["theme"]["primary_color"] = color
     if merged["theme"].get("layout") not in ("stacked", "two_column"):
         merged["theme"]["layout"] = "stacked"
+    merged["remember_visitor"] = bool(merged.get("remember_visitor"))
+    captcha = merged["captcha"]
+    if captcha.get("provider") not in ("none", "turnstile"):
+        raise HTTPException(status_code=422, detail="captcha.provider must be none or turnstile")
+    site_key = _clip(captcha.get("site_key"), 200)
+    if site_key and not re.fullmatch(r"[A-Za-z0-9_\-]{8,200}", site_key):
+        raise HTTPException(status_code=422, detail="captcha.site_key does not look like a site key")
+    captcha["site_key"] = site_key
+    captcha["secret_configured"] = bool(captcha.get("secret_configured"))
     return merged
+
+
+def with_defaults(form: dict) -> dict:
+    """A form saved before a setting existed reads as if it had the default."""
+    form_type = str(form.get("form_type") or "")
+    defaults = _default_settings(form_type if form_type in PRESETS else "contact")
+    settings = form.get("settings") or {}
+    merged = {**defaults, **settings}
+    for key, value in defaults.items():
+        if isinstance(value, dict):
+            merged[key] = {**value, **(settings.get(key) or {})}
+    return {**form, "settings": merged}
+
+
+def captcha_active(form: dict) -> bool:
+    captcha = form["settings"].get("captcha") or {}
+    return (captcha.get("provider") == "turnstile" and bool(captcha.get("site_key"))
+            and bool(form.get("captcha_secret_enc")))
 
 
 def public_config(form: dict) -> dict:
@@ -714,7 +809,11 @@ def public_config(form: dict) -> dict:
             "submit_text": settings["submit_text"],
             "success_message": settings["success_message"],
             "redirect_url": settings.get("redirect_url"),
-            "theme": settings["theme"]}
+            "theme": settings["theme"],
+            "remember_visitor": bool(settings.get("remember_visitor")),
+            "steps": max([f["step"] for f in fields] or [1]),
+            "captcha": ({"provider": "turnstile", "site_key": settings["captcha"]["site_key"]}
+                        if captcha_active(form) else None)}
 
 
 # -------------------------------------------------------------- CORS for websites
@@ -778,8 +877,12 @@ class LeadPipeline:
                  email_configured: Optional[Callable[[], bool]] = None,
                  get_prefs: Optional[Callable[..., Awaitable[dict]]] = None,
                  public_base_url: str = "",
-                 provider_registry: Optional[conversation_service.ProviderRegistry] = None):
+                 provider_registry: Optional[conversation_service.ProviderRegistry] = None,
+                 encrypt: Optional[Callable[[dict], str]] = None,
+                 decrypt: Optional[Callable[[str], dict]] = None):
         self.db = db
+        self.encrypt = encrypt
+        self.decrypt = decrypt
         self.new_id = new_id
         self.now_iso = now_iso
         self.record_event = record_event
@@ -808,8 +911,9 @@ class LeadPipeline:
     # ------------------------------------------------------------ form loading
 
     async def form_by_key(self, public_key: str) -> Optional[dict]:
-        return await self.db[FORMS].find_one(
+        form = await self.db[FORMS].find_one(
             {"public_key": public_key, "status": "active"}, {"_id": 0})
+        return with_defaults(form) if form else None
 
     @staticmethod
     def legacy_form(token: dict) -> dict:
@@ -848,6 +952,11 @@ class LeadPipeline:
             response.headers["Retry-After"] = str(limited)
             return response
 
+        if not await self._captcha_passed(form, data.get("cf-turnstile-response"), ip):
+            return self._respond(wants_html, 422,
+                                 {"detail": "Please complete the verification and try again.",
+                                  "errors": {"captcha": "Please complete the verification"}},
+                                 form)
         meta = {"ip": ip, "visitor": visitor,
                 "user_agent": (request.headers.get("user-agent") or "")[:400],
                 "origin": origin, "channel": "public_form"}
@@ -887,6 +996,30 @@ class LeadPipeline:
             f"<h1>{html.escape(heading)}</h1><div>{detail if status != 200 else html.escape(detail)}</div>"
             "<p><a href='javascript:history.back()'>Go back</a></p></body></html>")
         return HTMLResponse(page, status_code=status)
+
+    async def verify_turnstile(self, secret: str, token: str, ip: Optional[str]) -> bool:
+        """Ask Cloudflare whether the visitor passed the challenge. Fails closed."""
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                response = await client.post(
+                    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                    data={"secret": secret, "response": token, "remoteip": ip or ""})
+            return bool(response.status_code == 200 and (response.json() or {}).get("success"))
+        except Exception:
+            logger.warning("Turnstile verification could not be completed")
+            return False
+
+    async def _captcha_passed(self, form: dict, token: Any, ip: Optional[str]) -> bool:
+        if not captcha_active(form):
+            return True
+        if not token or not self.decrypt:
+            return False
+        try:
+            secret = self.decrypt(form["captcha_secret_enc"]).get("secret") or ""
+        except Exception:
+            logger.exception("Could not read the CAPTCHA secret for form %s", form.get("id"))
+            return False
+        return await self.verify_turnstile(secret, str(token)[:4096], ip)
 
     async def _rate_limited(self, form: dict, visitor: str) -> int:
         """Seconds to wait, or 0. Every attempt counts, including ones later refused."""
@@ -1176,7 +1309,10 @@ class LeadPipeline:
                 {"id": form["id"]}, {"$inc": {"stats.round_robin_cursor": 1}},
                 projection={"_id": 0, "stats": 1}, return_document=True)
             cursor = int(((updated or {}).get("stats") or {}).get("round_robin_cursor") or 1)
-            return candidates[(cursor - 1) % len(candidates)]
+            # Weighted: an agent with weight 2 takes two turns in each cycle.
+            weights = settings.get("weights") or {}
+            rotation = [u for u in candidates for _ in range(int(weights.get(u) or 1))]
+            return rotation[(cursor - 1) % len(rotation)]
         return None
 
     # ---------------------------------------------------------- opportunity
@@ -1662,6 +1798,8 @@ EMBED_JS = r"""/* ClientVerse website forms embed. Usage:
       ".cvf-check{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.4}" +
       ".cvf-err{color:#b91c1c;font-size:13px;margin-top:4px}.cvf-btn{background:var(--cvf-color);color:#fff;border:0;border-radius:8px;padding:12px 18px;font:inherit;font-weight:600;cursor:pointer;width:100%}" +
       ".cvf-btn[disabled]{opacity:.6;cursor:wait}.cvf-done{padding:16px;border-radius:8px;background:#ecfeff;border:1px solid #a5f3fc}" +
+      ".cvf-nav{display:flex;gap:10px}.cvf-back{background:none;border:1px solid #cbd5e1;border-radius:8px;padding:12px 18px;font:inherit;cursor:pointer;color:inherit}" +
+      ".cvf-progress{font-size:13px;font-weight:600;margin:0 0 12px;opacity:.75}" +
       ".cvf-hp{position:absolute!important;left:-10000px!important;width:1px;height:1px;overflow:hidden}" +
       ".cvf-two{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}@media(max-width:560px){.cvf-two{grid-template-columns:1fr}}" +
       ".cvf-overlay{position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;z-index:2147483000;padding:16px}" +
@@ -1687,6 +1825,18 @@ EMBED_JS = r"""/* ClientVerse website forms embed. Usage:
     if (prefill[f.key]) input.value = prefill[f.key];
     return el("div", { "class": "cvf-field", "data-key": f.key }, [el("label", { "class": "cvf-label", "for": id, text: f.label + (f.required ? " *" : "") }), input, el("div", { "class": "cvf-err" })]);
   }
+  var VISITOR = "cvf_visitor";
+  var REMEMBERED = ["first_name", "last_name", "name", "email", "phone"];
+  function remembered() {
+    try { return JSON.parse(window.localStorage.getItem(VISITOR) || "{}"); } catch (e) { return {}; }
+  }
+  function withTurnstile(callback, tries) {
+    if (window.turnstile && window.turnstile.render) { callback(window.turnstile); return; }
+    if (!document.getElementById("cvf-turnstile")) {
+      document.head.appendChild(el("script", { id: "cvf-turnstile", src: "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit", async: "async" }));
+    }
+    if ((tries || 0) < 100) setTimeout(function () { withTurnstile(callback, (tries || 0) + 1); }, 100);
+  }
   function render(host, cfg) {
     css(cfg.theme && cfg.theme.primary_color);
     var started = Date.now();
@@ -1694,23 +1844,91 @@ EMBED_JS = r"""/* ClientVerse website forms embed. Usage:
     var ds = host.dataset || {};
     var params = new URLSearchParams(window.location.search);
     var prefill = { listing_id: ds.listingId || params.get("listing_id") || "", property_address: ds.propertyAddress || params.get("property_address") || "" };
+    if (cfg.remember_visitor) {
+      var known = remembered();
+      REMEMBERED.forEach(function (k) { if (known[k] && !prefill[k]) prefill[k] = known[k]; });
+    }
     var form = el("form", { "class": "cvf", novalidate: "novalidate" });
     form.style.setProperty("--cvf-color", (cfg.theme && cfg.theme.primary_color) || "#1a9fbf");
-    var grid = el("div", { "class": cfg.theme && cfg.theme.layout === "two_column" ? "cvf-two" : "" });
+    var layout = cfg.theme && cfg.theme.layout === "two_column" ? "cvf-two" : "";
+    var steps = Math.max(1, cfg.steps || 1);
+    var current = 1;
+    var pages = [];
+    for (var i = 1; i <= steps; i++) pages.push(el("div", { "class": layout, "data-step": String(i) }));
+    var progress = steps > 1 ? el("div", { "class": "cvf-progress", "aria-live": "polite" }) : null;
+    if (progress) form.appendChild(progress);
     var keys = {};
-    cfg.fields.forEach(function (f) { keys[f.key] = true; grid.appendChild(fieldNode(f, prefill)); });
-    form.appendChild(grid);
+    cfg.fields.forEach(function (f) {
+      keys[f.key] = true;
+      var node = fieldNode(f, prefill);
+      if (f.show_if) {
+        node.setAttribute("data-show-field", f.show_if.field);
+        node.setAttribute("data-show-values", JSON.stringify(f.show_if.values));
+      }
+      pages[Math.min(steps, Math.max(1, f.step || 1)) - 1].appendChild(node);
+    });
+    pages.forEach(function (page) { form.appendChild(page); });
     ["listing_id", "property_address"].forEach(function (k) { if (!keys[k] && prefill[k]) form.appendChild(el("input", { type: "hidden", name: k, value: prefill[k] })); });
     form.appendChild(el("div", { "class": "cvf-hp", "aria-hidden": "true" }, [el("label", { text: "Leave this field empty" }, [el("input", { type: "text", name: "_hp", tabindex: "-1", autocomplete: "off" })])]));
+    var captcha = null;
+    var widget = null;
+    if (cfg.captcha && cfg.captcha.provider === "turnstile") {
+      var slot = el("div");
+      captcha = el("div", { "class": "cvf-field cvf-captcha", "data-key": "captcha" }, [slot, el("div", { "class": "cvf-err" })]);
+      form.appendChild(captcha);
+      withTurnstile(function (ts) { widget = ts.render(slot, { sitekey: cfg.captcha.site_key }); });
+    }
     var status = el("div", { "class": "cvf-err", role: "alert" });
+    var back = el("button", { type: "button", "class": "cvf-back", text: "Back" });
+    var next = el("button", { type: "button", "class": "cvf-btn", text: "Next" });
     var button = el("button", { type: "submit", "class": "cvf-btn", text: cfg.submit_text || "Submit" });
-    form.appendChild(button); form.appendChild(status);
+    form.appendChild(el("div", { "class": "cvf-nav" }, [back, next, button]));
+    form.appendChild(status);
+
+    function clearErrors(scope) { Array.prototype.forEach.call((scope || form).querySelectorAll(".cvf-err"), function (n) { n.textContent = ""; }); }
+    function applyConditions() {
+      Array.prototype.forEach.call(form.querySelectorAll("[data-show-field]"), function (node) {
+        var source = form.querySelector('[name="' + node.getAttribute("data-show-field") + '"]');
+        var value = "";
+        if (source && !source.disabled) value = source.type === "checkbox" ? (source.checked ? "Yes" : "No") : source.value;
+        var visible = JSON.parse(node.getAttribute("data-show-values") || "[]").indexOf(value) !== -1;
+        node.style.display = visible ? "" : "none";
+        Array.prototype.forEach.call(node.querySelectorAll("input,select,textarea"), function (input) { input.disabled = !visible; });
+      });
+    }
+    function showStep(n) {
+      current = n;
+      pages.forEach(function (page, index) { page.style.display = index + 1 === n ? "" : "none"; });
+      if (progress) progress.textContent = "Step " + n + " of " + steps;
+      back.style.display = n > 1 ? "" : "none";
+      next.style.display = n < steps ? "" : "none";
+      button.style.display = n === steps ? "" : "none";
+      if (captcha) captcha.style.display = n === steps ? "" : "none";
+    }
+    function stepValid(n) {
+      var ok = true;
+      Array.prototype.forEach.call(pages[n - 1].querySelectorAll("input,select,textarea"), function (input) {
+        if (input.disabled || input.type === "hidden" || input.checkValidity()) return;
+        ok = false;
+        var wrap = input.closest("[data-key]");
+        var err = wrap && wrap.querySelector(".cvf-err");
+        if (err) err.textContent = input.validationMessage || "Please complete this field";
+      });
+      return ok;
+    }
+    next.addEventListener("click", function () { clearErrors(pages[current - 1]); if (stepValid(current)) showStep(current + 1); });
+    back.addEventListener("click", function () { showStep(current - 1); });
+    form.addEventListener("change", applyConditions);
+    form.addEventListener("input", applyConditions);
+    applyConditions();
+    showStep(1);
+
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
-      Array.prototype.forEach.call(form.querySelectorAll(".cvf-err"), function (n) { n.textContent = ""; });
+      clearErrors();
       var data = {};
       Array.prototype.forEach.call(form.elements, function (n) {
-        if (!n.name) return;
+        if (!n.name || n.disabled) return;
         if (n.type === "checkbox") { if (n.checked) data[n.name] = true; }
         else if (n.value) data[n.name] = n.value;
       });
@@ -1727,16 +1945,27 @@ EMBED_JS = r"""/* ClientVerse website forms embed. Usage:
           button.disabled = false;
           if (res.ok) {
             try { window.localStorage.setItem("cvf_done_" + cfg.key, "1"); } catch (e) { /* private mode */ }
+            if (cfg.remember_visitor) {
+              var keep = {};
+              REMEMBERED.forEach(function (k) { if (data[k]) keep[k] = data[k]; });
+              try { window.localStorage.setItem(VISITOR, JSON.stringify(keep)); } catch (e) { /* private mode */ }
+            }
             try { window.dispatchEvent(new CustomEvent("clientverse:lead", { detail: { form: cfg.key, id: res.body.id } })); } catch (e) { /* old browser */ }
             if (res.body.redirect_url) { (window.top || window).location.href = res.body.redirect_url; return; }
             form.replaceWith(el("div", { "class": "cvf cvf-done", role: "status", text: res.body.message || cfg.success_message }));
             return;
           }
+          if (widget !== null && window.turnstile) { try { window.turnstile.reset(widget); } catch (e) { /* ignore */ } }
           var errors = res.body.errors || {};
+          var firstStep = null;
           Object.keys(errors).forEach(function (k) {
-            var wrap = form.querySelector('[data-key="' + k + '"] .cvf-err');
+            var holder = form.querySelector('[data-key="' + k + '"]');
+            var wrap = holder && holder.querySelector(".cvf-err");
             if (wrap) wrap.textContent = errors[k]; else status.textContent = errors[k];
+            var page = holder && holder.closest("[data-step]");
+            if (page) { var n = parseInt(page.getAttribute("data-step"), 10); if (firstStep === null || n < firstStep) firstStep = n; }
           });
+          if (firstStep !== null && firstStep !== current) showStep(firstStep);
           if (!Object.keys(errors).length) status.textContent = res.body.detail || "Something went wrong. Please try again.";
         })
         .catch(function () { button.disabled = false; status.textContent = "We couldn't send that. Please check your connection and try again."; });
@@ -1820,7 +2049,11 @@ def hosted_page(form: dict) -> str:
 
 
 HOSTED_PAGE_CSP = "; ".join([
-    "default-src 'self'", "script-src 'self' 'unsafe-inline'", "style-src 'self' 'unsafe-inline'",
+    "default-src 'self'",
+    # Cloudflare Turnstile, for forms that turn the CAPTCHA on.
+    "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+    "frame-src https://challenges.cloudflare.com",
+    "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:", "connect-src 'self'", "frame-ancestors *", "base-uri 'self'",
     "form-action 'self'",
 ])
@@ -1888,22 +2121,49 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
                                  get_current_user, require_role, spawn,
                                  send_email=None, email_configured=None, get_prefs=None,
                                  public_base_url: str = "",
-                                 provider_registry=None) -> LeadPipeline:
+                                 provider_registry=None, encrypt=None,
+                                 decrypt=None) -> LeadPipeline:
     pipeline = LeadPipeline(db, new_id=new_id, now_iso=now_iso, record_event=record_event,
                             spawn=spawn, send_email=send_email,
                             email_configured=email_configured, get_prefs=get_prefs,
                             public_base_url=public_base_url,
-                            provider_registry=provider_registry)
+                            provider_registry=provider_registry,
+                            encrypt=encrypt, decrypt=decrypt)
 
     async def load_form(form_id: str, user: dict) -> dict:
         form = await db[FORMS].find_one({"id": form_id, "tenant_id": user["tenant_id"],
                                          "status": {"$ne": "archived"}}, {"_id": 0})
         if not form:
             raise HTTPException(status_code=404, detail="Not found")
-        return form
+        return with_defaults(form)
+
+    def take_captcha_secret(settings_patch: Optional[dict]) -> Optional[str]:
+        """Pull a write-only CAPTCHA secret out of a settings update before it is stored.
+
+        Returns the new secret, "" to clear it, or None when the update does not touch it.
+        """
+        captcha = (settings_patch or {}).get("captcha")
+        if not isinstance(captcha, dict) or "secret" not in captcha:
+            return None
+        secret = str(captcha.pop("secret") or "").strip()
+        if secret and not re.fullmatch(r"[A-Za-z0-9_\-.]{8,300}", secret):
+            raise HTTPException(status_code=422, detail="captcha secret does not look like a secret key")
+        if secret and not encrypt:
+            raise HTTPException(status_code=500, detail="Secure credential storage is not configured")
+        return secret
+
+    def apply_captcha_secret(changes: dict, settings: dict, secret: Optional[str]) -> None:
+        if secret is None:
+            return
+        if secret:
+            changes["captcha_secret_enc"] = encrypt({"secret": secret}) if encrypt else None
+        else:
+            changes["captcha_secret_enc"] = None
+        settings["captcha"]["secret_configured"] = bool(secret)
 
     async def present(form: dict) -> dict:
-        out = {k: v for k, v in form.items() if k != "_id"}
+        form = with_defaults(form)
+        out = {k: v for k, v in form.items() if k not in ("_id", "captcha_secret_enc")}
         out["embed"] = embed_snippets(form, pipeline.public_base_url)
         state = await pipeline.template_approval_state(form)
         out["auto_reply_state"] = {"state": state["state"],
@@ -1959,6 +2219,7 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
         forms = await db[FORMS].find({"tenant_id": user["tenant_id"],
                                       "status": {"$ne": "archived"}},
                                      {"_id": 0}).sort("created_at", -1).to_list(200)
+        forms = [with_defaults(f) for f in forms]
         return {"items": [await present(f) for f in forms]}
 
     @router.post("/website-forms")
@@ -1968,14 +2229,23 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
                                 detail=f"preset must be one of {', '.join(PRESETS)}")
         specs = inp.fields if inp.fields is not None else [
             FieldSpec(**f) for f in PRESETS[inp.preset]["fields"]]
-        settings = merge_settings(_default_settings(inp.preset), inp.settings or {})
+        patch = json.loads(json.dumps(inp.settings or {}))
+        secret = take_captcha_secret(patch)
+        settings = merge_settings(_default_settings(inp.preset), patch)
+        secret_fields: dict[str, Any] = {}
+        apply_captcha_secret(secret_fields, settings, secret)
+        if settings["captcha"]["provider"] == "turnstile" and not (
+                secret_fields.get("captcha_secret_enc") and settings["captcha"]["site_key"]):
+            raise HTTPException(status_code=422,
+                                detail="Turnstile needs both a site key and a secret key")
         now = now_iso()
         doc = {"id": new_id("wf"), "tenant_id": user["tenant_id"], "name": inp.name.strip(),
                "form_type": inp.preset, "public_key": "f_" + secrets.token_urlsafe(18),
                "status": "active", "fields": validate_fields(specs), "settings": settings,
                "stats": {"views": 0, "submissions": 0, "spam_blocked": 0,
                          "last_submission_at": None, "round_robin_cursor": 0},
-               "created_by": user["email"], "created_at": now, "updated_at": now}
+               "created_by": user["email"], "created_at": now, "updated_at": now,
+               "captcha_secret_enc": secret_fields.get("captcha_secret_enc")}
         await db[FORMS].insert_one(dict(doc))
         await record_event("website_form.created", "website_form", doc["id"], user["tenant_id"],
                            user["email"], payload={"name": doc["name"], "preset": inp.preset})
@@ -2000,12 +2270,20 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
         if inp.fields is not None:
             changes["fields"] = validate_fields(inp.fields)
         if inp.settings is not None:
-            changes["settings"] = merge_settings(form["settings"], inp.settings)
+            patch = json.loads(json.dumps(inp.settings))
+            secret = take_captcha_secret(patch)
+            changes["settings"] = merge_settings(form["settings"], patch)
+            apply_captcha_secret(changes, changes["settings"], secret)
+        if (changes.get("settings") or form["settings"])["captcha"]["provider"] == "turnstile":
+            merged = {**form, **changes}
+            if not (merged.get("captcha_secret_enc") and merged["settings"]["captcha"]["site_key"]):
+                raise HTTPException(status_code=422,
+                                    detail="Turnstile needs both a site key and a secret key")
         await db[FORMS].update_one({"id": form_id, "tenant_id": user["tenant_id"]},
                                    {"$set": changes})
         await record_event("website_form.updated", "website_form", form_id, user["tenant_id"],
-                           user["email"], payload={"changed": sorted(k for k in changes
-                                                                     if k != "updated_at")})
+                           user["email"], payload={"changed": sorted(
+                               k for k in changes if k not in ("updated_at", "captcha_secret_enc"))})
         form = {**form, **changes}
         reply = form["settings"]["auto_reply"]
         if reply["enabled"]:
@@ -2108,6 +2386,47 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
                 "responded": len(minutes), "sla_breaches": breached, "open_now": open_now,
                 # An estimate, labelled as one: value of leads nobody has responded to yet.
                 "uncontacted_value_estimate": round(uncontacted_value, 2)}
+
+    @router.get("/leads/export")
+    async def export_leads(status: Optional[str] = None, form_id: Optional[str] = None,
+                           include_tests: bool = False, user=Depends(get_current_user)):
+        """Every lead as CSV, for a spreadsheet or another system."""
+        query: dict[str, Any] = {"tenant_id": user["tenant_id"]}
+        if status in LEAD_STATUSES:
+            query["status"] = status
+        if form_id:
+            query["form_id"] = form_id
+        if not include_tests:
+            query["is_test"] = {"$ne": True}
+        rows = await db[detectors.WEB_ENQUIRIES].find(query, {"_id": 0}).sort(
+            "received_at", -1).to_list(50000)
+        columns = ["received_at", "status", "name", "email", "phone", "form_name",
+                   "lead_type", "property_address", "listing_id", "message", "assigned_to",
+                   "estimated_value", "currency", "response_minutes", "escalated_at",
+                   "utm_source", "utm_medium", "utm_campaign", "referrer", "page_url",
+                   "consent_sms", "consent_email", "contact_id", "opportunity_id", "id"]
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=columns)
+        writer.writeheader()
+        for row in rows:
+            attribution = row.get("attribution") or {}
+            consent = row.get("consent") or {}
+            sla = row.get("sla") or {}
+            flat = {**{k: row.get(k) for k in columns},
+                    "lead_type": (row.get("fields") or {}).get("lead_type"),
+                    "response_minutes": sla.get("response_minutes"),
+                    "escalated_at": sla.get("escalated_at"),
+                    "utm_source": attribution.get("utm_source"),
+                    "utm_medium": attribution.get("utm_medium"),
+                    "utm_campaign": attribution.get("utm_campaign"),
+                    "referrer": attribution.get("referrer"),
+                    "page_url": attribution.get("page_url"),
+                    "consent_sms": consent.get("sms"), "consent_email": consent.get("email")}
+            writer.writerow({k: crm_core.csv_safe(v) for k, v in flat.items()})
+        await record_event("data.exported", "leads", "leads", user["tenant_id"], user["email"],
+                           payload={"rows": len(rows)})
+        return Response(content=buffer.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": 'attachment; filename="leads.csv"'})
 
     @router.get("/leads/{lead_id}")
     async def get_lead(lead_id: str, user=Depends(get_current_user)):
