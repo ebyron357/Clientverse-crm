@@ -1,7 +1,7 @@
 import {
   Activity, BadgeCheck, BarChart3, Bell, BookOpenCheck, Boxes, BriefcaseBusiness, CalendarDays,
   CircleDollarSign, ClipboardCheck, FileInput, GitBranch, Globe, Handshake, Headphones,
-  Inbox, LayoutDashboard, Mail, MessageSquareText, Phone, Settings, ShieldCheck,
+  Inbox, LayoutDashboard, ListTodo, Mail, MessageSquareText, Phone, Settings, ShieldCheck,
   Sparkles, Terminal, UserPlus, Users, Workflow,
 } from "lucide-react";
 
@@ -15,6 +15,7 @@ export const CLIENTVERSE_MODULES = [
   { id: "command-center", group: "Command", label: "Command Center", description: "Portfolio metrics, alerts, and priority follow-ups", route: "/dashboard", icon: LayoutDashboard, state: MODULE_STATES.AVAILABLE, contract: "GET /api/dashboard", actions: ["view", "navigate"] },
   { id: "action-center", group: "Command", label: "Action Center", description: "Alerts, approvals, and owned follow-through", route: "/notifications", icon: Bell, state: MODULE_STATES.AVAILABLE, contract: "GET /api/alerts", actions: ["view", "acknowledge", "resolve"] },
   { id: "leads", group: "CRM", label: "Leads", description: "Website leads with their speed-to-lead clock and follow-through", route: "/leads", icon: UserPlus, state: MODULE_STATES.AVAILABLE, contract: "GET /api/leads | GET /api/leads/summary | PATCH /api/leads/{id}", actions: ["view", "respond", "close", "spam"] },
+  { id: "tasks", group: "CRM", label: "Tasks", description: "Call-backs and follow-ups: what is overdue, due today and coming up", route: "/tasks", icon: ListTodo, state: MODULE_STATES.AVAILABLE, contract: "GET /api/tasks | GET|PATCH /api/crm/tasks/{id} | POST /api/crm/tasks", actions: ["view", "create", "complete", "reopen", "reschedule", "reassign"] },
   { id: "website-forms", group: "CRM", label: "Website Forms", description: "Real-estate website forms, embed codes and lead automation", route: "/website-forms", icon: Globe, state: MODULE_STATES.AVAILABLE, contract: "GET|POST|PATCH /api/website-forms | POST /api/public/forms/{key}/submit", actions: ["view", "create", "configure", "embed", "test"] },
   { id: "contacts", group: "CRM", label: "Contacts", description: "People and relationship context", route: "/contacts", icon: Users, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/contacts", actions: ["view", "create"] },
   { id: "companies", group: "CRM", label: "Companies", description: "Account and commercial context", route: "/companies", icon: BriefcaseBusiness, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/companies", actions: ["view", "create"] },

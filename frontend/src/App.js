@@ -26,6 +26,7 @@ import ClientPortal from "@/pages/ClientPortal";
 import ModuleStatus from "@/pages/ModuleStatus";
 import RecoveryProof from "@/pages/RecoveryProof";
 import Leads from "@/pages/Leads";
+import Tasks, { TaskRedirect } from "@/pages/Tasks";
 import WebsiteForms from "@/pages/WebsiteForms";
 import { CLIENTVERSE_MODULES, MODULE_STATES } from "@/platform/modules";
 
@@ -85,6 +86,8 @@ function AppRouter() {
         <Route path="/client-ops" element={<ClientOps />} />
         <Route path="/proof" element={<RecoveryProof />} />
         <Route path="/leads" element={<Leads />} />
+        <Route path="/tasks" element={<Tasks />} />
+        <Route path="/tasks/:taskId" element={<TaskRedirect />} />
         <Route path="/website-forms" element={<WebsiteForms />} />
         <Route path="/field" element={<FieldOps />} />
         {CLIENTVERSE_MODULES.filter((module) => module.state !== MODULE_STATES.AVAILABLE).map((module) => <Route key={module.id} path={module.route} element={<ModuleStatus moduleId={module.id} />} />)}
