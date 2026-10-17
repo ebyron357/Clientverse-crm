@@ -758,6 +758,9 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         await assert_exists(collection, related_id, user, f"{related_type} id")
         return related_type, related_id
 
+    def same_person(first: Optional[str], second: Optional[str]) -> bool:
+        return bool(first and second) and str(first).strip().lower() == str(second).strip().lower()
+
     def email_match(email: str) -> dict:
         # Assignees are typed by people and written by automation, so the case an address
         # was stored in says nothing about who it belongs to.
@@ -922,22 +925,34 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                            user["email"], workspace_id=workspace_id,
                            payload={"title": inp.title, "assignee": inp.assignee,
                                     "related_type": related_type, "related_id": related_id})
-        if inp.assignee and inp.assignee != user["email"]:
+        if inp.assignee and not same_person(inp.assignee, user["email"]):
             await notify_assignment(user, doc)
         return _public(doc)
 
     async def notify_assignment(user, task: dict) -> None:
-        """Tell someone a task landed on them.
+        """Tell someone a task landed on them -- and only them.
 
-        An assignment nobody is told about is not an assignment.
+        An assignment nobody is told about is not an assignment, and one the whole team
+        is told about is noise: a notice with no `user_id` is a team-wide one, which is
+        how every user used to read "a task was assigned to you". So it is addressed to
+        the assignee's own user. Someone who is not an active member here has no bell to
+        ring, and nothing is stored for them.
         """
+        assignee = str(task.get("assignee") or "").strip()
+        if not assignee:
+            return
+        member = await db.memberships.find_one(
+            {"tenant_id": tenant_of(user), "email": email_match(assignee), "status": "active"},
+            {"_id": 0, "user_id": 1})
+        if not (member or {}).get("user_id"):
+            return
         await db.notifications.insert_one({
-            "id": new_id("ntf"), "tenant_id": tenant_of(user), "user_id": None,
-            "recipient": task.get("assignee"), "workspace_id": task.get("workspace_id"),
-            "type": "assignment", "severity": "info", "source": "crm",
-            "title": "A task was assigned to you",
+            "id": new_id("ntf"), "tenant_id": tenant_of(user), "user_id": member["user_id"],
+            "recipient": assignee, "workspace_id": task.get("workspace_id"),
+            "type": "assignment", "severity": "info", "source": "crm", "category": "tasks",
+            "task_id": task["id"], "title": "A task was assigned to you",
             "body": f"{user['email']} assigned you \"{task['title']}\"",
-            "deep_link": f"/tasks/{task['id']}", "read": False, "created_at": now_iso(),
+            "deep_link": f"/tasks?task={task['id']}", "read": False, "created_at": now_iso(),
         })
 
     @router.patch("/crm/tasks/{task_id}")
@@ -958,7 +973,8 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             await record_event("task.completed", "task", task_id, tenant_of(user),
                                user["email"], workspace_id=before.get("workspace_id"),
                                payload={"title": before.get("title")})
-        if changes.get("assignee") and changes["assignee"] != before.get("assignee"):
+        if changes.get("assignee") and changes["assignee"] != before.get("assignee") \
+                and not same_person(changes["assignee"], user["email"]):
             await notify_assignment(user, updated)
         return updated
 

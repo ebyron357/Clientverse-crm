@@ -232,3 +232,71 @@ def test_tasks_and_what_they_point_at_stay_inside_the_tenant(client):
                        json={"title": "x", "related_type": "contact",
                              "related_id": secret["id"]}).status_code == 422
 
+
+# ------------------------------------------------------- assignment notices
+
+def notices(client, who):
+    response = client.get("/api/notifications", headers=who["headers"])
+    assert response.status_code == 200, response.text
+    return response.json()["notifications"]
+
+
+def test_an_assignment_notice_reaches_only_the_assignee_and_opens_the_task(client):
+    owner = register(client)
+    colleague = join(client, owner)
+    task = new_task(client, owner, title="Call the Bells about Saturday",
+                    assignee=colleague["email"])
+
+    theirs = [n for n in notices(client, colleague) if n["type"] == "assignment"]
+    assert len(theirs) == 1
+    assert theirs[0]["deep_link"] == f"/tasks?task={task['id']}"
+    assert theirs[0]["user_id"] == colleague["user_id"]
+    assert theirs[0]["category"] == "tasks"
+    assert not [n for n in notices(client, owner) if n["type"] == "assignment"], (
+        "nobody else is told a task was assigned to them")
+    assert client.post(f"/api/notifications/{theirs[0]['id']}/read",
+                       headers=owner["headers"]).status_code == 404
+
+    # Reassigning tells the new assignee; assigning to yourself tells nobody.
+    client.patch(f"/api/crm/tasks/{task['id']}", headers=colleague["headers"],
+                 json={"assignee": owner["email"]})
+    assert [n for n in notices(client, owner) if n["type"] == "assignment"]
+    before = len(find_all(client, "notifications", {"tenant_id": owner["tenant_id"],
+                                                    "type": "assignment"}))
+    client.patch(f"/api/crm/tasks/{task['id']}", headers=owner["headers"],
+                 json={"assignee": owner["email"].upper()})
+    new_task(client, owner, assignee=owner["email"])
+    assert len(find_all(client, "notifications", {"tenant_id": owner["tenant_id"],
+                                                  "type": "assignment"})) == before
+
+
+def test_an_assignee_outside_the_team_gets_no_team_wide_notice(client):
+    owner = register(client)
+    new_task(client, owner, assignee="stranger@example.com")
+    assert not find_all(client, "notifications", {"tenant_id": owner["tenant_id"],
+                                                  "type": "assignment"})
+
+
+def test_older_assignment_notices_stay_with_the_person_they_name(client):
+    owner = register(client)
+    colleague = join(client, owner)
+    stamp = iso(timedelta(0))
+    call(client, server.db.notifications.insert_many, [
+        {"id": f"ntf_{uuid.uuid4().hex[:8]}", "tenant_id": owner["tenant_id"], "user_id": None,
+         "recipient": colleague["email"], "type": "assignment", "source": "crm",
+         "title": "A task was assigned to you", "deep_link": "/tasks/task_legacy",
+         "read": False, "created_at": stamp},
+        {"id": f"ntf_{uuid.uuid4().hex[:8]}", "tenant_id": owner["tenant_id"], "user_id": None,
+         "recipient": None, "type": "lead.new", "category": "leads", "source": "website_form",
+         "title": "New lead: Jane", "deep_link": "/leads?lead=x", "read": False,
+         "created_at": stamp},
+    ])
+    assert {n["type"] for n in notices(client, colleague)} >= {"assignment", "lead.new"}
+    owner_view = notices(client, owner)
+    assert "lead.new" in {n["type"] for n in owner_view}, "team-wide notices still reach everyone"
+    assert "assignment" not in {n["type"] for n in owner_view}
+
+    client.post("/api/notifications/read-all", headers=owner["headers"])
+    legacy = find_one(client, "notifications", {"tenant_id": owner["tenant_id"],
+                                                "type": "assignment"})
+    assert legacy["read"] is False, "marking my notices read leaves someone else's alone"

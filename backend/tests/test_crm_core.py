@@ -248,13 +248,25 @@ def test_overdue_and_upcoming_work_is_surfaced(tenant):
 
 
 def test_assigning_a_task_to_someone_else_notifies_them(tenant):
-    tenant.post("/crm/tasks", {"title": "For a colleague", "assignee": "colleague@example.com",
-                               "related_type": "company", "related_id": tenant.company_id})
-    notifications = tenant.get("/notifications")["notifications"]
-    assigned = [n for n in notifications if "assigned" in (n.get("title") or "").lower()]
+    # A real colleague in the same team, the way one joins it: invited, then accepted.
+    colleague_token, colleague_email = _register("crm_colleague")
+    invite = tenant.post("/team/invitations", {"email": colleague_email, "role": "member"})
+    accepted = requests.post(f"{API}/team/invitations/accept", headers=_h(colleague_token),
+                             json={"token": invite["invite_token"]}, timeout=TIMEOUT)
+    assert accepted.status_code == 200, accepted.text
+
+    task = tenant.post("/crm/tasks", {"title": "For a colleague", "assignee": colleague_email,
+                                      "related_type": "company", "related_id": tenant.company_id})
+    mine = requests.get(f"{API}/notifications", headers=_h(colleague_token),
+                        timeout=TIMEOUT).json()["notifications"]
+    assigned = [n for n in mine if "assigned" in (n.get("title") or "").lower()]
     assert assigned, "an assignment nobody is told about is not an assignment"
-    assert assigned[0]["recipient"] == "colleague@example.com"
+    assert assigned[0]["recipient"] == colleague_email
     assert assigned[0]["read"] is False
+    assert assigned[0]["deep_link"] == f"/tasks?task={task['id']}"
+    # ...and only the assignee is told: the assigner is not "assigned" their own request.
+    theirs = tenant.get("/notifications")["notifications"]
+    assert not [n for n in theirs if "assigned" in (n.get("title") or "").lower()]
 
 
 # --------------------------------------------------------------------------- activities
