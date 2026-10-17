@@ -642,6 +642,16 @@ def _new_password_problem(password: str) -> Optional[str]:
 # neither the link nor the body is ever logged.
 from html import escape as html_escape
 
+# The example domains reserved by RFC 2606 can never receive mail (EmailStr already refuses
+# the reserved top-level names). Not attempting them also keeps the release smoke -- which
+# invites @example.com addresses, against production -- true to its promise that it sends
+# nothing outbound.
+_RESERVED_EMAIL_DOMAINS = ("example.com", "example.net", "example.org")
+
+
+def _undeliverable_address(email: str) -> bool:
+    domain = email.rsplit("@", 1)[-1].lower().rstrip(".")
+    return any(domain == reserved or domain.endswith(f".{reserved}") for reserved in _RESERVED_EMAIL_DOMAINS)
 
 def _invitation_email(inviter_name: str, org_name: str, role: str, invite_url: str):
     inviter, org = _one_line(inviter_name), _one_line(org_name)
@@ -667,8 +677,9 @@ def _invitation_email(inviter_name: str, org_name: str, role: str, invite_url: s
 async def _email_invitation(inv_id: str, email: str, role: str, invite_url: str, inviter: dict, tenant_id: str) -> str:
     """Email the invitation when the mailer is configured, and record the outcome on it:
     "sent" only for a send the provider accepted, so the Team screen never says an email
-    went out when it did not; otherwise "failed" or "not_sent" (no mailer configured)."""
-    if not email_configured():
+    went out when it did not; otherwise "failed", or "not_sent" when there is no mailer or
+    the address is a reserved one that cannot receive mail."""
+    if not email_configured() or _undeliverable_address(email):
         await db.invitations.update_one({"id": inv_id}, {"$set": {"email_status": "not_sent"}})
         return "not_sent"
     tenant = await db.tenants.find_one({"tenant_id": tenant_id}, {"_id": 0})

@@ -368,6 +368,12 @@ def test_concurrent_accepts_by_a_signed_in_user_consume_the_invitation_once(monk
 
 
 # --------------------------------------------------------------------------- email
+# Reserved names such as example.com are never mailed (see the next-but-one test), so the
+# email tests address an ordinary fictional domain. The mailer is faked: nothing is sent.
+
+def _mailable():
+    return f"teammate_{_suffix()}@harbourview-homes.co"
+
 
 def test_the_invitation_is_emailed_when_a_mailer_is_configured(monkeypatch):
     mailer = FakeMailer()
@@ -376,7 +382,7 @@ def test_the_invitation_is_emailed_when_a_mailer_is_configured(monkeypatch):
     _reset_motor_client()
     with TestClient(server.app) as client:
         admin_token, admin = _owner(client, name="Jordan Avery")
-        email, created = _invite(client, admin_token)
+        email, created = _invite(client, admin_token, email=_mailable())
         assert created["emailed"] is True and created["email_configured"] is True
         assert created["invitation"]["email_status"] == "sent"
         assert len(mailer.sent) == 1
@@ -418,12 +424,29 @@ def test_no_email_is_attempted_without_a_mailer(monkeypatch):
     _reset_motor_client()
     with TestClient(server.app) as client:
         admin_token, _ = _owner(client)
-        _, created = _invite(client, admin_token)
+        _, created = _invite(client, admin_token, email=_mailable())
         assert created["emailed"] is False and created["email_configured"] is False
         assert created["invitation"]["email_status"] == "not_sent"
         rs = client.post(f"/api/team/invitations/{created['invitation']['id']}/resend", headers=_h(admin_token))
         assert rs.status_code == 200 and rs.json()["emailed"] is False
         assert mailer.sent == []
+
+
+def test_reserved_addresses_are_never_mailed(monkeypatch):
+    # The release smoke invites @example.com addresses against production and promises
+    # to send nothing outbound; a reserved name cannot receive mail anyway.
+    mailer = FakeMailer(fail_with=AssertionError("must not send"))
+    monkeypatch.setattr(server, "email_configured", lambda: True)
+    monkeypatch.setattr(server, "send_email", mailer)
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        admin_token, _ = _owner(client)
+        for address in ("smoke-member@example.com", "a@mail.example.org", "d@EXAMPLE.NET"):
+            _, created = _invite(client, admin_token, email=address)
+            assert created["emailed"] is False and created["invitation"]["email_status"] == "not_sent", address
+        assert mailer.sent == []
+    for address in ("e@example.co", "f@notexample.com", "g@harbourview-homes.co"):
+        assert server._undeliverable_address(address) is False, address
 
 
 def test_a_failed_send_is_reported_and_the_token_is_never_logged(monkeypatch, caplog):
@@ -434,7 +457,7 @@ def test_a_failed_send_is_reported_and_the_token_is_never_logged(monkeypatch, ca
     _reset_motor_client()
     with TestClient(server.app) as client:
         admin_token, _ = _owner(client)
-        email, created = _invite(client, admin_token)
+        email, created = _invite(client, admin_token, email=_mailable())
         token = created["invite_token"]
         assert created["emailed"] is False and created["email_configured"] is True
         assert created["invitation"]["email_status"] == "failed"
