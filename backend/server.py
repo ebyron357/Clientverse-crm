@@ -1087,13 +1087,28 @@ async def list_opps(
     order: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
+    expand: Optional[str] = None,
     user=Depends(get_current_user),
 ):
     filters = {k: v for k, v in (("stage", stage), ("owner", owner),
                                  ("company_id", company_id)) if v}
-    return await crm_core.query_records(
+    deals = await crm_core.query_records(
         db, crm_core.DEALS, user["tenant_id"], q=q, filters=filters, sort=sort,
         order=order, limit=limit, offset=offset, include_archived=include_archived)
+    if "contacts" in (expand or "").split(","):
+        # The pipeline board shows who each deal is with. One read for the whole page
+        # rather than one per card, and tenant-scoped like every other read: an id that
+        # is not this tenant's resolves to nothing.
+        contact_ids = list({cid for deal in deals for cid in deal.get("contact_ids") or []})
+        found = await db.contacts.find(
+            {"tenant_id": user["tenant_id"], "id": {"$in": contact_ids}},
+            {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(len(contact_ids) or 1)
+        by_id = {contact["id"]: contact for contact in found}
+        for deal in deals:
+            deal["contacts"] = [
+                {"id": cid, "name": by_id[cid].get("name") or by_id[cid].get("email")}
+                for cid in deal.get("contact_ids") or [] if cid in by_id]
+    return deals
 
 @api.post("/opportunities")
 async def create_opp(inp: OppInput, user=Depends(get_current_user)):
@@ -1140,10 +1155,12 @@ class StageInput(BaseModel):
 @api.patch("/opportunities/{opp_id}/stage")
 async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user)):
     # Validated against this tenant's configured pipeline, not a module constant, so a
-    # tenant that added a stage can actually move deals into it.
-    stages = await crm_core.stage_keys(db, user["tenant_id"])
-    if inp.stage not in stages:
+    # tenant that added a stage can actually move deals into it. Won and lost are read
+    # from the same pipeline: a tenant that renamed "closed_won" to "signed" still won.
+    classes = await crm_core.stage_classes(db, user["tenant_id"])
+    if inp.stage not in set().union(*classes.values()):
         raise HTTPException(status_code=400, detail="Invalid stage")
+    outcome = crm_core.classify_stage(inp.stage, classes)
     opp = await db.opportunities.find_one({"id": opp_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not opp:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1154,19 +1171,27 @@ async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user
         {"$set": {"stage": inp.stage, "updated_at": now_iso()},
          "$push": {"stage_history": transition,
                    "history": crm_core.stage_history(user["email"], transition)}})
-    et = "opportunity.closed_won" if inp.stage == "closed_won" else ("opportunity.closed_lost" if inp.stage == "closed_lost" else "opportunity.stage_changed")
+    et = {crm_core.STAGE_WON: "opportunity.closed_won",
+          crm_core.STAGE_LOST: "opportunity.closed_lost"}.get(outcome, "opportunity.stage_changed")
     await record_event(et, "opportunity", opp_id, user["tenant_id"], user["email"], payload={"from": opp["stage"], "to": inp.stage})
-    # auto-create workspace on won
-    if inp.stage == "closed_won" and opp.get("company_id"):
-        exists = await db.workspaces.find_one({"opportunity_id": opp_id, "tenant_id": user["tenant_id"]})
-        if not exists:
+    # A won deal with a company becomes a client workspace. Without a company there is
+    # nothing to open one for, and the response says so rather than letting the screen
+    # announce a workspace that does not exist.
+    workspace_id, workspace_created = None, False
+    if outcome == crm_core.STAGE_WON and opp.get("company_id"):
+        exists = await db.workspaces.find_one({"opportunity_id": opp_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1})
+        if exists:
+            workspace_id = exists.get("id")
+        else:
             wid = new_id("ws")
             await db.workspaces.insert_one({"id": wid, "tenant_id": user["tenant_id"], "name": opp["name"],
                 "company_id": opp["company_id"], "opportunity_id": opp_id, "stage": "onboard",
                 "created_at": now_iso()})
             await record_event("client_workspace.created", "workspace", wid, user["tenant_id"], user["email"], workspace_id=wid, payload={"from_opportunity": opp_id})
             await record_event("onboarding.started", "workspace", wid, user["tenant_id"], user["email"], workspace_id=wid)
-    return {"ok": True, "stage": inp.stage}
+            workspace_id, workspace_created = wid, True
+    return {"ok": True, "stage": inp.stage, "outcome": outcome,
+            "workspace_created": workspace_created, "workspace_id": workspace_id}
 
 # ----------------------------- Workspaces -----------------------------
 

@@ -240,6 +240,120 @@ def test_a_deal_cannot_be_moved_into_a_stage_the_pipeline_does_not_have(tenant):
     assert response.status_code == 400
 
 
+def test_a_pipeline_needs_an_open_stage_for_new_deals_to_start_in(tenant):
+    stages = [{"key": "won", "label": "Won", "probability": 100, "is_closed": True, "is_won": True},
+              {"key": "lost", "label": "Lost", "probability": 0, "is_closed": True, "is_won": False}]
+    assert tenant.raw("PUT", "/pipelines/default", json={"stages": stages}).status_code == 422
+
+
+def test_moving_a_deal_to_won_says_whether_a_client_workspace_was_created():
+    fresh = Tenant("crm_won")
+    won = fresh.patch(f"/opportunities/{fresh.deal_id}/stage", {"stage": "closed_won"})
+    assert won["outcome"] == "won"
+    assert won["workspace_created"] is True and won["workspace_id"]
+    assert any(w["id"] == won["workspace_id"] and w["opportunity_id"] == fresh.deal_id
+               for w in fresh.get("/workspaces"))
+
+    # Winning it a second time finds the same workspace rather than announcing a new one.
+    fresh.patch(f"/opportunities/{fresh.deal_id}/stage", {"stage": "negotiation"})
+    again = fresh.patch(f"/opportunities/{fresh.deal_id}/stage", {"stage": "closed_won"})
+    assert again["workspace_created"] is False
+    assert again["workspace_id"] == won["workspace_id"]
+
+    # A deal with no company -- every website lead -- is won without a workspace, and the
+    # response must not let the screen claim one was created.
+    buyer = fresh.post("/opportunities", {"name": f"Buyer-{fresh.tag}", "value": 9000})
+    moved = fresh.patch(f"/opportunities/{buyer['id']}/stage", {"stage": "closed_won"})
+    assert moved == {"ok": True, "stage": "closed_won", "outcome": "won",
+                     "workspace_created": False, "workspace_id": None}
+    lost = fresh.patch(f"/opportunities/{buyer['id']}/stage", {"stage": "closed_lost"})
+    assert lost["outcome"] == "lost" and lost["workspace_created"] is False
+
+
+def test_a_renamed_won_stage_still_wins_the_deal():
+    fresh = Tenant("crm_signed")
+    stages = [s for s in fresh.get("/pipelines/default")["stages"] if s["key"] != "closed_won"]
+    stages.append({"key": "signed", "label": "Signed", "probability": 100,
+                   "is_closed": True, "is_won": True})
+    fresh.put("/pipelines/default", {"stages": stages})
+    moved = fresh.patch(f"/opportunities/{fresh.deal_id}/stage", {"stage": "signed"})
+    assert moved["outcome"] == "won" and moved["workspace_created"] is True
+
+
+def test_a_stage_holding_deals_cannot_switch_between_open_won_and_lost():
+    """Reclassifying a stage would win or write off every deal in it at once, with no
+    stage move anyone made -- and recovery settles its cases on that classification."""
+    fresh = Tenant("crm_reclass")
+    stages = fresh.get("/pipelines/default")["stages"]  # the fresh deal sits in "lead"
+    as_won = [dict(s, is_closed=True, is_won=True) if s["key"] == "lead" else s for s in stages]
+    refused = fresh.raw("PUT", "/pipelines/default", json={"stages": as_won})
+    assert refused.status_code == 409, refused.text
+    assert "Lead" in refused.json()["detail"]
+    assert fresh.get(f"/opportunities/{fresh.deal_id}")["stage"]["is_closed"] is False
+
+    # A stage with nothing in it can change what it means.
+    proposal_lost = [dict(s, is_closed=True, is_won=False) if s["key"] == "proposal" else s
+                     for s in stages]
+    fresh.put("/pipelines/default", {"stages": proposal_lost})
+
+    # An archived deal still holds its stage: restoring it must land somewhere real.
+    fresh.post(f"/opportunities/{fresh.deal_id}/archive", {})
+    in_use = fresh.get("/pipelines/default")["in_use"]["lead"]
+    assert in_use["deals"] == 1 and in_use["archived_deals"] == 1
+    without_lead = [s for s in stages if s["key"] != "lead"]
+    refused = fresh.raw("PUT", "/pipelines/default", json={"stages": without_lead})
+    assert refused.status_code == 409 and "archived" in refused.json()["detail"]
+
+
+def test_a_stage_a_website_form_starts_leads_in_cannot_be_removed_or_closed():
+    fresh = Tenant("crm_form")
+    stages = fresh.get("/pipelines/default")["stages"]
+    tour = {"key": "tour_booked", "label": "Tour booked", "probability": 30,
+            "is_closed": False, "is_won": False}
+    with_tour = [stages[0], tour, *stages[1:]]
+    fresh.put("/pipelines/default", {"stages": with_tour})
+    form = fresh.post("/website-forms", {
+        "name": f"Showings {fresh.tag}", "preset": "showing_request",
+        "settings": {"opportunity": {"stage": "tour_booked"}}})
+    in_use = fresh.get("/pipelines/default")["in_use"]
+    assert in_use["tour_booked"]["website_forms"] == [{"id": form["id"], "name": form["name"]}]
+    assert in_use["tour_booked"]["deals"] == 0
+
+    removed = fresh.raw("PUT", "/pipelines/default", json={"stages": stages})
+    assert removed.status_code == 409, "the form would quietly file leads somewhere else"
+    assert form["name"] in removed.json()["detail"]
+    closed = [dict(s, is_closed=True) if s["key"] == "tour_booked" else s for s in with_tour]
+    assert fresh.raw("PUT", "/pipelines/default", json={"stages": closed}).status_code == 409
+
+    # Renaming and reordering are fine: the form finds its stage by key, not by name.
+    renamed = [dict(s, label="Showing booked") if s["key"] == "tour_booked" else s
+               for s in with_tour]
+    fresh.put("/pipelines/default", {"stages": [renamed[1], renamed[0], *renamed[2:]]})
+
+    # Once the form is archived nothing depends on the stage, and it can go.
+    fresh.patch(f"/website-forms/{form['id']}", {"status": "archived"})
+    fresh.put("/pipelines/default", {"stages": stages})
+    assert "tour_booked" not in [s["key"] for s in fresh.get("/pipelines/default")["stages"]]
+
+
+def test_the_deal_list_can_carry_contact_names_for_the_board(tenant):
+    deal = tenant.post("/opportunities", {"name": f"Board-{tenant.tag}",
+                                          "contact_ids": [tenant.contact_id]})
+    plain = {d["id"]: d for d in tenant.get("/opportunities")}
+    assert "contacts" not in plain[deal["id"]], "the default list shape is unchanged"
+    expanded = {d["id"]: d for d in tenant.get("/opportunities?expand=contacts")}
+    assert expanded[deal["id"]]["contacts"] == [
+        {"id": tenant.contact_id, "name": f"Person-{tenant.tag}"}]
+
+
+def test_owner_options_list_this_tenants_people_and_no_one_else(tenant, other):
+    options = tenant.get("/opportunities/owner-options")["items"]
+    emails = [option["email"] for option in options]
+    assert tenant.email in emails
+    assert other.email not in emails
+    assert all(set(option) == {"email", "name"} for option in options)
+
+
 # -------------------------------------------------------------------------------- tasks
 
 def test_a_follow_up_can_be_created_against_a_deal_and_completed(tenant):

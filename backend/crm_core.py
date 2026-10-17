@@ -55,6 +55,9 @@ CURRENCY_PATTERN = r"^[A-Z]{3}$"
 TASKS = "tasks"
 ACTIVITIES = "crm_activities"
 PIPELINES = "pipelines"
+# `website_forms.FORMS`. Named here rather than imported because website_forms imports
+# this module; the pipeline only reads which stage each form sends its new deals to.
+WEBSITE_FORMS = "website_forms"
 
 # The stage set the product shipped with. It stays the default so every existing tenant
 # and every existing opportunity keeps working unchanged; a tenant that configures its
@@ -316,6 +319,17 @@ def classify_stage(stage: Optional[str], classes: dict[str, set[str]]) -> str:
     if lowered in LEGACY_LOST_STAGES:
         return STAGE_LOST
     return STAGE_OPEN
+
+
+def stage_outcome(stage: dict) -> str:
+    """Whether one configured stage is open, closed-won or closed-lost.
+
+    The same rule `stage_classes` applies, for a single stage definition: `is_won` only
+    counts on a closed stage.
+    """
+    if not stage.get("is_closed"):
+        return STAGE_OPEN
+    return STAGE_WON if stage.get("is_won") else STAGE_LOST
 
 
 # ------------------------------------------------------------------- request payloads
@@ -666,6 +680,29 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     # --------------------------------------------------------------------------- deals
 
+    # Registered before `/opportunities/{deal_id}` so the path is not read as a deal id.
+    @router.get("/opportunities/owner-options")
+    async def deal_owner_options(user=Depends(get_current_user)):
+        """The people a deal can be given to: this tenant's active members.
+
+        Names and emails only. A member needs this to hand a deal to a colleague; roles,
+        status and invitations stay on the admin-only team page.
+        """
+        tenant = tenant_of(user)
+        members = await db.memberships.find(
+            {"tenant_id": tenant, "status": "active"},
+            {"_id": 0, "user_id": 1, "email": 1}).sort("created_at", 1).to_list(500)
+        user_ids = [m["user_id"] for m in members if m.get("user_id")]
+        people = await db.users.find(
+            {"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "name": 1}
+        ).to_list(len(user_ids) or 1)
+        names = {person["user_id"]: person.get("name") for person in people}
+        options = [{"email": m["email"], "name": names.get(m.get("user_id")) or None}
+                   for m in members if m.get("email")]
+        if not any(option["email"] == user["email"] for option in options):
+            options.insert(0, {"email": user["email"], "name": user.get("name")})
+        return {"items": options}
+
     @router.get("/opportunities/{deal_id}")
     async def get_deal(deal_id: str, user=Depends(get_current_user)):
         deal = await load(DEALS, deal_id, user)
@@ -741,6 +778,42 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     # ----------------------------------------------------------------------- pipelines
 
+    async def stage_usage(tenant: str, keys: list[str]) -> dict[str, dict]:
+        """What depends on each stage: the deals in it and the website forms feeding it.
+
+        Archived deals count. Restoring one would otherwise put it back in a stage the
+        pipeline no longer has, or in one that now means something else. A website form
+        counts unless it is archived: a paused form can be switched back on.
+        """
+        usage: dict[str, dict] = {key: {"deals": 0, "archived_deals": 0, "website_forms": []}
+                                  for key in keys}
+        if not keys:
+            return usage
+        for key in keys:
+            scope = {"tenant_id": tenant, "stage": key}
+            usage[key]["deals"] = await db[DEALS].count_documents(scope)
+            usage[key]["archived_deals"] = await db[DEALS].count_documents(
+                {**scope, "archived_at": {"$ne": None}})
+        forms = await db[WEBSITE_FORMS].find(
+            {"tenant_id": tenant, "status": {"$ne": "archived"},
+             "settings.opportunity.stage": {"$in": keys}},
+            {"_id": 0, "id": 1, "name": 1, "settings": 1}).to_list(200)
+        for form in forms:
+            target = ((form.get("settings") or {}).get("opportunity") or {}).get("stage")
+            if target in usage:
+                usage[target]["website_forms"].append(
+                    {"id": form.get("id"), "name": form.get("name")})
+        return usage
+
+    def deals_phrase(usage: dict) -> str:
+        total, archived = usage["deals"], usage["archived_deals"]
+        noun = "deal" if total == 1 else "deals"
+        if archived and archived == total:
+            return f"{total} archived {noun}"
+        if archived:
+            return f"{total} {noun} ({archived} archived)"
+        return f"{total} {noun}"
+
     @router.get("/pipelines/default")
     async def get_pipeline(user=Depends(get_current_user)):
         stages = await resolve_stages(db, tenant_of(user))
@@ -759,42 +832,81 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 "weighted_value_estimate": round(total * stage.get("probability", 0) / 100.0, 2),
             }
         return {"id": "default", "stages": stages, "is_customised": bool(configured),
-                "totals": counts}
+                "totals": counts,
+                # What the stage editor needs to say up front which stages cannot be
+                # removed or reclassified, instead of finding out from a refusal.
+                "in_use": await stage_usage(tenant_of(user),
+                                            [stage["key"] for stage in stages])}
 
     @router.put("/pipelines/default")
     async def set_pipeline(inp: PipelineInput, user=Depends(require_role("admin"))):
         """Configure this tenant's stages.
 
-        A stage that still holds deals cannot be removed. Rewriting the stage set out
-        from under live records would leave them in a stage the pipeline does not have,
-        which is how a deal becomes invisible.
+        Three changes are refused, because each would change deals nobody touched:
+
+        * removing a stage that still holds deals. Rewriting the stage set out from under
+          live records would leave them in a stage the pipeline does not have, which is
+          how a deal becomes invisible;
+        * switching a stage that holds deals between open, won and lost. Every deal in it
+          would become revenue, or be written off, without anyone moving it -- and the
+          recovery engine settles its cases on exactly that classification;
+        * removing or closing a stage a website form sends its new leads to. The form
+          would quietly start filing leads somewhere else.
         """
         stages = [stage.model_dump() for stage in inp.stages]
+        for stage in stages:
+            stage["label"] = stage["label"].strip()
+            if not stage["label"]:
+                raise HTTPException(status_code=422, detail="Every stage needs a name")
         keys = [stage["key"] for stage in stages]
         if len(set(keys)) != len(keys):
             raise HTTPException(status_code=422, detail="Stage keys must be unique")
         if not any(stage["is_closed"] and stage["is_won"] for stage in stages):
             raise HTTPException(status_code=422,
                                 detail="At least one stage must be a closed-won stage")
-        current = await stage_keys(db, tenant_of(user))
-        removed = [key for key in current if key not in keys]
-        if removed:
-            blocking = await db[DEALS].count_documents(
-                {"tenant_id": tenant_of(user), "stage": {"$in": removed}})
-            if blocking:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(f"{blocking} deal(s) are still in stage(s) "
-                            f"{', '.join(removed)}; move them before removing"))
+        if not any(stage_outcome(stage) == STAGE_OPEN for stage in stages):
+            raise HTTPException(
+                status_code=422,
+                detail="Keep at least one open stage: new deals and website leads start there")
+        tenant = tenant_of(user)
+        previous = {stage["key"]: stage for stage in await resolve_stages(db, tenant)}
+        removed = [key for key in previous if key not in keys]
+        reclassified = [stage["key"] for stage in stages if stage["key"] in previous
+                        and stage_outcome(stage) != stage_outcome(previous[stage["key"]])]
+        newly_closed = [key for key in reclassified
+                        if stage_outcome(previous[key]) == STAGE_OPEN]
+        usage = await stage_usage(tenant, removed + reclassified)
+        # The name the admin knows the stage by, which is the old one if it was renamed.
+        labels = {key: stage.get("label") or key for key, stage in previous.items()}
+        problems: list[str] = []
+        for key in removed:
+            if usage[key]["deals"]:
+                problems.append(
+                    f"“{labels[key]}” still has {deals_phrase(usage[key])}. "
+                    "Move them to another stage before removing it.")
+        for key in reclassified:
+            if usage[key]["deals"]:
+                problems.append(
+                    f"“{labels[key]}” has {deals_phrase(usage[key])}, so it cannot switch "
+                    "between open, won and lost: that would change those deals without "
+                    "anyone moving them. Move them to another stage first.")
+        for key in removed + newly_closed:
+            for form in usage[key]["website_forms"]:
+                problems.append(
+                    f"Your website form “{form['name']}” puts new leads in "
+                    f"“{labels[key]}”. Choose a different starting stage for that form first.")
+        if problems:
+            raise HTTPException(status_code=409, detail=" ".join(problems))
         await db[PIPELINES].update_one(
-            {"tenant_id": tenant_of(user), "id": "default"},
+            {"tenant_id": tenant, "id": "default"},
             {"$set": {"stages": stages, "updated_at": now_iso(),
                       "updated_by": user["email"]},
              "$setOnInsert": {"created_at": now_iso()}},
             upsert=True)
         await record_event("pipeline.configured", "pipeline", "default",
-                           tenant_of(user), user["email"],
-                           payload={"stages": keys, "removed": removed})
+                           tenant, user["email"],
+                           payload={"stages": keys, "removed": removed,
+                                    "reclassified": reclassified})
         return {"id": "default", "stages": stages, "is_customised": True}
 
     # --------------------------------------------------------------------------- tasks
