@@ -79,7 +79,8 @@ SORTABLE = {
     CONTACTS: ("created_at", "updated_at", "name", "owner"),
     COMPANIES: ("created_at", "updated_at", "name", "owner"),
     DEALS: ("created_at", "updated_at", "name", "value", "stage", "expected_close_date", "owner"),
-    TASKS: ("created_at", "updated_at", "due_date", "status", "assignee", "title"),
+    TASKS: ("created_at", "updated_at", "due_date", "status", "assignee", "title",
+            "completed_at"),
 }
 
 MAX_PAGE = 200
@@ -757,27 +758,109 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         await assert_exists(collection, related_id, user, f"{related_type} id")
         return related_type, related_id
 
+    def email_match(email: str) -> dict:
+        # Assignees are typed by people and written by automation, so the case an address
+        # was stored in says nothing about who it belongs to.
+        return {"$regex": f"^{re.escape(email.strip())}$", "$options": "i"}
+
+    async def attach_related(user, tasks: list[dict]) -> list[dict]:
+        """Say what each task is about, in a form a person can act on.
+
+        A row reading "related_type: contact, related_id: c_91f2" is not something an agent
+        can call back. Each task gets a `related` summary: the record's name, the person
+        to call (the contact itself, or a deal's first contact) with their phone, and --
+        for a website lead's call-back task -- the lead it came from. One tenant-scoped
+        query per collection, however many tasks there are.
+        """
+        tenant = tenant_of(user)
+        wanted: dict[str, set[str]] = {collection: set() for collection in RELATABLE.values()}
+        for task in tasks:
+            collection = RELATABLE.get(task.get("related_type") or "")
+            if collection and task.get("related_id"):
+                wanted[collection].add(task["related_id"])
+        projection = {"_id": 0, "id": 1, "name": 1, "phone": 1, "email": 1, "contact_ids": 1}
+
+        async def fetch(collection: str) -> dict[str, dict]:
+            ids = sorted(wanted[collection])
+            if not ids:
+                return {}
+            rows = await db[collection].find({"tenant_id": tenant, "id": {"$in": ids}},
+                                             projection).to_list(len(ids))
+            return {row["id"]: row for row in rows}
+
+        found = {collection: await fetch(collection)
+                 for collection in (DEALS, COMPANIES, "workspaces")}
+        for deal in found[DEALS].values():
+            if deal.get("contact_ids"):
+                wanted[CONTACTS].add(deal["contact_ids"][0])
+        found[CONTACTS] = await fetch(CONTACTS)
+
+        def person(contact_id: Optional[str]) -> Optional[dict]:
+            contact = found[CONTACTS].get(contact_id or "")
+            if not contact:
+                return None
+            return {"id": contact["id"], "name": contact.get("name"),
+                    "phone": contact.get("phone"), "email": contact.get("email")}
+
+        for task in tasks:
+            related_type = task.get("related_type")
+            record = found.get(RELATABLE.get(related_type or "", ""), {}).get(
+                task.get("related_id") or "")
+            if related_type == "contact":
+                contact = person(task.get("related_id"))
+            elif related_type == "deal" and record and record.get("contact_ids"):
+                contact = person(record["contact_ids"][0])
+            else:
+                contact = None
+            source = task.get("source") if isinstance(task.get("source"), dict) else {}
+            task["related"] = {
+                "type": related_type, "id": task.get("related_id"),
+                "name": (record or {}).get("name"), "contact": contact,
+                "lead_id": source.get("enquiry_id") if source.get("kind") == "website_form" else None,
+            }
+        return tasks
+
     @router.get("/tasks")
     async def list_tasks(
         q: Optional[str] = None,
         status: Optional[str] = None,
         assignee: Optional[str] = None,
+        mine: bool = False,
+        include_unassigned: bool = False,
         related_type: Optional[str] = None,
         related_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         due_before: Optional[str] = None,
         due_after: Optional[str] = None,
+        include_undated: bool = False,
+        completed_after: Optional[str] = None,
+        expand: Optional[str] = None,
         sort: Optional[str] = "due_date",
         order: Optional[str] = "asc",
         limit: int = 50,
         offset: int = 0,
         user=Depends(get_current_user),
     ):
-        """Every task in the tenant, not just the ones inside a delivery workspace."""
+        """Every task in the tenant, not just the ones inside a delivery workspace.
+
+        The Tasks page reads its tabs from here. `mine` narrows to the caller's own work,
+        and `include_unassigned` keeps the tasks nobody owns yet beside it -- a website
+        lead that no one was assigned is everyone's call to make, and hiding it from every
+        "My tasks" view is how a call-back goes unmade. `status` takes a comma-separated
+        set ("todo,in_progress,blocked" is "still open"); a due window can keep undated
+        tasks with `include_undated`; `expand=related` says what each task is about.
+        """
         query: dict[str, Any] = {**text_filter(TASKS, q)}
+        clauses: list[dict] = []
         if status:
-            query["status"] = status
-        if assignee:
+            statuses = [value.strip() for value in status.split(",") if value.strip()]
+            query["status"] = statuses[0] if len(statuses) == 1 else {"$in": statuses}
+        if mine:
+            owned: list[dict] = [{"assignee": email_match(user["email"])}]
+            if include_unassigned:
+                owned += [{"assignee": None}, {"assignee": ""}]
+            clauses.append({"$or": owned})
+        elif assignee:
             query["assignee"] = assignee
         if related_type:
             query["related_type"] = related_type
@@ -790,10 +873,25 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             due["$lte"] = _parse_date(due_before, "due_before") or ""
         if due_after:
             due["$gte"] = _parse_date(due_after, "due_after") or ""
-        if due:
+        if due and include_undated:
+            clauses.append({"$or": [{"due_date": due}, {"due_date": None}]})
+        elif due:
             query["due_date"] = due
-        return await listing(TASKS, user, query=query, sort=sort, order=order,
+        if completed_after:
+            query["completed_at"] = {"$gte": _parse_date(completed_after, "completed_after")}
+        if clauses:
+            query["$and"] = clauses
+        page = await listing(TASKS, user, query=query, sort=sort, order=order,
                              limit=limit, offset=offset)
+        if expand == "related":
+            await attach_related(user, page["items"])
+        return page
+
+    @router.get("/crm/tasks/{task_id}")
+    async def get_crm_task(task_id: str, user=Depends(get_current_user)):
+        """One task with what it is about, for a link that names it (`/tasks?task=`)."""
+        task = await load(TASKS, task_id, user)
+        return (await attach_related(user, [task]))[0]
 
     @router.post("/crm/tasks")
     async def create_crm_task(inp: TaskCreate, user=Depends(get_current_user)):
