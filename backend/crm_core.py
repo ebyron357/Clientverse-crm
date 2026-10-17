@@ -816,11 +816,13 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 contact = person(record["contact_ids"][0])
             else:
                 contact = None
-            source = task.get("source") if isinstance(task.get("source"), dict) else {}
+            source = task.get("source")
+            lead_id = None
+            if isinstance(source, dict) and source.get("kind") == "website_form":
+                lead_id = source.get("enquiry_id")
             task["related"] = {
                 "type": related_type, "id": task.get("related_id"),
-                "name": (record or {}).get("name"), "contact": contact,
-                "lead_id": source.get("enquiry_id") if source.get("kind") == "website_form" else None,
+                "name": (record or {}).get("name"), "contact": contact, "lead_id": lead_id,
             }
         return tasks
 

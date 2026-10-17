@@ -4217,12 +4217,13 @@ async def cron_daily_digest(request: Request):
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
-# A call-back task ticked off on the Tasks page is the lead's response, so the lead
-# pipeline hears about it at once. Late-bound: `lead_pipeline` is created just below.
-crm_core.register_crm_core_routes(
-    api, db, new_id, now_iso, record_event, get_current_user, require_role,
-    on_task_status_changed=lambda task, previous, actor: lead_pipeline.task_status_changed(
-        task, previous, actor))
+async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: str) -> None:
+    # A call-back task ticked off on the Tasks page is the lead's response, so the lead
+    # pipeline hears about it at once. `lead_pipeline` is created just below.
+    await lead_pipeline.task_status_changed(task, previous, actor)
+
+crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
+                                  on_task_status_changed=_lead_task_status_changed)
 # Website forms: the public door an agent's website posts leads through, and the
 # automation that turns each lead into a contact, an owner, a deal, a call-back task and
 # an alert within seconds. The legacy intake-token door runs through the same pipeline.
