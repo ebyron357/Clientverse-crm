@@ -81,3 +81,32 @@ export function formatErr(detail) {
 }
 
 export const money = (n) => "$" + (n || 0).toLocaleString();
+
+/**
+ * Format an amount in its own currency, and never throw.
+ *
+ * `Intl.NumberFormat` raises a RangeError for a currency code it does not recognise, and a
+ * render that throws takes the whole page down. A record carrying "usd ", "$" or "" must
+ * cost one label, not the report: an unusable code falls back to the plain number with the
+ * code beside it, and a non-finite amount shows as a dash.
+ */
+export function formatMoney(amount, currency) {
+  const value = Number(amount);
+  if (amount == null || !Number.isFinite(value)) return "—";
+  const code = String(currency || "").trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(code)) {
+    try {
+      return new Intl.NumberFormat(undefined, { style: "currency", currency: code, maximumFractionDigits: 0 }).format(value);
+    } catch {
+      // An unrecognised code: fall through to the plain form below.
+    }
+  }
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}${code ? ` ${code}` : ""}`;
+}
+
+/** Amounts grouped by currency, one per currency, never added together. */
+export function formatMoneyByCurrency(byCurrency) {
+  const entries = Object.entries(byCurrency || {});
+  if (!entries.length) return formatMoney(0, "USD");
+  return entries.map(([code, amount]) => formatMoney(amount, code)).join(" · ");
+}

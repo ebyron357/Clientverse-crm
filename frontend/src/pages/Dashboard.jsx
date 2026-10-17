@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { money, HEALTH_BAND } from "@/lib/api";
+import { money, formatMoneyByCurrency, HEALTH_BAND } from "@/lib/api";
 import { commandCenterService } from "@/lib/services";
 import { Badge } from "@/components/AppShell";
 import OnboardingChecklist from "@/components/OnboardingChecklist";
@@ -91,8 +91,9 @@ export default function Dashboard() {
     </div>
 
     <section aria-label="Key portfolio metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <MetricCard icon={TrendingUp} label="Open pipeline" value={money(data.pipeline_value)} detail={`${data.open_opportunities} active opportunity${data.open_opportunities === 1 ? "" : "ies"}`} onClick={() => navigate("/pipeline")} />
-      <MetricCard icon={CircleDollarSign} label="Won revenue" value={money(data.won_value)} detail="Closed-won opportunities in your portfolio" tone="emerald" onClick={() => navigate("/pipeline")} />
+      {/* Per currency, never summed across currencies; the scalar is only a fallback for an older API. */}
+      <MetricCard icon={TrendingUp} label="Open pipeline" value={data.pipeline_value_by_currency ? formatMoneyByCurrency(data.pipeline_value_by_currency) : money(data.pipeline_value)} detail={`${data.open_opportunities} active opportunity${data.open_opportunities === 1 ? "" : "ies"}${(data.currencies || []).length > 1 ? " · shown per currency" : ""}`} onClick={() => navigate("/pipeline")} />
+      <MetricCard icon={CircleDollarSign} label="Won revenue" value={data.won_value_by_currency ? formatMoneyByCurrency(data.won_value_by_currency) : money(data.won_value)} detail="Closed-won opportunities in your portfolio" tone="emerald" onClick={() => navigate("/pipeline")} />
       <MetricCard icon={BriefcaseBusiness} label="Active clients" value={data.active_workspaces} detail="Client workspaces currently in delivery" tone="navy" onClick={() => navigate("/workspaces")} />
       <MetricCard icon={AlertTriangle} label="Delivery risk" value={data.at_risk_commitments} detail="Commitments flagged at risk or overdue" tone="amber" onClick={() => navigate("/workspaces")} />
     </section>
