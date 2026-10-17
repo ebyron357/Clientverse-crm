@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json as _json
 import logging
+import math
 import os
 import secrets
 import time
@@ -27,7 +28,7 @@ from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
@@ -42,11 +43,13 @@ import gmail_provider
 import next_best_action as nba_service
 import recovery_case as recovery_case_service
 import recovery_intake
+import recovery_lifecycle
 import recovery_proof
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
 import second_chance as second_chance_service
 import security_gate as security_gate_service
+import website_forms
 from client_value import register_client_value_routes
 from operations_routes import register_operations_routes
 from work_queue import WorkQueue, run_worker_tick
@@ -132,32 +135,43 @@ class ClientVerseStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await seed()
-    try:
-        await db.domain_events.create_index([("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])
-        await db.alerts.create_index([("tenant_id", 1), ("status", 1)])
-        await db.alerts.create_index([("tenant_id", 1), ("type", 1), ("source_ref", 1)])
-        await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
-        await db.login_lockouts.create_index("email", unique=True)
-        await db.cron_runs.create_index("run_id", unique=True)
-        await cron_ledger.ensure_indexes(db)
-        await crm_core.ensure_indexes(db)
-        await email_inbound.ensure_indexes(db)
-        await attribution_service.ensure_indexes(db)
-        await detectors.ensure_indexes(db)
-        await recovery_intake.ensure_indexes(db)
-        await WorkQueue(db).ensure_indexes()
-        await nba_service.ensure_indexes(db)
-        await second_chance_service.ensure_indexes(db)
-        await security_gate_service.ensure_indexes(db)
-        await approval_service.ensure_indexes(db)
-        await recovery_service.ensure_indexes(db)
-        await conversation_service.ensure_indexes(db)
-        await recovery_case_service.ensure_indexes(db)
-    except Exception:
-        logger.exception("Failed to create a non-critical application index")
+    # Each index is built on its own. They used to share one try block, so the first
+    # failure (an index that existing data violates, say) silently skipped every index
+    # after it -- including uniqueness guarantees later modules depend on.
+    index_builders = [
+        ("domain_events", lambda: db.domain_events.create_index(
+            [("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])),
+        ("alerts.status", lambda: db.alerts.create_index([("tenant_id", 1), ("status", 1)])),
+        ("alerts.source_ref", lambda: db.alerts.create_index(
+            [("tenant_id", 1), ("type", 1), ("source_ref", 1)])),
+        ("crm_communications", lambda: db.crm_communications.create_index(
+            [("tenant_id", 1), ("workspace_id", 1)])),
+        ("crm_meetings", lambda: db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])),
+        ("crm_billing", lambda: db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])),
+        ("revoked_tokens", lambda: db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)),
+        ("login_lockouts", lambda: db.login_lockouts.create_index("email", unique=True)),
+        ("cron_runs", lambda: db.cron_runs.create_index("run_id", unique=True)),
+        ("cron_ledger", lambda: cron_ledger.ensure_indexes(db)),
+        ("crm_core", lambda: crm_core.ensure_indexes(db)),
+        ("email_inbound", lambda: email_inbound.ensure_indexes(db)),
+        ("attribution", lambda: attribution_service.ensure_indexes(db)),
+        ("detectors", lambda: detectors.ensure_indexes(db)),
+        ("recovery_intake", lambda: recovery_intake.ensure_indexes(db)),
+        ("website_forms", lambda: lead_pipeline.ensure_indexes()),
+        ("work_queue", lambda: WorkQueue(db).ensure_indexes()),
+        ("next_best_action", lambda: nba_service.ensure_indexes(db)),
+        ("second_chance", lambda: second_chance_service.ensure_indexes(db)),
+        ("security_gate", lambda: security_gate_service.ensure_indexes(db)),
+        ("approval_queue", lambda: approval_service.ensure_indexes(db)),
+        ("recovery_strategy", lambda: recovery_service.ensure_indexes(db)),
+        ("conversations", lambda: conversation_service.ensure_indexes(db)),
+        ("recovery_case", lambda: recovery_case_service.ensure_indexes(db)),
+    ]
+    for name, build in index_builders:
+        try:
+            await build()
+        except Exception:
+            logger.exception("Failed to create the '%s' index set; continuing with the rest", name)
     try:
         for channel in register_channel_providers():
             logger.info("Registered outbound channel provider: %s", channel)
@@ -169,9 +183,13 @@ async def lifespan(_: FastAPI):
         await db.stripe_webhook_events.create_index("event_id", unique=True)
     except Exception as exc:
         raise RuntimeError("Stripe webhook event uniqueness index is unavailable") from exc
+    # The speed-to-lead clock runs inside the API: a new lead must not wait on an
+    # external scheduler to be escalated. `/api/cron/lead-sla` runs the same sweep.
+    lead_pipeline.start_watcher()
     try:
         yield
     finally:
+        await lead_pipeline.stop_watcher()
         mclient.close()
 
 
@@ -203,7 +221,11 @@ async def production_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    # The hosted website-form page is the one document meant to be framed by an
+    # agent's website. It carries its own CSP (`frame-ancestors *`) and holds no
+    # session-backed content, so it is exempt from the same-origin framing rule.
+    if not website_forms.HOSTED_PAGE_PATH.match(request.url.path):
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
     if request.url.scheme == "https":
@@ -851,12 +873,21 @@ STAGES = ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_
 class OppInput(BaseModel):
     name: str
     company_id: Optional[str] = None
-    value: float = 0
+    # A deal's value is money: never negative, and finite -- `ge=0` alone admits
+    # Infinity, which then breaks every JSON response that lists the deal.
+    value: float = Field(default=0, ge=0, le=crm_core.MAX_DEAL_VALUE, allow_inf_nan=False)
     stage: str = "lead"
     owner: Optional[str] = None
-    currency: str = "USD"
+    # ISO 4217, stored uppercase. A deal in "us dollars" or "$" cannot be totalled with
+    # anything, and its recovery case would inherit the same unknown unit.
+    currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
     expected_close_date: Optional[str] = None
     contact_ids: list[str] = []
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _uppercase_currency(cls, value):
+        return value.strip().upper() if isinstance(value, str) else value
 
 @api.get("/opportunities")
 async def list_opps(
@@ -1251,11 +1282,33 @@ async def list_events(limit: int = Query(200), user=Depends(get_current_user)):
 @api.get("/dashboard")
 async def dashboard(user=Depends(get_current_user)):
     t = user["tenant_id"]
-    opps = await db.opportunities.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
+    # Archived deals are out of the pipeline, as they are on the board.
+    opps = await db.opportunities.find({"tenant_id": t, "archived_at": None}, {"_id": 0}).to_list(2000)
     workspaces = await db.workspaces.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     commitments = await db.commitments.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
-    pipeline_value = sum(o.get("value", 0) for o in opps if o.get("stage") not in ("closed_won", "closed_lost"))
-    won_value = sum(o.get("value", 0) for o in opps if o.get("stage") == "closed_won")
+    # Money is grouped by currency and never summed across it: £40,000 plus $40,000 is not
+    # 80,000 of anything. Open/won follow the tenant's own pipeline stages. The scalar
+    # figures are kept for existing readers and are only a total while there is one
+    # currency; with several they are None and the per-currency maps are the answer.
+    classes = await crm_core.stage_classes(db, t)
+    pipeline_by_currency: dict[str, float] = {}
+    won_by_currency: dict[str, float] = {}
+    for o in opps:
+        try:
+            amount = float(o.get("value") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount) or amount < 0:
+            continue
+        cur = recovery_case_service.normalize_currency(o.get("currency")) or recovery_case_service.DEFAULT_CURRENCY
+        outcome = crm_core.classify_stage(o.get("stage"), classes)
+        bucket = {crm_core.STAGE_OPEN: pipeline_by_currency, crm_core.STAGE_WON: won_by_currency}.get(outcome)
+        if bucket is not None:
+            bucket[cur] = round(bucket.get(cur, 0.0) + amount, 2)
+    currencies = sorted(set(pipeline_by_currency) | set(won_by_currency))
+    single = currencies[0] if len(currencies) == 1 else None
+    pipeline_value = pipeline_by_currency.get(single, 0.0) if single else (0 if not currencies else None)
+    won_value = won_by_currency.get(single, 0.0) if single else (0 if not currencies else None)
     funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
     # health per workspace
     portfolio = []
@@ -1296,7 +1349,9 @@ async def dashboard(user=Depends(get_current_user)):
     }
     return {
         "pipeline_value": pipeline_value, "won_value": won_value,
-        "open_opportunities": len([o for o in opps if o.get("stage") not in ("closed_won", "closed_lost")]),
+        "pipeline_value_by_currency": pipeline_by_currency, "won_value_by_currency": won_by_currency,
+        "value_currency": single, "currencies": currencies,
+        "open_opportunities": len([o for o in opps if crm_core.classify_stage(o.get("stage"), classes) == crm_core.STAGE_OPEN]),
         "active_workspaces": len(workspaces), "at_risk_commitments": at_risk,
         "funnel": funnel, "portfolio": portfolio, "goal_rollup": goal_rollup,
     }
@@ -2246,6 +2301,21 @@ async def cron_detect_recovery(request: Request):
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
+@api.post("/cron/lead-sla")
+async def cron_lead_sla(request: Request):
+    """Recognise responses to website leads and escalate the ones nobody answered.
+
+    The API runs this sweep itself every minute; this entry point lets the external
+    scheduler run it too. Escalation is a conditional update, so running both never
+    notifies twice.
+    """
+    run_id, entry_id = await _begin_cron(request, "lead-sla")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job("lead-sla", run_id, lambda: lead_pipeline.sweep(), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
 @api.post("/cron/second-chance")
 async def cron_second_chance(request: Request):
     """Second Chance detection sweep across every tenant."""
@@ -3027,7 +3097,14 @@ async def record_attribution_outcome(inp: RecordOutcomeInput,
             audit=record_event)
     except (attribution_service.CaseNotFound, attribution_service.OutcomeNotFound):
         raise HTTPException(status_code=404, detail="Not found")
+    except attribution_service.DuplicateSale as exc:
+        # One sale counts once. The existing entry is named so the operator can find it;
+        # it is in this tenant, so naming it leaks nothing.
+        raise HTTPException(status_code=409, detail={
+            "message": str(exc), "entry_id": exc.entry.get("id"),
+            "case_id": exc.entry.get("case_id")})
     except attribution_service.AttributionError as exc:
+        # Includes an outcome that does not relate to the case it was recorded against.
         raise HTTPException(status_code=422, detail=str(exc))
     await record_event("attribution.outcome_recorded", "recovery_case", inp.case_id,
                        user["tenant_id"], user["email"],
@@ -4126,7 +4203,16 @@ async def cron_daily_digest(request: Request):
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
-recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+# Website forms: the public door an agent's website posts leads through, and the
+# automation that turns each lead into a contact, an owner, a deal, a call-back task and
+# an alert within seconds. The legacy intake-token door runs through the same pipeline.
+lead_pipeline = website_forms.register_website_form_routes(
+    api, db, new_id=new_id, now_iso=now_iso, record_event=record_event,
+    get_current_user=get_current_user, require_role=require_role, spawn=spawn_background,
+    send_email=send_email, email_configured=email_configured, get_prefs=get_prefs,
+    public_base_url=FRONTEND_URL, encrypt=enc_secret, decrypt=dec_secret)
+recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user,
+                                       require_role, lead_pipeline=lead_pipeline)
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
@@ -4176,11 +4262,32 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
             approval_service.CANCELLED: recovery_service.STATE_WITHDRAWN,
         }.get(status)
         if strategy_state:
+            strategy = None
             try:
-                await recovery_service.set_state(db, tenant_id, subject_id,
-                                                 state=strategy_state, actor=actor)
+                strategy = await recovery_service.set_state(db, tenant_id, subject_id,
+                                                            state=strategy_state, actor=actor)
             except recovery_service.RecoveryStrategyError:
                 logger.warning("Could not sync recovery strategy %s after a decision", subject_id)
+            if strategy:
+                # The decision has to move the *case*, not only the strategy: an approved
+                # plan whose case still read `awaiting_approval` was never picked up by
+                # the runner, so approving a recovery used to do nothing at all. Approval
+                # advances the case and queues its run; rejection closes it with the
+                # reason; withdrawal returns it to `planned` to be re-proposed.
+                try:
+                    case = await recovery_service.sync_case_with_strategy(
+                        db, tenant_id, strategy, actor=actor, audit=record_event,
+                        rationale=approval.get("decision_rationale"),
+                        closer=recovery_lifecycle.close_case)
+                    if case:
+                        result["recovery_case"] = {"id": case["id"], "state": case["state"]}
+                    if case and case.get("state") == recovery_case_service.APPROVED:
+                        queued = await recovery_runner_service.enqueue_case(
+                            work_queue, tenant_id=tenant_id, case_id=case["id"], actor=actor)
+                        result["recovery_case"]["run_queued"] = queued["id"]
+                except recovery_case_service.RecoveryCaseError:
+                    logger.warning("Could not move the recovery case for strategy %s",
+                                   subject_id)
 
     if subject_type == "communication_message" and subject_id:
         try:
@@ -4302,6 +4409,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added after (so outside) the credentialed CORS policy above: agents' websites may call
+# the public form paths from any origin, never with credentials. Adding those websites
+# to CORS_ORIGINS instead would let their scripts act as a signed-in CRM user, because
+# the session cookie is SameSite=None.
+app.add_middleware(website_forms.PublicFormCORSMiddleware)
 
 # Production containers build the React application into this directory. Mounting
 # it last preserves explicit API routes while supporting direct SPA deep links.

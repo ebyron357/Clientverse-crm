@@ -98,7 +98,7 @@ export default function Mcp() {
   const recentSuccess = invocations.filter((inv) => inv.status === "success").length;
 
   return (
-    <div>
+    <div className="cv-page">
       <div className="mb-6">
         <h1 className="font-display text-3xl font-bold flex items-center gap-2"><Terminal className="w-6 h-6" />MCP Console</h1>
         <p className="text-sm text-gray-500 mt-1">Governed MCP server — Level 1 read tools execute live through the ClientVerse policy wrapper.</p>

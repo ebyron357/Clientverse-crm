@@ -31,14 +31,20 @@ anything.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
+import approval_queue
 import attribution
 import conversations as conversation_service
 import recovery_case as recovery_case_service
 import recovery_strategy as recovery_strategy_service
 
 APPROVALS = "approvals"
+
+# The portfolio reads at most this many cases. Past it the report says it is truncated
+# rather than presenting a partial count as the whole.
+PORTFOLIO_SCAN_LIMIT = int(os.environ.get("RECOVERY_PORTFOLIO_SCAN_LIMIT", "20000"))
 
 # Message states, grouped by what they actually mean for a buyer reading a report.
 DRAFTED_STATES = (conversation_service.DRAFT, conversation_service.PENDING_APPROVAL,
@@ -61,9 +67,16 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
     if not case:
         return None
 
-    strategy = await db[recovery_strategy_service.COLLECTION].find_one(
-        {"tenant_id": tenant_id, "recovery_case_id": case_id}, {"_id": 0},
-        sort=[("created_at", -1)])
+    # The case's own plan first. Strategies did not carry `recovery_case_id` until it was
+    # added, so a lookup on that field alone found no plan for any older case.
+    strategy = None
+    if case.get("plan_reference"):
+        strategy = await db[recovery_strategy_service.COLLECTION].find_one(
+            {"tenant_id": tenant_id, "id": case["plan_reference"]}, {"_id": 0})
+    if strategy is None:
+        strategy = await db[recovery_strategy_service.COLLECTION].find_one(
+            {"tenant_id": tenant_id, "recovery_case_id": case_id}, {"_id": 0},
+            sort=[("created_at", -1)])
 
     conversations = await db[conversation_service.CONVERSATIONS].find(
         {"tenant_id": tenant_id, "recovery_case_id": case_id}, {"_id": 0}).to_list(50)
@@ -90,8 +103,8 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
         {"tenant_id": tenant_id, "recovery_case_id": case_id}, {"_id": 0}).to_list(200)
 
     entries = await attribution.list_entries(db, tenant_id, case_id=case_id, limit=100)
-    attributed = [entry for entry in entries
-                  if entry.get("claim") == attribution.CLAIM_ATTRIBUTED]
+    # A claim the case never accepted is not a claim (see `is_counted_as_attributed`).
+    attributed = [entry for entry in entries if attribution.is_counted_as_attributed(entry)]
 
     meetings = []
     if case.get("contact_id"):
@@ -123,6 +136,12 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
             "external_identity": case.get("external_identity"),
             "created_at": case.get("created_at"),
             "updated_at": case.get("updated_at"),
+            # Why a closed case closed, and who closed it -- "answered elsewhere", "gave
+            # up" and "test lead" all leave open potential and must not look alike.
+            "close_reason": case.get("close_reason"),
+            "close_note": case.get("close_note"),
+            "closed_at": case.get("closed_at"),
+            "closed_by": case.get("closed_by"),
         },
         "source_record": source_record,
         # Named at length, and never combined. A figure called "value" would be read as
@@ -130,8 +149,16 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
         "value": {
             "currency": case.get("currency") or recovery_case_service.DEFAULT_CURRENCY,
             "potential_value": case.get("potential_value"),
-            "potential_value_basis": (case.get("evidence") or {}).get("value_basis"),
+            # Where the estimate came from, in words ("opportunity value on record", "web
+            # form estimate"), recorded on the case when the value was set.
+            "potential_value_basis": (case.get("potential_value_basis")
+                                      or (case.get("evidence") or {}).get("value_basis")),
+            "potential_value_note": (case.get("evidence") or {}).get("value_rejected"),
             "confirmed_recovered_value": case.get("confirmed_value"),
+            # The money's own currency: a missed call (no value, so USD by default) can
+            # lead to a deal won in pounds.
+            "confirmed_currency": (recovery_case_service.confirmed_currency_of(case)
+                                   if case.get("confirmed_value") is not None else None),
             "confirmed_recovered_value_evidence": case.get("confirmed_value_evidence"),
             "note": ("Potential value is what this opportunity might be worth. Confirmed "
                      "recovered value is money a record says arrived. They are different "
@@ -160,7 +187,10 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
         "outcome": {
             "final_state": case.get("state"),
             "is_terminal": case.get("state") in recovery_case_service.TERMINAL_STATES,
-            "recovered": case.get("state") == recovery_case_service.RECOVERED,
+            # Recovered whenever a confirmed value is included -- a recovered case that
+            # was later closed is still a recovery.
+            "recovered": isinstance(case.get("confirmed_value"), (int, float)),
+            "close_reason": case.get("close_reason"),
         },
         "attribution": {
             "entries": entries,
@@ -178,23 +208,29 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
 async def portfolio(db: Any, tenant_id: str) -> dict:
     """The aggregate view, with the denominators that make the headline honest."""
     cases = await db[recovery_case_service.COLLECTION].find(
-        {"tenant_id": tenant_id}, {"_id": 0}).to_list(20000)
+        {"tenant_id": tenant_id},
+        {"_id": 0, "id": 1, "state": 1, "close_reason": 1, "plan_reference": 1},
+    ).to_list(PORTFOLIO_SCAN_LIMIT + 1)
+    cases_truncated = len(cases) > PORTFOLIO_SCAN_LIMIT
+    cases = cases[:PORTFOLIO_SCAN_LIMIT]
 
     by_state: dict[str, int] = {}
-    potential_open: dict[str, float] = {}
+    closed_by_reason: dict[str, int] = {}
     for case in cases:
         state = case.get("state") or recovery_case_service.DETECTED
         by_state[state] = by_state.get(state, 0) + 1
-        if state in recovery_case_service.OPEN_STATES and isinstance(
-                case.get("potential_value"), (int, float)):
-            currency = case.get("currency") or recovery_case_service.DEFAULT_CURRENCY
-            potential_open[currency] = round(
-                potential_open.get(currency, 0.0) + float(case["potential_value"]), 2)
+        if state == recovery_case_service.CLOSED:
+            reason = case.get("close_reason") or "unspecified"
+            closed_by_reason[reason] = closed_by_reason.get(reason, 0) + 1
+    # Each underlying opportunity once, however many cases point at it.
+    potential = await recovery_case_service.open_potential(db, tenant_id)
+    confirmed = await recovery_case_service.confirmed_totals(db, tenant_id)
 
     case_ids = [case["id"] for case in cases]
     conversations = await db[conversation_service.CONVERSATIONS].find(
         {"tenant_id": tenant_id, "recovery_case_id": {"$in": case_ids}},
-        {"_id": 0, "id": 1}).to_list(20000) if case_ids else []
+        {"_id": 0, "id": 1}).to_list(PORTFOLIO_SCAN_LIMIT + 1) if case_ids else []
+    conversations_truncated = len(conversations) > PORTFOLIO_SCAN_LIMIT
     conversation_ids = [conversation["id"] for conversation in conversations]
 
     drafted = sent = blocked = unknown = replies = 0
@@ -214,35 +250,57 @@ async def portfolio(db: Any, tenant_id: str) -> dict:
         replies = await db[conversation_service.MESSAGES].count_documents(
             {**scope, "direction": conversation_service.INBOUND})
 
+    # Approval requests are `requested` while undecided; the old count looked for
+    # "pending", which the approval queue never writes, and so always read zero. Counted
+    # here: undecided requests for recovery strategies, and for messages drafted on a
+    # recovery case.
+    pending_messages = await db[conversation_service.MESSAGES].find(
+        {"tenant_id": tenant_id, "conversation_id": {"$in": conversation_ids},
+         "status": conversation_service.PENDING_APPROVAL},
+        {"_id": 0, "id": 1}).to_list(5000) if conversation_ids else []
     awaiting_approval = await db[APPROVALS].count_documents(
-        {"tenant_id": tenant_id, "status": "pending"})
+        {"tenant_id": tenant_id, "status": approval_queue.REQUESTED,
+         "$and": [
+             {"$or": [{"subject_type": "recovery_strategy"},
+                      {"subject_type": "communication_message",
+                       "subject_id": {"$in": [m["id"] for m in pending_messages]}}]},
+             # A request past its expiry can no longer be decided, so it is not awaiting.
+             approval_queue._not_lapsed_criteria(),
+         ]})
 
     attribution_totals = await attribution.totals(db, tenant_id)
     timing = await attribution.time_to_recovery(db, tenant_id)
 
     detected = len(cases)
-    worked = sum(by_state.get(state, 0) for state in
-                 (recovery_case_service.PLANNED, recovery_case_service.AWAITING_APPROVAL,
-                  recovery_case_service.APPROVED, recovery_case_service.EXECUTING,
-                  recovery_case_service.ENGAGED, recovery_case_service.RECOVERED,
-                  recovery_case_service.CLOSED, recovery_case_service.FAILED))
+    # "Worked" means something was planned for it. A case closed by reconciliation before
+    # anything was planned -- the enquiry was answered by someone else -- was found and
+    # closed, not worked, so a closed or failed case only counts if it had a plan.
+    worked = sum(1 for case in cases
+                 if case.get("state") not in (None, recovery_case_service.DETECTED)
+                 and (case.get("state") not in (recovery_case_service.CLOSED,
+                                                recovery_case_service.FAILED)
+                      or case.get("plan_reference")))
 
     return {
         "tenant_id": tenant_id,
         "cases": {
             "detected": detected,
-            # "Worked" means something was planned for it. A case sitting in `detected`
-            # has been found and nothing more, and counting it as worked would be the
-            # easiest lie on this page.
+            # A case sitting in `detected` has been found and nothing more, and counting
+            # it as worked would be the easiest lie on this page.
             "worked": worked,
             "not_yet_worked": by_state.get(recovery_case_service.DETECTED, 0),
             "awaiting_approval": by_state.get(recovery_case_service.AWAITING_APPROVAL, 0),
             "executing": by_state.get(recovery_case_service.EXECUTING, 0),
             "engaged": by_state.get(recovery_case_service.ENGAGED, 0),
-            "recovered": by_state.get(recovery_case_service.RECOVERED, 0),
+            # Every case whose confirmed value is included in the recovered figure:
+            # `recovered`, and `recovered` then `closed`, alike -- once per sale.
+            "recovered": confirmed["recovered_cases"],
             "closed": by_state.get(recovery_case_service.CLOSED, 0),
+            "closed_by_reason": closed_by_reason,
             "failed": by_state.get(recovery_case_service.FAILED, 0),
             "by_state": by_state,
+            "truncated": cases_truncated,
+            "scan_limit": PORTFOLIO_SCAN_LIMIT,
         },
         "approvals": {"pending": awaiting_approval},
         "messages": {
@@ -251,29 +309,42 @@ async def portfolio(db: Any, tenant_id: str) -> dict:
             "blocked_or_failed": blocked,
             "outcome_unknown": unknown,
             "replies_received": replies,
+            "truncated": conversations_truncated,
             "note": ("Drafted counts every outbound message this system composed. "
                      "Actually sent counts only those a provider accepted."),
         },
         "revenue": {
             # Three separate figures that are never combined.
-            "potential_value_open_by_currency": potential_open,
+            "potential_value_open_by_currency": potential["by_currency"],
             "attributed_recovered_value_by_currency":
                 attribution_totals["attributed_recovered_value_by_currency"],
             "unattributed_outcome_value_by_currency":
                 attribution_totals["unattributed_outcome_value_by_currency"],
-            "currencies": sorted(set(potential_open)
+            "currencies": sorted(set(potential["by_currency"])
                                  | set(attribution_totals["attributed_recovered_value_by_currency"])
                                  | set(attribution_totals["unattributed_outcome_value_by_currency"])),
+            # What open potential is made of, so a reader can see what it leaves out.
+            "open_cases": potential["open_cases"],
+            "open_cases_without_value": potential["cases_without_value"],
+            "open_opportunity_groups": potential["opportunity_groups"],
+            "open_cases_collapsed": potential["cases_collapsed"],
+            "potential_truncated": potential["truncated"],
+            "outcomes_truncated": attribution_totals["truncated"],
             "note": ("Open potential is an estimate of what un-recovered cases might be "
-                     "worth. Attributed recovered value is money a record says arrived "
-                     "on a case where outreach demonstrably reached the client. "
-                     "Unattributed outcomes are real revenue this system does not claim "
-                     "to have caused."),
+                     "worth, counting each underlying opportunity once however many cases "
+                     "point at it; cases with no value yet (a missed call, say) add "
+                     "nothing to it and are counted separately. Attributed recovered value "
+                     "is money a record says arrived on a case where outreach demonstrably "
+                     "reached the client and the case confirmed it. Unattributed outcomes "
+                     "are real revenue this system does not claim to have caused. Each "
+                     "sale is counted once."),
         },
         "attribution": {
             "entries": attribution_totals["entries"],
             "attributed": attribution_totals["attributed_entries"],
             "unattributed": attribution_totals["unattributed_entries"],
+            "attributed_but_unconfirmed": attribution_totals["attributed_but_unconfirmed_entries"],
+            "duplicate_entries_excluded": attribution_totals["duplicate_entries_excluded"],
             "by_basis": attribution_totals["by_basis"],
         },
         "time_to_recovery": timing,
@@ -290,8 +361,17 @@ async def traceability(db: Any, tenant_id: str) -> dict:
     return {
         "cases.detected": f"{recovery_case_service.COLLECTION} where tenant_id matches",
         "cases.worked": (f"{recovery_case_service.COLLECTION} in any state past "
-                         f"'{recovery_case_service.DETECTED}'"),
-        "approvals.pending": f"{APPROVALS} where status = 'pending'",
+                         f"'{recovery_case_service.DETECTED}', counting a closed or failed "
+                         "case only if it had a plan_reference"),
+        "cases.recovered": (f"{recovery_case_service.COLLECTION} with a numeric "
+                            "confirmed_value, once per sale named in its confirmation "
+                            "evidence"),
+        "cases.closed_by_reason": (f"{recovery_case_service.COLLECTION} in state "
+                                   f"'{recovery_case_service.CLOSED}', grouped by "
+                                   "close_reason"),
+        "approvals.pending": (f"{APPROVALS} where status = '{approval_queue.REQUESTED}', not "
+                              "past expires_at, for a recovery strategy or for a message "
+                              "awaiting approval on a recovery conversation"),
         "messages.drafted": (f"{conversation_service.MESSAGES} where direction = "
                              f"'{conversation_service.OUTBOUND}' on a conversation "
                              "linked to a recovery case"),
@@ -300,13 +380,24 @@ async def traceability(db: Any, tenant_id: str) -> dict:
         "messages.replies_received": (f"{conversation_service.MESSAGES} where direction "
                                       f"= '{conversation_service.INBOUND}'"),
         "revenue.potential_value_open_by_currency": (
-            f"sum of potential_value over {recovery_case_service.COLLECTION} in an open "
-            "state, grouped by currency"),
+            f"potential_value over {recovery_case_service.COLLECTION} in an open state, "
+            "grouped into opportunities (by opportunity_id; else by contact_id, joined to "
+            "that contact's deal when the contact is on exactly one open deal; else the case "
+            "itself -- an unresolved phone number or email is not a grouping key) and taking "
+            "ONE value per opportunity -- the most authoritative, most recent -- then summed "
+            "per currency"),
+        "revenue.open_cases_without_value": (
+            "open cases with no usable potential_value; they add nothing to open potential"),
+        "revenue.open_cases_collapsed": (
+            "open cases whose value was not added because another case in the same "
+            "opportunity group already represents it"),
         "revenue.attributed_recovered_value_by_currency": (
             f"sum of outcome.amount over {attribution.COLLECTION} where claim = "
-            f"'{attribution.CLAIM_ATTRIBUTED}', grouped by currency"),
+            f"'{attribution.CLAIM_ATTRIBUTED}' and the case accepted the confirmation, "
+            "one entry per sale_key, grouped by currency"),
         "revenue.unattributed_outcome_value_by_currency": (
-            f"the same where claim = '{attribution.CLAIM_UNATTRIBUTED}'"),
+            f"the same over every other entry (claim = '{attribution.CLAIM_UNATTRIBUTED}', "
+            "or a claim the case never confirmed)"),
         "time_to_recovery": (
             "days between a case's detection and the outcome date on its attributed "
             f"{attribution.COLLECTION} entry, over entries carrying both dates"),

@@ -54,7 +54,7 @@ export default function Registries() {
   }, []);
 
   return (
-    <div>
+    <div className="cv-page">
       <div className="mb-6">
         <h1 className="font-display text-3xl font-bold">Registries</h1>
         <p className="text-sm text-gray-500 mt-1 flex items-center gap-1.5">

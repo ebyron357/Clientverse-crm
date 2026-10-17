@@ -32,6 +32,7 @@ guessed would manufacture recovery opportunities out of ordinary business.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -82,6 +83,7 @@ DETECTION_LIMIT = int(os.environ.get("RECOVERY_DETECTION_LIMIT", "500"))
 # A call that was answered is not a missed one.
 MISSED_CALL_OUTCOMES = ("missed", "no_answer", "voicemail", "abandoned", "unanswered")
 ANSWERED_CALL_OUTCOMES = ("answered", "connected", "completed")
+ANSWERED_OUTCOME_PATTERN = r"^\s*(" + "|".join(ANSWERED_CALL_OUTCOMES) + r")\s*$"
 
 # Document kinds that represent a priced offer awaiting a decision.
 QUOTE_KINDS = ("quote", "proposal", "pricing")
@@ -101,12 +103,41 @@ RECOVERABLE_EXTERNAL_KINDS = ("lead_lost", "deal_lost", "opportunity_stalled",
                               "quote_expired", "subscription_cancelled",
                               "enquiry_unanswered", "appointment_cancelled")
 
+# A web enquiry in any of these states is not a lost lead: somebody answered it, closed
+# it, or it was never a lead at all.
+RESOLVED_ENQUIRY_STATUSES = ("responded", "closed", "spam")
+
+# Lanes that exist in the vocabulary but cannot fire on the data this application holds,
+# with the reason. They are reported as disabled in every sweep summary rather than
+# being reported as "found 0", which reads as "looked, and nothing was wrong".
+DISABLED_LANES = {
+    "unanswered_quotes": (
+        "No priced-quote record exists to read. The lane looked in a `documents` collection "
+        "nothing writes; client documents (`client_documents`) carry no total, no sent "
+        "date and no accepted/declined status, so an unanswered quote cannot be told from "
+        "an ordinary shared file. Priced offers are covered by the estimates lane."),
+}
+
+# Phone numbers are compared on their last ten digits, so "+1 (555) 010-0199",
+# "15550100199" and "555-010-0199" are recognised as one caller. Ten digits is a national
+# number in the NANP and covers the significant part of most others; a shorter string is
+# compared whole.
+PHONE_MATCH_DIGITS = 10
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _parse(value: Any) -> Optional[datetime]:
+    """Parse a timestamp; one written without a timezone is read as UTC.
+
+    That reading is a convention, not knowledge: a time with no offset could have been
+    written in any zone. Timestamps this application writes always carry one; the naive
+    ones come from callers -- a phone system's `occurred_at`, an appointment typed into
+    a form. Where a detection rests on such a time it says so (`_naive`), so the reading
+    is visible to whoever acts on it rather than silently assumed.
+    """
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str) and value:
@@ -116,6 +147,34 @@ def _parse(value: Any) -> Optional[datetime]:
             return None
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     return None
+
+
+def _naive(value: Any) -> bool:
+    """True when `value` is a timestamp that carries no timezone (see `_parse`)."""
+    if isinstance(value, datetime):
+        return value.tzinfo is None
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is None
+        except ValueError:
+            return False
+    return False
+
+
+def _zone_note(*values: Any) -> dict:
+    """Evidence that a detection's timing rests on a time read as UTC, if it does."""
+    if any(_naive(v) for v in values):
+        return {"timestamp_timezone_assumed": "UTC",
+                "timestamp_note": ("A time this detection depends on was recorded without a "
+                                   "timezone and was read as UTC; it may be off by the "
+                                   "source's UTC offset.")}
+    return {}
+
+
+def phone_key(value: Any) -> str:
+    """The comparable part of a phone number: its last ten digits (see PHONE_MATCH_DIGITS)."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[-PHONE_MATCH_DIGITS:] if len(digits) > PHONE_MATCH_DIGITS else digits
 
 
 def _status(value: Any) -> str:
@@ -166,6 +225,13 @@ async def _responded_records(db: Any, tenant_id: str, related_type: str,
     return responded
 
 
+# Reconciliation re-reads a case's source record and must read it exactly the way its
+# detector did, so these are shared rather than re-implemented there.
+responded_records = _responded_records
+parse_time = _parse
+status_of = _status
+
+
 # --------------------------------------------------------------------- the lanes
 
 async def detect_missed_calls(db: Any, tenant_id: str, *,
@@ -181,22 +247,7 @@ async def detect_missed_calls(db: Any, tenant_id: str, *,
     calls = await db[CALL_LOGS].find(
         {"tenant_id": tenant_id, "direction": "inbound"}, {"_id": 0}
     ).sort("occurred_at", -1).to_list(DETECTION_LIMIT)
-
-    # A later call with the same number, in either direction, means contact was made.
-    reached: dict[str, datetime] = {}
-    for call in calls:
-        if _status(call.get("outcome")) in ANSWERED_CALL_OUTCOMES:
-            occurred = _parse(call.get("occurred_at"))
-            number = str(call.get("from_number") or "").strip()
-            if occurred and number:
-                reached[number] = max(reached.get(number, occurred), occurred)
-    callbacks = await db[CALL_LOGS].find(
-        {"tenant_id": tenant_id, "direction": "outbound"}, {"_id": 0}).to_list(DETECTION_LIMIT)
-    for call in callbacks:
-        occurred = _parse(call.get("occurred_at"))
-        number = str(call.get("to_number") or "").strip()
-        if occurred and number:
-            reached[number] = max(reached.get(number, occurred), occurred)
+    reached = await callbacks_by_number(db, tenant_id)
 
     detections = []
     for call in calls:
@@ -206,7 +257,8 @@ async def detect_missed_calls(db: Any, tenant_id: str, *,
         if not occurred or occurred > cutoff:
             continue
         number = str(call.get("from_number") or "").strip()
-        if number and reached.get(number) and reached[number] >= occurred:
+        key = phone_key(number)
+        if key and reached.get(key) and reached[key] >= occurred:
             continue
         waited = _hours(now - occurred)
         detections.append({
@@ -224,24 +276,65 @@ async def detect_missed_calls(db: Any, tenant_id: str, *,
                                   if number else None),
             "contact_id": call.get("contact_id"),
             "waited_hours": waited,
+            **_zone_note(call.get("occurred_at")),
         })
     return detections
 
 
+async def callbacks_by_number(db: Any, tenant_id: str) -> dict[str, datetime]:
+    """The latest time each number was actually reached, keyed by `phone_key`.
+
+    Reached means an answered inbound call from the number or any outbound call to it.
+    Both are read newest-first with their own cap: the inbound list used to double as the
+    source of answered calls and the outbound list was capped *unsorted*, so on a busy
+    line the callback that resolved a missed call could simply not be among the rows
+    read -- and the call was reported as unreturned. Numbers are compared on their
+    digits, so "+1 555 010 0199" and "(555) 010-0199" are the same caller.
+    """
+    reached: dict[str, datetime] = {}
+    # Outcomes are matched the way the missed-call detector reads them -- trimmed, any
+    # case -- or an "Answered" callback would leave its missed call open for ever.
+    answered = [call for call in await db[CALL_LOGS].find(
+        {"tenant_id": tenant_id, "direction": "inbound",
+         "outcome": {"$regex": ANSWERED_OUTCOME_PATTERN, "$options": "i"}},
+        {"_id": 0, "from_number": 1, "occurred_at": 1, "outcome": 1},
+    ).sort("occurred_at", -1).to_list(DETECTION_LIMIT * 4)
+        if _status(call.get("outcome")) in ANSWERED_CALL_OUTCOMES]
+    outbound = await db[CALL_LOGS].find(
+        {"tenant_id": tenant_id, "direction": "outbound"},
+        {"_id": 0, "to_number": 1, "occurred_at": 1},
+    ).sort("occurred_at", -1).to_list(DETECTION_LIMIT * 4)
+    for call, field in [(c, "from_number") for c in answered] + \
+                       [(c, "to_number") for c in outbound]:
+        occurred = _parse(call.get("occurred_at"))
+        key = phone_key(call.get(field))
+        if occurred and key:
+            reached[key] = max(reached.get(key, occurred), occurred)
+    return reached
+
+
 async def detect_web_enquiries(db: Any, tenant_id: str, *,
                                grace_hours: int = WEB_ENQUIRY_GRACE_HOURS) -> list[dict]:
-    """A website enquiry nobody answered."""
+    """A website enquiry nobody answered.
+
+    Not a lost lead, and never detected: a test lead (`is_test`), one whose status says it
+    was responded to, closed or spam, one whose SLA records a first response, and one with
+    an activity or task logged against it. The enquiry carries its own `currency`, and the
+    contact and deal the website pipeline linked it to -- which is what lets several
+    enquiries from one buyer be recognised as one opportunity rather than several.
+    """
     now = _now()
     cutoff = now - timedelta(hours=max(0, int(grace_hours)))
     enquiries = await db[WEB_ENQUIRIES].find(
-        {"tenant_id": tenant_id, "status": {"$nin": ["responded", "closed", "spam"]}},
+        {"tenant_id": tenant_id, "is_test": {"$ne": True},
+         "status": {"$nin": list(RESOLVED_ENQUIRY_STATUSES)}},
         {"_id": 0}).sort("received_at", -1).to_list(DETECTION_LIMIT)
     responded = await _responded_records(db, tenant_id, "web_enquiry",
                                          [e["id"] for e in enquiries])
 
     detections = []
     for enquiry in enquiries:
-        if enquiry["id"] in responded:
+        if enquiry["id"] in responded or enquiry_is_resolved(enquiry):
             continue
         received = _parse(enquiry.get("received_at"))
         if not received or received > cutoff:
@@ -262,10 +355,29 @@ async def detect_web_enquiries(db: Any, tenant_id: str, *,
                                   if email else None),
             "contact_id": enquiry.get("contact_id"),
             "company_id": enquiry.get("company_id"),
+            "opportunity_id": enquiry.get("opportunity_id"),
             "value": enquiry.get("estimated_value"),
+            # Older enquiries carry no currency; `sanitize_detection` applies the default
+            # and records that it did, rather than presenting it as known.
+            "currency": enquiry.get("currency"),
+            "value_basis": "web form estimate",
             "waited_hours": waited,
+            **_zone_note(enquiry.get("received_at")),
         })
     return detections
+
+
+def enquiry_is_resolved(enquiry: dict) -> Optional[str]:
+    """Why a web enquiry is no longer a lost lead, or None if it still is."""
+    if enquiry.get("is_test") is True:
+        return "test lead"
+    status = _status(enquiry.get("status"))
+    if status in RESOLVED_ENQUIRY_STATUSES:
+        return f"status '{status}'"
+    sla = enquiry.get("sla")
+    if isinstance(sla, dict) and sla.get("first_response_at"):
+        return "a first response is recorded"
+    return None
 
 
 async def _detect_open_offers(db: Any, tenant_id: str, *, collection: str, detector_type: str,
@@ -285,6 +397,7 @@ async def _detect_open_offers(db: Any, tenant_id: str, *, collection: str, detec
     rows = await db[collection].find(query, {"_id": 0}).sort("created_at", -1).to_list(
         DETECTION_LIMIT)
     responded = await _responded_records(db, tenant_id, label, [r["id"] for r in rows])
+    invoiced = await invoiced_estimate_ids(db, tenant_id, [r["id"] for r in rows])
 
     detections = []
     for row in rows:
@@ -294,7 +407,9 @@ async def _detect_open_offers(db: Any, tenant_id: str, *, collection: str, detec
         if OPEN_OFFER_STATUSES and status not in OPEN_OFFER_STATUSES:
             # A draft was never sent to anybody, so there is nothing to chase.
             continue
-        if row["id"] in responded:
+        if row["id"] in responded or row["id"] in invoiced or row.get("invoice_id"):
+            # Converted into an invoice: the client said yes. That is not a lost offer,
+            # whatever the estimate's own status still reads.
             continue
         sent_at = _parse(row.get("sent_at") or row.get("updated_at") or row.get("created_at"))
         if not sent_at or sent_at > cutoff:
@@ -316,16 +431,32 @@ async def _detect_open_offers(db: Any, tenant_id: str, *, collection: str, detec
             # The offer's own total is what *might* be recovered.
             "value": row.get("total") or row.get("amount"),
             "currency": row.get("currency"),
+            "value_basis": f"{label} total",
             "waited_days": waited,
+            **_zone_note(row.get("sent_at") or row.get("updated_at") or row.get("created_at")),
         })
     return detections
 
 
+async def invoiced_estimate_ids(db: Any, tenant_id: str, estimate_ids: list[str]) -> set[str]:
+    """Which of these estimates an invoice has been raised from."""
+    if not estimate_ids:
+        return set()
+    rows = await db.invoices.find(
+        {"tenant_id": tenant_id, "estimate_id": {"$in": estimate_ids}},
+        {"_id": 0, "estimate_id": 1}).to_list(len(estimate_ids) + 10)
+    return {row["estimate_id"] for row in rows if row.get("estimate_id")}
+
+
 async def detect_unanswered_quotes(db: Any, tenant_id: str, *,
                                    grace_days: int = QUOTE_GRACE_DAYS) -> list[dict]:
-    return await _detect_open_offers(
-        db, tenant_id, collection="documents", detector_type=TYPE_UNANSWERED_QUOTE,
-        grace_days=grace_days, kinds=QUOTE_KINDS, label="quote")
+    """Disabled: there is no priced-quote record to read (see `DISABLED_LANES`).
+
+    Returns nothing rather than reading a collection the application never writes. The
+    lane stays declared so that, once quotes are real records with a total, a sent date
+    and a decision, it can be pointed at them -- and so the sweep can say it is off.
+    """
+    return []
 
 
 async def detect_unanswered_estimates(db: Any, tenant_id: str, *,
@@ -402,15 +533,7 @@ async def detect_cancelled_appointments(db: Any, tenant_id: str) -> list[dict]:
     responded = await _responded_records(db, tenant_id, "appointment",
                                          [a["id"] for a in appointments])
 
-    # A later booking for the same company is a rebooking, so there is nothing to recover.
-    rebooked: dict[str, datetime] = {}
-    for appointment in appointments:
-        if _status(appointment.get("status")) in CANCELLED_APPOINTMENT_STATUSES:
-            continue
-        start = _parse(appointment.get("start_at"))
-        company = appointment.get("company_id")
-        if start and company:
-            rebooked[company] = max(rebooked.get(company, start), start)
+    rebooked = latest_bookings(appointments)
 
     detections = []
     for appointment in appointments:
@@ -421,9 +544,9 @@ async def detect_cancelled_appointments(db: Any, tenant_id: str) -> list[dict]:
         start = _parse(appointment.get("start_at"))
         if not start:
             continue
-        company = appointment.get("company_id")
-        if company and rebooked.get(company) and rebooked[company] >= start:
+        if is_rebooked(appointment, rebooked):
             continue
+        company = appointment.get("company_id")
         detections.append({
             "tenant_id": tenant_id,
             "type": TYPE_APPOINTMENT_CANCELLED,
@@ -437,8 +560,37 @@ async def detect_cancelled_appointments(db: Any, tenant_id: str) -> list[dict]:
             "workspace_id": appointment.get("workspace_id"),
             "company_id": company,
             "contact_id": appointment.get("contact_id"),
+            **_zone_note(appointment.get("start_at")),
         })
     return detections
+
+
+def latest_bookings(appointments: list[dict]) -> dict[str, datetime]:
+    """The latest live (not cancelled) booking start per company and per contact."""
+    latest: dict[str, datetime] = {}
+    for appointment in appointments:
+        if _status(appointment.get("status")) in CANCELLED_APPOINTMENT_STATUSES:
+            continue
+        start = _parse(appointment.get("start_at"))
+        if not start:
+            continue
+        for key in (f"company:{appointment.get('company_id')}" if appointment.get("company_id") else None,
+                    f"contact:{appointment.get('contact_id')}" if appointment.get("contact_id") else None):
+            if key:
+                latest[key] = max(latest.get(key, start), start)
+    return latest
+
+
+def is_rebooked(appointment: dict, latest: dict[str, datetime]) -> bool:
+    """A later booking for the same company or contact is a rebooking."""
+    start = _parse(appointment.get("start_at"))
+    if not start:
+        return False
+    for key in (f"company:{appointment.get('company_id')}" if appointment.get("company_id") else None,
+                f"contact:{appointment.get('contact_id')}" if appointment.get("contact_id") else None):
+        if key and latest.get(key) and latest[key] >= start:
+            return True
+    return False
 
 
 async def detect_no_shows(db: Any, tenant_id: str, *,
@@ -480,6 +632,7 @@ async def detect_no_shows(db: Any, tenant_id: str, *,
             "company_id": appointment.get("company_id"),
             "contact_id": appointment.get("contact_id"),
             "elapsed_hours": elapsed,
+            **_zone_note(appointment.get("end_at") or appointment.get("start_at")),
         })
     return detections
 
@@ -527,7 +680,9 @@ async def detect_external_crm_events(db: Any, tenant_id: str) -> list[dict]:
             "external_identity": identity,
             "value": event.get("value"),
             "currency": event.get("currency"),
+            "value_basis": f"value reported by {event.get('provider') or 'an external system'}",
             "provider": event.get("provider"),
+            **_zone_note(event.get("occurred_at")),
         })
     return detections
 
@@ -539,7 +694,12 @@ def to_recovery_event(detection: dict) -> dict:
 
     `source_event_id` names the record that went quiet, so re-detecting it resolves to
     the case that already exists rather than opening a second one.
+
+    The value is sanitised first: a source value that could not be real money (NaN,
+    Infinity, negative, over `MAX_POTENTIAL_VALUE`, or in something that is not a
+    currency code) is dropped with its reason recorded, and the case still opens.
     """
+    detection = _finalise(detection)
     kind = detection.get("record_kind") or "record"
     return recovery_case.normalize_event(
         tenant_id=detection["tenant_id"],
@@ -551,13 +711,29 @@ def to_recovery_event(detection: dict) -> dict:
         workspace_id=detection.get("workspace_id"),
         company_id=detection.get("company_id"),
         contact_id=detection.get("contact_id"),
+        opportunity_id=detection.get("opportunity_id"),
         external_identity=detection.get("external_identity"),
         # Whatever the source record says it might be worth. Potential, always, with its
         # provenance recorded in the evidence below.
         potential_value=detection.get("value"),
         currency=detection.get("currency") or recovery_case.DEFAULT_CURRENCY,
+        potential_value_basis=detection.get("value_basis"),
         evidence={k: v for k, v in detection.items() if k not in ("tenant_id", "type")},
     )
+
+
+def _finalise(detection: dict) -> dict:
+    """Sanitise a detection's value and state any assumption its timing rests on.
+
+    Idempotent, and applied before the detection is written anywhere -- the case and the
+    work item both keep it as evidence.
+    """
+    detection = recovery_case.sanitize_detection(detection)
+    note = " Timing read as UTC: the source recorded no timezone."
+    if detection.get("timestamp_timezone_assumed") and \
+            not str(detection.get("reason") or "").endswith(note):
+        detection["reason"] = f"{detection['reason']}{note}"
+    return detection
 
 
 async def enqueue_detections(db: Any, queue: Any, detections: list[dict], *,
@@ -577,7 +753,8 @@ async def enqueue_detections(db: Any, queue: Any, detections: list[dict], *,
     """
     items = []
     rejected = []
-    for detection in detections:
+    for raw in detections:
+        detection = _finalise(raw)
         kind = detection.get("record_kind") or "record"
         try:
             case = await recovery_case.open_case(db, to_recovery_event(detection),
@@ -589,31 +766,51 @@ async def enqueue_detections(db: Any, queue: Any, detections: list[dict], *,
             rejected.append({"record_id": detection.get("record_id"),
                              "type": detection.get("type"), "error": str(exc)[:200]})
             continue
-        item = await queue.enqueue(
-            tenant_id=detection["tenant_id"],
-            queue=QUEUE_NAME,
-            item_type=detection["type"],
-            payload={
-                "record_id": detection["record_id"],
-                "record_kind": kind,
-                "record_collection": detection.get("record_collection"),
-                "title": detection["title"],
-                "reason": detection["reason"],
-                "recovery_case_id": case["id"],
-            },
-            dedupe_key=f"{detection['type']}:{kind}:{detection['record_id']}",
-            source_ref=f"{kind}:{detection['record_id']}",
-            evidence={k: v for k, v in detection.items() if k not in ("tenant_id", "type")},
-            workspace_id=detection.get("workspace_id"),
-            priority=60,
-            actor=actor,
-        )
-        if case.get("work_item_reference") != item["id"]:
-            await recovery_case.attach(db, tenant_id=detection["tenant_id"],
-                                       case_id=case["id"], actor=actor,
-                                       work_item_reference=item["id"])
-        items.append({**item, "recovery_case_id": case["id"]})
+        if case.get("state") in recovery_case.TERMINAL_STATES:
+            # Re-found, but its case is closed or recovered. The case's identity is its
+            # source record; a closed decision is not re-opened by the next sweep, and no
+            # new work is raised for it.
+            items.append({"recovery_case_id": case["id"], "skipped_terminal_case": True,
+                          "deduplicated": True})
+            continue
+        try:
+            item = await _enqueue_case_work(queue, detection, case, kind=kind, db=db,
+                                            actor=actor)
+        except Exception as exc:  # a queue failure costs this detection, not the sweep
+            rejected.append({"record_id": detection.get("record_id"),
+                             "type": detection.get("type"), "error": str(exc)[:200]})
+            continue
+        items.append(item)
     return items, rejected
+
+
+async def _enqueue_case_work(queue: Any, detection: dict, case: dict, *, kind: str, db: Any,
+                             actor: str) -> dict:
+    """Place the durable work item for one detection's case and link the two."""
+    item: dict = await queue.enqueue(
+        tenant_id=detection["tenant_id"],
+        queue=QUEUE_NAME,
+        item_type=detection["type"],
+        payload={
+            "record_id": detection["record_id"],
+            "record_kind": kind,
+            "record_collection": detection.get("record_collection"),
+            "title": detection["title"],
+            "reason": detection["reason"],
+            "recovery_case_id": case["id"],
+        },
+        dedupe_key=f"{detection['type']}:{kind}:{detection['record_id']}",
+        source_ref=f"{kind}:{detection['record_id']}",
+        evidence={k: v for k, v in detection.items() if k not in ("tenant_id", "type")},
+        workspace_id=detection.get("workspace_id"),
+        priority=60,
+        actor=actor,
+    )
+    if case.get("work_item_reference") != item["id"]:
+        await recovery_case.attach(db, tenant_id=detection["tenant_id"],
+                                   case_id=case["id"], actor=actor,
+                                   work_item_reference=item["id"])
+    return {**item, "recovery_case_id": case["id"]}
 
 
 LANES = (
@@ -633,11 +830,26 @@ async def run_detection(db: Any, queue: Any, tenant_id: str, *, actor: str = "re
     """Run every lane for one tenant and report what each one found.
 
     A lane that raises is recorded and the sweep continues: one broken source must not
-    stop the other seven from finding work.
+    stop the other seven from finding work. A lane that is disabled is reported as
+    disabled, with the reason, rather than as having found nothing.
+
+    Reconciliation runs first, over the open cases from these lanes: a case whose source
+    was since dealt with -- the enquiry answered, the call returned, the estimate decided
+    or invoiced, the deal closed -- is closed (or its win recorded) before anything new
+    is opened. It is imported here because it reads this module's constants, so a
+    module-level import would be circular.
     """
+    import recovery_reconcile
+
+    reconciliation = await recovery_reconcile.reconcile_tenant(
+        db, tenant_id, sources=tuple(SOURCE_FOR_TYPE.values()), actor=actor, audit=audit)
+
     per_lane: dict[str, Any] = {}
     detections: list[dict] = []
     for name, detector in LANES:
+        if name in DISABLED_LANES:
+            per_lane[name] = {"disabled": True, "reason": DISABLED_LANES[name]}
+            continue
         try:
             found = await detector(db, tenant_id)
         except Exception as exc:
@@ -648,15 +860,20 @@ async def run_detection(db: Any, queue: Any, tenant_id: str, *, actor: str = "re
 
     items, rejected = await enqueue_detections(db, queue, detections, actor=actor,
                                                audit=audit)
+    skipped = [item for item in items if item.get("skipped_terminal_case")]
+    items = [item for item in items if not item.get("skipped_terminal_case")]
     created = [item for item in items if not item.get("deduplicated")]
     return {
         "tenant_id": tenant_id,
         "detected": len(detections),
         "by_lane": per_lane,
+        "disabled_lanes": sorted(DISABLED_LANES),
         "work_items_created": len(created),
         "work_items_deduplicated": len(items) - len(created),
         "recovery_cases_linked": len([i for i in items if i.get("recovery_case_id")]),
+        "skipped_closed_cases": len(skipped),
         "rejected": rejected,
+        "reconciliation": reconciliation,
         "thresholds": {
             "missed_call_grace_hours": MISSED_CALL_GRACE_HOURS,
             "web_enquiry_grace_hours": WEB_ENQUIRY_GRACE_HOURS,

@@ -29,18 +29,25 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Query, Response
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 # --------------------------------------------------------------------------- constants
 
 CONTACTS = "contacts"
 COMPANIES = "companies"
 DEALS = "opportunities"
+
+# A deal's money: finite, never negative, below an absurd ceiling, in an ISO 4217 code.
+# The same bounds a recovery case puts on a potential value, so a deal that saves here
+# can always be booked when it is won.
+MAX_DEAL_VALUE = 1e10
+CURRENCY_PATTERN = r"^[A-Z]{3}$"
 TASKS = "tasks"
 ACTIVITIES = "crm_activities"
 PIPELINES = "pipelines"
@@ -95,6 +102,19 @@ def _public(doc: Optional[dict]) -> Optional[dict]:
 
 def _history_entry(action: str, actor: str, detail: Optional[dict] = None) -> dict:
     return {"action": action, "actor": actor, "at": _iso(), "detail": detail or {}}
+
+
+def csv_safe(value: Any) -> Any:
+    """Neutralise a cell a spreadsheet would execute as a formula.
+
+    Website visitors can now put text into contacts and leads, and a name like
+    `=HYPERLINK(...)` would run when an agent opens the export in Excel or Sheets.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 def _escape_regex(value: str) -> str:
@@ -211,6 +231,50 @@ async def stage_keys(db, tenant_id: str) -> list[str]:
     return [stage["key"] for stage in await resolve_stages(db, tenant_id)]
 
 
+# Stage names the product shipped with before pipelines were configurable. They are only
+# consulted for a deal whose stage the tenant's pipeline no longer contains, so a legacy
+# record is still classified rather than silently treated as open revenue.
+LEGACY_WON_STAGES = ("closed_won", "won")
+LEGACY_LOST_STAGES = ("closed_lost", "lost")
+
+STAGE_OPEN = "open"
+STAGE_WON = "won"
+STAGE_LOST = "lost"
+
+
+async def stage_classes(db, tenant_id: str) -> dict[str, set[str]]:
+    """Which of this tenant's stage keys are open, closed-won and closed-lost.
+
+    Read from the tenant's own pipeline, because a tenant that renamed "closed_won" to
+    "signed" has still won the deal. Anything that decides whether a deal is revenue,
+    pipeline or lost must ask this rather than compare against a hard-coded name.
+    """
+    stages = await resolve_stages(db, tenant_id)
+    return {
+        STAGE_WON: {s["key"] for s in stages if s.get("is_closed") and s.get("is_won")},
+        STAGE_LOST: {s["key"] for s in stages if s.get("is_closed") and not s.get("is_won")},
+        STAGE_OPEN: {s["key"] for s in stages if not s.get("is_closed")},
+    }
+
+
+def classify_stage(stage: Optional[str], classes: dict[str, set[str]]) -> str:
+    """Classify one deal stage as open, won or lost for the tenant `classes` came from.
+
+    A stage the pipeline does not contain falls back to the shipped names and otherwise
+    counts as open: an unknown stage is live until something says it closed.
+    """
+    key = str(stage or "")
+    for outcome in (STAGE_WON, STAGE_LOST, STAGE_OPEN):
+        if key in classes.get(outcome, set()):
+            return outcome
+    lowered = key.lower()
+    if lowered in LEGACY_WON_STAGES:
+        return STAGE_WON
+    if lowered in LEGACY_LOST_STAGES:
+        return STAGE_LOST
+    return STAGE_OPEN
+
+
 # ------------------------------------------------------------------- request payloads
 
 class ContactPatch(BaseModel):
@@ -239,11 +303,20 @@ class DealPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     company_id: Optional[str] = None
     contact_ids: Optional[list[str]] = None
-    value: Optional[float] = Field(default=None, ge=0)
-    currency: Optional[str] = Field(default=None, max_length=8)
+    # Finite as well as non-negative: `ge=0` alone admits Infinity, which no JSON
+    # response can carry, so one bad patch would break every listing of this deal.
+    value: Optional[float] = Field(default=None, ge=0, le=MAX_DEAL_VALUE, allow_inf_nan=False)
+    # ISO 4217, stored uppercase. "$" saved here used to make every later win of the deal
+    # unbookable, and the recovery sweep re-raised that error on every run.
+    currency: Optional[str] = Field(default=None, pattern=CURRENCY_PATTERN)
     owner: Optional[str] = Field(default=None, max_length=200)
     expected_close_date: Optional[str] = None
     description: Optional[str] = Field(default=None, max_length=4000)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _uppercase_currency(cls, value):
+        return value.strip().upper() if isinstance(value, str) else value
 
 
 class TaskCreate(BaseModel):
@@ -920,7 +993,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            writer.writerow({column: row.get(column, "") for column in columns})
+            writer.writerow({column: csv_safe(row.get(column, "")) for column in columns})
         await record_event("data.exported", entity, entity, tenant_of(user),
                            user["email"], payload={"rows": len(rows)})
         return Response(
@@ -995,9 +1068,21 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 row.setdefault("stage", valid_stages[0])
                 if row.get("value"):
                     try:
-                        row["value"] = float(row["value"])
+                        amount = float(row["value"])
                     except ValueError:
                         errors.append({"row": index, "error": "value must be a number"})
+                        continue
+                    row["value"] = amount
+                    if not math.isfinite(amount) or not 0 <= amount <= MAX_DEAL_VALUE:
+                        errors.append({"row": index, "error": (
+                            "value must be a finite amount from 0 to "
+                            f"{MAX_DEAL_VALUE:,.0f}")})
+                        continue
+                if row.get("currency"):
+                    row["currency"] = str(row["currency"]).strip().upper()
+                    if not re.match(CURRENCY_PATTERN, row["currency"]):
+                        errors.append({"row": index, "error": (
+                            "currency must be a 3-letter ISO 4217 code")})
                         continue
                 if row.get("expected_close_date"):
                     try:
