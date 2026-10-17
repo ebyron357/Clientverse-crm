@@ -383,7 +383,51 @@ function ReplyTab({ form, draft, setDraft, catalog, readOnly, isAdmin, onApprove
   );
 }
 
-function EmbedTab({ form, isAdmin }) {
+function ServerConnection({ form, isAdmin, onChanged }) {
+  const [minted, setMinted] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const status = form.server_key || {};
+  const mint = async () => {
+    if (status.configured && !window.confirm("Create a new key? The current key stops working immediately, so update your website's settings right after.")) return;
+    setBusy(true);
+    try { const { data } = await api.post(`/website-forms/${form.id}/server-key`); setMinted(data); onChanged(); }
+    catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+    finally { setBusy(false); }
+  };
+  const revoke = async () => {
+    if (!window.confirm("Revoke the server key? Your website's server will stop delivering leads to this form until it has a new key.")) return;
+    setBusy(true);
+    try { await api.delete(`/website-forms/${form.id}/server-key`); setMinted(null); toast.success("Server key revoked"); onChanged(); }
+    catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+    finally { setBusy(false); }
+  };
+  const settings = minted ? `CRM_PROVIDER=clientverse\nCLIENTVERSE_INTAKE_URL=${minted.submit_url}\nCLIENTVERSE_API_KEY=${minted.key}` : "";
+  return (
+    <Section title="Server connection (recommended for custom-built websites)" description="For a website with its own form backend — a Next.js or custom site, or a form plugin that posts from the server. The website keeps its own form design, saves each lead first, and delivers it here with this key, retrying until it is accepted. Nothing is lost if either side is briefly down.">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        {status.configured
+          ? <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5" />Key active (ends …{status.hint})</span>
+          : <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">No server key yet</span>}
+        {status.last_used_at && <span className="text-xs text-slate-500">Last lead received {new Date(status.last_used_at).toLocaleString()}</span>}
+      </div>
+      {isAdmin && (
+        <div className="flex flex-wrap gap-2">
+          <Button className="cv-action-primary" onClick={mint} disabled={busy}><ShieldCheck className="mr-1.5 h-4 w-4" />{status.configured ? "Replace key" : "Create server key"}</Button>
+          {status.configured && <Button variant="outline" className="text-red-700" onClick={revoke} disabled={busy}>Revoke</Button>}
+        </div>
+      )}
+      {minted && (
+        <div className="space-y-2">
+          <p className="text-sm font-semibold text-amber-700">Copy these now — the key is shown only once.</p>
+          <CodeBlock title="Website environment variables" description="Add to the website's hosting settings (Vercel → Project → Settings → Environment Variables), then redeploy the website." code={settings} />
+        </div>
+      )}
+      <p className="text-xs leading-5 text-slate-500">Leads sent with this key skip browser-only checks (allowed websites, CAPTCHA) because they come from your website's server, and they are filed even if this form marks a field required that your website doesn't collect. They still need an email or a phone number.</p>
+    </Section>
+  );
+}
+
+function EmbedTab({ form, isAdmin, onChanged }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState(null);
   const embed = form.embed;
@@ -413,6 +457,7 @@ function EmbedTab({ form, isAdmin }) {
           </div>
         )}
       </Section>
+      <ServerConnection form={form} isAdmin={isAdmin} onChanged={onChanged} />
       <div className="grid gap-4 xl:grid-cols-2">
         <CodeBlock title="Inline form" description="Paste where the form should appear (WordPress Custom HTML block, Squarespace Code block, Webflow Embed, IDX custom HTML)." code={embed.inline} />
         <CodeBlock title="Pop-up on a button" description="A button that opens the form in a pop-up." code={embed.popup} />
@@ -473,7 +518,7 @@ function FormEditor({ form, catalog, members, stages, isAdmin, onBack, onSaved }
         <TabsContent value="settings"><SettingsTab draft={draft} setDraft={setDraft} readOnly={readOnly} captchaSecret={captchaSecret} setCaptchaSecret={setCaptchaSecret} /></TabsContent>
         <TabsContent value="automation"><AutomationTab draft={draft} setDraft={setDraft} members={members} stages={stages} readOnly={readOnly} /></TabsContent>
         <TabsContent value="reply"><ReplyTab form={form} draft={draft} setDraft={setDraft} catalog={catalog} readOnly={readOnly} isAdmin={isAdmin} onApproved={() => onSaved(null)} /></TabsContent>
-        <TabsContent value="embed"><EmbedTab form={form} isAdmin={isAdmin} /></TabsContent>
+        <TabsContent value="embed"><EmbedTab form={form} isAdmin={isAdmin} onChanged={() => onSaved(null)} /></TabsContent>
       </Tabs>
     </div>
   );

@@ -692,3 +692,95 @@ def test_leads_export_as_csv_without_running_formulas(client):
     lines = response.text.strip().splitlines()
     assert lines[0].startswith("received_at,status,name,email,phone")
     assert "'=HYPERLINK" in response.text and ",=HYPERLINK" not in response.text
+
+
+# --------------------------------------------- a website's own server forwarding
+
+def server_body(**overrides):
+    """Exactly what a website's ClientVerse adapter sends (charlotte-real-estate-system,
+    lib/crm/adapter.ts `createClientVerseCrmAdapter`)."""
+    body = {"idempotencyKey": f"charlotte-lead-{uuid.uuid4().hex[:6]}",
+            "source": "home-value-page", "leadType": "home_value",
+            "name": "Mia Seller", "email": "mia.seller@example.com", "phone": "704-555-0142",
+            "propertyAddress": "1200 Queens Rd, Charlotte, NC", "message": "What could we list for?",
+            "timeframe": "3-6 months", "consultationDate": None, "consultationTime": None,
+            "payload": {"propertyType": "Single family", "condition": "Needs minor work"}}
+    body.update(overrides)
+    return body
+
+
+def server_post(client, form, body, key):
+    return client.post(f"/api/public/forms/{form['public_key']}/submit", json=body,
+                       headers={"Authorization": f"Bearer {key}"})
+
+
+def test_a_website_server_forwards_leads_with_its_key(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 3, "fixed_value": 7000}})
+    minted = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"])
+    assert minted.status_code == 200 and minted.json()["key"].startswith("cvsk_")
+    key = minted.json()["key"]
+    listed = client.get(f"/api/website-forms/{form['id']}", headers=owner["headers"]).json()
+    assert listed["server_key"]["configured"] is True and key not in str(listed)
+
+    body = server_body()
+    response = server_post(client, form, body, key)
+    assert response.status_code == 200, response.text
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": response.json()["id"]})
+    assert stored["received_via"] == "server"
+    assert stored["property_address"] == "1200 Queens Rd, Charlotte, NC"
+    assert stored["fields"]["timeline"] == "3-6 months"
+    assert stored["fields"]["lead_type"] == "Selling"  # "home_value" mapped, original kept
+    assert stored["extra"]["site_leadtype"] == "home_value"
+    assert stored["fields"]["property_condition"] == "Needs minor work"  # lifted from payload
+    assert stored["extra"]["propertyType"] == "Single family"
+    assert stored["extra"]["source"] == "home-value-page"
+    assert stored["contact_id"] and stored["task_id"] and stored["opportunity_id"]
+    # The website's outbox retries with the same idempotency key: filed once.
+    again = server_post(client, form, body, key)
+    assert again.json()["id"] == response.json()["id"]
+
+
+def test_server_leads_skip_browser_rules_but_still_need_a_way_to_reach_them(client, monkeypatch):
+    monkeypatch.setattr(wf, "RATE_PER_VISITOR_PER_HOUR", 1)
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={"allowed_origins": [SITE]})
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    # Every lead comes from the same server address: no per-visitor limit applies.
+    codes = [server_post(client, form, server_body(email=f"s{i}@example.com", phone=f"70455501{i:02d}"),
+                         key).status_code for i in range(3)]
+    assert codes == [200, 200, 200]
+    # The visual form requires an email; a phone-only lead the site already accepted is
+    # still filed rather than lost over a display setting.
+    phone_only = server_post(client, form, server_body(email=None, phone="704-555-0199"), key)
+    assert phone_only.status_code == 200
+    nothing = server_post(client, form, server_body(email=None, phone=None, message="hi"), key)
+    assert nothing.status_code == 422
+
+
+def test_a_wrong_or_revoked_server_key_is_refused(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    assert server_post(client, form, server_body(), "cvsk_wrong").status_code == 401
+    rotated = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    assert server_post(client, form, server_body(), key).status_code == 401  # old key dead
+    assert server_post(client, form, server_body(), rotated).status_code == 200
+    client.delete(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"])
+    assert server_post(client, form, server_body(idempotencyKey="x2"), rotated).status_code == 401
+
+
+def test_a_buyer_guide_price_range_becomes_a_commission_value(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5, "fixed_value": 5000}})
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    body = server_body(leadType="buyer", source="buyer-guide", propertyAddress=None,
+                       payload={"kind": "buyer_guide", "priceRange": "$400k\u2013$500k",
+                                "preapproval": "Yes", "firstName": "Ben", "lastName": "Buyer"})
+    stored = find_one(client, detectors.WEB_ENQUIRIES,
+                      {"id": server_post(client, form, body, key).json()["id"]})
+    assert stored["fields"]["price_min"] == 400000.0 and stored["fields"]["price_max"] == 500000.0
+    assert stored["fields"]["pre_approved"] == "Yes" and stored["fields"]["lead_type"] == "Buying"
+    assert stored["estimated_value"] == 12500.0  # 2.5% of the top of the range

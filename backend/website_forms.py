@@ -327,6 +327,44 @@ def parse_amount(value: Any) -> Optional[float]:
     return round(number, 2)
 
 
+# Hyphen, en dash, em dash, or "to": websites write ranges every one of these ways.
+_RANGE_SPLIT = re.compile(r"\s*(?:-|\u2013|\u2014|to)\s*", re.IGNORECASE)
+
+
+def parse_price_range(value: Any) -> tuple[Optional[float], Optional[float]]:
+    """`$400k-$500k` (any dash), `400,000 to 500,000`, `under 300k`, `500k+` -> (low, high)."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None, None
+    text = text.replace("under", "").replace("up to", "").replace("+", "").replace("over", "")
+    parts = [p for p in _RANGE_SPLIT.split(text) if p.strip()]
+    amounts = [parse_amount(p) for p in parts[:2]]
+    amounts = [a for a in amounts if a]
+    if not amounts:
+        return None, None
+    return min(amounts), max(amounts)
+
+
+def normalise_lead_type(value: Any) -> Optional[str]:
+    """Map a website's own wording to the catalogue's options, or None if it is not one."""
+    text = str(value or "").strip()
+    if text in _SELECTS["lead_type"]:
+        return text
+    lowered = text.lower()
+    if ("buy" in lowered and "sell" in lowered) or "both" in lowered:
+        return "Buying and selling"
+    if "sell" in lowered or "home_value" in lowered or "home value" in lowered \
+            or "valuation" in lowered:
+        return "Selling"
+    if "buy" in lowered or "purchase" in lowered:
+        return "Buying"
+    if "rent" in lowered or "lease" in lowered:
+        return "Renting"
+    if "invest" in lowered:
+        return "Investing"
+    return None
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -441,14 +479,44 @@ def normalise_submission(raw: dict, form: dict) -> dict:
                "telephone": "phone", "phone_number": "phone", "mobile": "phone",
                "comments": "message", "address": "property_address", "mls": "listing_id",
                "mls_id": "listing_id", "mls_number": "listing_id", "source_page": "page_url",
-               "budget": "price_max", "home_value": "estimated_home_value"}
+               "budget": "price_max", "home_value": "estimated_home_value",
+               # The camelCase contract a website's own server sends (see LeadPipeline docs).
+               "propertyaddress": "property_address", "timeframe": "timeline",
+               "consultationdate": "preferred_date", "consultationtime": "preferred_time",
+               "leadtype": "lead_type", "goal": "lead_type", "preapproval": "pre_approved",
+               "pre_approval": "pre_approved", "condition": "property_condition",
+               "listingid": "listing_id", "pageurl": "page_url", "estimatedhomevalue":
+               "estimated_home_value", "pricemin": "price_min", "pricemax": "price_max"}
+    control_aliases = {"idempotencykey": "_sid", "idempotency_key": "_sid"}
 
+    # A server integration nests its own extras under `payload`. Lift them to the top
+    # level -- without letting them override a top-level field -- so they are typed,
+    # aliased and kept like any other field.
+    flat: dict[str, Any] = {}
+    nested = (raw or {}).get("payload")
     for raw_key, value in (raw or {}).items():
+        if raw_key != "payload" or not isinstance(nested, dict):
+            flat[raw_key] = value
+    if isinstance(nested, dict):
+        for raw_key, value in list(nested.items())[:MAX_EXTRA_KEYS]:
+            flat.setdefault(raw_key, value)
+
+    for raw_key, value in flat.items():
         key = str(raw_key).strip()
         lowered = key.lower()
+        lowered = control_aliases.get(lowered, lowered)
         if lowered in ("_hp", "_sid", "_elapsed_ms", "_format", "external_id",
-                       "cf-turnstile-response"):
+                       "cf-turnstile-response", "client_ip", "user_agent"):
             control[lowered] = value
+            continue
+        if lowered in ("pricerange", "price_range"):
+            low, high = parse_price_range(value)
+            if high is not None:
+                fields.setdefault("price_max", high)
+                if low is not None and low != high:
+                    fields.setdefault("price_min", low)
+            if len(extra) < MAX_EXTRA_KEYS:
+                extra["price_range"] = _clip(value, MAX_EXTRA_VALUE) or ""
             continue
         if lowered.startswith("_"):
             continue
@@ -465,6 +533,19 @@ def normalise_submission(raw: dict, form: dict) -> dict:
                 errors[key] = "Enter a number (for example 450000 or 450k)"
             else:
                 fields[key] = amount
+        elif key == "lead_type":
+            if "lead_type" in fields:
+                if len(extra) < MAX_EXTRA_KEYS:
+                    extra.setdefault(lowered, _clip(value, MAX_EXTRA_VALUE) or "")
+                continue
+            mapped = normalise_lead_type(value)
+            if mapped:
+                fields["lead_type"] = mapped
+                if mapped != str(value).strip() and len(extra) < MAX_EXTRA_KEYS:
+                    extra[f"site_{lowered}"] = _clip(value, MAX_EXTRA_VALUE) or ""
+            elif len(extra) < MAX_EXTRA_KEYS:
+                # "consultation", "contact": a kind of request, not a buy/sell intent.
+                extra[f"site_{lowered}"] = _clip(value, MAX_EXTRA_VALUE) or ""
         elif key in FIELD_CATALOG:
             fields[key] = _clip(value, MAX_LONG_TEXT if key in LONG_TEXT_FIELDS else MAX_TEXT)
         elif key in custom_defs:
@@ -482,7 +563,7 @@ def normalise_submission(raw: dict, form: dict) -> dict:
         elif len(extra) < MAX_EXTRA_KEYS:
             # Includes a visitor-supplied `estimated_value`: kept as what they said, never
             # trusted as money. A lead's value comes from the form's own configuration.
-            extra[key[:60]] = (_clip(value if not isinstance(value, (dict, list))
+            extra[str(raw_key).strip()[:60]] = (_clip(value if not isinstance(value, (dict, list))
                                      else json.dumps(value)[:MAX_EXTRA_VALUE],
                                      MAX_EXTRA_VALUE) or "")
 
@@ -929,8 +1010,32 @@ class LeadPipeline:
 
     # ------------------------------------------------------------- the request
 
+    @staticmethod
+    def server_key_matches(form: dict, header: Optional[str]) -> Optional[bool]:
+        """None when no server key was presented; True/False when one was."""
+        if not header:
+            return None
+        scheme, _, token = header.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return False
+        stored = form.get("server_key_hash")
+        return bool(stored) and secrets.compare_digest(stored, _sha(token.strip()))
+
     async def handle_public_submission(self, request: Request, form: dict) -> Response:
-        """Parse, police and process one public submission, answering in kind."""
+        """Parse, police and process one public submission, answering in kind.
+
+        A request carrying the form's server key is a website's own server forwarding a
+        lead it already validated and stored. It is trusted for exactly that: no browser
+        checks (origin, CAPTCHA, per-visitor limit -- every lead arrives from the same
+        server address), and the visual form's required fields do not apply, because
+        refusing a real lead over a display setting would lose it. It still needs an
+        email or phone, still passes the per-form limit, and is still idempotent.
+        """
+        trusted = self.server_key_matches(form, request.headers.get("authorization"))
+        if trusted is False:
+            return JSONResponse(status_code=401, content={"detail": "Invalid server key"})
+        if trusted:
+            return await self._handle_server_submission(request, form)
         data, wants_html = await read_submission(request)
         settings = form["settings"]
 
@@ -971,6 +1076,28 @@ class LeadPipeline:
         if settings.get("redirect_url"):
             body["redirect_url"] = settings["redirect_url"]
         return self._respond(wants_html, 200, body, form)
+
+    async def _handle_server_submission(self, request: Request, form: dict) -> Response:
+        data, _ = await read_submission(request)
+        limited = await self._rate_limited(form, "server", per_visitor=False)
+        if limited:
+            return JSONResponse(status_code=429, headers={"Retry-After": str(limited)},
+                                content={"detail": "Too many submissions. Retry shortly."})
+        relaxed = {**form, "fields": [{**f, "required": False} for f in form["fields"]]}
+        ip = _clip(data.get("client_ip"), 64)
+        meta = {"ip": ip, "visitor": _sha(f"{form['tenant_id']}|{ip or 'server'}")[:32],
+                "user_agent": _clip(data.get("user_agent"), 400),
+                "origin": None, "channel": "server"}
+        try:
+            result = await self.submit(relaxed, data, meta)
+        except SubmissionInvalid as exc:
+            return JSONResponse(status_code=422, content={
+                "detail": "The lead is missing what the CRM needs.", "errors": exc.errors})
+        await self.db[FORMS].update_one({"id": form["id"]},
+                                        {"$set": {"server_key_last_used_at": _iso()}})
+        return JSONResponse({"accepted": True, "id": result["id"],
+                             "outcome": result.get("outcome"),
+                             "contact_id": result.get("contact_id")})
 
     def _respond(self, wants_html: bool, status: int, body: dict, form: dict) -> Response:
         if not wants_html:
@@ -1021,14 +1148,16 @@ class LeadPipeline:
             return False
         return await self.verify_turnstile(secret, str(token)[:4096], ip)
 
-    async def _rate_limited(self, form: dict, visitor: str) -> int:
+    async def _rate_limited(self, form: dict, visitor: str, *, per_visitor: bool = True) -> int:
         """Seconds to wait, or 0. Every attempt counts, including ones later refused."""
         now = _now()
         attempts = self.db[ATTEMPTS]
-        per_visitor = await attempts.count_documents(
-            {"form_id": form["id"], "visitor": visitor, "at": {"$gte": now - timedelta(hours=1)}})
-        if per_visitor >= RATE_PER_VISITOR_PER_HOUR:
-            return 3600
+        if per_visitor:
+            count = await attempts.count_documents(
+                {"form_id": form["id"], "visitor": visitor,
+                 "at": {"$gte": now - timedelta(hours=1)}})
+            if count >= RATE_PER_VISITOR_PER_HOUR:
+                return 3600
         per_form = await attempts.count_documents(
             {"form_id": form["id"], "at": {"$gte": now - timedelta(minutes=1)}})
         if per_form >= RATE_PER_FORM_PER_MINUTE:
@@ -2163,7 +2292,12 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
 
     async def present(form: dict) -> dict:
         form = with_defaults(form)
-        out = {k: v for k, v in form.items() if k not in ("_id", "captcha_secret_enc")}
+        out = {k: v for k, v in form.items()
+               if k not in ("_id", "captcha_secret_enc", "server_key_hash")}
+        out["server_key"] = {"configured": bool(form.get("server_key_hash")),
+                             "hint": form.get("server_key_hint"),
+                             "created_at": form.get("server_key_created_at"),
+                             "last_used_at": form.get("server_key_last_used_at")}
         out["embed"] = embed_snippets(form, pipeline.public_base_url)
         state = await pipeline.template_approval_state(form)
         out["auto_reply_state"] = {"state": state["state"],
@@ -2291,6 +2425,36 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             if state["state"] in ("not_requested", "rejected", "expired", "cancelled"):
                 await request_template_approval(form, user)
         return await present(form)
+
+    @router.post("/website-forms/{form_id}/server-key")
+    async def create_server_key(form_id: str, user=Depends(require_role("admin"))):
+        """Mint the key a website's own server sends to forward leads. Shown once.
+
+        Creating a new key replaces the old one immediately, so rotating is one click and
+        a leaked key stops working the moment it is replaced.
+        """
+        form = await load_form(form_id, user)
+        key = "cvsk_" + secrets.token_urlsafe(32)
+        await db[FORMS].update_one(
+            {"id": form["id"], "tenant_id": user["tenant_id"]},
+            {"$set": {"server_key_hash": _sha(key), "server_key_hint": key[-4:],
+                      "server_key_created_at": now_iso(), "server_key_last_used_at": None}})
+        await record_event("website_form.server_key_created", "website_form", form["id"],
+                           user["tenant_id"], user["email"], payload={"hint": key[-4:]})
+        return {"key": key, "hint": key[-4:],
+                "submit_url": embed_snippets(form, pipeline.public_base_url)["api"]["url"],
+                "note": "Store this now. It is hashed at rest and cannot be shown again."}
+
+    @router.delete("/website-forms/{form_id}/server-key")
+    async def revoke_server_key(form_id: str, user=Depends(require_role("admin"))):
+        form = await load_form(form_id, user)
+        await db[FORMS].update_one(
+            {"id": form["id"], "tenant_id": user["tenant_id"]},
+            {"$set": {"server_key_hash": None, "server_key_hint": None,
+                      "server_key_created_at": None}})
+        await record_event("website_form.server_key_revoked", "website_form", form["id"],
+                           user["tenant_id"], user["email"])
+        return {"ok": True}
 
     @router.post("/website-forms/{form_id}/test")
     async def test_form(form_id: str, inp: TestLead, user=Depends(require_role("admin"))):

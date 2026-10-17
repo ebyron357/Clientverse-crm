@@ -96,6 +96,41 @@ through the public HTTP door with the headers a browser sends.
 | Keep the site's existing form design | **Your own HTML form**: point its `action` at the submit URL and keep the hidden `_hp` field |
 | Contact Form 7 / Gravity Forms / WPForms / Elementor webhooks, Zapier, Make, IDX vendors that post leads | **API**: `POST` JSON or form data to the submit URL. Common field names are understood (`your-name`, `your-email`, `fname`, `mls_number`, `address`, `budget`, …). Send a unique `_sid` per submission so retries are never filed twice |
 
+### Custom-built websites (recommended): server connection
+
+A website with its own form backend should forward leads from its server instead of embedding
+a form. Next.js, a custom app, or a WordPress plugin that posts server-side all qualify. The
+site keeps its own form design, saves each lead in its own database first, and delivers it to
+the CRM with a **server key**, retrying until the CRM accepts it. A lead survives either side
+being briefly down. This is stronger than GoHighLevel's usual fire-and-forget webhook.
+
+1. **Website Forms → (form) → Embed & test → Create server key.** The key is shown once and
+   stored hashed. **Replace key** rotates it and the old key stops working at once; **Revoke**
+   turns it off.
+2. Put the three values shown into the website's hosting environment and redeploy:
+   `CRM_PROVIDER=clientverse`, `CLIENTVERSE_INTAKE_URL=…/api/public/forms/{key}/submit`,
+   `CLIENTVERSE_API_KEY=cvsk_…`.
+3. The website's server sends `POST` with `Authorization: Bearer cvsk_…` and a JSON body.
+
+**What the CRM accepts on this path:**
+- The website's own field names: `name`, `email`, `phone`, `propertyAddress`, `timeframe`,
+  `consultationDate`, `consultationTime`, `leadType`, `source`, `message`.
+- A nested `payload`, whose entries are lifted to the top level. Examples: `priceRange` such as
+  "$400k–$500k" becomes `price_min` and `price_max`; `preapproval`; `condition`; `goal`;
+  `firstName` and `lastName`.
+- `idempotencyKey`: a retry with the same key is filed once.
+- `leadType` / `goal` wording is mapped to Buying / Selling / Buying and selling / Renting /
+  Investing, and the original wording is kept.
+
+**How these requests are treated:**
+- They skip browser-only checks: allowed websites, CAPTCHA, and the per-visitor limit (every
+  lead comes from the same server).
+- They are filed even when the visual form marks a field required that the site doesn't
+  collect. Refusing a real lead over a display setting would lose it.
+- They still need an email or a phone number, and still count against the per-form limit.
+- A wrong or revoked key gets `401`. A lead with no way to contact the person gets `422`, which
+  the website should treat as final. `429` and `5xx` should be retried.
+
 Website builders' JavaScript can listen for the `clientverse:lead` browser event (fired on
 `window` after a successful submission) to trigger their own analytics.
 
@@ -229,6 +264,7 @@ GHL behaviour is taken from GHL's help-centre and tutorial material:
 | Send SMS to the lead | ❌ | Needs an SMS provider (M-03, owner decision) |
 | Missed-call text-back | ❌ | Needs telephony (O-06) |
 | Webhook | ✅ | `lead.received` and the other events listed above |
+| Inbound from a custom website's server | ✅ | Server key with rotation and revocation, idempotent, delivered from the site's own durable outbox. Stronger than an inbound webhook URL anyone could post to |
 | Wait / delays, if-else, drip sequences | ❌ | The Workflows module (contract pending) |
 | Lead scoring | ❌ | |
 
