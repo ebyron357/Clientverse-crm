@@ -287,8 +287,11 @@ class InProcessScheduler:
                 if await self._window_settled(job, key):
                     self._settled[job] = window
                 return
-            self._settled[job] = window
             await self._execute(job, key, window, int(lease.get("attempt") or 1))
+            # Only once it has run: if something outside the job itself failed (the
+            # database, say), the claimed lease expires and this instance -- even if it
+            # is the only one -- takes the window back over instead of losing it.
+            self._settled[job] = window
         except asyncio.CancelledError:
             raise
         except Exception:

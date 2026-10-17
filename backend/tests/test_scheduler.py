@@ -275,6 +275,36 @@ def test_a_stopped_instance_hands_its_window_back_at_once():
     assert entries[1]["status"] == cron_ledger.SUCCEEDED
 
 
+def test_a_lone_instance_recovers_a_window_an_infrastructure_error_interrupted():
+    async def scenario():
+        clock = Clock()
+        job = Counter()
+        instance = make(server.db, {"probe": job}, clock)
+        original = instance._external_run_in_window
+        failed = []
+
+        async def flaky(name, key):
+            if not failed:
+                failed.append(key)
+                raise RuntimeError("database unavailable")
+            return await original(name, key)
+
+        instance._external_run_in_window = flaky
+        await settle(instance)                    # claims the window, then the database fails
+        clock.advance(seconds=30)
+        await settle(instance)                    # its own claim is still live: wait
+        before_expiry = len(job.calls)
+        clock.advance(minutes=3)
+        await settle(instance)
+        return before_expiry, job.calls, await lease(server.db, "probe")
+
+    before_expiry, calls, record = run(scenario)
+    assert before_expiry == 0
+    assert len(calls) == 1, "the only instance must not lose the window it failed to run"
+    assert calls[0][0].endswith("-r2")
+    assert record["state"] == scheduler.DONE
+
+
 def test_a_still_running_previous_window_holds_back_the_next():
     async def scenario():
         clock = Clock()
