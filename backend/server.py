@@ -575,9 +575,64 @@ async def assert_workspace(user, workspace_id: str):
 # ----------------------------- Team: invitations & members -----------------------------
 
 INVITE_TTL_DAYS = 7
+# A new account made from an invitation lands straight inside somebody else's team, so it
+# has to meet a minimum. 72 bytes is bcrypt's limit: beyond it the extra characters are
+# silently ignored, so refuse rather than store a password that is not what it looks like.
+NEW_PASSWORD_MIN_LENGTH = 8
+NEW_PASSWORD_MAX_BYTES = 72
+_EXISTING_ACCOUNT_DETAIL = "An account already exists for {email}. Sign in with that email to accept this invitation."
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+async def _find_invitation_by_token(token: str):
+    """Invitations store only a hash of their token. Look the hash up, then confirm the
+    match with a constant-time comparison before trusting it."""
+    token_hash = hash_token(token or "")
+    inv = await db.invitations.find_one({"token_hash": token_hash}, {"_id": 0})
+    if not inv or not hmac.compare_digest(inv.get("token_hash") or "", token_hash):
+        return None
+    return inv
+
+async def _pending_invitation(token: str):
+    inv = await _find_invitation_by_token(token)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    inv = await _expire_if_needed(inv)
+    if inv["status"] == "expired":
+        raise HTTPException(status_code=400, detail="This invitation has expired")
+    if inv["status"] == "revoked":
+        raise HTTPException(status_code=400, detail="This invitation has been revoked")
+    if inv["status"] == "accepted":
+        raise HTTPException(status_code=400, detail="This invitation has already been used")
+    return inv
+
+async def _claim_invitation(inv) -> bool:
+    """Consume a pending invitation exactly once. Status and token hash are part of the
+    filter, so of two concurrent submits only one write matches; the other gets False."""
+    res = await db.invitations.update_one(
+        {"id": inv["id"], "status": "pending", "token_hash": inv["token_hash"]},
+        {"$set": {"status": "accepted", "accepted_at": now_iso(), "token_hash": None}})
+    return res.modified_count == 1
+
+async def _release_invitation(inv):
+    """Undo _claim_invitation when the work it guarded could not be completed."""
+    await db.invitations.update_one(
+        {"id": inv["id"], "status": "accepted", "token_hash": None},
+        {"$set": {"status": "pending", "accepted_at": None, "token_hash": inv["token_hash"]}})
+
+async def _account_exists(email: str) -> bool:
+    return await db.users.find_one({"email": email}, {"_id": 0, "user_id": 1}) is not None
+
+def _one_line(text: str) -> str:
+    return " ".join((text or "").split())
+
+def _new_password_problem(password: str) -> Optional[str]:
+    if len(password) < NEW_PASSWORD_MIN_LENGTH or not password.strip():
+        return f"Choose a password with at least {NEW_PASSWORD_MIN_LENGTH} characters."
+    if len(password.encode()) > NEW_PASSWORD_MAX_BYTES:
+        return f"That password is too long. Please use {NEW_PASSWORD_MAX_BYTES} characters or fewer."
+    return None
 
 async def count_active_admins(tenant_id):
     return await db.memberships.count_documents({"tenant_id": tenant_id, "role": "admin", "status": "active"})
@@ -595,11 +650,12 @@ async def _expire_if_needed(inv):
             pass
     return inv
 
-def _invite_public(inv, tenant_name=None):
+def _invite_public(inv, tenant_name=None, inviter_name=None):
     return {"id": inv["id"], "email": inv["email"], "role": inv["role"], "status": inv["status"],
             "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
             "expires_at": inv.get("expires_at"), "accepted_at": inv.get("accepted_at"),
-            "revoked_at": inv.get("revoked_at"), "tenant_name": tenant_name}
+            "revoked_at": inv.get("revoked_at"), "tenant_name": tenant_name,
+            "invited_by_name": inviter_name}
 
 class InviteInput(BaseModel):
     email: EmailStr
@@ -607,6 +663,11 @@ class InviteInput(BaseModel):
 
 class TokenInput(BaseModel):
     token: str
+
+class InviteSignupInput(BaseModel):
+    token: str
+    name: str
+    password: str
 
 class RoleInput(BaseModel):
     role: str
@@ -680,27 +741,21 @@ async def revoke_invitation(inv_id: str, user=Depends(require_role("admin"))):
 
 @api.get("/team/invitations/lookup")
 async def lookup_invitation(token: str = Query(...)):
-    inv = await db.invitations.find_one({"token_hash": hash_token(token)}, {"_id": 0})
+    inv = await _find_invitation_by_token(token)
     if not inv:
         raise HTTPException(status_code=404, detail="Invitation not found")
     inv = await _expire_if_needed(inv)
     tenant = await db.tenants.find_one({"tenant_id": inv["tenant_id"]}, {"_id": 0})
-    return _invite_public(inv, tenant_name=(tenant or {}).get("name"))
+    inviter = await db.users.find_one({"email": inv.get("invited_by")}, {"_id": 0, "name": 1}) if inv.get("invited_by") else None
+    return _invite_public(inv, tenant_name=(tenant or {}).get("name"), inviter_name=(inviter or {}).get("name"))
 
 @api.post("/team/invitations/accept")
 async def accept_invitation(inp: TokenInput, user=Depends(get_current_user)):
-    inv = await db.invitations.find_one({"token_hash": hash_token(inp.token)}, {"_id": 0})
-    if not inv:
-        raise HTTPException(status_code=404, detail="Invitation not found")
-    inv = await _expire_if_needed(inv)
-    if inv["status"] == "expired":
-        raise HTTPException(status_code=400, detail="This invitation has expired")
-    if inv["status"] == "revoked":
-        raise HTTPException(status_code=400, detail="This invitation has been revoked")
-    if inv["status"] == "accepted":
-        raise HTTPException(status_code=400, detail="This invitation has already been used")
+    inv = await _pending_invitation(inp.token)
     if user["email"].lower() != inv["email"].lower():
         raise HTTPException(status_code=403, detail=f"This invitation was sent to {inv['email']}. Sign in with that email to accept.")
+    if not await _claim_invitation(inv):
+        raise HTTPException(status_code=400, detail="This invitation has already been used")
     tenant_id = inv["tenant_id"]
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"tenant_id": tenant_id, "role": inv["role"]}})
     existing = await db.memberships.find_one({"tenant_id": tenant_id, "user_id": user["user_id"]}, {"_id": 0})
@@ -711,9 +766,67 @@ async def accept_invitation(inp: TokenInput, user=Depends(get_current_user)):
         await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": tenant_id, "user_id": user["user_id"], "email": user["email"],
             "role": inv["role"], "status": "active", "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
-    await db.invitations.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": now_iso(), "token_hash": None}})
     await record_event("team.invitation_accepted", "invitation", inv["id"], tenant_id, user["email"], payload={"email": user["email"], "role": inv["role"]})
     return {"ok": True, "tenant_id": tenant_id, "role": inv["role"]}
+
+@api.post("/team/invitations/accept-new")
+async def accept_invitation_new_account(inp: InviteSignupInput, response: Response):
+    """Create an account from an invitation, directly inside the inviting team.
+
+    For someone who has never used ClientVerse. Unlike /auth/register it never creates an
+    organisation: the invitation fixes the tenant, the role and the email, and the session
+    is issued the way login issues it. An email that already has an account is sent to
+    sign in and accept instead, so this path can never put a second password on an
+    existing identity. That refusal tells the token holder nothing new: the invited email
+    is already on the invitation, and /auth/register answers the same question for any
+    address."""
+    inv = await _pending_invitation(inp.token)
+    email = inv["email"].lower()
+    name = _one_line(inp.name)
+    if not name:
+        raise HTTPException(status_code=422, detail="Please enter your name.")
+    if len(name) > 120:
+        raise HTTPException(status_code=422, detail="Please use a shorter name (120 characters or fewer).")
+    problem = _new_password_problem(inp.password)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    if await _login_is_locked(email):
+        # The brute-force lock login honours: a locked address does not get a fresh
+        # session through a side door.
+        raise HTTPException(status_code=429, detail="Too many sign-in attempts for this email. Please wait a few minutes and try again.")
+    if await _account_exists(email):
+        raise HTTPException(status_code=409, detail=_EXISTING_ACCOUNT_DETAIL.format(email=email))
+    if not await _claim_invitation(inv):
+        raise HTTPException(status_code=400, detail="This invitation has already been used")
+    tenant_id, role, uid = inv["tenant_id"], inv["role"], new_id("user")
+    try:
+        await db.users.insert_one({
+            "user_id": uid, "email": email, "name": name, "role": role,
+            "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
+            "picture": None, "created_at": now_iso(), "auth": "password",
+        })
+    except Exception as exc:
+        # Hand the invitation back whatever went wrong. A duplicate key means an account
+        # for this email appeared after the check above (a concurrent sign-up); the unique
+        # email index refused the second one, and the invitation can still be accepted by
+        # signing in.
+        await _release_invitation(inv)
+        if getattr(exc, "code", None) == 11000 or "E11000" in str(exc):
+            raise HTTPException(status_code=409, detail=_EXISTING_ACCOUNT_DETAIL.format(email=email))
+        raise
+    await db.memberships.insert_one({
+        "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
+        "role": role, "status": "active", "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
+        "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso(),
+    })
+    await record_event("team.invitation_accepted", "invitation", inv["id"], tenant_id, email,
+                       payload={"email": email, "role": role, "new_account": True})
+    await _reset_login_failures(email)
+    token = create_access_token(uid, email)
+    set_auth_cookie(response, token)
+    u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
+    u = await resolve_membership(u)
+    return {"user": u, "token": token, "tenant_id": tenant_id, "role": role}
 
 @api.patch("/team/members/{target_user_id}/role")
 async def change_member_role(target_user_id: str, inp: RoleInput, user=Depends(require_role("admin"))):
