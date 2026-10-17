@@ -2515,8 +2515,17 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
 
     # ---------------------------------------------------------------- leads
 
+    async def with_assignee_names(tenant_id: str, leads: list[dict]) -> list[dict]:
+        """Each lead's agent by name, beside the address it is assigned by."""
+        names = await crm_core.display_names(
+            db, tenant_id, (lead.get("assigned_to") for lead in leads))
+        for lead in leads:
+            lead["assigned_name"] = names.get(lead.get("assigned_to") or "")
+        return leads
+
     @router.get("/leads")
     async def list_leads(status: Optional[str] = None, form_id: Optional[str] = None,
+                         contact_id: Optional[str] = None,
                          q: Optional[str] = None, include_tests: bool = True,
                          limit: int = 50, offset: int = 0,
                          user=Depends(get_current_user)):
@@ -2528,6 +2537,10 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             query["status"] = status
         if form_id:
             query["form_id"] = form_id
+        if contact_id:
+            # A contact's own website requests, for its record. Scoped by tenant above,
+            # so another tenant's contact id simply matches nothing.
+            query["contact_id"] = contact_id
         if not include_tests:
             query["is_test"] = {"$ne": True}
         if q:
@@ -2538,7 +2551,7 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
         offset = max(0, int(offset or 0))
         items = await db[detectors.WEB_ENQUIRIES].find(query, {"_id": 0, "visitor": 0}).sort(
             "received_at", -1).skip(offset).limit(limit).to_list(limit)
-        return {"items": items,
+        return {"items": await with_assignee_names(user["tenant_id"], items),
                 "total": await db[detectors.WEB_ENQUIRIES].count_documents(query),
                 "limit": limit, "offset": offset}
 
@@ -2629,7 +2642,7 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             {"id": lead_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "visitor": 0})
         if not lead:
             raise HTTPException(status_code=404, detail="Not found")
-        return lead
+        return (await with_assignee_names(user["tenant_id"], [lead]))[0]
 
     @router.patch("/leads/{lead_id}")
     async def update_lead(lead_id: str, inp: LeadPatch, user=Depends(get_current_user)):
@@ -2672,8 +2685,9 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
                 "actor": user["email"], "created_at": now_iso(), "logged_by": user["email"]})
         await record_event("lead.status_changed", "web_enquiry", lead_id, user["tenant_id"],
                            user["email"], payload={"from": lead["status"], "to": inp.status})
-        return await db[detectors.WEB_ENQUIRIES].find_one(
+        updated = await db[detectors.WEB_ENQUIRIES].find_one(
             {"id": lead_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "visitor": 0})
+        return (await with_assignee_names(user["tenant_id"], [updated]))[0]
 
     # --------------------------------------------------------------- public
 

@@ -477,6 +477,44 @@ def test_a_fault_after_logging_never_loses_the_logged_call(client, monkeypatch):
     assert find_one(client, detectors.WEB_ENQUIRIES, {"id": lead_id})["status"] == "responded"
 
 
+def test_a_contacts_website_requests_can_be_listed_inside_the_tenant(client):
+    owner = register(client)
+    other = register(client, name="Other")
+    form = create_form(client, owner)
+    jane = browser_submit(client, form, lead()).json()["id"]
+    sam = browser_submit(client, form, lead(email="sam.seller@example.com",
+                                            phone="555-010-0222")).json()["id"]
+    jane_contact = find_one(client, detectors.WEB_ENQUIRIES, {"id": jane})["contact_id"]
+    mine = client.get("/api/leads", headers=owner["headers"],
+                      params={"contact_id": jane_contact}).json()
+    assert [item["id"] for item in mine["items"]] == [jane] and mine["total"] == 1
+    assert sam not in {item["id"] for item in mine["items"]}
+    # Another tenant naming this contact's id sees nothing of it.
+    theirs = client.get("/api/leads", headers=other["headers"],
+                        params={"contact_id": jane_contact}).json()
+    assert theirs["items"] == [] and theirs["total"] == 0
+
+
+def test_leads_name_their_agent_and_only_from_inside_the_tenant(client):
+    owner = register(client, name="Dana Agent")
+    outsider = register(client, name="Outside Agent")
+    form = create_form(client, owner, settings={
+        "assignment": {"mode": "specific", "users": [owner["email"]]}})
+    lead_id = browser_submit(client, form, lead()).json()["id"]
+    listed = client.get("/api/leads", headers=owner["headers"]).json()["items"][0]
+    assert listed["assigned_to"] == owner["email"] and listed["assigned_name"] == "Dana Agent"
+    assert client.get(f"/api/leads/{lead_id}",
+                      headers=owner["headers"]).json()["assigned_name"] == "Dana Agent"
+    patched = client.patch(f"/api/leads/{lead_id}", headers=owner["headers"],
+                           json={"status": "closed"}).json()
+    assert patched["assigned_name"] == "Dana Agent"
+    # An address that belongs to a user in another tenant is never resolved to a name.
+    call(client, server.db[detectors.WEB_ENQUIRIES].update_one,
+         {"id": lead_id}, {"$set": {"assigned_to": outsider["email"]}})
+    shown = client.get(f"/api/leads/{lead_id}", headers=owner["headers"]).json()
+    assert shown["assigned_to"] == outsider["email"] and shown["assigned_name"] is None
+
+
 def test_marking_a_lead_responded_closes_its_call_back_task(client):
     owner = register(client)
     form = create_form(client, owner)
