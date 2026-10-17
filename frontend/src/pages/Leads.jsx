@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
+import { activityEntries } from "@/lib/contactHistory";
+import { ActivityFeed } from "@/components/ContactRecord";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -62,6 +64,22 @@ function ago(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
+// The automation's own log, as sentences. Its details are record ids and addresses,
+// which mean nothing to the person reading the lead, so only the step's meaning is shown.
+function automationStep(step, lead) {
+  const sentences = {
+    "contact:created": "Added them as a new contact",
+    "contact:matched": "Matched them to a contact you already had",
+    "assignment:assigned": `Assigned the lead to ${lead.assigned_name || lead.assigned_to || "an agent"}`,
+    "assignment:unassigned": "No agent is set up for this form, so every admin was alerted",
+    "opportunity:created": "Opened a deal",
+    "opportunity:linked": "Added it to their open deal",
+    "task:created": "Created a call-back task",
+    "automation:failed": "Something went wrong after the lead was saved. The lead is safe here; check the contact and deal by hand.",
+  };
+  return sentences[`${step.step}:${step.result}`] || `${step.step} · ${step.result}`.replace(/_/g, " ");
+}
+
 function SlaBadge({ lead }) {
   const sla = lead.sla || {};
   if (lead.status === "responded" && sla.response_minutes != null) {
@@ -103,12 +121,29 @@ function Row({ label, children }) {
   );
 }
 
-function LeadDetail({ lead, onStatus, busy }) {
+function LeadDetail({ lead, onStatus, busy, refreshKey }) {
   const [note, setNote] = useState("");
+  // The contact this lead became: its name, its deals and what has been logged on it.
+  // Read again after every update so a note saved below appears straight away.
+  const [loaded, setLoaded] = useState(null);
+  useEffect(() => {
+    if (!lead.contact_id) return undefined;
+    let current = true;
+    api.get(`/contacts/${lead.contact_id}`)
+      .then((response) => { if (current) setLoaded(response.data); })
+      .catch(() => { if (current) setLoaded(null); });
+    return () => { current = false; };
+  }, [lead.contact_id, refreshKey]);
+  // Kept while a refresh is in flight so the list does not flicker; never shown for a different lead.
+  const contact = loaded?.contact?.id === lead.contact_id ? loaded : null;
   const fields = lead.fields || {};
   const attribution = lead.attribution || {};
   const extra = lead.extra || {};
   const consent = lead.consent;
+  const contactName = contact?.contact?.name || lead.name || lead.email || lead.phone;
+  const deal = (contact?.deals || []).find((item) => item.id === lead.opportunity_id);
+  const dealValue = formatMoney(deal ? deal.value : lead.estimated_value, (deal && deal.currency) || lead.currency);
+  const notes = useMemo(() => activityEntries(contact?.timeline, contactName), [contact, contactName]);
   const setStatus = async (status) => { await onStatus(lead, status, note); setNote(""); };
   return (
     <div className="space-y-6 pb-10">
@@ -142,15 +177,17 @@ function LeadDetail({ lead, onStatus, busy }) {
       <section>
         <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">What happened automatically</h3>
         <dl>
-          <Row label="Assigned to">{lead.assigned_to || "Unassigned — all admins alerted"}</Row>
-          <Row label="Contact">{lead.contact_id && <Link className="font-semibold text-[#127b96]" to="/contacts">{lead.created_contact ? "Created" : "Matched existing"} ({lead.contact_id})</Link>}</Row>
-          <Row label="Deal">{lead.opportunity_id && <Link className="font-semibold text-[#127b96]" to="/deals">{formatMoney(lead.estimated_value, lead.currency)} · {lead.opportunity_id}</Link>}</Row>
+          <Row label="Assigned to">{lead.assigned_name || lead.assigned_to || "Unassigned — all admins alerted"}</Row>
+          <Row label="Contact">{lead.contact_id && <><Link className="font-semibold text-[#127b96]" to={`/contacts?contact=${lead.contact_id}`} data-testid="lead-contact-link">{contactName || "Open contact"}</Link><span className="text-slate-500"> · {lead.created_contact ? "new contact" : "already in your contacts"}</span></>}</Row>
+          <Row label="Deal">{lead.opportunity_id && (deal
+            ? <><Link className="font-semibold text-[#127b96]" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">{deal.name}</Link><span className="text-slate-500"> · {dealValue}</span></>
+            : <Link className="font-semibold text-[#127b96]" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">Deal · {dealValue}</Link>)}</Row>
           <Row label="Call-back task">{lead.task_id && `Due ${lead.sla?.due_at ? new Date(lead.sla.due_at).toLocaleTimeString() : "now"}`}</Row>
           <Row label="Auto-reply">{lead.auto_reply?.status && lead.auto_reply.status !== "off" ? `${lead.auto_reply.status.replace(/_/g, " ")}${lead.auto_reply.detail ? ` — ${lead.auto_reply.detail}` : ""}` : null}</Row>
         </dl>
         {lead.automation?.length > 0 && (
           <ol className="mt-3 space-y-1 text-xs text-slate-500">
-            {lead.automation.map((step, index) => <li key={index}><span className="font-semibold text-slate-600">{step.step}</span> · {step.result}{step.detail ? ` · ${step.detail}` : ""}</li>)}
+            {lead.automation.map((step, index) => <li key={index} className="flex gap-1.5">{step.result === "failed" ? <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-red-500" /> : <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-slate-400" />}{automationStep(step, lead)}</li>)}
           </ol>
         )}
       </section>
@@ -178,9 +215,21 @@ function LeadDetail({ lead, onStatus, busy }) {
         </section>
       )}
 
+      {lead.contact_id && (
+        <section>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Notes and calls</h3>
+            <Link className="text-xs font-semibold text-[#127b96]" to={`/contacts?contact=${lead.contact_id}`}>Open contact to log a call</Link>
+          </div>
+          {contact
+            ? <ActivityFeed entries={notes} limit={5} empty="Nothing logged yet. A note you add below is saved here." testId="lead-notes" />
+            : <Skeleton className="h-12 rounded-xl" />}
+        </section>
+      )}
+
       <section className="space-y-2">
         <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Update</h3>
-        <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional note — saved to the contact's history" rows={3} />
+        <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional note — saved to the contact's history" rows={3} data-testid="lead-note" />
         <div className="flex flex-wrap gap-2">
           {lead.status !== "responded" && <Button size="sm" className="cv-action-primary" disabled={busy} onClick={() => setStatus("responded")}><CheckCircle2 className="mr-1.5 h-4 w-4" />Mark contacted</Button>}
           {lead.status !== "closed" && <Button size="sm" variant="outline" disabled={busy} onClick={() => setStatus("closed")}>Close</Button>}
@@ -204,6 +253,7 @@ export default function Leads() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [, setTick] = useState(0);
   const selectedId = searchParams.get("lead");
 
@@ -245,6 +295,7 @@ export default function Leads() {
     try {
       const { data } = await api.patch(`/leads/${lead.id}`, { status: next, note: note || undefined });
       setSelected(data);
+      setRefreshKey((value) => value + 1);
       toast.success(next === "responded" ? "Marked as contacted" : `Lead marked ${STATUS_LABEL[next].toLowerCase()}`);
       load();
     } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
@@ -343,7 +394,7 @@ export default function Leads() {
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-3 text-xs text-slate-500">
                     <SlaBadge lead={lead} />
-                    <span>{lead.assigned_to || "Unassigned"}</span>
+                    <span>{lead.assigned_name || lead.assigned_to || "Unassigned"}</span>
                     <span>{ago(lead.received_at)}</span>
                   </div>
                 </button>
@@ -362,7 +413,7 @@ export default function Leads() {
                 <SheetTitle>{selected.name || selected.email || selected.phone || "Website visitor"}</SheetTitle>
                 <SheetDescription>{selected.form_name} · {ago(selected.received_at)}</SheetDescription>
               </SheetHeader>
-              <LeadDetail lead={selected} onStatus={changeStatus} busy={busy} />
+              <LeadDetail lead={selected} onStatus={changeStatus} busy={busy} refreshKey={refreshKey} />
             </>
           )}
         </SheetContent>
