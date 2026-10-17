@@ -1,4 +1,4 @@
-"""Creating an account straight from a team invitation.
+"""Creating an account straight from a team invitation, and emailing the invitation.
 
 Before this, a brand-new invitee had to register first -- which created an organisation of
 their own with them as its admin -- and only then accept, which moved them into the
@@ -12,6 +12,8 @@ the reason given in test_security_headers.py. Every test makes its own inviting 
 """
 
 import asyncio
+import json
+import logging
 import os
 import sys
 import uuid
@@ -85,6 +87,18 @@ class FakeResponse:
 
     def set_cookie(self, *args, **kwargs):
         self.cookies.append((args, kwargs))
+
+
+class FakeMailer:
+    def __init__(self, fail_with=None):
+        self.sent = []
+        self.fail_with = fail_with
+
+    async def __call__(self, to, subject, html):
+        self.sent.append({"to": to, "subject": subject, "html": html})
+        if self.fail_with:
+            raise self.fail_with
+        return "msg_fake"
 
 
 # --------------------------------------------------------------------------- happy path
@@ -351,3 +365,90 @@ def test_concurrent_accepts_by_a_signed_in_user_consume_the_invitation_once(monk
         results = client.portal.call(race)
         assert sum(isinstance(r, dict) for r in results) == 1, results
         assert sum(isinstance(r, server.HTTPException) for r in results) == 1, results
+
+
+# --------------------------------------------------------------------------- email
+
+def test_the_invitation_is_emailed_when_a_mailer_is_configured(monkeypatch):
+    mailer = FakeMailer()
+    monkeypatch.setattr(server, "email_configured", lambda: True)
+    monkeypatch.setattr(server, "send_email", mailer)
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        admin_token, admin = _owner(client, name="Jordan Avery")
+        email, created = _invite(client, admin_token)
+        assert created["emailed"] is True and created["email_configured"] is True
+        assert created["invitation"]["email_status"] == "sent"
+        assert len(mailer.sent) == 1
+        sent = mailer.sent[0]
+        assert sent["to"] == email
+        assert sent["subject"] == "Jordan Avery invited you to join Jordan Avery's Org on ClientVerse"
+        assert created["invite_url"] in sent["html"]
+        assert "expires in 7 days" in sent["html"]
+        listed = client.get("/api/team/invitations", headers=_h(admin_token)).json()
+        assert next(i for i in listed if i["id"] == created["invitation"]["id"])["email_status"] == "sent"
+
+        # Resend issues a new link and emails it again; the old link stops working.
+        rs = client.post(f"/api/team/invitations/{created['invitation']['id']}/resend", headers=_h(admin_token))
+        assert rs.status_code == 200 and rs.json()["emailed"] is True
+        assert len(mailer.sent) == 2
+        assert mailer.sent[1]["to"] == email
+        assert rs.json()["invite_url"] in mailer.sent[1]["html"]
+        assert created["invite_url"] not in mailer.sent[1]["html"]
+        assert client.get("/api/team/invitations/lookup", params={"token": created["invite_token"]}).status_code == 404
+
+        # The emailed link is the one that creates the account.
+        r = _accept_new(client, rs.json()["invite_token"])
+        assert r.status_code == 200 and r.json()["tenant_id"] == admin["tenant_id"]
+
+
+def test_names_in_the_invitation_email_are_escaped():
+    subject, html = server._invitation_email("Eve <script>\nBcc: x@y", "A&B <Realty>", "admin", "https://app.example/invite?token=a&b")
+    assert "\n" not in subject
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert "A&amp;B &lt;Realty&gt;" in html
+    assert 'href="https://app.example/invite?token=a&amp;b"' in html
+    assert "as an admin" in html
+
+
+def test_no_email_is_attempted_without_a_mailer(monkeypatch):
+    mailer = FakeMailer(fail_with=AssertionError("must not send"))
+    monkeypatch.setattr(server, "email_configured", lambda: False)
+    monkeypatch.setattr(server, "send_email", mailer)
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        admin_token, _ = _owner(client)
+        _, created = _invite(client, admin_token)
+        assert created["emailed"] is False and created["email_configured"] is False
+        assert created["invitation"]["email_status"] == "not_sent"
+        rs = client.post(f"/api/team/invitations/{created['invitation']['id']}/resend", headers=_h(admin_token))
+        assert rs.status_code == 200 and rs.json()["emailed"] is False
+        assert mailer.sent == []
+
+
+def test_a_failed_send_is_reported_and_the_token_is_never_logged(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    mailer = FakeMailer(fail_with=RuntimeError("provider_error:503"))
+    monkeypatch.setattr(server, "email_configured", lambda: True)
+    monkeypatch.setattr(server, "send_email", mailer)
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        admin_token, _ = _owner(client)
+        email, created = _invite(client, admin_token)
+        token = created["invite_token"]
+        assert created["emailed"] is False and created["email_configured"] is True
+        assert created["invitation"]["email_status"] == "failed"
+        assert len(mailer.sent) == 1  # it was attempted
+
+        rs = client.post(f"/api/team/invitations/{created['invitation']['id']}/resend", headers=_h(admin_token))
+        new_token = rs.json()["invite_token"]
+        assert _accept_new(client, new_token).status_code == 200
+
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "was not emailed: provider_error:503" in logged
+        for secret in (token, new_token):
+            assert secret not in logged
+            events = _db(client, lambda: server.db.domain_events.find({}, {"_id": 0}).to_list(5000))
+            assert secret not in json.dumps(events, default=str)
+            stored = _db(client, lambda: server.db.invitations.find({"email": email}, {"_id": 0}).to_list(10))
+            assert secret not in json.dumps(stored, default=str)

@@ -634,6 +634,58 @@ def _new_password_problem(password: str) -> Optional[str]:
         return f"That password is too long. Please use {NEW_PASSWORD_MAX_BYTES} characters or fewer."
     return None
 
+# Inviting a teammate by email. The recipient is a person the admin typed in, the message
+# goes out because the admin asked for it, and its wording is fixed system text: internal
+# account mail on the same transactional mailer as alert and digest emails (C-08). It is
+# not client communication, so the consent and approval gate that governs messages to
+# clients (CommunicationMessage, M-01/M-07) does not apply. The link carries the token, so
+# neither the link nor the body is ever logged.
+from html import escape as html_escape
+
+
+def _invitation_email(inviter_name: str, org_name: str, role: str, invite_url: str):
+    inviter, org = _one_line(inviter_name), _one_line(org_name)
+    role_label = "an admin" if role == "admin" else "a team member"
+    subject = f"{inviter} invited you to join {org} on ClientVerse"
+    url = html_escape(invite_url, quote=True)
+    body = (
+        "<div style=\"font-family:Arial,Helvetica,sans-serif;max-width:520px;color:#0a1628;font-size:15px;line-height:1.55\">"
+        "<p>Hello,</p>"
+        f"<p><strong>{html_escape(inviter)}</strong> invited you to join <strong>{html_escape(org)}</strong> "
+        f"on ClientVerse as {role_label}.</p>"
+        "<p style=\"margin:28px 0\">"
+        f"<a href=\"{url}\" style=\"background:#0a1628;color:#ffffff;padding:12px 22px;border-radius:8px;"
+        "text-decoration:none;font-weight:bold;display:inline-block\">Accept invitation</a></p>"
+        f"<p style=\"color:#5b6577;font-size:13px\">This invitation expires in {INVITE_TTL_DAYS} days and can be used once. "
+        "If the button does not work, copy this link into your browser:<br>"
+        f"<span style=\"word-break:break-all\">{url}</span></p>"
+        "<p style=\"color:#5b6577;font-size:13px\">If you were not expecting this invitation, you can ignore this email.</p>"
+        "</div>"
+    )
+    return subject, body
+
+async def _email_invitation(inv_id: str, email: str, role: str, invite_url: str, inviter: dict, tenant_id: str) -> str:
+    """Email the invitation when the mailer is configured, and record the outcome on it:
+    "sent" only for a send the provider accepted, so the Team screen never says an email
+    went out when it did not; otherwise "failed" or "not_sent" (no mailer configured)."""
+    if not email_configured():
+        await db.invitations.update_one({"id": inv_id}, {"$set": {"email_status": "not_sent"}})
+        return "not_sent"
+    tenant = await db.tenants.find_one({"tenant_id": tenant_id}, {"_id": 0})
+    org = (tenant or {}).get("name") or "your team"
+    inviter_name = inviter.get("name") or inviter.get("email") or "A teammate"
+    subject, body = _invitation_email(inviter_name, org, role, invite_url)
+    try:
+        await send_email(email, subject, body)
+    except Exception as exc:
+        # send_email fails with its own fixed reason codes; anything else is named by type.
+        reason = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+        logger.warning("Invitation %s was not emailed: %s", inv_id, reason)
+        await db.invitations.update_one({"id": inv_id}, {"$set": {"email_status": "failed"}})
+        return "failed"
+    await db.invitations.update_one({"id": inv_id}, {"$set": {"email_status": "sent", "emailed_at": now_iso()}})
+    return "sent"
+
 async def count_active_admins(tenant_id):
     return await db.memberships.count_documents({"tenant_id": tenant_id, "role": "admin", "status": "active"})
 
@@ -655,7 +707,8 @@ def _invite_public(inv, tenant_name=None, inviter_name=None):
             "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
             "expires_at": inv.get("expires_at"), "accepted_at": inv.get("accepted_at"),
             "revoked_at": inv.get("revoked_at"), "tenant_name": tenant_name,
-            "invited_by_name": inviter_name}
+            "invited_by_name": inviter_name, "email_status": inv.get("email_status"),
+            "emailed_at": inv.get("emailed_at")}
 
 class InviteInput(BaseModel):
     email: EmailStr
@@ -710,7 +763,10 @@ async def create_invitation(inp: InviteInput, user=Depends(require_role("admin")
            "accepted_at": None, "revoked_at": None, "created_at": now_iso()}
     await db.invitations.insert_one(dict(inv))
     await record_event("team.invitation_created", "invitation", inv["id"], user["tenant_id"], user["email"], payload={"email": email, "role": inp.role})
-    return {"invitation": _invite_public(inv), "invite_token": token, "invite_url": f"{FRONTEND_URL}/invite?token={token}"}
+    invite_url = f"{FRONTEND_URL}/invite?token={token}"
+    inv["email_status"] = await _email_invitation(inv["id"], email, inp.role, invite_url, user, user["tenant_id"])
+    return {"invitation": _invite_public(inv), "invite_token": token, "invite_url": invite_url,
+            "emailed": inv["email_status"] == "sent", "email_configured": email_configured()}
 
 @api.post("/team/invitations/{inv_id}/resend")
 async def resend_invitation(inv_id: str, user=Depends(require_role("admin"))):
@@ -725,7 +781,10 @@ async def resend_invitation(inv_id: str, user=Depends(require_role("admin"))):
         "status": "pending", "token_hash": hash_token(token), "invited_at": now_iso(), "invited_by": user["email"],
         "expires_at": (datetime.now(timezone.utc) + timedelta(days=INVITE_TTL_DAYS)).isoformat()}})
     await record_event("team.invitation_resent", "invitation", inv_id, user["tenant_id"], user["email"], payload={"email": inv["email"]})
-    return {"invite_token": token, "invite_url": f"{FRONTEND_URL}/invite?token={token}"}
+    invite_url = f"{FRONTEND_URL}/invite?token={token}"
+    email_status = await _email_invitation(inv_id, inv["email"], inv["role"], invite_url, user, user["tenant_id"])
+    return {"invite_token": token, "invite_url": invite_url, "emailed": email_status == "sent",
+            "email_configured": email_configured()}
 
 @api.post("/team/invitations/{inv_id}/revoke")
 async def revoke_invitation(inv_id: str, user=Depends(require_role("admin"))):
