@@ -289,9 +289,9 @@ def _is_duplicate_key(exc: Exception) -> bool:
         or "duplicate key" in str(exc).lower()
 
 
-def phone_digits(value: Optional[str]) -> str:
-    """The comparable part of a phone number: its last ten digits."""
-    return re.sub(r"\D", "", str(value or ""))[-10:]
+# One definition of "the same number", shared with contact editing so a number changed
+# by hand is matched exactly as one that arrived through a form.
+phone_digits = crm_core.phone_digits
 
 
 def normalise_origin(value: Optional[str]) -> Optional[str]:

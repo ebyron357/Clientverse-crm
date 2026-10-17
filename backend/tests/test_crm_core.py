@@ -108,6 +108,36 @@ def test_a_contact_can_be_edited_and_the_change_is_in_its_own_history(tenant):
         "a record's own history is where its state transitions live")
 
 
+def test_a_contact_can_be_created_with_a_phone_number(tenant):
+    created = tenant.post("/contacts", {"name": f"Caller-{uuid.uuid4().hex[:6]}",
+                                        "phone": " (555) 010-0142 "})
+    assert created["phone"] == "(555) 010-0142"
+    # Stored the way website leads are matched, so this person's next form finds them.
+    assert created["phone_digits"] == "5550100142"
+    assert tenant.get(f"/contacts/{created['id']}")["contact"]["phone"] == "(555) 010-0142"
+
+
+def test_changing_a_phone_number_keeps_it_matchable(tenant):
+    contact_id = tenant.post("/contacts", {"name": f"Mover-{uuid.uuid4().hex[:6]}",
+                                           "phone": "555-010-0150"})["id"]
+    updated = tenant.patch(f"/contacts/{contact_id}", {"phone": "+1 (555) 010-0199"})
+    assert updated["phone"] == "+1 (555) 010-0199" and updated["phone_digits"] == "5550100199"
+    cleared = tenant.patch(f"/contacts/{contact_id}", {"phone": ""})
+    assert cleared["phone"] is None and cleared["phone_digits"] is None
+
+
+def test_a_contact_record_names_its_owner_and_who_did_what(tenant):
+    tenant.post("/activities", {"type": "note", "related_type": "contact",
+                                "related_id": tenant.contact_id, "body": "Prefers mornings"})
+    detail = tenant.get(f"/contacts/{tenant.contact_id}")
+    # The registered user's name, not just the address on the record.
+    assert detail["contact"]["owner"] == tenant.email
+    assert detail["owner_name"] == "CRM Core Test"
+    note = next(entry for entry in detail["timeline"]
+                if entry["kind"] == "activity" and entry["body"] == "Prefers mornings")
+    assert note["actor"] == tenant.email and note["actor_name"] == "CRM Core Test"
+
+
 def test_archiving_hides_a_contact_from_lists_without_destroying_it(tenant):
     contact_id = tenant.post("/contacts", {"name": f"Temp-{uuid.uuid4().hex[:6]}"})["id"]
     tenant.post(f"/contacts/{contact_id}/archive", {})

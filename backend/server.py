@@ -823,6 +823,7 @@ async def create_company(inp: CompanyInput, user=Depends(get_current_user)):
 class ContactInput(BaseModel):
     name: str
     email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(default=None, max_length=60)
     role: Optional[str] = None
     company_id: Optional[str] = None
     influence: Optional[str] = "medium"
@@ -850,6 +851,7 @@ async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
     payload = inp.model_dump()
     if payload.get("email") is not None:
         payload["email"] = str(payload["email"])
+    payload["phone"] = (payload.get("phone") or "").strip() or None
     if payload.get("company_id"):
         known = await db.companies.find_one(
             {"id": payload["company_id"], "tenant_id": user["tenant_id"]}, {"_id": 1})
@@ -859,7 +861,9 @@ async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
             raise HTTPException(status_code=422, detail="Unknown company_id")
     doc = {"id": new_id("ct"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
            "updated_at": now_iso(), "archived_at": None, "owner": user["email"],
-           "phone": None, "title": None,
+           "title": None,
+           # Matched against website leads, so a lead from this person finds this record.
+           "phone_digits": crm_core.phone_digits(payload["phone"]) or None,
            "history": [crm_core.created_history(user["email"])],
            **payload}
     await db.contacts.insert_one(doc)

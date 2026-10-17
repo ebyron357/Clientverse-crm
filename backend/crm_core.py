@@ -31,6 +31,7 @@ import csv
 import io
 import math
 import re
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -119,6 +120,42 @@ def csv_safe(value: Any) -> Any:
 
 def _escape_regex(value: str) -> str:
     return re.escape(value.strip())[:200]
+
+
+def phone_digits(value: Optional[str]) -> str:
+    """The comparable part of a phone number: its last ten digits.
+
+    Stored beside the number as typed so a website lead from "555.010.0100" finds the
+    contact someone entered as "(555) 010-0100".
+    """
+    return re.sub(r"\D", "", str(value or ""))[-10:]
+
+
+async def display_names(db, tenant_id: str, emails: Iterable[Optional[str]]) -> dict[str, str]:
+    """Each teammate's name, keyed by the email address it was asked for.
+
+    Records store who did something as an email address, which is right for an audit
+    trail and wrong for a person reading it. Only members of `tenant_id` are resolved,
+    so an address on a record can never be used to read another tenant's user names;
+    anything else (a system actor, a former teammate with no name) is simply absent and
+    the caller shows the address it already has.
+    """
+    wanted = {str(email): str(email).strip().lower() for email in emails
+              if email and "@" in str(email)}
+    if not wanted:
+        return {}
+    members = await db.memberships.find(
+        {"tenant_id": tenant_id}, {"_id": 0, "email": 1, "user_id": 1}).to_list(500)
+    user_ids = {str(m.get("email") or "").lower(): m["user_id"]
+                for m in members if m.get("user_id")}
+    ids = sorted({user_ids[lowered] for lowered in wanted.values() if lowered in user_ids})
+    if not ids:
+        return {}
+    users = await db.users.find(
+        {"user_id": {"$in": ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(ids))
+    names = {u["user_id"]: str(u["name"]).strip() for u in users if u.get("name")}
+    return {email: names[user_ids[lowered]] for email, lowered in wanted.items()
+            if lowered in user_ids and user_ids[lowered] in names}
 
 
 def _parse_date(value: Optional[str], field: str) -> Optional[str]:
@@ -481,7 +518,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             {"kind": "activity", "at": item.get("occurred_at") or item.get("created_at"),
              "type": item.get("type"), "subject": item.get("subject"),
              "body": item.get("body"), "actor": item.get("actor"), "id": item.get("id"),
-             "outcome": item.get("outcome")}
+             "outcome": item.get("outcome"), "direction": item.get("direction")}
             for item in activities
         ] + [
             {"kind": "event", "at": item.get("timestamp"), "type": item.get("event_type"),
@@ -490,7 +527,13 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             for item in events
         ]
         merged.sort(key=lambda entry: entry.get("at") or "", reverse=True)
-        return merged[:limit]
+        merged = merged[:limit]
+        # Who did it, as a name a person recognises. The address stays on `actor`.
+        names = await display_names(db, tenant_of(user),
+                                    (entry.get("actor") for entry in merged))
+        for entry in merged:
+            entry["actor_name"] = names.get(entry.get("actor") or "")
+        return merged
 
     # ------------------------------------------------------------------------ contacts
 
@@ -515,8 +558,10 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                      {"participants": {"$elemMatch": {"kind": "contact",
                                                       "id": contact_id}}}]},
             {"_id": 0}).sort("last_message_at", -1).to_list(25)
+        owner_names = await display_names(db, tenant, [contact.get("owner")])
         return {"contact": contact, "company": company, "deals": deals, "tasks": tasks,
                 "conversations": conversations,
+                "owner_name": owner_names.get(contact.get("owner") or ""),
                 "timeline": await timeline_for(user, "contact", contact_id)}
 
     @router.patch("/contacts/{contact_id}")
@@ -525,6 +570,11 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         changes = dict(inp.model_dump(exclude_unset=True))
         if "email" in changes and changes["email"] is not None:
             changes["email"] = str(changes["email"])
+        if "phone" in changes:
+            # Kept in step with the number, or the next website lead from this person
+            # would be matched against the number they used to have.
+            changes["phone"] = (changes["phone"] or "").strip() or None
+            changes["phone_digits"] = phone_digits(changes["phone"]) or None
         await assert_exists(COMPANIES, changes.get("company_id"), user, "company_id")
         return await apply_patch(CONTACTS, contact_id, user, changes,
                                  "contact.updated", "contact")
