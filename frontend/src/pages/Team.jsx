@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { UserPlus, Copy, RotateCw, Ban, ShieldAlert, Mail, MailCheck, CheckCircle2 } from "lucide-react";
+import { UserPlus, Copy, RotateCw, Ban, ShieldAlert, Mail, MailCheck, CheckCircle2, KeyRound } from "lucide-react";
 
 const ROLE_BADGE = {
   admin: "bg-indigo-50 text-indigo-700 border-indigo-200",
@@ -49,6 +49,8 @@ export default function Team() {
   const [form, setForm] = useState({ email: "", role: "member" });
   const [lastInvite, setLastInvite] = useState(null);
   const [busy, setBusy] = useState(false);
+  // A teammate who forgot their password: confirm, then show the temporary one once.
+  const [reset, setReset] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -89,6 +91,17 @@ export default function Team() {
     const status = m.status === "active" ? "disabled" : "active";
     try { await api.patch(`/team/members/${m.user_id}/status`, { status }); toast.success(status === "disabled" ? "Member disabled" : "Member re-enabled"); load(); }
     catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+  };
+  const resetPassword = async () => {
+    setReset((current) => ({ ...current, busy: true }));
+    try {
+      const { data } = await api.post(`/team/members/${reset.member.user_id}/reset-password`);
+      setReset((current) => ({ ...current, busy: false, temporary: data.temporary_password }));
+    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); setReset(null); }
+  };
+  const copyTemporary = async (t) => {
+    try { await navigator.clipboard.writeText(t); toast.success("Temporary password copied"); }
+    catch { toast.error("Couldn't copy automatically. Select the password and copy it."); }
   };
   const copy = async (t) => {
     try { await navigator.clipboard.writeText(t); toast.success("Invite link copied"); }
@@ -145,6 +158,11 @@ export default function Team() {
                   </td>
                   <td className="px-6 py-3"><Badge className={`capitalize ${STATUS_BADGE[m.status]}`}>{m.status}</Badge></td>
                   <td className="px-6 py-3 text-right">
+                    {!isSelf && m.status === "active" && (
+                      <Button size="sm" variant="outline" className="mr-2 h-8" onClick={() => setReset({ member: m })} data-testid={`member-reset-password-${m.user_id}`}>
+                        <KeyRound className="w-3.5 h-3.5 mr-1" />Reset password
+                      </Button>
+                    )}
                     <Button size="sm" variant="outline" className="h-8" onClick={() => toggleStatus(m)} data-testid={`member-toggle-${m.user_id}`}>
                       {m.status === "active" ? <><Ban className="w-3.5 h-3.5 mr-1" />Disable</> : <><CheckCircle2 className="w-3.5 h-3.5 mr-1" />Enable</>}
                     </Button>
@@ -194,6 +212,31 @@ export default function Team() {
           ))}
         </div>
       )}
+
+      {/* Reset a teammate's password */}
+      <Dialog open={Boolean(reset)} onOpenChange={(open) => !open && setReset(null)}>
+        <DialogContent data-testid="reset-password-dialog">
+          <DialogHeader>
+            <DialogTitle>{reset?.temporary ? "Temporary password ready" : `Reset ${reset?.member?.name || reset?.member?.email}'s password?`}</DialogTitle>
+            <DialogDescription>
+              {reset?.temporary
+                ? <>Send this to <span className="font-medium text-[#132038]">{reset.member.email}</span> by text or phone. When they sign in with it, ClientVerse asks them to choose their own password straight away. It is shown only once.</>
+                : "They'll be signed out everywhere and get a temporary password from you. Their leads, tasks and history stay exactly as they are."}
+            </DialogDescription>
+          </DialogHeader>
+          {reset?.temporary ? (
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+              <code className="flex-1 select-all font-mono text-base tracking-wide text-[#0a1628]" data-testid="temporary-password">{reset.temporary}</code>
+              <Button size="sm" variant="outline" onClick={() => copyTemporary(reset.temporary)}><Copy className="w-3.5 h-3.5 mr-1" />Copy</Button>
+            </div>
+          ) : null}
+          <DialogFooter>
+            {reset?.temporary
+              ? <Button className="cv-action-primary" onClick={() => setReset(null)}>Done</Button>
+              : <><Button variant="outline" onClick={() => setReset(null)}>Cancel</Button><Button className="cv-action-primary" onClick={resetPassword} disabled={reset?.busy} data-testid="reset-password-confirm">{reset?.busy ? "Resetting…" : "Reset password"}</Button></>}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Invite dialog */}
       <Dialog open={dialog} onOpenChange={setDialog}>

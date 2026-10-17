@@ -254,8 +254,12 @@ def create_access_token(user_id: str, email: str) -> str:
     # jti keeps two tokens issued in the same second from being byte-identical (JWT
     # exp/iat only have second granularity) -- without it, revoking one login's token
     # would also revoke a different login's token that happened to match exactly.
+    now = datetime.now(timezone.utc)
+    # `iat_ms` dates the session to the millisecond, so a password change made a moment
+    # after a sign-in still ends it.
     payload = {"sub": user_id, "email": email, "type": "access", "jti": secrets.token_hex(16),
-               "exp": datetime.now(timezone.utc) + timedelta(days=7)}
+               "iat": int(now.timestamp()), "iat_ms": int(now.timestamp() * 1000),
+               "exp": now + timedelta(days=7)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 def set_auth_cookie(response: Response, token: str):
@@ -348,6 +352,23 @@ async def _is_token_revoked(token: str) -> bool:
     except AttributeError:
         return False
 
+# All a temporary password can reach: who am I, choose a new password, sign out.
+_TEMPORARY_PASSWORD_PATHS = ("/api/auth/me", "/api/auth/change-password", "/api/auth/logout")
+
+def _issued_before_password_change(payload: dict, user: dict) -> bool:
+    """A password change ends every session that existed before it.
+
+    Sessions are dated by `iat_ms`; one issued before tokens carried it is dated from its
+    7-day expiry. The session that made the change is re-issued after it, so it survives.
+    """
+    changed = _parse_dt(user.get("password_changed_at"))
+    if not changed:
+        return False
+    issued_ms = payload.get("iat_ms")
+    if issued_ms is None and payload.get("exp"):
+        issued_ms = (int(payload["exp"]) - int(timedelta(days=7).total_seconds())) * 1000
+    return issued_ms is not None and int(issued_ms) < int(changed.timestamp() * 1000)
+
 async def get_current_user(request: Request) -> dict:
     token = _extract_token(request)
     if not token:
@@ -360,6 +381,11 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        if _issued_before_password_change(payload, user):
+            raise HTTPException(status_code=401, detail="Your password was changed. Please sign in again.")
+        if user.get("must_change_password") and request.url.path not in _TEMPORARY_PASSWORD_PATHS:
+            # Someone else knows a temporary password, so it opens nothing until it is replaced.
+            raise HTTPException(status_code=403, detail="Choose your own password to continue.")
         user.pop("password_hash", None)
         return await resolve_membership(user)
     except jwt.InvalidTokenError:
@@ -920,6 +946,80 @@ async def accept_invitation_new_account(inp: InviteSignupInput, response: Respon
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
     return {"user": u, "token": token, "tenant_id": tenant_id, "role": role}
+
+class PasswordChangeInput(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(max_length=256)
+
+@api.post("/auth/change-password")
+async def change_password(inp: PasswordChangeInput, request: Request, response: Response,
+                          user=Depends(get_current_user)):
+    """Replace your own password, given the current one.
+
+    Every other session ends (tokens issued before the change are refused) and this
+    browser gets a fresh session, so the person changing it stays signed in. Wrong
+    current passwords count towards the same lockout as sign-in, so this is no side
+    door for guessing."""
+    email = user["email"].lower()
+    record = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 1})
+    if not record or not record.get("password_hash"):
+        raise HTTPException(status_code=400, detail="You sign in with Google, so there is no ClientVerse password to change.")
+    if await _login_is_locked(email):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please wait a few minutes and try again.")
+    if not verify_password(inp.current_password, record["password_hash"]):
+        await _record_login_failure(email)
+        raise HTTPException(status_code=400, detail="Your current password isn't right.")
+    problem = _new_password_problem(inp.new_password)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    if inp.new_password == inp.current_password:
+        raise HTTPException(status_code=422, detail="Choose a password different from your current one.")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"password_hash": hash_password(inp.new_password), "password_changed_at": now_iso(),
+                  "must_change_password": False}})
+    await _reset_login_failures(email)
+    old_token = _extract_token(request)
+    if old_token:
+        await _revoke_token(old_token)
+    token = create_access_token(user["user_id"], email)
+    set_auth_cookie(response, token)
+    await record_event("auth.password_changed", "user", user["user_id"], user["tenant_id"], email,
+                       payload={"temporary_cleared": bool(user.get("must_change_password"))})
+    u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
+    return {"user": await resolve_membership(u), "token": token}
+
+def _temporary_password() -> str:
+    # Easy to read aloud or type from a text message, and 70+ bits of randomness.
+    alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "-".join("".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3))
+
+@api.post("/team/members/{target_user_id}/reset-password")
+async def reset_member_password(target_user_id: str, user=Depends(require_role("admin"))):
+    """Give a teammate a temporary password, for a forgotten one.
+
+    The teammate's sessions all end, and on their next sign-in they must choose their
+    own password before anything else. The temporary password is returned once, to the
+    admin, and never stored or logged in plain text. Your own password is changed under
+    Settings instead, with your current one."""
+    if target_user_id == user["user_id"]:
+        raise HTTPException(status_code=400, detail="Change your own password under Settings.")
+    m = await db.memberships.find_one({"tenant_id": user["tenant_id"], "user_id": target_user_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Member not found")
+    target = await db.users.find_one({"user_id": target_user_id, "tenant_id": user["tenant_id"]},
+                                     {"_id": 0, "password_hash": 1, "email": 1})
+    if not target or not target.get("password_hash"):
+        raise HTTPException(status_code=400, detail="This teammate signs in with Google, so there is no password to reset.")
+    temporary = _temporary_password()
+    await db.users.update_one(
+        {"user_id": target_user_id, "tenant_id": user["tenant_id"]},
+        {"$set": {"password_hash": hash_password(temporary), "password_changed_at": now_iso(),
+                  "must_change_password": True}})
+    await _reset_login_failures(target["email"].lower())
+    await record_event("team.password_reset", "membership", target_user_id, user["tenant_id"], user["email"],
+                       payload={"target": m["email"]})
+    return {"ok": True, "email": m["email"], "temporary_password": temporary}
 
 @api.patch("/team/members/{target_user_id}/role")
 async def change_member_role(target_user_id: str, inp: RoleInput, user=Depends(require_role("admin"))):
