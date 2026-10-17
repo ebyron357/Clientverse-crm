@@ -34,6 +34,7 @@ const CLOSE_REASON_LABEL = {
   deal_won_before_case: "Deal already won",
   outcome_recorded: "Outcome recorded, not attributed",
   sale_recorded_on_another_case: "Sale counted on another case",
+  outcome_refused: "Outcome could not be booked",
   strategy_rejected: "Strategy rejected",
   attribution_window_elapsed: "No outcome within the window",
 };
@@ -208,7 +209,7 @@ function CaseProof({ caseId, onBack, onChanged }) {
         <CurrencyBlock
           title="Confirmed recovered"
           tone="border-emerald-200 bg-emerald-50 text-emerald-900"
-          byCurrency={value.confirmed_recovered_value ? { [value.currency]: value.confirmed_recovered_value } : {}}
+          byCurrency={value.confirmed_recovered_value ? { [value.confirmed_currency || value.currency]: value.confirmed_recovered_value } : {}}
           note="Money a record says arrived. Never derived from the figure beside it."
         />
       </div>
@@ -395,7 +396,7 @@ export default function RecoveryProof() {
                     </div>
                     <div className="shrink-0 text-right text-xs">
                       <div className="text-gray-400">confirmed</div>
-                      <div className="font-semibold text-emerald-700">{item.confirmed_value != null ? money(item.confirmed_value, item.currency) : "—"}</div>
+                      <div className="font-semibold text-emerald-700">{item.confirmed_value != null ? money(item.confirmed_value, item.confirmed_currency || item.confirmed_value_evidence?.outcome?.currency || item.currency) : "—"}</div>
                     </div>
                   </button>
                 ))}
