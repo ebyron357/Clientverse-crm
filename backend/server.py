@@ -135,33 +135,43 @@ class ClientVerseStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await seed()
-    try:
-        await db.domain_events.create_index([("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])
-        await db.alerts.create_index([("tenant_id", 1), ("status", 1)])
-        await db.alerts.create_index([("tenant_id", 1), ("type", 1), ("source_ref", 1)])
-        await db.crm_communications.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])
-        await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
-        await db.login_lockouts.create_index("email", unique=True)
-        await db.cron_runs.create_index("run_id", unique=True)
-        await cron_ledger.ensure_indexes(db)
-        await crm_core.ensure_indexes(db)
-        await email_inbound.ensure_indexes(db)
-        await attribution_service.ensure_indexes(db)
-        await detectors.ensure_indexes(db)
-        await recovery_intake.ensure_indexes(db)
-        await lead_pipeline.ensure_indexes()
-        await WorkQueue(db).ensure_indexes()
-        await nba_service.ensure_indexes(db)
-        await second_chance_service.ensure_indexes(db)
-        await security_gate_service.ensure_indexes(db)
-        await approval_service.ensure_indexes(db)
-        await recovery_service.ensure_indexes(db)
-        await conversation_service.ensure_indexes(db)
-        await recovery_case_service.ensure_indexes(db)
-    except Exception:
-        logger.exception("Failed to create a non-critical application index")
+    # Each index is built on its own. They used to share one try block, so the first
+    # failure (an index that existing data violates, say) silently skipped every index
+    # after it -- including uniqueness guarantees later modules depend on.
+    index_builders = [
+        ("domain_events", lambda: db.domain_events.create_index(
+            [("tenant_id", 1), ("workspace_id", 1), ("timestamp", -1)])),
+        ("alerts.status", lambda: db.alerts.create_index([("tenant_id", 1), ("status", 1)])),
+        ("alerts.source_ref", lambda: db.alerts.create_index(
+            [("tenant_id", 1), ("type", 1), ("source_ref", 1)])),
+        ("crm_communications", lambda: db.crm_communications.create_index(
+            [("tenant_id", 1), ("workspace_id", 1)])),
+        ("crm_meetings", lambda: db.crm_meetings.create_index([("tenant_id", 1), ("workspace_id", 1)])),
+        ("crm_billing", lambda: db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])),
+        ("revoked_tokens", lambda: db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)),
+        ("login_lockouts", lambda: db.login_lockouts.create_index("email", unique=True)),
+        ("cron_runs", lambda: db.cron_runs.create_index("run_id", unique=True)),
+        ("cron_ledger", lambda: cron_ledger.ensure_indexes(db)),
+        ("crm_core", lambda: crm_core.ensure_indexes(db)),
+        ("email_inbound", lambda: email_inbound.ensure_indexes(db)),
+        ("attribution", lambda: attribution_service.ensure_indexes(db)),
+        ("detectors", lambda: detectors.ensure_indexes(db)),
+        ("recovery_intake", lambda: recovery_intake.ensure_indexes(db)),
+        ("website_forms", lambda: lead_pipeline.ensure_indexes()),
+        ("work_queue", lambda: WorkQueue(db).ensure_indexes()),
+        ("next_best_action", lambda: nba_service.ensure_indexes(db)),
+        ("second_chance", lambda: second_chance_service.ensure_indexes(db)),
+        ("security_gate", lambda: security_gate_service.ensure_indexes(db)),
+        ("approval_queue", lambda: approval_service.ensure_indexes(db)),
+        ("recovery_strategy", lambda: recovery_service.ensure_indexes(db)),
+        ("conversations", lambda: conversation_service.ensure_indexes(db)),
+        ("recovery_case", lambda: recovery_case_service.ensure_indexes(db)),
+    ]
+    for name, build in index_builders:
+        try:
+            await build()
+        except Exception:
+            logger.exception("Failed to create the '%s' index set; continuing with the rest", name)
     try:
         for channel in register_channel_providers():
             logger.info("Registered outbound channel provider: %s", channel)
