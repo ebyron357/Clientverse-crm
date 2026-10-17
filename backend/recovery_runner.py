@@ -37,6 +37,7 @@ from typing import Any, Optional
 import approval_queue
 import conversations
 import recovery_case
+import recovery_lifecycle
 import recovery_strategy
 
 JOB_RUN_RECOVERY_CASE = "recovery.run_case"
@@ -219,12 +220,23 @@ async def run_case(db, *, tenant_id: str, case_id: str, actor: str = "recovery-r
     """Execute one approved Recovery Case as far as it is permitted to go.
 
     Refuses anything not approved. Moves the case to `executing` on entry and to `engaged`
-    only if something actually reached a counterparty — which, with no provider registered,
-    it currently cannot. The case does not advance on the strength of intent.
+    only if something actually reached a counterparty: a message on the case that a
+    provider accepted (`recovery_lifecycle.sync_engagement`). A drafted message awaiting its
+    own approval leaves the case `executing` -- drafted is not sent -- and the send route
+    (or the next reconciliation sweep) moves it on once the message really goes. The case
+    does not advance on the strength of intent.
     """
     case = await recovery_case.get_case(db, tenant_id, case_id)
     if not case:
         raise RecoveryRunnerError("Recovery case not found")
+
+    if case["state"] in recovery_case.TERMINAL_STATES:
+        # Closed (or recovered) after the run was queued -- by reconciliation, an outcome
+        # or an operator. There is nothing left to do, and that is not a failure: raising
+        # would retry the job until it dead-lettered over a case that ended correctly.
+        return {"case_id": case_id, "skipped": True,
+                "reason": f"The case is '{case['state']}'; nothing to run.",
+                "steps": [], "outbound_drafted": 0, "outbound_sent": 0}
 
     if case["state"] not in (recovery_case.APPROVED, recovery_case.EXECUTING):
         raise RecoveryRunnerError(
@@ -268,14 +280,26 @@ async def run_case(db, *, tenant_id: str, case_id: str, actor: str = "recovery-r
             await recovery_case.attach(db, tenant_id=tenant_id, case_id=case_id, actor=actor,
                                        conversation_reference=message["conversation_id"])
 
+    # A re-run can find a message from an earlier run that has since been approved and
+    # sent; only then is the case engaged.
+    engaged = await recovery_lifecycle.sync_engagement(db, tenant_id=tenant_id,
+                                                       case_id=case_id, actor=actor,
+                                                       audit=audit)
+    sent = await recovery_lifecycle.last_contact_by_case(db, tenant_id, [case_id])
+
     return {
         "case_id": case_id,
         "plan_id": plan_id,
         "steps": results,
         "internal_executed": len([r for r in results if r["status"] == STEP_DONE]),
         "outbound_drafted": len(drafted),
-        # Stated plainly so no caller can read this result as "the client was contacted".
+        # Stated plainly so no caller can read this result as "the client was contacted":
+        # the runner itself never sends. Whether anything on the case has reached the
+        # client -- by any route -- is reported separately.
         "outbound_sent": 0,
+        "client_reached": case_id in sent,
+        "case_state": (engaged or await recovery_case.get_case(db, tenant_id, case_id)
+                       or {}).get("state"),
         "awaiting": [r["approval_id"] for r in drafted if r.get("approval_id")],
         "blocked_reasons": sorted({r["blocked_reason"] for r in results
                                    if r.get("blocked_reason")}),

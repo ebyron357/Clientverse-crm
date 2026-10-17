@@ -61,7 +61,19 @@ def db():
     client.close()
 
 
-def make_case(db, *, tenant_id=TENANT, potential=4000.0, detected_days_ago=30):
+def make_case(db, *, tenant_id=TENANT, potential=4000.0, detected_days_ago=30,
+              opportunity_id=None):
+    """A dormant-deal case, on a deal of its own.
+
+    The deal matters: an outcome is only accepted against the case it relates to, so each
+    case needs a deal its invoices and wins can belong to.
+    """
+    if opportunity_id is None:
+        opportunity_id = f"opp_{uuid.uuid4().hex[:10]}"
+        run(db.opportunities.insert_one({"id": opportunity_id, "tenant_id": tenant_id,
+                                         "name": "Renewal", "stage": "proposal",
+                                         "value": potential, "currency": "USD",
+                                         "created_at": iso(detected_days_ago + 30)}))
     case = run(rc.open_case(db, rc.normalize_event(
         tenant_id=tenant_id,
         source=rc.SOURCE_DORMANT_DEAL,
@@ -70,6 +82,7 @@ def make_case(db, *, tenant_id=TENANT, potential=4000.0, detected_days_ago=30):
         reason="No contact for 45 days",
         potential_value=potential,
         currency="USD",
+        opportunity_id=opportunity_id,
     ), actor="detector"))
     run(db[rc.COLLECTION].update_one({"id": case["id"], "tenant_id": tenant_id},
                                      {"$set": {"created_at": iso(detected_days_ago)}}))
@@ -126,11 +139,14 @@ def inbound_reply(db, conversation, *, days_ago=5, tenant_id=TENANT):
     return doc
 
 
-def paid_invoice(db, *, total=4000.0, days_ago=1, tenant_id=TENANT, currency="USD"):
+def paid_invoice(db, *, total=4000.0, days_ago=1, tenant_id=TENANT, currency="USD",
+                 case=None):
+    """A paid invoice, raised for `case`'s deal when a case is given."""
     invoice = {"id": f"inv_{uuid.uuid4().hex[:10]}", "tenant_id": tenant_id,
                "total": total, "currency": currency, "status": "paid",
                "payment_status": "paid", "paid_at": iso(days_ago),
-               "created_at": iso(days_ago + 5)}
+               "created_at": iso(days_ago + 5),
+               "opportunity_id": (case or {}).get("opportunity_id")}
     run(db.invoices.insert_one(dict(invoice)))
     return invoice
 
@@ -143,7 +159,7 @@ def test_a_reply_after_a_sent_message_is_the_strongest_basis(db):
     outbound(db, conversation, status=cv.SENT, days_ago=10)
     inbound_reply(db, conversation, days_ago=5)
     engage(db, case)
-    invoice = paid_invoice(db, days_ago=1)
+    invoice = paid_invoice(db, case=case, days_ago=1)
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -168,7 +184,7 @@ def test_contact_without_a_reply_is_a_weaker_basis_and_says_so(db):
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=cv.DELIVERED, days_ago=10)
     engage(db, case)
-    invoice = paid_invoice(db)
+    invoice = paid_invoice(db, case=case)
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -182,24 +198,35 @@ def test_contact_without_a_reply_is_a_weaker_basis_and_says_so(db):
 def test_a_case_that_cannot_accept_a_confirmation_does_not_lose_the_ledger_entry(db):
     """A case still in `detected` cannot jump to `recovered`, and must not silently.
 
-    The derivation is still true and is still worth keeping, so the entry stays and says
-    plainly that the case was not updated -- rather than the ledger and the case quietly
-    disagreeing about what happened.
+    The outcome is still true and is still worth keeping, so the entry stays and says
+    plainly that the case was not updated. What changed: an unconfirmed claim is not a
+    claim. The entry is recorded as *unattributed* -- it used to be counted as attributed
+    revenue although the case never accepted it -- and the case leaves open potential,
+    because its money is now in an outcome bucket.
     """
     case = make_case(db)
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=cv.SENT, days_ago=10)
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
-        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
         actor="ops@acme.test"))
 
-    assert entry["claim"] == attribution.CLAIM_ATTRIBUTED
+    assert entry["claim"] == attribution.CLAIM_UNATTRIBUTED
+    assert entry["attributed_amount"] == 0.0
+    assert entry["basis"] == attribution.BASIS_DELIVERED, "the contact fact is still recorded"
     assert entry["case_updated"] is False
     assert entry["case_update_error"]
+    assert "could not be confirmed" in entry["reason"]
     stored = run(attribution.get_entry(db, TENANT, entry["id"]))
     assert stored["case_updated"] is False
-    assert run(rc.get_case(db, TENANT, case["id"]))["state"] == rc.DETECTED
+    assert stored["claim"] == attribution.CLAIM_UNATTRIBUTED
+    closed = run(rc.get_case(db, TENANT, case["id"]))
+    assert closed["state"] == rc.CLOSED
+    assert closed["close_reason"] == "outcome_recorded"
+    totals = run(attribution.totals(db, TENANT))
+    assert totals["attributed_recovered_value_by_currency"] == {}
+    assert totals["unattributed_outcome_value_by_currency"] == {"USD": 4000.0}
 
 
 def test_no_confidence_score_is_fabricated(db):
@@ -208,7 +235,7 @@ def test_no_confidence_score_is_fabricated(db):
     outbound(db, conversation, status=cv.SENT)
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
-        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
         actor="ops@acme.test"))
     assert "confidence" not in entry
     assert "score" not in entry
@@ -229,7 +256,7 @@ def test_a_message_that_did_not_reach_the_client_supports_no_claim(db, status):
     case = make_case(db)
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=status, days_ago=10)
-    invoice = paid_invoice(db)
+    invoice = paid_invoice(db, case=case)
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -250,7 +277,7 @@ def test_a_case_with_no_conversation_at_all_claims_nothing(db):
     case = make_case(db)
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
-        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
         actor="ops@acme.test"))
     assert entry["claim"] == attribution.CLAIM_UNATTRIBUTED
     assert "nothing was ever sent" in entry["reason"]
@@ -261,7 +288,7 @@ def test_an_outcome_that_predates_the_contact_is_not_attributed(db):
     case = make_case(db, detected_days_ago=60)
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=cv.SENT, days_ago=2)
-    invoice = paid_invoice(db, days_ago=20)
+    invoice = paid_invoice(db, case=case, days_ago=20)
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -274,7 +301,7 @@ def test_an_outcome_long_after_the_contact_falls_outside_the_window(db):
     case = make_case(db, detected_days_ago=400)
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=cv.SENT, days_ago=300)
-    invoice = paid_invoice(db, days_ago=1)
+    invoice = paid_invoice(db, case=case, days_ago=1)
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -289,7 +316,7 @@ def test_a_reply_that_arrived_before_we_ever_wrote_is_not_our_reply(db):
     conversation = make_conversation(db, case)
     inbound_reply(db, conversation, days_ago=20)      # they wrote first
     outbound(db, conversation, status=cv.SENT, days_ago=10)
-    invoice = paid_invoice(db, days_ago=1)
+    invoice = paid_invoice(db, case=case, days_ago=1)
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -310,19 +337,19 @@ def test_the_caller_cannot_supply_the_basis_the_evidence_or_the_claim(db):
     with pytest.raises(TypeError):
         run(attribution.record_outcome(
             db, tenant_id=TENANT, case_id=case["id"],
-            kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+            kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
             actor="attacker", basis=attribution.BASIS_REPLY))
 
     with pytest.raises(TypeError):
         run(attribution.record_outcome(
             db, tenant_id=TENANT, case_id=case["id"],
-            kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+            kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
             actor="attacker", evidence=[{"kind": "outbound_message", "record_id": "x"}]))
 
     with pytest.raises(TypeError):
         run(attribution.record_outcome(
             db, tenant_id=TENANT, case_id=case["id"],
-            kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+            kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
             actor="attacker", claim=attribution.CLAIM_ATTRIBUTED))
 
 
@@ -332,7 +359,7 @@ def test_a_note_cannot_smuggle_a_basis_into_the_entry(db):
     outbound(db, conversation, status=cv.DRAFT)
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
-        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
         actor="attacker", note="basis=reply_after_contact; claim=attributed"))
     assert entry["basis"] == attribution.BASIS_NONE
     assert entry["claim"] == attribution.CLAIM_UNATTRIBUTED
@@ -345,7 +372,8 @@ def test_the_amount_comes_from_the_invoice_not_from_the_caller(db):
     case = make_case(db)
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=cv.SENT, days_ago=10)
-    invoice = paid_invoice(db, total=1000.0)
+    engage(db, case)
+    invoice = paid_invoice(db, case=case, total=1000.0)
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -389,13 +417,13 @@ def test_an_open_deal_is_pipeline_not_revenue(db):
 
 
 def test_a_won_deals_value_comes_from_the_deal(db):
-    case = make_case(db)
-    conversation = make_conversation(db, case)
-    outbound(db, conversation, status=cv.SENT, days_ago=20)
     deal = {"id": f"opp_{uuid.uuid4().hex[:8]}", "tenant_id": TENANT, "value": 12000.0,
             "stage": "closed_won", "currency": "USD", "created_at": iso(30),
             "stage_history": [{"from": "proposal", "to": "closed_won", "at": iso(1)}]}
     run(db.opportunities.insert_one(dict(deal)))
+    case = make_case(db, opportunity_id=deal["id"])
+    conversation = make_conversation(db, case)
+    outbound(db, conversation, status=cv.SENT, days_ago=20)
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -433,7 +461,8 @@ def test_replaying_the_same_outcome_does_not_book_the_revenue_twice(db):
     case = make_case(db)
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=cv.SENT, days_ago=10)
-    invoice = paid_invoice(db, total=3000.0)
+    engage(db, case)
+    invoice = paid_invoice(db, case=case, total=3000.0)
 
     first = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -482,7 +511,7 @@ def test_another_tenants_sent_message_cannot_support_a_claim(db):
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
-        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
         actor="attacker"))
     assert entry["claim"] == attribution.CLAIM_UNATTRIBUTED
 
@@ -495,7 +524,7 @@ def test_a_message_on_another_case_does_not_support_this_one(db):
 
     entry = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
-        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db)["id"],
+        kind=attribution.OUTCOME_INVOICE_PAID, record_id=paid_invoice(db, case=case)["id"],
         actor="attacker"))
     assert entry["claim"] == attribution.CLAIM_UNATTRIBUTED
 
@@ -506,16 +535,17 @@ def test_totals_keep_attributed_and_unattributed_side_by_side(db):
     attributed_case = make_case(db)
     conversation = make_conversation(db, attributed_case)
     outbound(db, conversation, status=cv.SENT, days_ago=10)
+    engage(db, attributed_case)
     run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=attributed_case["id"],
         kind=attribution.OUTCOME_INVOICE_PAID,
-        record_id=paid_invoice(db, total=1000.0)["id"], actor="ops@acme.test"))
+        record_id=paid_invoice(db, case=attributed_case, total=1000.0)["id"], actor="ops@acme.test"))
 
     unattributed_case = make_case(db)
     run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=unattributed_case["id"],
         kind=attribution.OUTCOME_INVOICE_PAID,
-        record_id=paid_invoice(db, total=7000.0)["id"], actor="ops@acme.test"))
+        record_id=paid_invoice(db, case=unattributed_case, total=7000.0)["id"], actor="ops@acme.test"))
 
     totals = run(attribution.totals(db, TENANT))
     assert totals["attributed_recovered_value_by_currency"]["USD"] == 1000.0
@@ -529,10 +559,11 @@ def test_money_is_never_summed_across_currencies(db):
         case = make_case(db)
         conversation = make_conversation(db, case)
         outbound(db, conversation, status=cv.SENT, days_ago=10)
+        engage(db, case)
         run(attribution.record_outcome(
             db, tenant_id=TENANT, case_id=case["id"],
             kind=attribution.OUTCOME_INVOICE_PAID,
-            record_id=paid_invoice(db, total=amount, currency=currency)["id"],
+            record_id=paid_invoice(db, case=case, total=amount, currency=currency)["id"],
             actor="ops@acme.test"))
 
     totals = run(attribution.totals(db, TENANT))
@@ -549,10 +580,11 @@ def test_time_to_recovery_is_only_reported_where_it_can_be_measured(db):
     case = make_case(db, detected_days_ago=30)
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=cv.SENT, days_ago=20)
+    engage(db, case)
     run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
         kind=attribution.OUTCOME_INVOICE_PAID,
-        record_id=paid_invoice(db, days_ago=2)["id"], actor="ops@acme.test"))
+        record_id=paid_invoice(db, case=case, days_ago=2)["id"], actor="ops@acme.test"))
 
     measured = run(attribution.time_to_recovery(db, TENANT))
     assert measured["measured_entries"] == 1
@@ -563,7 +595,7 @@ def test_the_attribution_window_is_tenant_configuration_not_a_call_argument(db):
     case = make_case(db, detected_days_ago=200)
     conversation = make_conversation(db, case)
     outbound(db, conversation, status=cv.SENT, days_ago=150)
-    invoice = paid_invoice(db, days_ago=1)
+    invoice = paid_invoice(db, case=case, days_ago=1)
 
     outside = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=case["id"],
@@ -576,9 +608,10 @@ def test_the_attribution_window_is_tenant_configuration_not_a_call_argument(db):
     second_case = make_case(db, detected_days_ago=200)
     second_conversation = make_conversation(db, second_case)
     outbound(db, second_conversation, status=cv.SENT, days_ago=150)
+    engage(db, second_case)
     inside = run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=second_case["id"],
         kind=attribution.OUTCOME_INVOICE_PAID,
-        record_id=paid_invoice(db, days_ago=1)["id"], actor="ops@acme.test"))
+        record_id=paid_invoice(db, case=second_case, days_ago=1)["id"], actor="ops@acme.test"))
     assert inside["claim"] == attribution.CLAIM_ATTRIBUTED
     assert inside["attribution_window_days"] == 365

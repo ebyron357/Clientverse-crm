@@ -27,8 +27,10 @@ already made once:
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -68,6 +70,33 @@ CONFIGURED_INTEGRATION_STATUSES = ("CONNECTED", "ACTIVE", "CERTIFIED", "ENABLED"
 # Value bands are configuration so the playbook can be tuned without a code change.
 HIGH_VALUE_THRESHOLD = float(os.environ.get("RECOVERY_HIGH_VALUE_THRESHOLD", "25000"))
 LOW_VALUE_THRESHOLD = float(os.environ.get("RECOVERY_LOW_VALUE_THRESHOLD", "2500"))
+# The two thresholds above are amounts *in this currency*. A bare 25,000 compared with a
+# value in yen or in pounds is not a threshold, it is a coincidence, so a value in any
+# other currency is only banded if that currency has thresholds of its own -- given as
+# JSON, e.g. RECOVERY_VALUE_THRESHOLDS='{"GBP": {"high": 20000, "low": 2000}}'. A value
+# in a currency with no thresholds is treated as unbanded: neither high nor low.
+THRESHOLD_CURRENCY = (recovery_case.normalize_currency(
+    os.environ.get("RECOVERY_THRESHOLD_CURRENCY", recovery_case.DEFAULT_CURRENCY))
+    or recovery_case.DEFAULT_CURRENCY)
+
+
+def _load_thresholds() -> dict[str, dict[str, float]]:
+    bands = {THRESHOLD_CURRENCY: {"high": HIGH_VALUE_THRESHOLD, "low": LOW_VALUE_THRESHOLD}}
+    try:
+        extra = json.loads(os.environ.get("RECOVERY_VALUE_THRESHOLDS") or "{}")
+    except ValueError:
+        return bands
+    for code, band in (extra.items() if isinstance(extra, dict) else []):
+        currency = recovery_case.normalize_currency(code)
+        try:
+            if currency and isinstance(band, dict):
+                bands[currency] = {"high": float(band["high"]), "low": float(band["low"])}
+        except (KeyError, TypeError, ValueError):
+            continue
+    return bands
+
+
+VALUE_THRESHOLDS = _load_thresholds()
 DORMANT_DAYS = int(os.environ.get("RECOVERY_DORMANT_DAYS", "60"))
 LATE_STAGES = ("proposal", "negotiation")
 COMPOSE_LIMIT = int(os.environ.get("RECOVERY_COMPOSE_LIMIT", "100"))
@@ -191,6 +220,14 @@ async def gather_context(db, tenant_id: str, candidate: dict) -> dict:
         facts.append(_fact("Stage", evidence["stage"], f"{record_kind}:{record_id}"))
     if evidence.get("value") is not None:
         facts.append(_fact("Value", evidence["value"], f"{record_kind}:{record_id}"))
+        currency = _value_currency(evidence)
+        if currency not in VALUE_THRESHOLDS:
+            # Said out loud, because otherwise an operator would reasonably assume a large
+            # figure was weighed as large.
+            facts.append(_fact("Value not banded",
+                               f"in {currency}; value thresholds are configured for "
+                               f"{', '.join(sorted(VALUE_THRESHOLDS))}",
+                               f"{record_kind}:{record_id}"))
 
     # Load the source record. Detector candidates carry a `record_id` and little else:
     # the owner, company and value live on the opportunity, and the workspace is reached
@@ -282,6 +319,25 @@ def _step(action: str, channel: str, detail: str) -> dict:
     return {"action": action, "channel": channel, "detail": detail}
 
 
+def _value_currency(evidence: dict) -> str:
+    """The currency a candidate's value is in. A candidate written before values carried
+    a currency predates multi-currency cases and was always in the default."""
+    return (recovery_case.normalize_currency(evidence.get("currency"))
+            or recovery_case.DEFAULT_CURRENCY)
+
+
+def value_band(value: Optional[float], currency: str) -> Optional[str]:
+    """"high", "low", "mid", or None when there is no value or no thresholds for it."""
+    band = VALUE_THRESHOLDS.get(currency)
+    if value is None or band is None:
+        return None
+    if value >= band["high"]:
+        return "high"
+    if value < band["low"]:
+        return "low"
+    return "mid"
+
+
 def select_lane(candidate: dict, context: dict) -> dict:
     """Pick a recovery lane from the ordered playbook.
 
@@ -299,6 +355,9 @@ def select_lane(candidate: dict, context: dict) -> dict:
         value = float(evidence.get("value")) if evidence.get("value") is not None else None
     except (TypeError, ValueError):
         value = None
+    currency = _value_currency(evidence)
+    band = value_band(value, currency)
+    thresholds = VALUE_THRESHOLDS.get(currency) or VALUE_THRESHOLDS[THRESHOLD_CURRENCY]
 
     owner = context.get("owner")
     has_contact = bool(context.get("contact_id"))
@@ -356,13 +415,16 @@ def select_lane(candidate: dict, context: dict) -> dict:
             ],
         }
 
+    # No value at all is treated as low, as it always was. A value in a currency with no
+    # thresholds is *unbanded*: it is not assumed small, so it does not route a large
+    # foreign-currency deal into nurture, and it is not assumed large either.
     if idle_days is not None and idle_days >= DORMANT_DAYS and (
-            value is None or value < LOW_VALUE_THRESHOLD):
+            value is None or band == "low"):
         return {
             "lane": "dormant_nurture",
             "rule": "stalled_lead.dormant_low_value",
             "rationale": (
-                f"Idle {idle_days} days with a value below {LOW_VALUE_THRESHOLD:,.0f}. This does "
+                f"Idle {idle_days} days with a value below {thresholds['low']:,.0f}. This does "
                 f"not justify owner time; it belongs in a low-touch nurture motion until the "
                 f"client signals interest."),
             "steps": [
@@ -373,9 +435,9 @@ def select_lane(candidate: dict, context: dict) -> dict:
             ],
         }
 
-    if owner and ((value is not None and value >= HIGH_VALUE_THRESHOLD) or stage in LATE_STAGES):
-        trigger = (f"Value at or above {HIGH_VALUE_THRESHOLD:,.0f}"
-                   if value is not None and value >= HIGH_VALUE_THRESHOLD
+    if owner and (band == "high" or stage in LATE_STAGES):
+        trigger = (f"Value at or above {thresholds['high']:,.0f}"
+                   if band == "high"
                    else f"Late-stage opportunity ({stage or 'unknown'})")
         return {
             "lane": "owner_led_reengagement",
@@ -481,7 +543,10 @@ def candidate_from_case(case: dict) -> dict:
         "tenant_id": case["tenant_id"],
         "type": item_type or f"recovery_case.{case.get('source')}",
         "payload": {
-            "record_id": case.get("opportunity_id") or case.get("source_event_id"),
+            # The detector's own record id where it has one, so a case-composed plan cites
+            # the same record a queue-composed one did ("cmt_1", not "commitment:cmt_1").
+            "record_id": (case.get("opportunity_id") or evidence.get("record_id")
+                          or case.get("source_event_id")),
             "record_kind": evidence.get("record_kind") or (
                 "opportunity" if case.get("opportunity_id") else case.get("source")),
             "title": case.get("title"),
@@ -510,16 +575,25 @@ async def compose_for_case(db, tenant_id: str, case: dict, *,
     # terminal one before anything is written. Composing first and letting the transition
     # fail afterwards still left a recovered or closed case holding a fresh plan and a
     # live approval for work nobody is going to do.
-    current = (await recovery_case.get_case(db, tenant_id, case["id"]) or {}).get("state")
+    current_case = await recovery_case.get_case(db, tenant_id, case["id"]) or {}
+    current = current_case.get("state")
     if current in recovery_case.TERMINAL_STATES:
         raise recovery_case.InvalidCaseTransition(
             f"Cannot compose a strategy for a '{current}' recovery case")
 
+    await _adopt_case_strategies(db, tenant_id, current_case or case, actor=actor)
     strategy = await compose_for_candidate(db, tenant_id, candidate_from_case(case),
                                            actor=actor, channels=channels)
     await recovery_case.attach(db, tenant_id=tenant_id, case_id=case["id"], actor=actor,
                                plan_reference=strategy["id"],
                                approval_reference=strategy.get("approval_id"))
+
+    if strategy.get("state") == STATE_APPROVED:
+        # The plan was already approved -- before this fix, approving a strategy never
+        # moved its case, so cases sat in `awaiting_approval` behind an approved plan
+        # forever. Bring the case up to the decision that was actually made.
+        await sync_case_with_strategy(db, tenant_id, strategy, actor=actor)
+        return strategy
 
     state_now = (await recovery_case.get_case(db, tenant_id, case["id"]) or {}).get("state")
     target = (recovery_case.AWAITING_APPROVAL if strategy.get("approval_id")
@@ -535,6 +609,129 @@ async def compose_for_case(db, tenant_id: str, case: dict, *,
             # that is suppressed — a terminal case was refused above, before any write.
             pass
     return strategy
+
+
+async def _adopt_case_strategies(db, tenant_id: str, case: dict, *, actor: str) -> None:
+    """Make sure a case has at most one live strategy, keyed on the case itself.
+
+    Strategies used to be keyed on whichever *work item* was being composed. A case's work
+    item is resolved and replaced over its life, and a case with no work item was composed
+    under the case's own id -- so one deal could hold two live strategies and two pending
+    approvals for the same recovery. Strategies are now keyed on the case. A live one left
+    over from the old keying (found by the case's id or its current work item) is re-keyed
+    onto the case if the case has none, and every further one is superseded, its approval
+    withdrawn.
+    """
+    keys = [key for key in (case.get("work_item_reference"),) if key]
+    live = await db[COLLECTION].find(
+        {"tenant_id": tenant_id, "active_candidate_key": {"$type": "string"},
+         "$or": [{"recovery_case_id": case["id"]}, {"active_candidate_key": case["id"]},
+                 *([{"active_candidate_key": {"$in": keys}}] if keys else [])]},
+    ).sort("updated_at", -1).to_list(20)
+    if not live:
+        return
+    keeper = next((s for s in live if s.get("active_candidate_key") == case["id"]), None)
+    if keeper is None:
+        # Prefer an approved plan -- an operator's decision is not discarded by a re-key.
+        keeper = next((s for s in live if s.get("state") == STATE_APPROVED), live[0])
+        await db[COLLECTION].update_one(
+            {"_id": keeper["_id"]},
+            {"$set": {"active_candidate_key": case["id"], "recovery_case_id": case["id"]}})
+    for extra in live:
+        if extra["_id"] == keeper["_id"]:
+            continue
+        if extra.get("approval_id"):
+            try:
+                await approval_queue.cancel(
+                    db, tenant_id=tenant_id, approval_id=extra["approval_id"], actor=actor,
+                    reason="Superseded: this recovery case already has a strategy.")
+            except approval_queue.ApprovalError:
+                pass
+        await set_state(db, tenant_id, extra["id"], state=STATE_SUPERSEDED, actor=actor)
+
+
+async def _case_for_strategy(db, tenant_id: str, strategy: dict) -> Optional[dict]:
+    """The Recovery Case a strategy was composed for, however it was keyed."""
+    if strategy.get("recovery_case_id"):
+        case = await recovery_case.get_case(db, tenant_id, strategy["recovery_case_id"])
+        if case:
+            return case
+    for criteria in ({"plan_reference": strategy["id"]},
+                     {"work_item_reference": strategy.get("candidate_id")},
+                     {"id": strategy.get("candidate_id")}):
+        if not next(iter(criteria.values())):
+            continue
+        doc = await db[recovery_case.COLLECTION].find_one(
+            {"tenant_id": tenant_id, **criteria}, {"_id": 0})
+        if doc:
+            return doc
+    return None
+
+
+async def sync_case_with_strategy(db, tenant_id: str, strategy: dict, *,
+                                  actor: str = "recovery-composer",
+                                  rationale: Optional[str] = None,
+                                  audit: Optional[Callable[..., Awaitable[Any]]] = None,
+                                  closer: Optional[Callable[..., Awaitable[dict]]] = None
+                                  ) -> Optional[dict]:
+    """Move a strategy's Recovery Case to match the decision taken on the strategy.
+
+    Before this, approving a strategy changed the strategy and nothing else: the case
+    stayed `awaiting_approval`, the runner only picks `approved` cases, and the pipeline
+    stopped there. Now:
+
+    * **approved** -> the case is `approved` (walked through `awaiting_approval` if it
+      never got there), and its plan and approval are recorded on it;
+    * **rejected** -> the case is closed as `strategy_rejected`. The playbook is
+      deterministic, so re-planning would propose the same motion and ask the same
+      question again; an operator who rejects the plan has declined this recovery;
+    * **withdrawn** -> the case returns to `planned`, and the next composer sweep
+      proposes afresh (a withdrawn request is "not this one", not "never").
+
+    A decision on a strategy that is no longer the case's live plan does not move the
+    case. Returns the case as it now stands, or None when no case is linked.
+    """
+    case = await _case_for_strategy(db, tenant_id, strategy)
+    if not case or case.get("state") in recovery_case.TERMINAL_STATES:
+        return case
+    if case.get("plan_reference") not in (None, strategy["id"]):
+        return case
+    detail = {"strategy_id": strategy["id"], "approval_id": strategy.get("approval_id")}
+    state = strategy.get("state")
+
+    if state == STATE_APPROVED:
+        approval = (await approval_queue.get(db, tenant_id, strategy["approval_id"])
+                    if strategy.get("approval_id") else None)
+        if not approval or approval.get("status") != approval_queue.APPROVED:
+            return case
+        if case.get("plan_reference") != strategy["id"] or \
+                case.get("approval_reference") != strategy["approval_id"]:
+            case = await recovery_case.attach(
+                db, tenant_id=tenant_id, case_id=case["id"], actor=actor,
+                plan_reference=strategy["id"], approval_reference=strategy["approval_id"])
+        path = {recovery_case.DETECTED: [recovery_case.AWAITING_APPROVAL, recovery_case.APPROVED],
+                recovery_case.PLANNED: [recovery_case.AWAITING_APPROVAL, recovery_case.APPROVED],
+                recovery_case.AWAITING_APPROVAL: [recovery_case.APPROVED]}.get(case["state"], [])
+        for target in path:
+            case = await recovery_case.set_state(db, tenant_id=tenant_id, case_id=case["id"],
+                                                 state=target, actor=actor, detail=detail,
+                                                 audit=audit)
+        return case
+
+    if state == STATE_REJECTED:
+        # `closer` is injected (the application passes the lifecycle's close, which also
+        # resolves the case's work item) because the lifecycle module imports this one.
+        close = closer or recovery_case.close_case
+        return await close(db, tenant_id=tenant_id, case_id=case["id"],
+                           reason="strategy_rejected", actor=actor, note=rationale,
+                           detail=detail, audit=audit)
+
+    if state == STATE_WITHDRAWN and case["state"] == recovery_case.AWAITING_APPROVAL:
+        return await recovery_case.set_state(
+            db, tenant_id=tenant_id, case_id=case["id"], state=recovery_case.PLANNED,
+            actor=actor, detail={**detail, "note": "approval withdrawn; will be re-proposed"},
+            audit=audit)
+    return case
 
 
 async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
@@ -578,6 +775,10 @@ async def compose_for_candidate(db, tenant_id: str, candidate: dict, *,
         "created_at": _iso(now),
         "updated_at": _iso(now),
         "active_candidate_key": candidate_id,
+        # The case this plan is for, when there is one. Proof reads the plan through it,
+        # and it is how a decision on the strategy finds the case to move.
+        "recovery_case_id": (candidate.get("recovery_case_id")
+                             or (candidate.get("payload") or {}).get("recovery_case_id")),
         "approval_id": None,
     }
 
@@ -714,22 +915,56 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
     channels = await authorized_channels(db, tenant_id)
     composed, errors = [], []
     planned_case_ids: set[str] = set()
+    skipped: dict[str, int] = {"terminal_case": 0, "already_past_approval": 0}
     for candidate in candidates:
+        case_id = (candidate.get("payload") or {}).get("recovery_case_id")
         try:
-            composed.append(await compose_for_candidate(db, tenant_id, candidate, actor=actor,
-                                                        channels=channels))
-            if candidate.get("payload", {}).get("recovery_case_id"):
-                planned_case_ids.add(candidate["payload"]["recovery_case_id"])
+            case = await recovery_case.get_case(db, tenant_id, case_id) if case_id else None
+            if case is None:
+                # A queue item that never had a case (created by a caller with no
+                # database handle) is planned as it always was.
+                composed.append(await compose_for_candidate(
+                    db, tenant_id, candidate, actor=actor, channels=channels))
+                continue
+            planned_case_ids.add(case["id"])
+            if case["state"] in recovery_case.TERMINAL_STATES:
+                skipped["terminal_case"] += 1
+                continue
+            if case["state"] not in PLANNABLE_CASE_STATES:
+                skipped["already_past_approval"] += 1
+                continue
+            # Planned *through its case*, so the plan is keyed on the case and attached
+            # to it. Composing the queue item directly left the case unplanned, and the
+            # next sweep composed it again under the case's id -- two live strategies and
+            # two approval requests for one recovery.
+            composed.append(await compose_for_case(db, tenant_id, case, actor=actor,
+                                                   channels=channels))
         except Exception as exc:  # one bad candidate must not stop the sweep
             errors.append({"candidate_id": candidate.get("id"), "error": str(exc)[:300]})
 
     remaining = max(0, limit - len(candidates))
     cases = (await recovery_case.list_unplanned(db, tenant_id, limit=remaining)
              if remaining else [])
-    for case in cases:
+    # A case whose approval lapsed or was withdrawn is waiting on a request nobody can
+    # decide any more. It is re-proposed here, or it would wait for ever.
+    stale = await _cases_awaiting_a_dead_approval(
+        db, tenant_id, limit=max(0, remaining - len(cases)))
+    for case in cases + stale:
         if case["id"] in planned_case_ids:
             continue
+        planned_case_ids.add(case["id"])
+        approval_status = case.pop("_approval_status", None)
         try:
+            if approval_status == approval_queue.REJECTED:
+                # Rejected before a rejection closed the case: apply it now rather than
+                # proposing the same plan again.
+                plan = (await get_strategy(db, tenant_id, case["plan_reference"])
+                        if case.get("plan_reference") else None)
+                if plan:
+                    await sync_case_with_strategy(db, tenant_id,
+                                                  {**plan, "state": STATE_REJECTED},
+                                                  actor=actor)
+                    continue
             composed.append(await compose_for_case(db, tenant_id, case, actor=actor,
                                                    channels=channels))
         except Exception as exc:  # one bad case must not stop the sweep
@@ -741,14 +976,47 @@ async def compose_for_tenant(db, queue, tenant_id: str, *, actor: str = "recover
         lanes[strategy["lane"]] = lanes.get(strategy["lane"], 0) + 1
     return {
         "tenant_id": tenant_id,
-        "candidates_examined": len(candidates) + len(cases),
+        "candidates_examined": len(candidates) + len(cases) + len(stale),
         "queue_candidates_examined": len(candidates),
         "recovery_cases_examined": len(cases),
+        "stale_approvals_reproposed": len(stale),
+        "skipped": skipped,
         "strategies_composed": len(composed),
         "strategies_blocked": len(blocked),
         "lanes": lanes,
         "errors": errors,
     }
+
+
+# A case in one of these states may be (re)planned. Past them the plan is approved and in
+# execution, and recomposing would only re-ask a question that has been answered.
+PLANNABLE_CASE_STATES = (recovery_case.DETECTED, recovery_case.PLANNED,
+                         recovery_case.AWAITING_APPROVAL)
+
+
+async def _cases_awaiting_a_dead_approval(db, tenant_id: str, *, limit: int) -> list[dict]:
+    """Planned or awaiting-approval cases whose approval is no longer pending.
+
+    Three ways a case gets here, all of them a case nothing would otherwise move: its
+    approval lapsed or was withdrawn (re-propose), or it was approved or rejected before
+    a decision moved the case (bring the case up to that decision).
+    """
+    if limit <= 0:
+        return []
+    rows = await db[recovery_case.COLLECTION].find(
+        {"tenant_id": tenant_id,
+         "state": {"$in": [recovery_case.PLANNED, recovery_case.AWAITING_APPROVAL]}},
+        {"_id": 0}).sort("updated_at", 1).to_list(int(limit) * 4)
+    stale = []
+    for row in rows:
+        approval = (await approval_queue.get(db, tenant_id, row["approval_reference"])
+                    if row.get("approval_reference") else None)
+        if approval and approval.get("status") == approval_queue.REQUESTED:
+            continue
+        stale.append({**row, "_approval_status": (approval or {}).get("status")})
+        if len(stale) >= limit:
+            break
+    return stale
 
 
 async def compose_all_tenants(db, queue, *, actor: str = "cron") -> dict:

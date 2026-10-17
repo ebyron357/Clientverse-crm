@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json as _json
 import logging
+import math
 import os
 import secrets
 import time
@@ -27,7 +28,7 @@ from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
@@ -42,6 +43,7 @@ import gmail_provider
 import next_best_action as nba_service
 import recovery_case as recovery_case_service
 import recovery_intake
+import recovery_lifecycle
 import recovery_proof
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
@@ -861,12 +863,21 @@ STAGES = ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_
 class OppInput(BaseModel):
     name: str
     company_id: Optional[str] = None
-    value: float = 0
+    # A deal's value is money: never negative, and finite -- `ge=0` alone admits
+    # Infinity, which then breaks every JSON response that lists the deal.
+    value: float = Field(default=0, ge=0, allow_inf_nan=False)
     stage: str = "lead"
     owner: Optional[str] = None
-    currency: str = "USD"
+    # ISO 4217, stored uppercase. A deal in "us dollars" or "$" cannot be totalled with
+    # anything, and its recovery case would inherit the same unknown unit.
+    currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
     expected_close_date: Optional[str] = None
     contact_ids: list[str] = []
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _uppercase_currency(cls, value):
+        return value.strip().upper() if isinstance(value, str) else value
 
 @api.get("/opportunities")
 async def list_opps(
@@ -1264,8 +1275,29 @@ async def dashboard(user=Depends(get_current_user)):
     opps = await db.opportunities.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     workspaces = await db.workspaces.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     commitments = await db.commitments.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
-    pipeline_value = sum(o.get("value", 0) for o in opps if o.get("stage") not in ("closed_won", "closed_lost"))
-    won_value = sum(o.get("value", 0) for o in opps if o.get("stage") == "closed_won")
+    # Money is grouped by currency and never summed across it: £40,000 plus $40,000 is not
+    # 80,000 of anything. Open/won follow the tenant's own pipeline stages. The scalar
+    # figures are kept for existing readers and are only a total while there is one
+    # currency; with several they are None and the per-currency maps are the answer.
+    classes = await crm_core.stage_classes(db, t)
+    pipeline_by_currency: dict[str, float] = {}
+    won_by_currency: dict[str, float] = {}
+    for o in opps:
+        try:
+            amount = float(o.get("value") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount):
+            continue
+        cur = recovery_case_service.normalize_currency(o.get("currency")) or recovery_case_service.DEFAULT_CURRENCY
+        outcome = crm_core.classify_stage(o.get("stage"), classes)
+        bucket = {crm_core.STAGE_OPEN: pipeline_by_currency, crm_core.STAGE_WON: won_by_currency}.get(outcome)
+        if bucket is not None:
+            bucket[cur] = round(bucket.get(cur, 0.0) + amount, 2)
+    currencies = sorted(set(pipeline_by_currency) | set(won_by_currency))
+    single = currencies[0] if len(currencies) == 1 else None
+    pipeline_value = pipeline_by_currency.get(single, 0.0) if single else (0 if not currencies else None)
+    won_value = won_by_currency.get(single, 0.0) if single else (0 if not currencies else None)
     funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
     # health per workspace
     portfolio = []
@@ -1306,7 +1338,9 @@ async def dashboard(user=Depends(get_current_user)):
     }
     return {
         "pipeline_value": pipeline_value, "won_value": won_value,
-        "open_opportunities": len([o for o in opps if o.get("stage") not in ("closed_won", "closed_lost")]),
+        "pipeline_value_by_currency": pipeline_by_currency, "won_value_by_currency": won_by_currency,
+        "value_currency": single, "currencies": currencies,
+        "open_opportunities": len([o for o in opps if crm_core.classify_stage(o.get("stage"), classes) == crm_core.STAGE_OPEN]),
         "active_workspaces": len(workspaces), "at_risk_commitments": at_risk,
         "funnel": funnel, "portfolio": portfolio, "goal_rollup": goal_rollup,
     }
@@ -3052,7 +3086,14 @@ async def record_attribution_outcome(inp: RecordOutcomeInput,
             audit=record_event)
     except (attribution_service.CaseNotFound, attribution_service.OutcomeNotFound):
         raise HTTPException(status_code=404, detail="Not found")
+    except attribution_service.DuplicateSale as exc:
+        # One sale counts once. The existing entry is named so the operator can find it;
+        # it is in this tenant, so naming it leaks nothing.
+        raise HTTPException(status_code=409, detail={
+            "message": str(exc), "entry_id": exc.entry.get("id"),
+            "case_id": exc.entry.get("case_id")})
     except attribution_service.AttributionError as exc:
+        # Includes an outcome that does not relate to the case it was recorded against.
         raise HTTPException(status_code=422, detail=str(exc))
     await record_event("attribution.outcome_recorded", "recovery_case", inp.case_id,
                        user["tenant_id"], user["email"],
@@ -4210,11 +4251,32 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
             approval_service.CANCELLED: recovery_service.STATE_WITHDRAWN,
         }.get(status)
         if strategy_state:
+            strategy = None
             try:
-                await recovery_service.set_state(db, tenant_id, subject_id,
-                                                 state=strategy_state, actor=actor)
+                strategy = await recovery_service.set_state(db, tenant_id, subject_id,
+                                                            state=strategy_state, actor=actor)
             except recovery_service.RecoveryStrategyError:
                 logger.warning("Could not sync recovery strategy %s after a decision", subject_id)
+            if strategy:
+                # The decision has to move the *case*, not only the strategy: an approved
+                # plan whose case still read `awaiting_approval` was never picked up by
+                # the runner, so approving a recovery used to do nothing at all. Approval
+                # advances the case and queues its run; rejection closes it with the
+                # reason; withdrawal returns it to `planned` to be re-proposed.
+                try:
+                    case = await recovery_service.sync_case_with_strategy(
+                        db, tenant_id, strategy, actor=actor, audit=record_event,
+                        rationale=approval.get("decision_rationale"),
+                        closer=recovery_lifecycle.close_case)
+                    if case:
+                        result["recovery_case"] = {"id": case["id"], "state": case["state"]}
+                    if case and case.get("state") == recovery_case_service.APPROVED:
+                        queued = await recovery_runner_service.enqueue_case(
+                            work_queue, tenant_id=tenant_id, case_id=case["id"], actor=actor)
+                        result["recovery_case"]["run_queued"] = queued["id"]
+                except recovery_case_service.RecoveryCaseError:
+                    logger.warning("Could not move the recovery case for strategy %s",
+                                   subject_id)
 
     if subject_type == "communication_message" and subject_id:
         try:

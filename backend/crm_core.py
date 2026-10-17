@@ -224,6 +224,50 @@ async def stage_keys(db, tenant_id: str) -> list[str]:
     return [stage["key"] for stage in await resolve_stages(db, tenant_id)]
 
 
+# Stage names the product shipped with before pipelines were configurable. They are only
+# consulted for a deal whose stage the tenant's pipeline no longer contains, so a legacy
+# record is still classified rather than silently treated as open revenue.
+LEGACY_WON_STAGES = ("closed_won", "won")
+LEGACY_LOST_STAGES = ("closed_lost", "lost")
+
+STAGE_OPEN = "open"
+STAGE_WON = "won"
+STAGE_LOST = "lost"
+
+
+async def stage_classes(db, tenant_id: str) -> dict[str, set[str]]:
+    """Which of this tenant's stage keys are open, closed-won and closed-lost.
+
+    Read from the tenant's own pipeline, because a tenant that renamed "closed_won" to
+    "signed" has still won the deal. Anything that decides whether a deal is revenue,
+    pipeline or lost must ask this rather than compare against a hard-coded name.
+    """
+    stages = await resolve_stages(db, tenant_id)
+    return {
+        STAGE_WON: {s["key"] for s in stages if s.get("is_closed") and s.get("is_won")},
+        STAGE_LOST: {s["key"] for s in stages if s.get("is_closed") and not s.get("is_won")},
+        STAGE_OPEN: {s["key"] for s in stages if not s.get("is_closed")},
+    }
+
+
+def classify_stage(stage: Optional[str], classes: dict[str, set[str]]) -> str:
+    """Classify one deal stage as open, won or lost for the tenant `classes` came from.
+
+    A stage the pipeline does not contain falls back to the shipped names and otherwise
+    counts as open: an unknown stage is live until something says it closed.
+    """
+    key = str(stage or "")
+    for outcome in (STAGE_WON, STAGE_LOST, STAGE_OPEN):
+        if key in classes.get(outcome, set()):
+            return outcome
+    lowered = key.lower()
+    if lowered in LEGACY_WON_STAGES:
+        return STAGE_WON
+    if lowered in LEGACY_LOST_STAGES:
+        return STAGE_LOST
+    return STAGE_OPEN
+
+
 # ------------------------------------------------------------------- request payloads
 
 class ContactPatch(BaseModel):
@@ -252,7 +296,9 @@ class DealPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     company_id: Optional[str] = None
     contact_ids: Optional[list[str]] = None
-    value: Optional[float] = Field(default=None, ge=0)
+    # Finite as well as non-negative: `ge=0` alone admits Infinity, which no JSON
+    # response can carry, so one bad patch would break every listing of this deal.
+    value: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     currency: Optional[str] = Field(default=None, max_length=8)
     owner: Optional[str] = Field(default=None, max_length=200)
     expected_close_date: Optional[str] = None
