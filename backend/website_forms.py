@@ -338,8 +338,7 @@ def parse_price_range(value: Any) -> tuple[Optional[float], Optional[float]]:
         return None, None
     text = text.replace("under", "").replace("up to", "").replace("+", "").replace("over", "")
     parts = [p for p in _RANGE_SPLIT.split(text) if p.strip()]
-    amounts = [parse_amount(p) for p in parts[:2]]
-    amounts = [a for a in amounts if a]
+    amounts: list[float] = [a for a in (parse_amount(p) for p in parts[:2]) if a]
     if not amounts:
         return None, None
     return min(amounts), max(amounts)
@@ -1018,7 +1017,7 @@ class LeadPipeline:
         scheme, _, token = header.partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
             return False
-        stored = form.get("server_key_hash")
+        stored = str(form.get("server_key_hash") or "")
         return bool(stored) and secrets.compare_digest(stored, _sha(token.strip()))
 
     async def handle_public_submission(self, request: Request, form: dict) -> Response:
