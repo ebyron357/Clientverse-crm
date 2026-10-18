@@ -28,6 +28,9 @@ import RecoveryProof from "@/pages/RecoveryProof";
 import Leads from "@/pages/Leads";
 import Tasks, { TaskRedirect } from "@/pages/Tasks";
 import WebsiteForms from "@/pages/WebsiteForms";
+import CalendarPage from "@/pages/Calendar";
+import PublicBooking from "@/pages/PublicBooking";
+import ManageBooking from "@/pages/ManageBooking";
 import { CLIENTVERSE_MODULES, MODULE_STATES } from "@/platform/modules";
 import { ChooseOwnPassword } from "@/components/ChangePassword";
 
@@ -69,6 +72,9 @@ function AppRouter() {
       <Route path="/login" element={<Login />} />
       <Route path="/invite" element={<AcceptInvite />} />
       <Route path="/portal/:token" element={<ClientPortal />} />
+      {/* Public booking pages: outside the signed-in app, and /book/:key may be framed. */}
+      <Route path="/book/:key" element={<PublicBooking />} />
+      <Route path="/booking/manage/:token" element={<ManageBooking />} />
       <Route element={<Protected><AppShell /></Protected>}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/pipeline" element={<Pipeline />} />
@@ -91,6 +97,7 @@ function AppRouter() {
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/tasks/:taskId" element={<TaskRedirect />} />
         <Route path="/website-forms" element={<WebsiteForms />} />
+        <Route path="/scheduling/calendar" element={<CalendarPage />} />
         <Route path="/field" element={<FieldOps />} />
         {CLIENTVERSE_MODULES.filter((module) => module.state !== MODULE_STATES.AVAILABLE).map((module) => <Route key={module.id} path={module.route} element={<ModuleStatus moduleId={module.id} />} />)}
       </Route>
