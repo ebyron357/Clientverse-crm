@@ -33,7 +33,7 @@ export const LEAD_STATUS_LABEL = { new: "New", responded: "Contacted", closed: "
 export const LEAD_STATUS_STYLE = {
   new: "border-amber-200 bg-amber-50 text-amber-700",
   responded: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  closed: "border-slate-200 bg-slate-50 text-slate-600",
+  closed: "border-border bg-muted/50 text-muted-foreground",
   spam: "border-red-200 bg-red-50 text-red-700",
 };
 

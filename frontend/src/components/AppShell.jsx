@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTheme } from "next-themes";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import NotificationBell from "@/components/NotificationBell";
@@ -6,7 +7,7 @@ import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
 import BrandMark from "@/components/BrandMark";
 import { CLIENTVERSE_MODULES, getModuleByRoute, MODULE_GROUPS, MODULE_STATES, PINNED_GROUPS } from "@/platform/modules";
-import { ChevronDown, LogOut, Menu, PanelLeft, Plus, Search, X } from "lucide-react";
+import { ChevronDown, ChevronRight, LogOut, Menu, Monitor, Moon, PanelLeft, Plus, Search, Sun, X } from "lucide-react";
 
 // Which optional navigation groups a person has opened. Pinned groups are always open.
 const OPEN_GROUPS_KEY = "cv.nav.open-groups";
@@ -29,9 +30,10 @@ export default function AppShell() {
   // own group, so the full route decides which group opens; the page decides the heading.
   const navModule = useMemo(() => getModuleByRoute(`${location.pathname}${location.search}`) || activeModule,
     [location.pathname, location.search, activeModule]);
-  const heading = location.pathname.startsWith("/workspaces/")
-    ? ["Client 360", "Account health, outcomes, commitments, and relationship context"]
-    : [activeModule?.label || "ClientVerse", activeModule?.description || "Relationship operating system"];
+  // Top bar breadcrumb: the section, then the page. The page itself carries the detail.
+  const crumbs = location.pathname.startsWith("/workspaces/")
+    ? ["Client Success", "Client 360"]
+    : activeModule ? [activeModule.group, activeModule.label] : ["ClientVerse"];
 
   useEffect(() => { setMobileOpen(false); }, [location.pathname]);
   const doLogout = async () => { await logout(); navigate("/login"); };
@@ -87,6 +89,7 @@ export default function AppShell() {
         <div className={`flex items-center ${collapsed ? "flex-col gap-2" : "gap-2.5"}`}>
           <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand" title={collapsed ? user?.name : undefined}>{initials}</div>
           {!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium text-foreground">{user?.name}</div><div className="truncate text-xs text-muted-foreground">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}
+          <ThemeButton />
           <button onClick={doLogout} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out" title="Sign out"><LogOut className="size-4" /></button>
         </div>
       </div>
@@ -97,10 +100,12 @@ export default function AppShell() {
         <header className="sticky top-0 z-20 border-b border-border/80 bg-background/85 backdrop-blur-xl lg:rounded-t-xl">
           <div className="flex h-14 items-center gap-2 px-4 sm:px-6 lg:px-8">
             <button onClick={() => setMobileOpen(true)} className="-ml-1 rounded-md p-2 text-muted-foreground hover:bg-accent lg:hidden" aria-label="Open navigation"><Menu className="size-5" /></button>
-            <div className="flex min-w-0 flex-1 items-baseline gap-3">
-              <div className="truncate text-[15px] font-semibold tracking-tight text-foreground">{heading[0]}</div>
-              <div className="hidden truncate text-[13px] text-muted-foreground xl:block">{heading[1]}</div>
-            </div>
+            <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1.5 text-[13.5px]">
+              {crumbs.map((crumb, index) => <span key={crumb} className="flex min-w-0 items-center gap-1.5">
+                {index > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/70" aria-hidden="true" />}
+                <span className={`truncate ${index === crumbs.length - 1 ? "font-medium text-foreground" : "hidden text-muted-foreground sm:inline"}`} aria-current={index === crumbs.length - 1 ? "page" : undefined}>{crumb}</span>
+              </span>)}
+            </nav>
             <button onClick={() => setCommandOpen(true)} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
             <button onClick={triggerQuickCreate} className="hidden h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-xs hover:bg-primary/90 sm:flex"><Plus className="size-4" />Create</button>
             <button onClick={triggerQuickCreate} className="inline-flex rounded-md bg-primary p-2 text-primary-foreground sm:hidden" aria-label="Quick create"><Plus className="size-4" /></button>
@@ -113,6 +118,21 @@ export default function AppShell() {
     <GlobalCommandDialog open={commandOpen} onOpenChange={setCommandOpen} onQuickCreate={triggerQuickCreate} />
     <QuickCreateDialog open={quickCreateOpen} onOpenChange={setQuickCreateOpen} onCreated={(type, data) => { if (type === "workspace" && data?.id) navigate(`/workspaces/${data.id}`); else if (type === "opportunity") navigate("/pipeline"); else if (type === "company" || type === "contact") navigate("/directory"); }} />
   </div>;
+}
+
+// Light, dark, or follow the device. One button cycles through them.
+const THEMES = [
+  { value: "light", label: "Light", icon: Sun },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "system", label: "Match device", icon: Monitor },
+];
+function ThemeButton() {
+  const { theme = "light", setTheme } = useTheme();
+  const index = Math.max(0, THEMES.findIndex((option) => option.value === theme));
+  const current = THEMES[index];
+  const next = THEMES[(index + 1) % THEMES.length];
+  const Icon = current.icon;
+  return <button type="button" onClick={() => setTheme(next.value)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={`Theme: ${current.label}. Switch to ${next.label}`} title={`Theme: ${current.label}`} data-testid="theme-toggle"><Icon className="size-4" /></button>;
 }
 
 function SidebarLink({ item, collapsed }) {
