@@ -57,7 +57,7 @@ export default function QuickCreateDialog({ open, onOpenChange, onCreated }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
-          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-50 text-[#1a9fbf]"><CirclePlus className="h-5 w-5" /></div>
+          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-lg bg-brand-soft text-brand"><CirclePlus className="h-5 w-5" /></div>
           <DialogTitle className="font-display text-2xl">Create a record</DialogTitle>
           <DialogDescription>Capture the essential information now; enrich the record as work progresses.</DialogDescription>
         </DialogHeader>
@@ -66,7 +66,7 @@ export default function QuickCreateDialog({ open, onOpenChange, onCreated }) {
             {TYPES.map((item) => {
               const Icon = item.icon;
               const active = type === item.value;
-              return <button key={item.value} type="button" onClick={() => changeType(item.value)} className={`rounded-xl border p-3 text-left transition-colors ${active ? "border-[#1a9fbf] bg-cyan-50 text-[#0a6177]" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"}`}>
+              return <button key={item.value} type="button" onClick={() => changeType(item.value)} className={`rounded-lg border p-3 text-left transition-colors ${active ? "border-brand bg-brand-soft text-brand" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"}`}>
                 <Icon className="mb-2 h-4 w-4" />
                 <span className="block text-xs font-semibold leading-4">{item.label}</span>
               </button>;

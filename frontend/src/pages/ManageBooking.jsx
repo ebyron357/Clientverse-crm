@@ -87,8 +87,8 @@ export default function ManageBooking() {
 
   return (
     <PublicFrame color={color} testid="manage-booking">
-      <div className="mx-auto max-w-3xl overflow-hidden rounded-3xl border border-slate-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(10,22,40,0.04),0_24px_60px_rgba(10,22,40,0.08)] sm:p-8">
-        {notice && <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900" role="alert" data-testid="manage-booking-notice">{notice}</div>}
+      <div className="mx-auto max-w-3xl overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(10,22,40,0.04),0_24px_60px_rgba(10,22,40,0.08)] sm:p-8">
+        {notice && <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900" role="alert" data-testid="manage-booking-notice">{notice}</div>}
 
         {mode === "view" && (
           <div className="space-y-5">
@@ -97,7 +97,7 @@ export default function ManageBooking() {
                 ? <XCircle className="h-8 w-8 shrink-0 text-slate-400" aria-hidden="true" />
                 : <CheckCircle2 className="h-8 w-8 shrink-0 text-emerald-600" aria-hidden="true" />}
               <div>
-                <h1 ref={heading} tabIndex={-1} className="font-display text-2xl font-extrabold text-[#0a1628] outline-none" data-testid="manage-booking-title">
+                <h1 ref={heading} tabIndex={-1} className="font-display text-2xl font-semibold text-foreground outline-none" data-testid="manage-booking-title">
                   {done === "moved" ? "Your booking has moved" : done === "cancelled" ? "Your booking is cancelled" : status ? "Your booking" : `See you then${booking.person?.first_name ? `, ${booking.person.first_name}` : ""}`}
                 </h1>
                 <p className="mt-1 text-sm text-slate-600">{done === "cancelled" ? `We've let ${booking.host_name || "your agent"} know.`
@@ -106,21 +106,21 @@ export default function ManageBooking() {
             </div>
             <SummaryCard booking={booking} zone={zone} testid="manage-booking-summary" />
             {booking.status === "cancelled" ? (
-              booking.links?.rebook_url && <a href={booking.links.rebook_url} className="inline-flex h-11 items-center justify-center rounded-xl bg-[var(--brand)] px-5 text-sm font-semibold text-white hover:opacity-90" data-testid="manage-booking-rebook">Book a new time</a>
+              booking.links?.rebook_url && <a href={booking.links.rebook_url} className="inline-flex h-11 items-center justify-center rounded-lg bg-[var(--booking-accent)] px-5 text-sm font-semibold text-white hover:opacity-90" data-testid="manage-booking-rebook">Book a new time</a>
             ) : (
               <>
                 <div>
-                  <div className="mb-2 text-sm font-semibold text-[#0a1628]">Add it to your calendar</div>
+                  <div className="mb-2 text-sm font-semibold text-foreground">Add it to your calendar</div>
                   <AddToCalendar links={booking.links} testid="manage-add-to-calendar" />
                 </div>
                 {booking.can_change && (
                   <div className="flex flex-col gap-2 border-t border-slate-100 pt-5 sm:flex-row">
                     <button type="button" onClick={() => { setMode("reschedule"); setNotice(""); setDone(""); }} data-testid="manage-booking-reschedule"
-                      className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-5 text-sm font-semibold text-white hover:opacity-90">
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--booking-accent)] px-5 text-sm font-semibold text-white hover:opacity-90">
                       <CalendarClock className="h-4 w-4" aria-hidden="true" />Reschedule
                     </button>
                     <button type="button" onClick={() => { setMode("cancel"); setNotice(""); setDone(""); }} data-testid="manage-booking-cancel"
-                      className="inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-5 text-sm font-semibold text-red-700 hover:bg-red-50">
+                      className="inline-flex h-11 items-center justify-center rounded-lg border border-slate-300 bg-white px-5 text-sm font-semibold text-red-700 hover:bg-red-50">
                       Cancel booking
                     </button>
                   </div>
@@ -132,7 +132,7 @@ export default function ManageBooking() {
 
         {mode === "reschedule" && (
           <div>
-            <h1 ref={heading} tabIndex={-1} className="font-display text-xl font-bold text-[#0a1628] outline-none">Pick a new time</h1>
+            <h1 ref={heading} tabIndex={-1} className="font-display text-xl font-semibold text-foreground outline-none">Pick a new time</h1>
             <p className="mb-5 mt-1 text-sm text-slate-600">Now: {formatRange(booking.start_at, booking.end_at, zone)}</p>
             <SlotPicker loadDays={loadDays} zone={zone} onZoneChange={setZone} maxKey={addDays(today, 365)} controlRef={picker}
               selectedStart={newStart} testid="manage-slots" onPick={(value) => { setNewStart(value); setMode("confirm-move"); }} />
@@ -142,37 +142,37 @@ export default function ManageBooking() {
 
         {mode === "confirm-move" && newStart && (
           <div className="max-w-lg space-y-4">
-            <h1 ref={heading} tabIndex={-1} className="font-display text-xl font-bold text-[#0a1628] outline-none">Move your booking?</h1>
-            <div className="rounded-2xl border border-slate-200 p-4 text-sm">
+            <h1 ref={heading} tabIndex={-1} className="font-display text-xl font-semibold text-foreground outline-none">Move your booking?</h1>
+            <div className="rounded-xl border border-slate-200 p-4 text-sm">
               <div className="text-slate-500 line-through">{formatRange(booking.start_at, booking.end_at, zone)}</div>
-              <div className="mt-1 font-semibold text-[#0a1628]">{formatRange(newStart, null, zone)}</div>
+              <div className="mt-1 font-semibold text-foreground">{formatRange(newStart, null, zone)}</div>
               <div className="text-slate-500">{zoneLabel(zone, new Date(newStart))}</div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <button type="button" onClick={move} disabled={busy} data-testid="manage-confirm-move"
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--booking-accent)] px-5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
                 {busy && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}Yes, move it
               </button>
-              <button type="button" onClick={() => setMode("reschedule")} className="inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 px-5 text-sm font-semibold text-[#0a1628] hover:bg-slate-50">Choose a different time</button>
+              <button type="button" onClick={() => setMode("reschedule")} className="inline-flex h-11 items-center justify-center rounded-lg border border-slate-300 px-5 text-sm font-semibold text-foreground hover:bg-slate-50">Choose a different time</button>
             </div>
           </div>
         )}
 
         {mode === "cancel" && (
           <form onSubmit={cancel} className="max-w-lg space-y-4" data-testid="manage-cancel-form">
-            <h1 ref={heading} tabIndex={-1} className="font-display text-xl font-bold text-[#0a1628] outline-none">Cancel your booking?</h1>
+            <h1 ref={heading} tabIndex={-1} className="font-display text-xl font-semibold text-foreground outline-none">Cancel your booking?</h1>
             <p className="text-sm text-slate-600">{formatRange(booking.start_at, booking.end_at, zone)}</p>
             <div>
-              <label htmlFor="cancel-reason" className="mb-1.5 block text-sm font-semibold text-[#0a1628]">Reason <span className="font-normal text-slate-500">(optional)</span></label>
+              <label htmlFor="cancel-reason" className="mb-1.5 block text-sm font-semibold text-foreground">Reason <span className="font-normal text-slate-500">(optional)</span></label>
               <textarea id="cancel-reason" rows={3} value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} data-testid="manage-cancel-reason"
-                className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-base outline-none focus:ring-2 focus:ring-[var(--brand)] sm:text-sm" />
+                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-base outline-none focus:ring-2 focus:ring-[var(--booking-accent)] sm:text-sm" />
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <button type="submit" disabled={busy} data-testid="manage-confirm-cancel"
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-red-700 px-5 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-60">
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-red-700 px-5 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-60">
                 {busy && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}Cancel booking
               </button>
-              <button type="button" onClick={() => setMode("view")} className="inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 px-5 text-sm font-semibold text-[#0a1628] hover:bg-slate-50">Keep it</button>
+              <button type="button" onClick={() => setMode("view")} className="inline-flex h-11 items-center justify-center rounded-lg border border-slate-300 px-5 text-sm font-semibold text-foreground hover:bg-slate-50">Keep it</button>
             </div>
           </form>
         )}

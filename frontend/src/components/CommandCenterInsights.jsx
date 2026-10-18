@@ -108,18 +108,18 @@ export default function CommandCenterInsights() {
   if (!alerts) {
     return (
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12" data-testid="command-center-insights-skeleton">
-        <Skeleton className="h-64 rounded-xl lg:col-span-7" />
-        <Skeleton className="h-64 rounded-xl lg:col-span-5" />
+        <Skeleton className="h-64 rounded-lg lg:col-span-7" />
+        <Skeleton className="h-64 rounded-lg lg:col-span-5" />
       </div>
     );
   }
 
   return (
     <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-12" data-testid="command-center-insights">
-      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm lg:col-span-7" data-testid="cc-alerts">
+      <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm lg:col-span-7" data-testid="cc-alerts">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <h3 className="font-display flex items-center gap-2 text-lg font-bold"><Bell className="h-4 w-4" />Operational Alerts</h3>
+            <h3 className="font-display flex items-center gap-2 text-lg font-semibold"><Bell className="h-4 w-4" />Operational Alerts</h3>
             <p className="text-xs text-gray-400">Grouped by family & workspace · {alerts.counts?.open ?? open.length} open</p>
           </div>
           <Button size="sm" variant="outline" className="h-8" onClick={evaluate} disabled={busy} data-testid="evaluate-alerts"><RefreshCw className={`mr-1 h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />Scan now</Button>
@@ -152,8 +152,8 @@ export default function CommandCenterInsights() {
         )}
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm lg:col-span-5" data-testid="cc-connection-health">
-        <h3 className="font-display mb-1 flex items-center gap-2 text-lg font-bold"><Activity className="h-4 w-4" />Connection Health</h3>
+      <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm lg:col-span-5" data-testid="cc-connection-health">
+        <h3 className="font-display mb-1 flex items-center gap-2 text-lg font-semibold"><Activity className="h-4 w-4" />Connection Health</h3>
         <p className="mb-4 text-xs text-gray-400">API-backed connection status. This does not claim live Google or Stripe certification.</p>
         {!isAdmin ? (
           <div className="py-6 text-center text-sm text-gray-400" data-testid="cc-health-admin-only">Connection health is visible to admins.</div>

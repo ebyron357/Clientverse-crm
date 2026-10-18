@@ -57,7 +57,7 @@ function MonthGrid({ month, selected, counts, floorKey, maxKey, onSelect, onMont
   return (
     <div data-testid={testid}>
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="font-display text-base font-bold text-[#0a1628]" aria-live="polite">{formatMonth(month)}</h3>
+        <h3 className="font-display text-base font-semibold text-foreground" aria-live="polite">{formatMonth(month)}</h3>
         <div className="flex gap-1">
           <button type="button" className="flex h-10 w-10 items-center justify-center rounded-full text-slate-600 hover:bg-slate-100 disabled:opacity-30"
             onClick={() => onMonth(addMonths(month, -1))} disabled={month <= monthStart(floorKey)}
@@ -69,7 +69,7 @@ function MonthGrid({ month, selected, counts, floorKey, maxKey, onSelect, onMont
       </div>
       <table className="w-full table-fixed border-collapse" role="grid" aria-label={formatMonth(month)}>
         <thead>
-          <tr>{WEEKDAYS.map((day) => <th key={day} scope="col" className="pb-2 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-500">{day}</th>)}</tr>
+          <tr>{WEEKDAYS.map((day) => <th key={day} scope="col" className="pb-2 text-center text-xs font-semibold text-slate-500">{day}</th>)}</tr>
         </thead>
         <tbody>
           {weeks.map((week) => (
@@ -80,8 +80,8 @@ function MonthGrid({ month, selected, counts, floorKey, maxKey, onSelect, onMont
                 const isSelected = key === selected;
                 const isToday = key === todayKey;
                 const label = `${formatDay(key)}${isToday ? " (today)" : ""}, ${count ? `${count} time${count === 1 ? "" : "s"} free` : "no times free"}`;
-                const tone = isSelected ? "bg-[var(--brand)] font-bold text-white shadow-sm"
-                  : count ? "bg-[var(--brand-soft)] font-bold text-[#0a1628] hover:bg-[var(--brand-hover)]"
+                const tone = isSelected ? "bg-[var(--booking-accent)] font-bold text-white shadow-sm"
+                  : count ? "bg-[var(--booking-accent-soft)] font-bold text-foreground hover:bg-[var(--booking-accent-hover)]"
                     : "cursor-default text-slate-400";
                 return (
                   <td key={key} className="p-0.5 text-center">
@@ -91,7 +91,7 @@ function MonthGrid({ month, selected, counts, floorKey, maxKey, onSelect, onMont
                       onClick={() => count && onSelect(key)} data-testid={`${testid}-day-${key}`}
                       className={`relative mx-auto flex h-11 w-11 items-center justify-center rounded-full text-sm transition-colors motion-reduce:transition-none sm:h-12 sm:w-12 ${tone} ${isToday && !isSelected ? "ring-1 ring-inset ring-slate-300" : ""}`}>
                       {Number(key.slice(8))}
-                      {count > 0 && !isSelected && <span className="absolute bottom-1.5 h-1 w-1 rounded-full bg-[var(--brand)]" aria-hidden="true" />}
+                      {count > 0 && !isSelected && <span className="absolute bottom-1.5 h-1 w-1 rounded-full bg-[var(--booking-accent)]" aria-hidden="true" />}
                     </button>
                   </td>
                 );
@@ -111,7 +111,7 @@ export function ZoneSelect({ value, onChange, testid = "zone-select", id = "book
       <Globe2 className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
       <label htmlFor={id} className="sr-only">Time zone</label>
       <select id={id} value={value} onChange={(event) => onChange(event.target.value)} data-testid={testid}
-        className="min-w-0 max-w-full flex-1 truncate rounded-lg border border-transparent bg-transparent py-1.5 pr-6 text-sm font-semibold text-[#0a1628] hover:border-slate-200 focus:border-slate-300">
+        className="min-w-0 max-w-full flex-1 truncate rounded-lg border border-transparent bg-transparent py-1.5 pr-6 text-sm font-semibold text-foreground hover:border-slate-200 focus:border-slate-300">
         {options.map((zone) => <option key={zone} value={zone}>{zoneLabel(zone)}</option>)}
       </select>
     </div>
@@ -121,7 +121,7 @@ export function ZoneSelect({ value, onChange, testid = "zone-select", id = "book
 /** The brand colour as the CSS variables the picker's classes read. */
 export function brandStyle(color = "#0a6177") {
   const hex = /^#[0-9a-fA-F]{6}$/.test(color || "") ? color : "#0a6177";
-  return { "--brand": hex, "--brand-soft": `${hex}14`, "--brand-hover": `${hex}29` };
+  return { "--booking-accent": hex, "--booking-accent-soft": `${hex}14`, "--booking-accent-hover": `${hex}29` };
 }
 
 export default function SlotPicker({ loadDays, zone, onZoneChange, minKey, maxKey, onPick, selectedStart,
@@ -212,13 +212,13 @@ export default function SlotPicker({ loadDays, zone, onZoneChange, minKey, maxKe
       </div>
       <div ref={timesRef} className="min-w-0 scroll-mt-4">
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h3 className="font-display text-base font-bold text-[#0a1628]">{selected ? formatDay(selected, "short") : "Pick a day"}</h3>
+          <h3 className="font-display text-base font-semibold text-foreground">{selected ? formatDay(selected, "short") : "Pick a day"}</h3>
           <button type="button" onClick={() => setHour12((value) => !value)}
             className="rounded-full border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
             aria-label={hour12 ? "Show 24-hour times" : "Show 12-hour times"} data-testid={`${testid}-clock`}>{hour12 ? "24h" : "12h"}</button>
         </div>
         {loading && !times.length ? (
-          <div className="space-y-2" aria-busy="true">{[0, 1, 2, 3].map((n) => <div key={n} className="h-12 animate-pulse rounded-xl bg-slate-100 motion-reduce:animate-none" />)}</div>
+          <div className="space-y-2" aria-busy="true">{[0, 1, 2, 3].map((n) => <div key={n} className="h-12 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none" />)}</div>
         ) : selected && times.length ? (
           <ul className="grid grid-cols-2 gap-2 p-0.5 sm:max-h-[26rem] sm:grid-cols-1 sm:overflow-y-auto" aria-label={`Free times on ${formatDay(selected)}`}>
             {times.map((start) => {
@@ -227,9 +227,9 @@ export default function SlotPicker({ loadDays, zone, onZoneChange, minKey, maxKe
                 <li key={start}>
                   <button type="button" onClick={() => onPick(start)} aria-pressed={active} data-testid={`${testid}-time`}
                     data-start={start}
-                    className={`h-12 w-full rounded-xl border-2 border-[var(--brand)] text-sm font-bold transition-colors motion-reduce:transition-none ${active
-                      ? "bg-[var(--brand)] text-white"
-                      : "text-[var(--brand)] hover:bg-[var(--brand)] hover:text-white focus-visible:bg-[var(--brand)] focus-visible:text-white"}`}>
+                    className={`h-12 w-full rounded-lg border-2 border-[var(--booking-accent)] text-sm font-bold transition-colors motion-reduce:transition-none ${active
+                      ? "bg-[var(--booking-accent)] text-white"
+                      : "text-[var(--booking-accent)] hover:bg-[var(--booking-accent)] hover:text-white focus-visible:bg-[var(--booking-accent)] focus-visible:text-white"}`}>
                     {formatTime(start, zone, hour12)}
                   </button>
                 </li>
@@ -237,7 +237,7 @@ export default function SlotPicker({ loadDays, zone, onZoneChange, minKey, maxKe
             })}
           </ul>
         ) : (
-          <p className="rounded-xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+          <p className="rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
             {Object.values(counts).some(Boolean) ? "Choose a highlighted day to see its times." : emptyHint}
           </p>
         )}

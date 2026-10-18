@@ -4,8 +4,16 @@ import { useAuth } from "@/context/AuthContext";
 import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
+import BrandMark from "@/components/BrandMark";
 import { CLIENTVERSE_MODULES, getModuleByRoute, MODULE_GROUPS, MODULE_STATES, PINNED_GROUPS } from "@/platform/modules";
-import { ChevronRight, CirclePlus, LogOut, Menu, Orbit, PanelLeftClose, Search, X } from "lucide-react";
+import { ChevronDown, LogOut, Menu, PanelLeft, Plus, Search, X } from "lucide-react";
+
+// Which optional navigation groups a person has opened. Pinned groups are always open.
+const OPEN_GROUPS_KEY = "cv.nav.open-groups";
+const readOpenGroups = () => {
+  try { return new Set(JSON.parse(window.localStorage.getItem(OPEN_GROUPS_KEY) || "[]")); }
+  catch { return new Set(); }
+};
 
 export default function AppShell() {
   const { user, logout } = useAuth();
@@ -15,7 +23,12 @@ export default function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const [openGroups, setOpenGroups] = useState(readOpenGroups);
   const activeModule = useMemo(() => getModuleByRoute(location.pathname), [location.pathname]);
+  // A tab of a shared page (Unified Inbox is /operations?tab=conversations) belongs to its
+  // own group, so the full route decides which group opens; the page decides the heading.
+  const navModule = useMemo(() => getModuleByRoute(`${location.pathname}${location.search}`) || activeModule,
+    [location.pathname, location.search, activeModule]);
   const heading = location.pathname.startsWith("/workspaces/")
     ? ["Client 360", "Account health, outcomes, commitments, and relationship context"]
     : [activeModule?.label || "ClientVerse", activeModule?.description || "Relationship operating system"];
@@ -23,61 +36,96 @@ export default function AppShell() {
   useEffect(() => { setMobileOpen(false); }, [location.pathname]);
   const doLogout = async () => { await logout(); navigate("/login"); };
   const triggerQuickCreate = () => setQuickCreateOpen(true);
+  const toggleGroup = (group) => setOpenGroups((current) => {
+    const next = new Set(current);
+    if (next.has(group)) next.delete(group); else next.add(group);
+    try { window.localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify([...next])); } catch { /* storage unavailable */ }
+    return next;
+  });
+  const initials = user?.name?.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase() || "CV";
 
-  return <div className="min-h-screen bg-background text-foreground">
-    {mobileOpen && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-foreground/50 lg:hidden" onClick={() => setMobileOpen(false)} />}
-    <aside className={`cv-scrollbar fixed inset-y-0 left-0 z-40 flex flex-col overflow-y-auto border-r border-border bg-card text-card-foreground transition-[width,transform] duration-200 lg:translate-x-0 ${collapsed ? "w-[76px]" : "w-[272px]"} ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
-      <div className={`flex h-[72px] shrink-0 items-center border-b border-border ${collapsed ? "justify-center" : "justify-between px-4"}`}>
-        <button className="flex items-center gap-2.5 text-left" onClick={() => navigate("/dashboard")} aria-label="Go to ClientVerse command center">
-          <span className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Orbit className="size-5" /></span>
-          {!collapsed && <span><span className="block font-display text-lg font-extrabold tracking-tight text-foreground">ClientVerse</span><span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground">Relationship OS</span></span>}
+  return <div className="min-h-screen bg-canvas text-foreground">
+    {mobileOpen && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-foreground/40 backdrop-blur-[1px] lg:hidden" onClick={() => setMobileOpen(false)} />}
+    <aside className={`cv-scrollbar fixed inset-y-0 left-0 z-40 flex flex-col overflow-y-auto bg-canvas transition-[width,transform] duration-200 max-lg:border-r max-lg:border-border max-lg:shadow-xl lg:translate-x-0 ${collapsed ? "w-[68px]" : "w-[252px]"} ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
+      <div className={`flex h-14 shrink-0 items-center ${collapsed ? "justify-center" : "justify-between pl-4 pr-2"}`}>
+        <button className="flex min-w-0 items-center gap-2.5 rounded-md text-left" onClick={() => navigate("/dashboard")} aria-label="Go to ClientVerse command center">
+          <BrandMark className="size-7" />
+          {!collapsed && <span className="truncate text-[15px] font-semibold tracking-tight text-foreground">ClientVerse</span>}
         </button>
-        {!collapsed && <button className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-4" /></button>}
+        {!collapsed && <>
+          <button className="hidden rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground lg:inline-flex" onClick={() => setCollapsed(true)} aria-label="Collapse navigation"><PanelLeft className="size-4" /></button>
+          <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-4" /></button>
+        </>}
       </div>
-      <nav aria-label="Primary navigation" className="flex flex-col gap-4 p-3">
+      <div className={collapsed ? "flex flex-col items-center gap-1 px-2 pb-2" : "px-3 pb-2"}>
+        {collapsed && <button className="mb-1 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => setCollapsed(false)} aria-label="Expand navigation"><PanelLeft className="size-4" /></button>}
+        <button onClick={() => setCommandOpen(true)} className={`flex items-center rounded-md border border-border bg-card text-[13px] text-muted-foreground shadow-xs transition-colors hover:border-input hover:text-foreground ${collapsed ? "size-9 justify-center" : "h-8 w-full gap-2 px-2.5"}`} aria-label="Search or jump to a page">
+          <Search className="size-3.5 shrink-0" />
+          {!collapsed && <><span className="flex-1 text-left">Search</span><kbd className="cv-kbd">⌘K</kbd></>}
+        </button>
+      </div>
+      <nav aria-label="Primary navigation" className={`flex flex-col gap-3 pb-4 ${collapsed ? "px-2" : "px-3"}`}>
         {MODULE_GROUPS.map((group) => {
           const items = CLIENTVERSE_MODULES.filter((item) => item.group === group && (!item.adminOnly || user?.role === "admin"));
           if (!items.length) return null;
           const pinned = PINNED_GROUPS.includes(group);
-          return <section key={group} aria-label={group} className={pinned ? "" : "opacity-95"}>
-            {!collapsed && <div className={`mb-1 px-3 text-[10px] font-bold uppercase tracking-[0.15em] ${pinned ? "text-foreground/70" : "text-muted-foreground"}`}>{pinned ? group : group}<span className="sr-only">{pinned ? " (pinned)" : ""}</span></div>}
-            <div className={`flex flex-col ${pinned ? "gap-1" : "gap-0.5"}`}>{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} dense={!pinned} />)}</div>
+          const containsActive = items.some((item) => item.id === navModule?.id);
+          const open = collapsed || pinned || containsActive || openGroups.has(group);
+          const listId = `nav-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+          return <section key={group} aria-label={group}>
+            {!collapsed && (pinned
+              ? <div className="mb-0.5 px-2 py-1 text-xs font-medium text-muted-foreground">{group}</div>
+              : <button type="button" onClick={() => toggleGroup(group)} aria-expanded={open} aria-controls={listId} className="group mb-0.5 flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground">
+                  <span className="flex-1 text-left">{group}</span>
+                  <ChevronDown className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`} aria-hidden="true" />
+                </button>)}
+            {open && <div id={listId} className="flex flex-col gap-px">{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} />)}</div>}
           </section>;
         })}
       </nav>
-      <div className="mt-auto p-3">
-        <div className={`rounded-xl border border-border bg-card p-2.5 ${collapsed ? "text-center" : ""}`}>
-          <div className={`flex items-center ${collapsed ? "justify-center" : "gap-2.5"}`}><div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground">{user?.name?.split(" ").map((part) => part[0]).slice(0, 2).join("") || "CV"}</div>{!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-xs font-semibold text-foreground">{user?.name}</div><div className="truncate text-[11px] text-muted-foreground">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}</div>
-          {!collapsed && <button onClick={doLogout} className="mt-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"><LogOut className="size-3.5" />Sign out</button>}
+      <div className={`mt-auto border-t border-border/70 ${collapsed ? "p-2" : "p-3"}`}>
+        <div className={`flex items-center ${collapsed ? "flex-col gap-2" : "gap-2.5"}`}>
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand" title={collapsed ? user?.name : undefined}>{initials}</div>
+          {!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium text-foreground">{user?.name}</div><div className="truncate text-xs text-muted-foreground">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}
+          <button onClick={doLogout} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out" title="Sign out"><LogOut className="size-4" /></button>
         </div>
       </div>
     </aside>
 
-    <div className={`min-h-screen transition-[margin] duration-200 ${collapsed ? "lg:ml-[76px]" : "lg:ml-[272px]"}`}>
-      <header className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur-xl">
-        <div className="flex h-[72px] items-center gap-3 px-4 sm:px-6 lg:px-8">
-          <button onClick={() => setMobileOpen(true)} className="rounded-lg p-2 text-muted-foreground hover:bg-card lg:hidden" aria-label="Open navigation"><Menu className="size-5" /></button>
-          <button onClick={() => setCollapsed((value) => !value)} className="hidden rounded-lg p-2 text-muted-foreground hover:bg-card hover:text-foreground lg:inline-flex" aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}>{collapsed ? <ChevronRight className="size-4" /> : <PanelLeftClose className="size-4" />}</button>
-          <div className="min-w-0 flex-1"><div className="truncate font-display text-lg font-bold tracking-tight text-foreground">{heading[0]}</div><div className="hidden truncate text-xs text-muted-foreground xl:block">{heading[1]}</div></div>
-          <button onClick={() => setCommandOpen(true)} className="hidden w-full max-w-md items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:border-ring md:flex" aria-label="Search or jump to a page"><Search className="size-4" /><span className="flex-1">Search modules and actions…</span><kbd className="rounded border border-border bg-secondary px-1.5 py-0.5 text-[10px] font-medium">⌘ K</kbd></button>
-          <button onClick={triggerQuickCreate} className="hidden items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 sm:flex"><CirclePlus className="size-4" />Create</button>
-          <button onClick={triggerQuickCreate} className="inline-flex rounded-xl bg-primary p-2 text-primary-foreground sm:hidden" aria-label="Quick create"><CirclePlus className="size-4" /></button>
-          <NotificationBell />
-        </div>
-      </header>
-      <main className="py-6 sm:py-8"><Outlet /></main>
+    <div className={`min-h-screen transition-[margin] duration-200 lg:py-2 lg:pr-2 ${collapsed ? "lg:ml-[68px]" : "lg:ml-[252px]"}`}>
+      <div className="flex min-h-screen flex-col bg-background lg:min-h-[calc(100vh-1rem)] lg:rounded-xl lg:shadow-panel">
+        <header className="sticky top-0 z-20 border-b border-border/80 bg-background/85 backdrop-blur-xl lg:rounded-t-xl">
+          <div className="flex h-14 items-center gap-2 px-4 sm:px-6 lg:px-8">
+            <button onClick={() => setMobileOpen(true)} className="-ml-1 rounded-md p-2 text-muted-foreground hover:bg-accent lg:hidden" aria-label="Open navigation"><Menu className="size-5" /></button>
+            <div className="flex min-w-0 flex-1 items-baseline gap-3">
+              <div className="truncate text-[15px] font-semibold tracking-tight text-foreground">{heading[0]}</div>
+              <div className="hidden truncate text-[13px] text-muted-foreground xl:block">{heading[1]}</div>
+            </div>
+            <button onClick={() => setCommandOpen(true)} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
+            <button onClick={triggerQuickCreate} className="hidden h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-xs hover:bg-primary/90 sm:flex"><Plus className="size-4" />Create</button>
+            <button onClick={triggerQuickCreate} className="inline-flex rounded-md bg-primary p-2 text-primary-foreground sm:hidden" aria-label="Quick create"><Plus className="size-4" /></button>
+            <NotificationBell />
+          </div>
+        </header>
+        <main className="flex-1 py-6 sm:py-8"><Outlet /></main>
+      </div>
     </div>
     <GlobalCommandDialog open={commandOpen} onOpenChange={setCommandOpen} onQuickCreate={triggerQuickCreate} />
     <QuickCreateDialog open={quickCreateOpen} onOpenChange={setQuickCreateOpen} onCreated={(type, data) => { if (type === "workspace" && data?.id) navigate(`/workspaces/${data.id}`); else if (type === "opportunity") navigate("/pipeline"); else if (type === "company" || type === "contact") navigate("/directory"); }} />
   </div>;
 }
 
-function SidebarLink({ item, collapsed, dense = false }) {
+function SidebarLink({ item, collapsed }) {
   const Icon = item.icon;
   const pending = item.state !== MODULE_STATES.AVAILABLE;
-  return <NavLink to={item.route} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={({ isActive }) => `group relative flex items-center rounded-xl text-sm font-medium transition-colors ${dense ? "py-1.5" : "py-2"} ${collapsed ? "justify-center px-2" : "gap-3 px-3"} ${isActive ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}><Icon className="size-4 shrink-0" />{!collapsed && <><span className="min-w-0 flex-1 truncate">{item.label}</span>{pending && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Contract pending" aria-label="Backend contract pending" />}</>}</NavLink>;
+  return <NavLink to={item.route} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={({ isActive }) => `group relative flex h-8 items-center rounded-md text-[13.5px] font-medium transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2"} ${isActive ? "bg-card text-foreground shadow-xs ring-1 ring-border" : "text-foreground/70 hover:bg-accent hover:text-foreground"}`}>
+    {({ isActive }) => <>
+      <Icon className={`size-4 shrink-0 ${isActive ? "text-brand" : "text-muted-foreground group-hover:text-foreground"}`} />
+      {!collapsed && <><span className="min-w-0 flex-1 truncate">{item.label}</span>{pending && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Contract pending" aria-label="Backend contract pending" />}</>}
+    </>}
+  </NavLink>;
 }
 
 export function Badge({ children, className = "" }) {
-  return <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${className}`}>{children}</span>;
+  return <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${className}`}>{children}</span>;
 }

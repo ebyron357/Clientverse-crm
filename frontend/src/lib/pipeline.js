@@ -23,7 +23,7 @@ export function splitStages(stages) {
 }
 
 // Open stages cycle through these; won and lost always look like won and lost.
-const OPEN_ACCENTS = ["bg-slate-400", "bg-[#1a9fbf]", "bg-violet-500", "bg-amber-500", "bg-sky-600", "bg-fuchsia-500", "bg-teal-500"];
+const OPEN_ACCENTS = ["bg-slate-400", "bg-brand", "bg-violet-500", "bg-amber-500", "bg-sky-600", "bg-fuchsia-500", "bg-teal-500"];
 
 export function stageAccent(stage, index) {
   const outcome = stageOutcome(stage);

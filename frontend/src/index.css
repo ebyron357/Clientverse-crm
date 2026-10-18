@@ -1,55 +1,65 @@
-@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@500,700,800&display=swap');
-@import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * ClientVerse design tokens.
+ * Neutral surfaces, one brand accent, near-black primary actions. Inter is bundled
+ * with the app (see index.js), so no font is fetched from a third party at runtime.
+ */
 @layer base {
   :root {
-    --background: 210 33% 98%;
-    --foreground: 216 43% 11%;
+    --canvas: 220 16% 96.5%;
+    --background: 0 0% 100%;
+    --foreground: 222 24% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 216 43% 11%;
+    --card-foreground: 222 24% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 216 43% 11%;
-    --primary: 192 84% 25%;
+    --popover-foreground: 222 24% 11%;
+    --primary: 222 24% 11%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 210 35% 96%;
-    --secondary-foreground: 216 32% 18%;
-    --muted: 210 35% 96%;
-    --muted-foreground: 215 25% 35%;
-    --accent: 192 70% 95%;
-    --accent-foreground: 193 76% 27%;
+    --secondary: 220 16% 96%;
+    --secondary-foreground: 222 24% 14%;
+    --muted: 220 16% 96%;
+    --muted-foreground: 220 9% 40%;
+    --accent: 220 16% 94.5%;
+    --accent-foreground: 222 24% 11%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 25% 90%;
-    --input: 214 25% 88%;
-    --ring: 192 84% 25%;
-    --chart-1: 192 84% 25%;
-    --chart-2: 216 43% 17%;
-    --chart-3: 159 66% 42%;
-    --chart-4: 39 92% 50%;
-    --chart-5: 266 70% 60%;
-    --radius: 0.75rem;
+    --border: 220 14% 90.5%;
+    --input: 220 13% 87%;
+    --ring: 228 76% 56%;
+    --brand: 228 76% 54%;
+    --brand-foreground: 0 0% 100%;
+    --brand-soft: 228 100% 97%;
+    --brand-strong: 228 70% 44%;
+    --chart-1: 228 76% 54%;
+    --chart-2: 222 24% 20%;
+    --chart-3: 160 64% 40%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 268 66% 60%;
+    --radius: 0.625rem;
   }
 
   * { @apply border-border; }
 
-  html { background: #f7fafc; }
+  html { background: hsl(var(--canvas)); }
 
   body {
     margin: 0;
     min-width: 320px;
-    font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: 'Inter Variable', Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-feature-settings: "cv11", "ss01", "ss03";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    color: #0a1628;
-    background: #f7fafc;
+    color: hsl(var(--foreground));
+    background: hsl(var(--canvas));
+    text-rendering: optimizeLegibility;
   }
 
   h1, h2, h3, h4, .font-display {
-    font-family: 'Cabinet Grotesk', 'Satoshi', sans-serif;
-    letter-spacing: -0.025em;
+    font-family: 'Inter Variable', Inter, ui-sans-serif, sans-serif;
+    letter-spacing: -0.018em;
   }
 
   button, a, input, select, textarea, [role="button"] {
@@ -62,69 +72,70 @@
   select:focus-visible,
   textarea:focus-visible,
   [role="button"]:focus-visible {
-    outline: 3px solid rgba(26, 159, 191, 0.32);
+    outline: 2px solid hsl(var(--ring));
     outline-offset: 2px;
   }
 
-  ::selection { background: #1a9fbf; color: #ffffff; }
+  ::selection { background: hsl(var(--brand) / 0.18); color: hsl(var(--foreground)); }
 }
 
 @layer components {
   .cv-page {
-    @apply mx-auto w-full max-w-[1600px] px-4 pb-8 sm:px-6 lg:px-8;
+    @apply mx-auto w-full max-w-[1440px] px-4 pb-10 sm:px-6 lg:px-8;
   }
 
   .cv-page-header {
-    @apply mb-6 flex flex-col gap-4 sm:mb-7 sm:flex-row sm:items-end sm:justify-between;
+    @apply mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between;
   }
 
   .cv-eyebrow {
-    @apply text-[11px] font-bold uppercase tracking-[0.14em] text-[#0a6177];
+    @apply text-[13px] font-medium text-muted-foreground;
   }
 
   .cv-page-title {
-    @apply mt-1 font-display text-2xl font-extrabold tracking-[-0.035em] text-[#0a1628] sm:text-3xl;
+    @apply mt-0.5 text-[22px] font-semibold leading-8 tracking-tight text-foreground sm:text-2xl;
   }
 
   .cv-page-description {
-    @apply mt-1.5 max-w-2xl text-sm leading-6 text-slate-500;
+    @apply mt-1 max-w-2xl text-sm leading-6 text-muted-foreground;
   }
 
   .cv-card {
-    @apply rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(10,22,40,0.03),0_8px_24px_rgba(10,22,40,0.035)];
+    @apply rounded-xl border border-border bg-card shadow-xs;
   }
 
   .cv-card-header {
-    @apply flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-start sm:justify-between;
+    @apply flex flex-col gap-2 border-b border-border/80 px-5 py-4 sm:flex-row sm:items-start sm:justify-between;
   }
 
-  .cv-card-title { @apply font-display text-base font-bold text-[#132038]; }
-  .cv-card-description { @apply mt-0.5 text-xs leading-5 text-slate-500; }
+  .cv-card-title { @apply text-[15px] font-semibold tracking-tight text-foreground; }
+  .cv-card-description { @apply mt-0.5 text-[13px] leading-5 text-muted-foreground; }
 
   .cv-kpi {
-    @apply relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-5 shadow-[0_1px_2px_rgba(10,22,40,0.03),0_8px_24px_rgba(10,22,40,0.035)] transition-shadow duration-200 hover:shadow-[0_10px_28px_rgba(10,22,40,0.08)];
+    @apply relative overflow-hidden rounded-xl border border-border bg-card p-5 shadow-xs transition-shadow duration-200 hover:shadow-sm;
   }
 
   .cv-data-row {
-    @apply transition-colors duration-150 hover:bg-slate-50/90;
+    @apply transition-colors duration-150 hover:bg-muted/60;
   }
 
   .cv-empty {
-    @apply flex min-h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center;
+    @apply flex min-h-[220px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/40 px-6 py-10 text-center;
   }
 
   .cv-action-primary {
-    @apply bg-[#0a6177] text-white shadow-sm transition-colors hover:bg-[#07536b] focus-visible:ring-[#4ac4e0];
+    @apply bg-primary text-primary-foreground shadow-xs transition-colors hover:bg-primary/90 focus-visible:ring-ring;
   }
 
   .cv-status-dot { @apply inline-block h-1.5 w-1.5 rounded-full; }
+
+  .cv-kbd {
+    @apply inline-flex h-5 min-w-5 items-center justify-center rounded border border-border bg-card px-1 text-[11px] font-medium text-muted-foreground;
+  }
 }
 
 @layer utilities {
-  /* Release accessibility: retain the ClientVerse cyan family at AA-compliant contrast. */
-  .text-\[\#1a9fbf\] { color: #0a6177 !important; }
-  .bg-\[\#1a9fbf\] { background-color: #0a6177 !important; }
-  .hover\:bg-\[\#147f9a\]:hover { background-color: #07536b !important; }
+  /* Accessibility: keep light grey text at AA contrast on white surfaces. */
   .text-slate-400 { color: #64748b !important; }
   .text-gray-400 { color: #475569 !important; }
   .text-red-600 { color: #b91c1c !important; }
@@ -132,8 +143,9 @@
   .placeholder\:text-slate-400::placeholder { color: #64748b !important; }
   .cv-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
   .cv-scrollbar::-webkit-scrollbar-track { background: transparent; }
-  .cv-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
-  .cv-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  .cv-scrollbar::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
+  .cv-scrollbar::-webkit-scrollbar-thumb:hover { background: hsl(var(--input)); }
+  .tabular { font-variant-numeric: tabular-nums; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -20,12 +20,12 @@ const PREFILL = { first_name: "first_name", last_name: "last_name", email: "emai
 function InfoPanel({ config, compact }) {
   return (
     <div className={compact ? "space-y-3" : "space-y-4"}>
-      {config.brand_name && <div className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--brand)]">{config.brand_name}</div>}
-      <h1 className="font-display text-2xl font-extrabold tracking-tight text-[#0a1628] sm:text-3xl">{config.name}</h1>
+      {config.brand_name && <div className="text-xs font-medium text-[var(--booking-accent)]">{config.brand_name}</div>}
+      <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">{config.name}</h1>
       <div className="space-y-2.5 text-sm">
-        <div className="flex items-center gap-2.5"><Clock className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><span className="font-semibold text-[#0a1628]">{config.duration_minutes} minutes</span></div>
+        <div className="flex items-center gap-2.5"><Clock className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><span className="font-semibold text-foreground">{config.duration_minutes} minutes</span></div>
         <LocationLine location={config.location} />
-        {config.host_name && <div className="flex items-center gap-2.5"><UserRound className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><span className="font-semibold text-[#0a1628]">with {config.host_name}</span></div>}
+        {config.host_name && <div className="flex items-center gap-2.5"><UserRound className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><span className="font-semibold text-foreground">with {config.host_name}</span></div>}
       </div>
       {config.description && !compact && <p className="text-sm leading-6 text-slate-600">{config.description}</p>}
     </div>
@@ -35,14 +35,14 @@ function InfoPanel({ config, compact }) {
 function FieldInput({ field, value, error, onChange }) {
   const id = `book-${field.key}`;
   const describedBy = error ? `${id}-error` : undefined;
-  const base = `w-full rounded-xl border bg-white px-3.5 text-base text-[#0a1628] outline-none transition-shadow motion-reduce:transition-none focus:ring-2 focus:ring-[var(--brand)] focus:ring-offset-1 sm:text-sm ${error ? "border-red-400" : "border-slate-300"}`;
+  const base = `w-full rounded-lg border bg-white px-3.5 text-base text-foreground outline-none transition-shadow motion-reduce:transition-none focus:ring-2 focus:ring-[var(--booking-accent)] focus:ring-offset-1 sm:text-sm ${error ? "border-red-400" : "border-slate-300"}`;
   if (field.type === "checkbox") {
     return (
       <div>
         <label htmlFor={id} className="flex items-start gap-3 text-sm leading-5 text-slate-700">
           <input id={id} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)}
             aria-invalid={Boolean(error)} aria-describedby={describedBy} data-testid={`book-field-${field.key}`}
-            className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-[var(--brand)]" />
+            className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-[var(--booking-accent)]" />
           <span>{field.label}{field.required ? " *" : ""}</span>
         </label>
         {error && <p id={`${id}-error`} className="mt-1 text-sm text-red-700">{error}</p>}
@@ -51,7 +51,7 @@ function FieldInput({ field, value, error, onChange }) {
   }
   return (
     <div>
-      <label htmlFor={id} className="mb-1.5 block text-sm font-semibold text-[#0a1628]">
+      <label htmlFor={id} className="mb-1.5 block text-sm font-semibold text-foreground">
         {field.label}{field.required ? <span className="text-red-700" aria-hidden="true"> *</span> : <span className="font-normal text-slate-500"> (optional)</span>}
       </label>
       {field.type === "textarea" ? (
@@ -170,26 +170,26 @@ export default function PublicBooking() {
 
   return (
     <PublicFrame embed={embed} color={config.color} testid="public-booking">
-      <div className="overflow-hidden rounded-3xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(10,22,40,0.04),0_24px_60px_rgba(10,22,40,0.08)]" style={brandStyle(config.color)}>
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(10,22,40,0.04),0_24px_60px_rgba(10,22,40,0.08)]" style={brandStyle(config.color)}>
         <div className="grid lg:grid-cols-[19rem_minmax(0,1fr)]">
           <aside className="border-b border-slate-100 bg-slate-50/60 p-5 sm:p-7 lg:border-b-0 lg:border-r" data-testid="public-booking-info">
             <InfoPanel config={config} compact={step !== "pick"} />
             {start && step === "details" && (
-              <div className="mt-5 rounded-2xl border border-[var(--brand)] bg-white p-3.5 text-sm" data-testid="public-booking-chosen">
-                <div className="font-semibold text-[#0a1628]">{formatRange(start, null, zone)}</div>
+              <div className="mt-5 rounded-xl border border-[var(--booking-accent)] bg-white p-3.5 text-sm" data-testid="public-booking-chosen">
+                <div className="font-semibold text-foreground">{formatRange(start, null, zone)}</div>
                 <div className="text-slate-500">{zoneLabel(zone, new Date(start))}</div>
               </div>
             )}
           </aside>
 
           <section className="min-w-0 p-5 sm:p-7" aria-live="polite">
-            {notice && <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900" role="alert" data-testid="public-booking-notice">{notice}</div>}
+            {notice && <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900" role="alert" data-testid="public-booking-notice">{notice}</div>}
 
             {step === "pick" && (
               <>
-                <h2 className="mb-5 font-display text-xl font-bold text-[#0a1628]">Pick a day and time</h2>
+                <h2 className="mb-5 font-display text-xl font-semibold text-foreground">Pick a day and time</h2>
                 {!config.available
-                  ? <p className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-600">No times are open right now. Please contact the agent directly.</p>
+                  ? <p className="rounded-lg bg-slate-50 p-6 text-center text-sm text-slate-600">No times are open right now. Please contact the agent directly.</p>
                   : <SlotPicker loadDays={loadDays} zone={zone} onZoneChange={setZone} maxKey={maxKey} controlRef={picker}
                       selectedStart={start} testid="public-slots"
                       onPick={(value) => { setStart(value); setNotice(""); setStep("details"); }} />}
@@ -198,10 +198,10 @@ export default function PublicBooking() {
 
             {step === "details" && (
               <form onSubmit={submit} noValidate data-testid="public-booking-form" className="max-w-xl">
-                <button type="button" onClick={() => setStep("pick")} className="mb-4 inline-flex items-center gap-1.5 rounded-lg px-1 py-1 text-sm font-semibold text-[var(--brand)] hover:underline" data-testid="public-booking-back">
+                <button type="button" onClick={() => setStep("pick")} className="mb-4 inline-flex items-center gap-1.5 rounded-lg px-1 py-1 text-sm font-semibold text-[var(--booking-accent)] hover:underline" data-testid="public-booking-back">
                   <ArrowLeft className="h-4 w-4" aria-hidden="true" />Choose another time
                 </button>
-                <h2 ref={heading} tabIndex={-1} className="mb-5 font-display text-xl font-bold text-[#0a1628] outline-none">Your details</h2>
+                <h2 ref={heading} tabIndex={-1} className="mb-5 font-display text-xl font-semibold text-foreground outline-none">Your details</h2>
                 <div className="grid gap-4 sm:grid-cols-2">
                   {fields.map((field) => (
                     <div key={field.key} className={["first_name", "last_name"].includes(field.key) ? "" : "sm:col-span-2"}>
@@ -214,7 +214,7 @@ export default function PublicBooking() {
                   <label>Leave this field empty<input ref={honeypot} type="text" name="_hp" tabIndex={-1} autoComplete="off" /></label>
                 </div>
                 <button type="submit" disabled={busy} data-testid="public-booking-submit"
-                  className="mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-6 text-base font-bold text-white shadow-sm hover:opacity-90 disabled:opacity-60 sm:w-auto">
+                  className="mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-[var(--booking-accent)] px-6 text-base font-bold text-white shadow-sm hover:opacity-90 disabled:opacity-60 sm:w-auto">
                   {busy && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{busy ? "Booking…" : "Confirm booking"}
                 </button>
               </form>
@@ -225,13 +225,13 @@ export default function PublicBooking() {
                 <div className="flex items-start gap-3">
                   <CheckCircle2 className="h-9 w-9 shrink-0 text-emerald-600" aria-hidden="true" />
                   <div>
-                    <h2 ref={heading} tabIndex={-1} className="font-display text-2xl font-extrabold text-[#0a1628] outline-none">You're booked{values.first_name ? `, ${values.first_name}` : ""}!</h2>
+                    <h2 ref={heading} tabIndex={-1} className="font-display text-2xl font-semibold text-foreground outline-none">You're booked{values.first_name ? `, ${values.first_name}` : ""}!</h2>
                     {booked.confirmation_message && <p className="mt-1 text-sm leading-6 text-slate-600">{booked.confirmation_message}</p>}
                   </div>
                 </div>
                 <SummaryCard booking={booked} zone={zone} />
                 <div>
-                  <div className="mb-2 text-sm font-semibold text-[#0a1628]">Add it to your calendar</div>
+                  <div className="mb-2 text-sm font-semibold text-foreground">Add it to your calendar</div>
                   <AddToCalendar links={booked.links} />
                 </div>
                 <ManageLink url={booked.links?.manage_url} newTab={embed} />

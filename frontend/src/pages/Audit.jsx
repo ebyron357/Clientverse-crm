@@ -54,28 +54,28 @@ export default function Audit() {
   return (
     <div className="cv-page">
       <div className="mb-6">
-        <h1 className="font-display text-3xl font-bold">Automation & Audit</h1>
+        <h1 className="font-display text-3xl font-semibold">Automation & Audit</h1>
         <p className="text-sm text-gray-500 mt-1">Normalized domain event feed — every significant state change is recorded. Admins can reverse MCP writes.</p>
       </div>
       {!events ? <SurfaceLoading rows={2} testid="audit-loading" /> : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" data-testid="audit-status-cards">
-            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold"><Bot className="w-3.5 h-3.5" />Agent / MCP activity</div>
-              <div className="font-display text-2xl font-bold mt-2 text-[#0a1628]" data-testid="audit-agent-count">{agentEvents.length}</div>
+            <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-xs text-gray-400 font-semibold"><Bot className="w-3.5 h-3.5" />Agent / MCP activity</div>
+              <div className="font-display text-2xl font-semibold mt-2 text-foreground" data-testid="audit-agent-count">{agentEvents.length}</div>
               <p className="text-xs text-gray-500 mt-1">Events tagged agent.* or mcp.* in this feed</p>
             </div>
-            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold"><Activity className="w-3.5 h-3.5" />Domain events</div>
-              <div className="font-display text-2xl font-bold mt-2 text-[#0a1628]">{otherCount}</div>
+            <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-xs text-gray-400 font-semibold"><Activity className="w-3.5 h-3.5" />Domain events</div>
+              <div className="font-display text-2xl font-semibold mt-2 text-foreground">{otherCount}</div>
               <p className="text-xs text-gray-500 mt-1">CRM and workflow state changes</p>
             </div>
-            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold"><Terminal className="w-3.5 h-3.5" />Observability</div>
+            <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-xs text-gray-400 font-semibold"><Terminal className="w-3.5 h-3.5" />Observability</div>
               <p className="text-sm text-gray-600 mt-2 leading-5">Counts reflect recorded events only. Empty agent activity means no governed tool runs have been audited yet.</p>
             </div>
           </div>
-          <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100">
+          <div className="bg-white border border-gray-200 rounded-lg divide-y divide-gray-100">
             {events.map((e) => (
               <div key={e.id} className="flex items-start gap-4 px-6 py-3.5 hover:bg-gray-50" data-testid={`event-${e.id}`}>
                 <Activity className="w-4 h-4 text-gray-300 mt-1 shrink-0" />

@@ -17,10 +17,10 @@ const TABS = [
 
 function Row({ item }) {
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm" data-testid={`registry-item-${item.id}`}>
+    <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm" data-testid={`registry-item-${item.id}`}>
       <div className="flex items-start justify-between">
         <div>
-          <div className="font-display font-bold text-base">{item.name}</div>
+          <div className="font-display font-semibold text-base">{item.name}</div>
           <div className="text-xs text-gray-400 mt-0.5">
             {item.provider || item.publisher || item.version || item.url}
             {item.level ? ` · Level ${item.level}` : ""}
@@ -56,7 +56,7 @@ export default function Registries() {
   return (
     <div className="cv-page">
       <div className="mb-6">
-        <h1 className="font-display text-3xl font-bold">Registries</h1>
+        <h1 className="font-display text-3xl font-semibold">Registries</h1>
         <p className="text-sm text-gray-500 mt-1 flex items-center gap-1.5">
           <ShieldCheck className="w-4 h-4 text-emerald-600" />
           Governed contracts with capability statuses. External execution wired later.
@@ -74,12 +74,12 @@ export default function Registries() {
                 <IntegrationsPanel />
                 {!loading && (data[t.key] || []).length > 0 && (
                   <div>
-                    <div className="text-xs uppercase tracking-[0.06em] font-semibold text-gray-400 mb-3">Governed capability contracts</div>
+                    <div className="text-xs font-semibold text-gray-400 mb-3">Governed capability contracts</div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{(data[t.key] || []).map((it) => <Row key={it.id} item={it} />)}</div>
                   </div>
                 )}
               </div>
-            ) : loading ? <Skeleton className="h-40 rounded-xl" /> : (
+            ) : loading ? <Skeleton className="h-40 rounded-lg" /> : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {(data[t.key] || []).map((it) => <Row key={it.id} item={it} />)}
                 {(data[t.key] || []).length === 0 && <div className="text-sm text-gray-400 py-8">No entries.</div>}

@@ -25,8 +25,8 @@ import { ClipboardCheck, Inbox, ListChecks, Lock, MessagesSquare, RefreshCw, Rou
 
 const STATUS_TONE = {
   queued: "bg-slate-50 text-slate-700 border-slate-200",
-  claimed: "bg-cyan-50 text-cyan-800 border-cyan-200",
-  processing: "bg-cyan-50 text-cyan-800 border-cyan-200",
+  claimed: "bg-brand-soft text-brand-strong border-brand/20",
+  processing: "bg-brand-soft text-brand-strong border-brand/20",
   retry_scheduled: "bg-amber-50 text-amber-900 border-amber-200",
   completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
   failed: "bg-red-50 text-red-700 border-red-200",
@@ -35,7 +35,7 @@ const STATUS_TONE = {
 
 const GATE_STATE_TONE = {
   DISCOVERED: "bg-slate-50 text-slate-700 border-slate-200",
-  UNDER_REVIEW: "bg-cyan-50 text-cyan-800 border-cyan-200",
+  UNDER_REVIEW: "bg-brand-soft text-brand-strong border-brand/20",
   APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
   APPROVED_LIMITED: "bg-emerald-50 text-emerald-700 border-emerald-200",
   QUARANTINED: "bg-amber-50 text-amber-900 border-amber-200",
@@ -43,11 +43,11 @@ const GATE_STATE_TONE = {
   REVOKED: "bg-red-50 text-red-800 border-red-300",
 };
 
-function StatTile({ label, value, tone = "text-[#0a1628]" }) {
+function StatTile({ label, value, tone = "text-foreground" }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
-      <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">{label}</div>
-      <div className={`mt-1 font-display text-2xl font-extrabold ${tone}`}>{value}</div>
+    <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+      <div className="text-xs font-medium text-slate-500">{label}</div>
+      <div className={`mt-1 font-display text-2xl font-semibold ${tone}`}>{value}</div>
     </div>
   );
 }
@@ -112,11 +112,11 @@ function WorkQueuePanel({ isAdmin }) {
         <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatTile label="Open" value={stats.open} />
           <StatTile label="Retry scheduled" value={stats.retry_scheduled}
-                    tone={stats.retry_scheduled ? "text-amber-700" : "text-[#0a1628]"} />
+                    tone={stats.retry_scheduled ? "text-amber-700" : "text-foreground"} />
           <StatTile label="Dead letter" value={stats.dead_letter}
-                    tone={stats.dead_letter ? "text-red-700" : "text-[#0a1628]"} />
+                    tone={stats.dead_letter ? "text-red-700" : "text-foreground"} />
           <StatTile label="Needs operator" value={stats.needs_operator}
-                    tone={stats.needs_operator ? "text-red-700" : "text-[#0a1628]"} />
+                    tone={stats.needs_operator ? "text-red-700" : "text-foreground"} />
         </div>
       ) : null}
 
@@ -137,7 +137,7 @@ function WorkQueuePanel({ isAdmin }) {
                       description="Recovery candidates and queued jobs appear here as they are detected."
                       testid="work-queue-empty" />
       ) : (
-        <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
           {items.map((item) => (
             <div key={item.id} className="flex flex-wrap items-start gap-3 px-4 py-3"
                  data-testid={`work-item-${item.type}`}>
@@ -146,12 +146,12 @@ function WorkQueuePanel({ isAdmin }) {
                   <Badge className={STATUS_TONE[item.status] || STATUS_TONE.queued}>
                     {String(item.status).replace("_", " ")}
                   </Badge>
-                  <span className="text-[11px] uppercase tracking-wide text-slate-500">{item.type}</span>
+                  <span className="text-xs text-slate-500">{item.type}</span>
                   {item.occurrence_count > 1 ? (
                     <span className="text-[11px] text-slate-400">seen {item.occurrence_count}×</span>
                   ) : null}
                 </div>
-                <div className="mt-1 truncate text-sm font-semibold text-[#132038]">
+                <div className="mt-1 truncate text-sm font-semibold text-foreground">
                   {item.payload?.title || item.type}
                 </div>
                 {item.payload?.reason ? (
@@ -191,7 +191,7 @@ function WorkQueuePanel({ isAdmin }) {
 
 const RISK_TONE = {
   low: "bg-slate-50 text-slate-700 border-slate-200",
-  medium: "bg-cyan-50 text-cyan-800 border-cyan-200",
+  medium: "bg-brand-soft text-brand-strong border-brand/20",
   high: "bg-amber-50 text-amber-900 border-amber-200",
   critical: "bg-red-50 text-red-700 border-red-200",
 };
@@ -204,9 +204,9 @@ function StepRow({ step }) {
         ? <Lock className="mt-0.5 h-3 w-3 shrink-0 text-amber-600" />
         : <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />}
       <div className="min-w-0 flex-1">
-        <div className="text-xs font-semibold text-[#132038]">
+        <div className="text-xs font-semibold text-foreground">
           {step.action.replace(/_/g, " ")}
-          <span className="ml-2 text-[10px] font-normal uppercase tracking-wide text-slate-400">
+          <span className="ml-2 text-xs font-normal text-slate-400">
             {step.channel}
           </span>
         </div>
@@ -229,7 +229,7 @@ function strategyLabel(strategy) {
 
 function strategyTone(strategy) {
   if (strategy.blocked_reasons?.length) return "bg-amber-50 text-amber-900 border-amber-200";
-  if (strategy.state !== "approved") return "bg-cyan-50 text-cyan-800 border-cyan-200";
+  if (strategy.state !== "approved") return "bg-brand-soft text-brand-strong border-brand/20";
   return "bg-emerald-50 text-emerald-700 border-emerald-200";
 }
 
@@ -283,15 +283,15 @@ function RecoveryStrategiesPanel({ isAdmin }) {
         <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
           <StatTile label="Proposed" value={summary.proposed} />
           <StatTile label="Blocked on a channel" value={summary.proposed_blocked}
-                    tone={summary.proposed_blocked ? "text-amber-700" : "text-[#0a1628]"} />
+                    tone={summary.proposed_blocked ? "text-amber-700" : "text-foreground"} />
           <StatTile label="Lanes in use" value={Object.keys(summary.by_lane || {}).length} />
         </div>
       ) : null}
 
       {unauthorized.length ? (
-        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50/60 p-4"
+        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50/60 p-4"
              data-testid="channel-authority">
-          <div className="text-xs font-bold uppercase tracking-[0.12em] text-amber-900">
+          <div className="text-xs font-medium text-amber-900">
             Outbound channels not authorised
           </div>
           <ul className="mt-2 space-y-1">
@@ -327,12 +327,12 @@ function RecoveryStrategiesPanel({ isAdmin }) {
       ) : (
         <div className="space-y-3">
           {strategies.map((strategy) => (
-            <div key={strategy.id} className="rounded-xl border border-slate-200 bg-white p-4"
+            <div key={strategy.id} className="rounded-lg border border-slate-200 bg-white p-4"
                  data-testid={`strategy-${strategy.lane}`}>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className={strategyTone(strategy)}>{strategyLabel(strategy)}</Badge>
-                <span className="text-sm font-semibold text-[#132038]">{strategy.title}</span>
-                <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                <span className="text-sm font-semibold text-foreground">{strategy.title}</span>
+                <span className="text-xs text-slate-500">
                   {strategy.lane.replace(/_/g, " ")}
                 </span>
               </div>
@@ -408,7 +408,7 @@ function ApprovalQueuePanel({ isAdmin }) {
         <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
           <StatTile label="Awaiting decision" value={summary.awaiting_decision} />
           <StatTile label="Blocked on a prerequisite" value={summary.awaiting_decision_blocked}
-                    tone={summary.awaiting_decision_blocked ? "text-amber-700" : "text-[#0a1628]"} />
+                    tone={summary.awaiting_decision_blocked ? "text-amber-700" : "text-foreground"} />
           <StatTile label="Approved, not yet executed" value={summary.approved_awaiting_execution} />
         </div>
       ) : null}
@@ -424,7 +424,7 @@ function ApprovalQueuePanel({ isAdmin }) {
                       description="Actions that need a person appear here — each one bound to the exact thing that would run if it is approved."
                       testid="approval-queue-empty" />
       ) : (
-        <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
           {requests.map((request) => (
             <div key={request.id} className="flex flex-wrap items-start gap-3 px-4 py-3"
                  data-testid={`approval-${request.kind}`}>
@@ -433,14 +433,14 @@ function ApprovalQueuePanel({ isAdmin }) {
                   <Badge className={RISK_TONE[request.risk] || RISK_TONE.medium}>
                     {request.risk || "medium"} risk
                   </Badge>
-                  <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                  <span className="text-xs text-slate-500">
                     {request.kind}
                   </span>
                   <span className="text-[11px] text-slate-400">
                     raised by {request.requester_kind === "agent" ? "an agent" : request.requested_by}
                   </span>
                 </div>
-                <div className="mt-1 text-sm font-semibold text-[#132038]">{request.title}</div>
+                <div className="mt-1 text-sm font-semibold text-foreground">{request.title}</div>
                 {request.summary ? (
                   <div className="mt-0.5 text-xs leading-5 text-slate-500">{request.summary}</div>
                 ) : null}
@@ -483,7 +483,7 @@ const CONSENT_TONE = {
 };
 
 const CONVERSATION_TONE = {
-  open: "bg-cyan-50 text-cyan-800 border-cyan-200",
+  open: "bg-brand-soft text-brand-strong border-brand/20",
   pending: "bg-amber-50 text-amber-900 border-amber-200",
   snoozed: "bg-slate-50 text-slate-700 border-slate-200",
   closed: "bg-slate-50 text-slate-500 border-slate-200",
@@ -551,14 +551,14 @@ function ConversationsPanel({ isAdmin }) {
           <StatTile label="Agent handled" value={summary.agent_handled_open} />
           <StatTile label="Awaiting approval" value={summary.messages_awaiting_approval} />
           <StatTile label="Blocked messages" value={summary.messages_blocked}
-                    tone={summary.messages_blocked ? "text-amber-700" : "text-[#0a1628]"} />
+                    tone={summary.messages_blocked ? "text-amber-700" : "text-foreground"} />
         </div>
       ) : null}
 
       {registered.length === 0 ? (
-        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50/60 p-4"
+        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50/60 p-4"
              data-testid="no-provider-notice">
-          <div className="text-xs font-bold uppercase tracking-[0.12em] text-amber-900">
+          <div className="text-xs font-medium text-amber-900">
             No delivery provider is registered
           </div>
           <p className="mt-2 text-[11px] leading-5 text-amber-900">
@@ -581,7 +581,7 @@ function ConversationsPanel({ isAdmin }) {
                       testid="conversations-empty" />
       ) : (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
-          <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+          <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
             {threads.map((thread) => (
               <button key={thread.id} type="button" onClick={() => open(thread)}
                       className={`block w-full px-4 py-3 text-left transition hover:bg-slate-50 ${
@@ -591,14 +591,14 @@ function ConversationsPanel({ isAdmin }) {
                   <Badge className={CONVERSATION_TONE[thread.status] || CONVERSATION_TONE.open}>
                     {thread.status}
                   </Badge>
-                  <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                  <span className="text-xs text-slate-500">
                     {thread.channel}
                   </span>
                   <Badge className={CONSENT_TONE[thread.consent?.state] || CONSENT_TONE.unknown}>
                     consent {thread.consent?.state}
                   </Badge>
                 </div>
-                <div className="mt-1 truncate text-sm font-semibold text-[#132038]">
+                <div className="mt-1 truncate text-sm font-semibold text-foreground">
                   {thread.subject || "No subject"}
                 </div>
                 <div className="mt-1 text-[11px] text-slate-400">
@@ -610,13 +610,13 @@ function ConversationsPanel({ isAdmin }) {
             ))}
           </div>
 
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
             {!selected ? (
               <p className="text-xs text-slate-500">Select a conversation to read it.</p>
             ) : (
               <div data-testid="conversation-detail">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-semibold text-[#132038]">
+                  <span className="text-sm font-semibold text-foreground">
                     {selected.subject || "No subject"}
                   </span>
                   <Badge className={CONSENT_TONE[selected.consent?.state] || CONSENT_TONE.unknown}>
@@ -657,7 +657,7 @@ function ConversationsPanel({ isAdmin }) {
                       <div key={message.id} className="rounded-lg border border-slate-200 px-3 py-2"
                            data-testid={`message-${message.status}`}>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                          <span className="text-xs text-slate-500">
                             {message.direction}
                           </span>
                           <Badge className={message.status === "blocked"
@@ -715,10 +715,10 @@ function SecurityGatePanel() {
 
   return (
     <div data-testid="security-gate-panel">
-      <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="mb-5 rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-[#1a9fbf]" />
-          <span className="text-sm font-semibold text-[#132038]">Dual gate pipeline</span>
+          <ShieldCheck className="h-4 w-4 text-brand" />
+          <span className="text-sm font-semibold text-foreground">Dual gate pipeline</span>
           <Badge className={status?.operational
             ? "bg-emerald-50 text-emerald-700 border-emerald-200"
             : "bg-amber-50 text-amber-900 border-amber-200"}>
@@ -730,7 +730,7 @@ function SecurityGatePanel() {
           {(status?.scanners || []).map((scanner) => (
             <div key={scanner.scanner} className="rounded-lg border border-slate-200 px-3 py-2"
                  data-testid={`scanner-${scanner.scanner}`}>
-              <div className="text-xs font-semibold text-[#132038]">{scanner.scanner}</div>
+              <div className="text-xs font-semibold text-foreground">{scanner.scanner}</div>
               <div className={`mt-0.5 text-[11px] ${scanner.configured ? "text-emerald-600" : "text-amber-700"}`}>
                 {scanner.configured ? "configured" : "not configured"}
               </div>
@@ -744,15 +744,15 @@ function SecurityGatePanel() {
                       description="External skills, MCP servers, plugins and packages appear here once registered. Registration alone grants nothing — both gates must pass before anything can execute."
                       testid="security-gate-empty" />
       ) : (
-        <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
           {components.map((component) => (
             <div key={component.id} className="px-4 py-3" data-testid={`component-${component.kind}`}>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className={GATE_STATE_TONE[component.state] || GATE_STATE_TONE.DISCOVERED}>
                   {component.state}
                 </Badge>
-                <span className="text-sm font-semibold text-[#132038]">{component.name}</span>
-                <span className="text-[11px] uppercase tracking-wide text-slate-500">{component.kind}</span>
+                <span className="text-sm font-semibold text-foreground">{component.name}</span>
+                <span className="text-xs text-slate-500">{component.kind}</span>
               </div>
               <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-400">
                 <span className="truncate">{component.source_url}</span>

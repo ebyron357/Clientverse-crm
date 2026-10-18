@@ -92,7 +92,7 @@ export default function AvailabilityEditor({ items, hosts, me, isAdmin, googleAc
             </select>
           </div>
         </div>
-        {!current.saved && <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="availability-unsaved">These are the standard hours (Monday to Saturday, 9 to 6). Save them, or change them first.</p>}
+        {!current.saved && <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="availability-unsaved">These are the standard hours (Monday to Saturday, 9 to 6). Save them, or change them first.</p>}
         <ul className="divide-y divide-slate-100">
           {DAYS.map(([day, label]) => {
             const blocks = draft.weekly[day] || [];
@@ -101,7 +101,7 @@ export default function AvailabilityEditor({ items, hosts, me, isAdmin, googleAc
               <li key={day} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-start" data-testid={`availability-day-${day}`}>
                 <div className="flex w-40 shrink-0 items-center gap-3 pt-1.5">
                   <Switch checked={on} onCheckedChange={(value) => setDay(day, value ? [{ start: "09:00", end: "18:00" }] : [])} aria-label={`Available on ${label}`} data-testid={`availability-toggle-${day}`} />
-                  <span className={`text-sm font-semibold ${on ? "text-[#132038]" : "text-slate-400"}`}>{label}</span>
+                  <span className={`text-sm font-semibold ${on ? "text-foreground" : "text-slate-400"}`}>{label}</span>
                 </div>
                 <div className="flex-1 space-y-2">
                   {on ? blocks.map((block, index) => (
@@ -110,7 +110,7 @@ export default function AvailabilityEditor({ items, hosts, me, isAdmin, googleAc
                       onRemove={blocks.length > 1 ? () => setDay(day, blocks.filter((_, i) => i !== index)) : null} />
                   )) : <p className="pt-2 text-sm text-slate-400">Not available</p>}
                   {on && blocks.length < 4 && (
-                    <button type="button" className="inline-flex items-center gap-1 text-xs font-semibold text-[#127b96] hover:underline"
+                    <button type="button" className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline"
                       onClick={() => setDay(day, [...blocks, { start: "16:00", end: "18:00" }])}><Plus className="h-3.5 w-3.5" />Add hours (for a break)</button>
                   )}
                 </div>
@@ -145,12 +145,12 @@ export default function AvailabilityEditor({ items, hosts, me, isAdmin, googleAc
             {!dayOff.closed && <Hours block={dayOff} label="Special" testid="dayoff-hours" onChange={(next) => setDayOff({ ...dayOff, start: next.start, end: next.end })} />}
             <Button variant="outline" onClick={addDayOff} data-testid="dayoff-add"><Plus className="mr-1 h-4 w-4" />Add</Button>
           </div>
-          <ul className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200" data-testid="dayoff-list">
+          <ul className="mt-4 divide-y divide-slate-100 rounded-lg border border-slate-200" data-testid="dayoff-list">
             {draft.overrides.length === 0 && <li className="px-3 py-3 text-sm text-slate-500">None yet.</li>}
             {draft.overrides.map((override) => (
               <li key={override.date} className="flex items-center justify-between gap-2 px-3 py-2.5 text-sm">
                 <div className="min-w-0">
-                  <div className="font-semibold text-[#132038]">{formatDay(override.date, "short")}{override.label ? ` · ${override.label}` : ""}</div>
+                  <div className="font-semibold text-foreground">{formatDay(override.date, "short")}{override.label ? ` · ${override.label}` : ""}</div>
                   <div className="text-xs text-slate-500">{override.intervals.length ? override.intervals.map((i) => `${i.start}–${i.end}`).join(", ") : "Closed"}</div>
                 </div>
                 <Button size="icon" variant="ghost" className="h-8 w-8 text-slate-500" aria-label={`Remove ${override.date}`}
@@ -162,7 +162,7 @@ export default function AvailabilityEditor({ items, hosts, me, isAdmin, googleAc
         </section>
         <section className="cv-card p-5 text-sm" data-testid="availability-google">
           <div className="flex items-start gap-2.5">
-            <CalendarCheck2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0a6177]" aria-hidden="true" />
+            <CalendarCheck2 className="mt-0.5 h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
             {googleAccount === draft.user_email
               ? <p className="text-slate-600">Busy times on <strong>{googleAccount}</strong>'s Google Calendar are taken off this agent's booking pages.</p>
               : googleAccount

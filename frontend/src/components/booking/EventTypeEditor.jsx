@@ -26,7 +26,7 @@ function Section({ title, description, children }) {
   return (
     <section className="space-y-4 border-b border-slate-100 pb-6 last:border-0">
       <div>
-        <h3 className="font-display text-base font-bold text-[#132038]">{title}</h3>
+        <h3 className="font-display text-base font-semibold text-foreground">{title}</h3>
         {description && <p className="mt-0.5 text-xs leading-5 text-slate-500">{description}</p>}
       </div>
       {children}
@@ -37,7 +37,7 @@ function Section({ title, description, children }) {
 function Field({ label, hint, htmlFor, children }) {
   return (
     <div className="space-y-1.5">
-      <Label htmlFor={htmlFor} className="text-sm font-semibold text-[#132038]">{label}</Label>
+      <Label htmlFor={htmlFor} className="text-sm font-semibold text-foreground">{label}</Label>
       {children}
       {hint && <p className="text-xs leading-5 text-slate-500">{hint}</p>}
     </div>
@@ -48,7 +48,7 @@ function Toggle({ id, label, hint, checked, onChange }) {
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
-        <Label htmlFor={id} className="text-sm font-semibold text-[#132038]">{label}</Label>
+        <Label htmlFor={id} className="text-sm font-semibold text-foreground">{label}</Label>
         {hint && <p className="text-xs leading-5 text-slate-500">{hint}</p>}
       </div>
       <Switch id={id} checked={Boolean(checked)} onCheckedChange={onChange} data-testid={id} />
@@ -178,7 +178,7 @@ export default function EventTypeEditor({ eventType, catalog, hosts, open, onOpe
                 <SelectContent>{hosts.map((host) => <SelectItem key={host.email} value={host.email}>{host.name}</SelectItem>)}</SelectContent>
               </Select>
             ) : (
-              <div className="space-y-1 rounded-xl border border-slate-200 p-2">
+              <div className="space-y-1 rounded-lg border border-slate-200 p-2">
                 {hosts.map((host) => (
                   <label key={host.email} className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-slate-50">
                     <input type="checkbox" checked={draft.hosts.users.includes(host.email)} onChange={() => toggleHost(host.email)} data-testid={`et-host-${host.email}`} />
@@ -190,7 +190,7 @@ export default function EventTypeEditor({ eventType, catalog, hosts, open, onOpe
           </Section>
 
           <Section title="What it asks" description="Name and email are always asked.">
-            <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
               {(catalog?.questions || []).map((question) => (
                 <li key={question.key} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <label className="flex min-w-0 items-center gap-2 text-sm">
@@ -239,13 +239,13 @@ export default function EventTypeEditor({ eventType, catalog, hosts, open, onOpe
           <Section title="Confirmation and reminders">
             <Field label="Message on the confirmation" htmlFor="et-confirmation"><Textarea id="et-confirmation" rows={3} value={draft.confirmation_message || ""} onChange={(event) => set({ confirmation_message: event.target.value })} /></Field>
             <div className="space-y-2">
-              <div className="text-sm font-semibold text-[#132038]">Remind before the appointment</div>
+              <div className="text-sm font-semibold text-foreground">Remind before the appointment</div>
               <div className="flex flex-wrap gap-2">
                 {(catalog?.reminder_hours || []).slice().reverse().map((hours) => {
                   const on = (draft.reminders?.hours || []).includes(hours);
                   return (
                     <button key={hours} type="button" onClick={() => toggleReminder(hours)} aria-pressed={on} data-testid={`et-reminder-${hours}`}
-                      className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${on ? "border-[#0a6177] bg-[#0a6177] text-white" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
+                      className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${on ? "border-brand bg-brand text-white" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
                       {hours >= 24 ? `${hours / 24} day${hours > 24 ? "s" : ""}` : `${hours} hour${hours > 1 ? "s" : ""}`}
                     </button>
                   );
@@ -254,8 +254,8 @@ export default function EventTypeEditor({ eventType, catalog, hosts, open, onOpe
               <p className="text-xs leading-5 text-slate-500">The host always gets an in-app reminder. Up to three.</p>
             </div>
             <Toggle id="et-email-person" label="Email the person their confirmation and reminders" checked={draft.notify_person?.email} onChange={(email) => set({ notify_person: { email } })} />
-            <p className="flex gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600">
-              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0a6177]" aria-hidden="true" />
+            <p className="flex gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
               Each email is written for you and waits until an admin approves its exact words — on the Calendar or in Approvals. Only the website-form auto-reply may be approved once for every lead. Emails go from your connected Gmail.
             </p>
           </Section>

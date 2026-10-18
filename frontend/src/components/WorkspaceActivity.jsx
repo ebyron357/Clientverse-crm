@@ -66,7 +66,7 @@ export default function WorkspaceActivity({ workspaceId }) {
       )}
 
       <section data-testid="activity-meetings">
-        <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 flex items-center gap-2 mb-3"><Calendar className="w-4 h-4" />Upcoming meetings</h3>
+        <h3 className="font-display font-semibold text-sm text-gray-500 flex items-center gap-2 mb-3"><Calendar className="w-4 h-4" />Upcoming meetings</h3>
         {meetings.length === 0 ? (
           <p className="text-xs text-gray-500 rounded-lg border border-dashed border-gray-200 bg-slate-50/60 px-3 py-4" data-testid="activity-meetings-empty">No upcoming client meetings synced for this workspace.</p>
         ) : (
@@ -85,7 +85,7 @@ export default function WorkspaceActivity({ workspaceId }) {
       </section>
 
       <section data-testid="activity-billing">
-        <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 flex items-center gap-2 mb-3"><CreditCard className="w-4 h-4" />Billing & subscriptions</h3>
+        <h3 className="font-display font-semibold text-sm text-gray-500 flex items-center gap-2 mb-3"><CreditCard className="w-4 h-4" />Billing & subscriptions</h3>
         {billing.length === 0 ? (
           <p className="text-xs text-gray-500 rounded-lg border border-dashed border-gray-200 bg-slate-50/60 px-3 py-4" data-testid="activity-billing-empty">No Stripe records matched to this client yet.</p>
         ) : (
@@ -107,7 +107,7 @@ export default function WorkspaceActivity({ workspaceId }) {
       </section>
 
       <section data-testid="activity-email">
-        <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 flex items-center gap-2 mb-3"><Mail className="w-4 h-4" />Recent email threads</h3>
+        <h3 className="font-display font-semibold text-sm text-gray-500 flex items-center gap-2 mb-3"><Mail className="w-4 h-4" />Recent email threads</h3>
         {communications.length === 0 ? (
           <p className="text-xs text-gray-500 rounded-lg border border-dashed border-gray-200 bg-slate-50/60 px-3 py-4" data-testid="activity-email-empty">No matched client email yet. Threads appear after a successful Gmail sync against CRM contacts.</p>
         ) : (
@@ -115,7 +115,7 @@ export default function WorkspaceActivity({ workspaceId }) {
             {communications.map((c) => (
               <div key={c.id} className="bg-white border border-gray-200 rounded-lg p-3" data-testid={`comm-${c.id}`}>
                 <div className="flex items-start gap-2">
-                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-cyan-50 text-[#0a6177]"><MessageSquare className="h-3.5 w-3.5" /></span>
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand"><MessageSquare className="h-3.5 w-3.5" /></span>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium flex items-center gap-2 flex-wrap">{c.subject || "(No subject)"} <ExternalTag /></div>
                     <div className="text-xs text-gray-400 mt-0.5">{c.from_email || "Unknown sender"} · {c.ts ? new Date(c.ts).toLocaleString() : "—"}{c.thread_id ? ` · thread ${String(c.thread_id).slice(0, 8)}` : ""}</div>

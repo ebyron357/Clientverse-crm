@@ -130,7 +130,7 @@ export default function DealRecord({ dealId, stages, owners, workspaces, current
   };
 
   if (missing) {
-    return <div className="py-10 text-center"><SheetHeader className="items-center"><SheetTitle className="font-display text-lg font-bold text-[#132038]">This deal could not be found</SheetTitle><SheetDescription>It may have been removed, or the link may be for a different account.</SheetDescription></SheetHeader></div>;
+    return <div className="py-10 text-center"><SheetHeader className="items-center"><SheetTitle className="font-display text-lg font-semibold text-foreground">This deal could not be found</SheetTitle><SheetDescription>It may have been removed, or the link may be for a different account.</SheetDescription></SheetHeader></div>;
   }
   if (!detail || !form) {
     return <div className="space-y-4 py-2" aria-busy="true"><SheetHeader className="sr-only"><SheetTitle>Deal</SheetTitle><SheetDescription>Loading this deal</SheetDescription></SheetHeader><Skeleton className="h-8 w-2/3" /><Skeleton className="h-24 w-full" /><Skeleton className="h-48 w-full" /></div>;
@@ -217,24 +217,24 @@ export default function DealRecord({ dealId, stages, owners, workspaces, current
   return (
     <div className="space-y-6 pb-10" data-testid="deal-record">
       <SheetHeader className="space-y-1 pr-6">
-        <SheetTitle className="font-display text-2xl leading-tight text-[#0a1628]" data-testid="deal-record-title">{deal.name}</SheetTitle>
+        <SheetTitle className="font-display text-2xl leading-tight text-foreground" data-testid="deal-record-title">{deal.name}</SheetTitle>
         <SheetDescription className="flex flex-wrap items-center gap-2">
-          <span className="font-semibold text-[#132038]">{formatMoney(deal.value, dealCurrency(deal))}</span>
+          <span className="font-semibold text-foreground">{formatMoney(deal.value, dealCurrency(deal))}</span>
           <span aria-hidden="true">·</span>
           <span>{labelOf(deal.stage)}</span>
-          {website && <span className="inline-flex items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold text-[#0a6177]"><Globe className="h-3 w-3" />Website lead</span>}
+          {website && <span className="inline-flex items-center gap-1 rounded-full border border-brand/20 bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand"><Globe className="h-3 w-3" />Website lead</span>}
           {deal.archived_at && <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">Archived</span>}
         </SheetDescription>
       </SheetHeader>
 
       {deal.archived_at && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
           <span>Archived on {formatDay(deal.archived_at)}. It is not on the board or in your totals.</span>
           <Button size="sm" variant="outline" onClick={() => setArchived(false)} data-testid="deal-restore"><RotateCcw className="mr-1.5 h-4 w-4" />Restore</Button>
         </div>
       )}
 
-      <section className="rounded-xl border border-slate-200 bg-slate-50/60 p-3" aria-label="Stage">
+      <section className="rounded-lg border border-slate-200 bg-slate-50/60 p-3" aria-label="Stage">
         <div className="flex flex-wrap items-end gap-2">
           <div className="grid min-w-[12rem] flex-1 gap-1.5">
             <Label htmlFor="deal-stage">Stage</Label>
@@ -249,17 +249,17 @@ export default function DealRecord({ dealId, stages, owners, workspaces, current
             </Button>
           )}
         </div>
-        {workspace && <Link to={`/workspaces/${workspace.id}`} className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-[#127b96] hover:underline" data-testid="deal-workspace-link"><BriefcaseBusiness className="h-4 w-4" />Open the client workspace</Link>}
+        {workspace && <Link to={`/workspaces/${workspace.id}`} className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-brand hover:underline" data-testid="deal-workspace-link"><BriefcaseBusiness className="h-4 w-4" />Open the client workspace</Link>}
       </section>
 
       {website && (
-        <section className="rounded-xl border border-cyan-100 bg-cyan-50/50 p-3 text-sm" aria-label="Where this deal came from">
+        <section className="rounded-lg border border-brand-soft bg-brand-soft/50 p-3 text-sm" aria-label="Where this deal came from">
           <div className="flex items-start gap-2">
-            <Globe className="mt-0.5 h-4 w-4 shrink-0 text-[#0a6177]" />
+            <Globe className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
             <div className="min-w-0 space-y-1">
-              <p className="font-semibold text-[#132038]">Came in through your website{sourceForm ? ` — “${sourceForm.name}”` : ""}</p>
+              <p className="font-semibold text-foreground">Came in through your website{sourceForm ? ` — “${sourceForm.name}”` : ""}</p>
               {basis?.method === "commission" && basis.price != null && <p className="text-slate-600">Value worked out as {basis.commission_rate}% commission on {formatMoney(basis.price, dealCurrency(deal))}, the price the visitor gave.</p>}
-              {deal.source?.enquiry_id && <Link to={`/leads?lead=${encodeURIComponent(deal.source.enquiry_id)}`} className="inline-flex items-center gap-1 font-semibold text-[#127b96] hover:underline" data-testid="deal-lead-link">See the original enquiry<ArrowRight className="h-3.5 w-3.5" /></Link>}
+              {deal.source?.enquiry_id && <Link to={`/leads?lead=${encodeURIComponent(deal.source.enquiry_id)}`} className="inline-flex items-center gap-1 font-semibold text-brand hover:underline" data-testid="deal-lead-link">See the original enquiry<ArrowRight className="h-3.5 w-3.5" /></Link>}
             </div>
           </div>
         </section>
@@ -304,7 +304,7 @@ export default function DealRecord({ dealId, stages, owners, workspaces, current
           <ContactPicker id="deal-contacts" selected={form.contacts} onChange={(contacts) => setField("contacts", contacts)} linkContacts testId="deal-contacts" />
         </div>
         {detail.company && (
-          <p className="flex items-center gap-1.5 text-sm text-slate-600"><Building2 className="h-4 w-4 text-slate-400" />Company: <Link to={`/companies?company=${encodeURIComponent(detail.company.id)}`} className="font-semibold text-[#127b96] hover:underline">{detail.company.name}</Link></p>
+          <p className="flex items-center gap-1.5 text-sm text-slate-600"><Building2 className="h-4 w-4 text-slate-400" />Company: <Link to={`/companies?company=${encodeURIComponent(detail.company.id)}`} className="font-semibold text-brand hover:underline">{detail.company.name}</Link></p>
         )}
         <div className="grid gap-1.5">
           <Label htmlFor="deal-notes">Notes</Label>
@@ -318,12 +318,12 @@ export default function DealRecord({ dealId, stages, owners, workspaces, current
       </section>
 
       <section className="space-y-3" aria-label="Log activity">
-        <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.06em] text-slate-500"><MessageSquareText className="h-3.5 w-3.5" />Log activity</h3>
+        <h3 className="flex items-center gap-1.5 text-xs font-medium text-slate-500"><MessageSquareText className="h-3.5 w-3.5" />Log activity</h3>
         <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="What kind of activity">
           {ACTIVITY_TYPES.map((item) => {
             const Icon = item.icon;
             const active = activity.type === item.key;
-            return <button key={item.key} type="button" role="radio" aria-checked={active} onClick={() => setActivity((current) => ({ ...current, type: item.key }))} className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-semibold ${active ? "border-[#0a6177] bg-[#0a6177] text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`} data-testid={`deal-activity-type-${item.key}`}><Icon className="h-3.5 w-3.5" />{item.label}</button>;
+            return <button key={item.key} type="button" role="radio" aria-checked={active} onClick={() => setActivity((current) => ({ ...current, type: item.key }))} className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-semibold ${active ? "border-brand bg-brand text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`} data-testid={`deal-activity-type-${item.key}`}><Icon className="h-3.5 w-3.5" />{item.label}</button>;
           })}
         </div>
         <Input value={activity.subject} onChange={(event) => setActivity((current) => ({ ...current, subject: event.target.value }))} placeholder="Summary, e.g. Called about the inspection" aria-label="Activity summary" maxLength={300} data-testid="deal-activity-subject" />
@@ -332,16 +332,16 @@ export default function DealRecord({ dealId, stages, owners, workspaces, current
       </section>
 
       <section className="space-y-2" aria-label="Activity">
-        <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Activity</h3>
+        <h3 className="text-xs font-medium text-slate-500">Activity</h3>
         {timeline.length === 0 ? <p className="text-sm text-slate-500">Nothing logged yet.</p> : (
           <ol className="space-y-2" data-testid="deal-timeline">
             {timeline.map((entry, index) => {
               const Icon = entry.kind === "activity" ? (ACTIVITY_ICON[entry.type] || StickyNote) : History;
               return (
-                <li key={entry.id || `${entry.at}-${index}`} className="flex gap-3 rounded-xl border border-slate-100 bg-white px-3 py-2.5">
-                  <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${entry.kind === "activity" ? "bg-cyan-50 text-[#0a6177]" : "bg-slate-100 text-slate-500"}`}><Icon className="h-3.5 w-3.5" /></span>
+                <li key={entry.id || `${entry.at}-${index}`} className="flex gap-3 rounded-lg border border-slate-100 bg-white px-3 py-2.5">
+                  <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${entry.kind === "activity" ? "bg-brand-soft text-brand" : "bg-slate-100 text-slate-500"}`}><Icon className="h-3.5 w-3.5" /></span>
                   <div className="min-w-0 flex-1 text-sm">
-                    <p className="font-semibold text-[#132038]">{entry.kind === "activity" ? (entry.subject || ACTIVITY_TYPES.find((item) => item.key === entry.type)?.label || "Activity") : describeEvent(entry)}</p>
+                    <p className="font-semibold text-foreground">{entry.kind === "activity" ? (entry.subject || ACTIVITY_TYPES.find((item) => item.key === entry.type)?.label || "Activity") : describeEvent(entry)}</p>
                     {entry.kind === "activity" && entry.body && <p className="mt-0.5 whitespace-pre-line break-words text-slate-600">{entry.body}</p>}
                     <p className="mt-0.5 text-xs text-slate-400">{[entry.kind === "activity" ? ACTIVITY_TYPES.find((item) => item.key === entry.type)?.label : null, when(entry.at), actorName(entry.actor) && `by ${actorName(entry.actor)}`].filter(Boolean).join(" · ")}</p>
                   </div>
@@ -353,11 +353,11 @@ export default function DealRecord({ dealId, stages, owners, workspaces, current
       </section>
 
       <section className="space-y-2" aria-label="Stage history">
-        <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Stage history</h3>
+        <h3 className="text-xs font-medium text-slate-500">Stage history</h3>
         <ol className="space-y-1.5 text-sm" data-testid="deal-stage-history">
           {[...(detail.stage_history || [])].reverse().map((step, index) => (
             <li key={`${step.at}-${index}`} className="flex flex-wrap items-baseline justify-between gap-x-3 border-b border-slate-100 pb-1.5 last:border-b-0">
-              <span className="text-[#132038]">{step.from ? <>{labelOf(step.from)} <ArrowRight className="inline h-3 w-3 text-slate-400" /> <strong>{labelOf(step.to)}</strong></> : <>Started in <strong>{labelOf(step.to)}</strong></>}</span>
+              <span className="text-foreground">{step.from ? <>{labelOf(step.from)} <ArrowRight className="inline h-3 w-3 text-slate-400" /> <strong>{labelOf(step.to)}</strong></> : <>Started in <strong>{labelOf(step.to)}</strong></>}</span>
               <span className="text-xs text-slate-400">{[when(step.at), actorName(step.actor) && `by ${actorName(step.actor)}`].filter(Boolean).join(" · ")}</span>
             </li>
           ))}
