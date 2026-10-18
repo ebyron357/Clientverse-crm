@@ -7,13 +7,15 @@ import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
 import { activityEntries } from "@/lib/contactHistory";
 import { ActivityFeed } from "@/components/ContactRecord";
+import { Avatar, PageHeader, PropertyList, StatStrip, StatusDot, Toolbar, ViewTabs } from "@/components/page/Page";
+import { SurfaceEmpty } from "@/components/SurfaceState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlarmClock, CheckCircle2, Clock3, Download, Globe, Mail, Phone, RefreshCw, Search, ShieldAlert, Timer, Zap } from "lucide-react";
+import { AlarmClock, CheckCircle2, CircleAlert, Download, Globe, Inbox, Mail, MessageSquare, Phone, RefreshCw, Search, ShieldAlert, Timer, UserPlus, Zap } from "lucide-react";
 import { describeLeadStep } from "@/lib/leadSteps";
 
 const STATUS_TABS = [
@@ -24,12 +26,7 @@ const STATUS_TABS = [
   { key: "all", label: "All" },
 ];
 
-const STATUS_STYLE = {
-  new: "border-amber-200 bg-amber-50 text-amber-700",
-  responded: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  closed: "border-slate-200 bg-slate-50 text-slate-600",
-  spam: "border-red-200 bg-red-50 text-red-700",
-};
+const STATUS_TONE = { new: "warning", responded: "success", closed: "neutral", spam: "danger" };
 const STATUS_LABEL = { new: "New", responded: "Contacted", closed: "Closed", spam: "Spam" };
 
 const FIELD_LABELS = {
@@ -76,48 +73,75 @@ function ago(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
-function SlaBadge({ lead }) {
+const fullDate = (iso) => (iso ? new Date(iso).toLocaleString() : "");
+const shortDate = (iso) => (iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null);
+/** Narrower labels than the default so values like an email fit the side column on one line. */
+const PROPS = "[&>div]:grid-cols-[96px_minmax(0,1fr)]";
+const leadName = (lead) => lead.name || lead.email || lead.phone || "Website visitor";
+
+/** Only the rows that have something to say; a lead form leaves most fields empty. */
+const present = (items) => items.filter(({ value }) => value != null && value !== "" && value !== false);
+
+const FLAG = "inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-red-200 bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700";
+
+/** The speed-to-lead clock: a soft red flag once it has run out, quiet text before that. */
+function speedFlag(lead) {
   const sla = lead.sla || {};
   if (lead.status === "responded" && sla.response_minutes != null) {
     const fast = sla.response_minutes <= 5;
-    return <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${fast ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}><CheckCircle2 className="h-3 w-3" />Responded in {duration(sla.response_minutes)}</span>;
+    return <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground"><CheckCircle2 className={`size-3.5 ${fast ? "text-emerald-600" : ""}`} aria-hidden="true" />Responded in {duration(sla.response_minutes)}</span>;
   }
   if (lead.status !== "new" || !sla.due_at) return null;
   if (sla.escalated_at) {
-    return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><ShieldAlert className="h-3 w-3" />Escalated · waiting {duration(minutesBetween(lead.received_at))}</span>;
+    return <span className={FLAG}><ShieldAlert className="size-3" aria-hidden="true" />Escalated · waiting {duration(minutesBetween(lead.received_at))}</span>;
   }
   const remaining = -minutesBetween(sla.due_at);
   if (remaining >= 0) {
-    return <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700"><Timer className="h-3 w-3" />Call within {duration(remaining)}</span>;
+    return <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-amber-700"><Timer className="size-3.5" aria-hidden="true" />Call within {duration(remaining)}</span>;
   }
-  return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><AlarmClock className="h-3 w-3" />Overdue {duration(-remaining)}</span>;
+  return <span className={FLAG}><AlarmClock className="size-3" aria-hidden="true" />Overdue {duration(-remaining)}</span>;
 }
 
-function Tile({ icon: Icon, label, value, hint, tone = "slate" }) {
-  const tones = { slate: "bg-slate-50 text-slate-600", amber: "bg-amber-50 text-amber-700", emerald: "bg-emerald-50 text-emerald-700", red: "bg-red-50 text-red-700", cyan: "bg-brand-soft text-brand" };
-  return (
-    <div className="cv-card flex items-start gap-3 p-4">
-      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${tones[tone]}`}><Icon className="h-4 w-4" /></span>
-      <div className="min-w-0">
-        <div className="text-xs font-semibold text-slate-500">{label}</div>
-        <div className="mt-1 font-display text-2xl font-semibold text-foreground">{value}</div>
-        {hint && <div className="mt-0.5 text-xs text-slate-500">{hint}</div>}
+function TestFlag({ children = "Test" }) {
+  return <span className="rounded-md border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700">{children}</span>;
+}
+
+function PanelHeading({ children, action }) {
+  return <div className="mb-1.5 flex items-center justify-between gap-3">
+    <h3 className="text-xs font-medium text-muted-foreground">{children}</h3>
+    {action}
+  </div>;
+}
+
+/** What happened to the lead, in order: it arrived, the automation ran, the clock ran out, someone answered. */
+function leadHistory(lead) {
+  const sla = lead.sla || {};
+  const assignee = lead.assigned_name || lead.assigned_to;
+  const events = [];
+  if (lead.received_at) events.push({ key: "received", at: lead.received_at, icon: Inbox, text: `Came in through ${lead.form_name || "your website"}` });
+  (lead.automation || []).forEach((step, index) => {
+    const failed = step.result === "failed";
+    events.push({ key: `step-${index}`, at: step.at, icon: failed ? ShieldAlert : Zap, tone: failed ? "danger" : null, text: describeLeadStep(step, { assignee }) });
+  });
+  if (sla.escalated_at) events.push({ key: "escalated", at: sla.escalated_at, icon: ShieldAlert, tone: "danger", text: "Escalated: nobody had responded, so the team was alerted" });
+  if (sla.first_response_at) events.push({ key: "responded", at: sla.first_response_at, icon: CheckCircle2, tone: "success", text: sla.response_minutes != null ? `Contacted after ${duration(sla.response_minutes)}` : "Marked as contacted" });
+  return events.sort((first, second) => new Date(first.at || 0) - new Date(second.at || 0));
+}
+
+function Timeline({ events }) {
+  const tones = { danger: "text-red-600", success: "text-emerald-600" };
+  return <ol className="space-y-0">
+    {events.map(({ key, at, icon: Icon, tone, text }) => <li key={key} className="relative flex gap-3 pb-4 before:absolute before:bottom-0 before:left-[11px] before:top-7 before:w-px before:bg-border last:pb-0 last:before:hidden">
+      <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-card"><Icon className={`size-3.5 ${tones[tone] || "text-muted-foreground"}`} aria-hidden="true" /></span>
+      <div className="min-w-0 pt-0.5 text-[13px] leading-5">
+        <span className="text-foreground/90">{text}</span>
+        {at && <time dateTime={at} title={fullDate(at)} className="ml-1.5 whitespace-nowrap text-xs text-muted-foreground">{ago(at)}</time>}
       </div>
-    </div>
-  );
+    </li>)}
+  </ol>;
 }
 
-function Row({ label, children }) {
-  if (children == null || children === "" || children === false) return null;
-  return (
-    <div className="grid grid-cols-[9rem_1fr] gap-3 border-t border-slate-100 py-2 text-sm first:border-t-0">
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="min-w-0 break-words text-foreground">{children}</dd>
-    </div>
-  );
-}
-
-function LeadDetail({ lead, onStatus, busy, refreshKey }) {
+function LeadPanel({ lead, onStatus, busy, refreshKey }) {
   const [note, setNote] = useState("");
   // The contact this lead became: its name, its deals and what has been logged on it.
   // Read again after every update so a note saved below appears straight away.
@@ -140,100 +164,158 @@ function LeadDetail({ lead, onStatus, busy, refreshKey }) {
   const deal = (contact?.deals || []).find((item) => item.id === lead.opportunity_id);
   const dealValue = formatMoney(deal ? deal.value : lead.estimated_value, (deal && deal.currency) || lead.currency);
   const notes = useMemo(() => activityEntries(contact?.timeline, contactName), [contact, contactName]);
+  const history = useMemo(() => leadHistory(lead), [lead]);
   const setStatus = async (status) => { await onStatus(lead, status, note); setNote(""); };
+
+  const details = present([
+    { label: "Form", value: lead.form_name },
+    { label: "Email", value: lead.email },
+    { label: "Phone", value: lead.phone },
+    ...Object.entries(fields).filter(([key]) => !SKIP_FIELDS.has(key)).map(([key, value]) => ({
+      label: FIELD_LABELS[key] || key.replace(/^custom_/, "").replace(/_/g, " "),
+      value: value === true ? "Yes" : value === false ? "No" : MONEY_FIELDS.has(key) && value !== "" && !Number.isNaN(Number(value)) ? formatMoney(value) : value == null ? null : String(value),
+    })),
+    ...Object.entries(extra).map(([key, value]) => ({ label: key, value: value == null ? null : String(value) })),
+    { label: "Received", value: shortDate(lead.received_at) },
+  ]);
+  const followThrough = present([
+    { label: "Assigned to", value: lead.assigned_name || lead.assigned_to || "Unassigned — all admins alerted" },
+    { label: "Contact", value: lead.contact_id && <><Link className="font-medium text-brand hover:underline" to={`/contacts?contact=${lead.contact_id}`} data-testid="lead-contact-link">{contactName || "Open contact"}</Link><span className="block text-xs text-muted-foreground">{lead.created_contact ? "New contact" : "Already in your contacts"}</span></> },
+    { label: "Deal", value: lead.opportunity_id && (deal
+      ? <><Link className="font-medium text-brand hover:underline" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">{deal.name}</Link><span className="block text-xs text-muted-foreground tabular">{dealValue}</span></>
+      : <Link className="font-medium text-brand hover:underline" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">Deal · {dealValue}</Link>) },
+    { label: "Call-back task", value: lead.task_id && `Due ${lead.sla?.due_at ? new Date(lead.sla.due_at).toLocaleTimeString() : "now"}` },
+    { label: "Auto-reply", value: lead.auto_reply?.status && lead.auto_reply.status !== "off" ? `${lead.auto_reply.status.replace(/_/g, " ")}${lead.auto_reply.detail ? ` — ${lead.auto_reply.detail}` : ""}` : null },
+  ]);
+  const source = present([
+    { label: "Website", value: lead.origin },
+    ...Object.entries(attribution).map(([key, value]) => ({ label: key.replace(/_/g, " "), value })),
+  ]);
+  const consentRows = consent ? present([
+    { label: "Text messages", value: consent.sms ? "Granted" : "Not given" },
+    { label: "Email", value: consent.email ? "Granted" : "Not given" },
+    { label: "Wording shown", value: consent.sms_text || consent.email_text },
+    { label: "Recorded", value: shortDate(consent.recorded_at) },
+    { label: "From", value: [consent.ip, consent.page_url].filter(Boolean).join(" · ") },
+  ]) : [];
+
   return (
-    <div className="space-y-6 pb-10">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${STATUS_STYLE[lead.status]}`}>{STATUS_LABEL[lead.status]}</span>
-        <SlaBadge lead={lead} />
-        {lead.is_test && <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700">Test lead</span>}
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {lead.phone && <Button asChild size="sm" className="cv-action-primary"><a href={`tel:${lead.phone}`}><Phone className="mr-1.5 h-4 w-4" />Call {lead.phone}</a></Button>}
-        {lead.phone && <Button asChild size="sm" variant="outline"><a href={`sms:${lead.phone}`}>Text</a></Button>}
-        {lead.email && <Button asChild size="sm" variant="outline"><a href={`mailto:${lead.email}`}><Mail className="mr-1.5 h-4 w-4" />Email</a></Button>}
-      </div>
-
-      <section>
-        <h3 className="mb-1 text-xs font-medium text-slate-500">Request</h3>
-        <dl>
-          <Row label="Form">{lead.form_name}</Row>
-          <Row label="Email">{lead.email}</Row>
-          <Row label="Phone">{lead.phone}</Row>
-          <Row label="Message">{lead.message && <span className="whitespace-pre-wrap">{lead.message}</span>}</Row>
-          {Object.entries(fields).filter(([key]) => !SKIP_FIELDS.has(key)).map(([key, value]) => (
-            <Row key={key} label={FIELD_LABELS[key] || key.replace(/^custom_/, "").replace(/_/g, " ")}>{value === true ? "Yes" : value === false ? "No" : MONEY_FIELDS.has(key) && value !== "" && !Number.isNaN(Number(value)) ? formatMoney(value) : String(value)}</Row>
-          ))}
-          {Object.entries(extra).map(([key, value]) => <Row key={`x-${key}`} label={key}>{String(value)}</Row>)}
-          <Row label="Received">{lead.received_at && new Date(lead.received_at).toLocaleString()}</Row>
-        </dl>
-      </section>
-
-      <section>
-        <h3 className="mb-1 text-xs font-medium text-slate-500">What happened automatically</h3>
-        <dl>
-          <Row label="Assigned to">{lead.assigned_name || lead.assigned_to || "Unassigned — all admins alerted"}</Row>
-          <Row label="Contact">{lead.contact_id && <><Link className="font-semibold text-brand" to={`/contacts?contact=${lead.contact_id}`} data-testid="lead-contact-link">{contactName || "Open contact"}</Link><span className="text-slate-500"> · {lead.created_contact ? "new contact" : "already in your contacts"}</span></>}</Row>
-          <Row label="Deal">{lead.opportunity_id && (deal
-            ? <><Link className="font-semibold text-brand" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">{deal.name}</Link><span className="text-slate-500"> · {dealValue}</span></>
-            : <Link className="font-semibold text-brand" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">Deal · {dealValue}</Link>)}</Row>
-          <Row label="Call-back task">{lead.task_id && `Due ${lead.sla?.due_at ? new Date(lead.sla.due_at).toLocaleTimeString() : "now"}`}</Row>
-          <Row label="Auto-reply">{lead.auto_reply?.status && lead.auto_reply.status !== "off" ? `${lead.auto_reply.status.replace(/_/g, " ")}${lead.auto_reply.detail ? ` — ${lead.auto_reply.detail}` : ""}` : null}</Row>
-        </dl>
-        {lead.automation?.length > 0 && (
-          <ol className="mt-3 space-y-1 text-xs text-slate-500">
-            {lead.automation.map((step, index) => <li key={index} className="flex gap-1.5">{step.result === "failed" ? <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-red-500" /> : <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-slate-400" />}{describeLeadStep(step, { assignee: lead.assigned_name || lead.assigned_to })}</li>)}
-          </ol>
-        )}
-      </section>
-
-      {(Object.keys(attribution).length > 0 || lead.origin) && (
-        <section>
-          <h3 className="mb-1 text-xs font-medium text-slate-500">Source</h3>
-          <dl>
-            <Row label="Website">{lead.origin}</Row>
-            {Object.entries(attribution).map(([key, value]) => <Row key={key} label={key.replace(/_/g, " ")}>{value}</Row>)}
-          </dl>
-        </section>
-      )}
-
-      {consent && (
-        <section>
-          <h3 className="mb-1 text-xs font-medium text-slate-500">Consent record</h3>
-          <dl>
-            <Row label="Text messages">{consent.sms ? "Granted" : "Not given"}</Row>
-            <Row label="Email">{consent.email ? "Granted" : "Not given"}</Row>
-            <Row label="Wording shown">{consent.sms_text || consent.email_text}</Row>
-            <Row label="Recorded">{consent.recorded_at && new Date(consent.recorded_at).toLocaleString()}</Row>
-            <Row label="From">{[consent.ip, consent.page_url].filter(Boolean).join(" · ")}</Row>
-          </dl>
-        </section>
-      )}
-
-      {lead.contact_id && (
-        <section>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <h3 className="text-xs font-medium text-slate-500">Notes and calls</h3>
-            <Link className="text-xs font-semibold text-brand" to={`/contacts?contact=${lead.contact_id}`}>Open contact to log a call</Link>
+    <div className="flex min-h-full flex-col" data-testid="lead-detail">
+      <header className="border-b border-border px-5 pb-5 pt-6 sm:px-6">
+        <div className="flex items-start gap-3.5 pr-8">
+          <Avatar name={leadName(lead)} size="lg" />
+          <div className="min-w-0 flex-1">
+            <SheetTitle className="break-words text-lg font-semibold leading-7 tracking-tight">{leadName(lead)}</SheetTitle>
+            <SheetDescription className="text-[13px]">{lead.form_name} · {ago(lead.received_at)}</SheetDescription>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <StatusDot tone={STATUS_TONE[lead.status]}>{STATUS_LABEL[lead.status]}</StatusDot>
+              {speedFlag(lead)}
+              {lead.is_test && <TestFlag>Test lead</TestFlag>}
+            </div>
           </div>
-          {contact
-            ? <ActivityFeed entries={notes} limit={5} empty="Nothing logged yet. A note you add below is saved here." testId="lead-notes" />
-            : <Skeleton className="h-12 rounded-lg" />}
-        </section>
-      )}
-
-      <section className="space-y-2">
-        <h3 className="text-xs font-medium text-slate-500">Update</h3>
-        <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional note — saved to the contact's history" rows={3} data-testid="lead-note" />
-        <div className="flex flex-wrap gap-2">
-          {lead.status !== "responded" && <Button size="sm" className="cv-action-primary" disabled={busy} onClick={() => setStatus("responded")}><CheckCircle2 className="mr-1.5 h-4 w-4" />Mark contacted</Button>}
-          {lead.status !== "closed" && <Button size="sm" variant="outline" disabled={busy} onClick={() => setStatus("closed")}>Close</Button>}
-          {lead.status !== "spam" && <Button size="sm" variant="outline" className="text-red-700" disabled={busy} onClick={() => setStatus("spam")}>Spam</Button>}
-          {lead.status !== "new" && <Button size="sm" variant="ghost" disabled={busy} onClick={() => setStatus("new")}>Reopen</Button>}
         </div>
-      </section>
+        {(lead.phone || lead.email) && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {lead.phone && <Button asChild size="sm"><a href={`tel:${lead.phone}`}><Phone aria-hidden="true" />Call {lead.phone}</a></Button>}
+            {lead.phone && <Button asChild size="sm" variant="outline"><a href={`sms:${lead.phone}`}><MessageSquare aria-hidden="true" />Text</a></Button>}
+            {lead.email && <Button asChild size="sm" variant="outline"><a href={`mailto:${lead.email}`}><Mail aria-hidden="true" />Email</a></Button>}
+          </div>
+        )}
+      </header>
+
+      <div className="flex-1 lg:grid lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 space-y-7 px-5 pb-10 pt-5 sm:px-6">
+          {lead.message && (
+            <section>
+              <PanelHeading>Message</PanelHeading>
+              <blockquote className="whitespace-pre-wrap break-words border-l-2 border-border pl-3 text-sm leading-6 text-foreground">{lead.message}</blockquote>
+            </section>
+          )}
+
+          <section>
+            <PanelHeading>Update</PanelHeading>
+            <div className="overflow-hidden rounded-xl border border-border bg-card transition-colors focus-within:border-ring">
+              <Textarea value={note} onChange={(event) => setNote(event.target.value)} aria-label="Note" placeholder="Optional note — saved to the contact's history" rows={3}
+                className="min-h-[76px] resize-none rounded-none border-0 bg-transparent text-[13px] shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" data-testid="lead-note" />
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-muted/30 px-2.5 py-2">
+                {lead.status !== "new" && <Button size="sm" variant="ghost" disabled={busy} onClick={() => setStatus("new")}>Reopen</Button>}
+                {lead.status !== "spam" && <Button size="sm" variant="outline" className="text-red-700" disabled={busy} onClick={() => setStatus("spam")}>Spam</Button>}
+                {lead.status !== "closed" && <Button size="sm" variant="outline" disabled={busy} onClick={() => setStatus("closed")}>Close</Button>}
+                {lead.status !== "responded" && <Button size="sm" disabled={busy} onClick={() => setStatus("responded")}><CheckCircle2 aria-hidden="true" />Mark contacted</Button>}
+              </div>
+            </div>
+          </section>
+
+          {lead.contact_id && (
+            <section>
+              <PanelHeading action={<Link className="text-xs font-medium text-brand hover:underline" to={`/contacts?contact=${lead.contact_id}`}>Open contact to log a call</Link>}>Notes and calls</PanelHeading>
+              <div className="pt-1">
+                {contact
+                  ? <ActivityFeed entries={notes} limit={5} empty="Nothing logged yet. A note you add above is saved here." testId="lead-notes" />
+                  : <Skeleton className="h-12 rounded-lg" />}
+              </div>
+            </section>
+          )}
+
+          {history.length > 0 && (
+            <section>
+              <PanelHeading>History</PanelHeading>
+              <div className="pt-1.5"><Timeline events={history} /></div>
+            </section>
+          )}
+        </div>
+
+        <aside className="space-y-6 border-t border-border bg-muted/20 px-5 pb-10 pt-5 sm:px-6 lg:border-l lg:border-t-0 lg:px-5">
+          <section>
+            <PanelHeading>Details</PanelHeading>
+            <PropertyList className={PROPS} items={details} />
+          </section>
+          <section>
+            <PanelHeading>What happened automatically</PanelHeading>
+            <PropertyList className={PROPS} items={followThrough} />
+          </section>
+          {source.length > 0 && (
+            <section>
+              <PanelHeading>Source</PanelHeading>
+              <PropertyList className={PROPS} items={source} />
+            </section>
+          )}
+          {consentRows.length > 0 && (
+            <section>
+              <PanelHeading>Consent record</PanelHeading>
+              <PropertyList className={PROPS} items={consentRows} />
+            </section>
+          )}
+        </aside>
+      </div>
     </div>
+  );
+}
+
+function LeadRow({ lead, showStatus, onOpen }) {
+  const flag = speedFlag(lead);
+  const meta = [lead.form_name, lead.property_address, lead.listing_id && `MLS ${lead.listing_id}`, lead.phone, lead.email].filter(Boolean).join(" · ");
+  return (
+    <li className="border-b border-border/70 last:border-0">
+      <button type="button" onClick={() => onOpen(lead)} data-testid={`lead-${lead.id}`}
+        className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+        <Avatar name={leadName(lead)} size="sm" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[13px] font-medium text-foreground">{leadName(lead)}</span>
+            {lead.is_test && <TestFlag />}
+            {showStatus && <StatusDot tone={STATUS_TONE[lead.status]} className="text-xs text-muted-foreground">{STATUS_LABEL[lead.status]}</StatusDot>}
+          </div>
+          <div className="truncate text-xs text-muted-foreground">{meta}</div>
+          {flag && <div className="mt-1 sm:hidden">{flag}</div>}
+        </div>
+        <div className="flex shrink-0 items-center gap-4 text-xs text-muted-foreground">
+          <span className="hidden w-44 justify-end sm:flex">{flag}</span>
+          <span className="hidden w-28 truncate text-right md:block">{lead.assigned_name || lead.assigned_to || "Unassigned"}</span>
+          <time dateTime={lead.received_at} title={fullDate(lead.received_at)} className="tabular w-[4.5rem] text-right">{ago(lead.received_at)}</time>
+        </div>
+      </button>
+    </li>
   );
 }
 
@@ -316,102 +398,80 @@ export default function Leads() {
     return `${summary.within_5_minutes} of ${summary.responded} within 5 min`;
   }, [summary]);
 
+  // The New tab always carries the number waiting; the open tab carries what it holds.
+  const tabs = STATUS_TABS.map(({ key, label }) => ({
+    value: key, label, testid: `leads-tab-${key}`,
+    count: key === "new" ? summary?.open_now : key === status && leads ? total : undefined,
+  }));
+
   return (
     <div className="cv-page" data-testid="leads-page">
-      <div className="cv-page-header">
-        <div>
-          <div className="cv-eyebrow">Lead capture</div>
-          <h1 className="cv-page-title">Leads</h1>
-          <p className="cv-page-description">Every lead from your website forms, the speed-to-lead clock on each one, and what the CRM already did with it.</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" asChild><Link to="/website-forms"><Globe className="mr-1.5 h-4 w-4" />Website forms</Link></Button>
-          <Button variant="outline" onClick={exportCsv}><Download className="mr-1.5 h-4 w-4" />Export CSV</Button>
-          <Button variant="outline" onClick={load} data-testid="leads-refresh"><RefreshCw className="mr-1.5 h-4 w-4" />Refresh</Button>
-        </div>
-      </div>
+      <PageHeader icon={UserPlus} title="Leads"
+        description="Every website lead, its speed-to-lead clock, and what the CRM already did with it."
+        actions={<>
+          <Button variant="outline" size="sm" asChild><Link to="/website-forms"><Globe aria-hidden="true" />Website forms</Link></Button>
+          <Button variant="outline" size="sm" onClick={exportCsv}><Download aria-hidden="true" />Export CSV</Button>
+          <Button variant="outline" size="sm" className="w-8 px-0" onClick={load} aria-label="Refresh leads" title="Refresh" data-testid="leads-refresh"><RefreshCw aria-hidden="true" /></Button>
+        </>} />
 
       {summary ? (
-        <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <Tile icon={Zap} tone={summary.open_now ? "amber" : "emerald"} label="Waiting for a response" value={summary.open_now} hint={summary.open_now ? "New leads nobody has contacted" : "Every lead has been contacted"} />
-          <Tile icon={Clock3} tone="cyan" label="Median response" value={summary.median_response_minutes == null ? "—" : duration(summary.median_response_minutes)} hint={responseHint} />
-          <Tile icon={ShieldAlert} tone={summary.sla_breaches ? "red" : "slate"} label="Escalated" value={summary.sla_breaches} hint={`Last ${summary.window_days} days`} />
-          <Tile icon={Globe} tone="slate" label="Leads" value={summary.total} hint={`Last ${summary.window_days} days, test leads excluded`} />
-        </div>
-      ) : <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>}
+        <StatStrip className="mb-5" items={[
+          { label: "Waiting for a response", value: summary.open_now, tone: summary.open_now ? "warning" : undefined, detail: summary.open_now ? "New leads nobody has contacted" : "Every lead has been contacted", testid: "leads-stat-waiting" },
+          { label: "Median response", value: summary.median_response_minutes == null ? "—" : duration(summary.median_response_minutes), detail: responseHint, testid: "leads-stat-median" },
+          { label: "Escalated", value: summary.sla_breaches, tone: summary.sla_breaches ? "danger" : undefined, detail: `Last ${summary.window_days} days`, testid: "leads-stat-escalated" },
+          { label: "Leads", value: summary.total, detail: `Last ${summary.window_days} days, test leads excluded`, testid: "leads-stat-total" },
+        ]} />
+      ) : <Skeleton className="mb-5 h-[94px] rounded-xl" />}
 
-      <div className="cv-card">
-        <div className="flex flex-col gap-3 border-b border-slate-100 p-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-1" role="tablist">
-            {STATUS_TABS.map((tab) => (
-              <button key={tab.key} type="button" role="tab" aria-selected={status === tab.key} onClick={() => setStatus(tab.key)}
-                className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${status === tab.key ? "bg-foreground text-white" : "text-slate-600 hover:bg-slate-100"}`}>
-                {tab.label}{tab.key === "new" && summary?.open_now ? ` (${summary.open_now})` : ""}
-              </button>
-            ))}
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Select value={formId} onValueChange={setFormId}>
-              <SelectTrigger className="h-9 w-full sm:w-52"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All forms</SelectItem>
-                {forms.map((form) => <SelectItem key={form.id} value={form.id}>{form.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name, email, phone, address, MLS #" className="h-9 pl-8 sm:w-72" />
-            </div>
-          </div>
+      <ViewTabs label="Leads by status" items={tabs} value={status} onChange={setStatus} />
+      <Toolbar>
+        <div className="relative w-full sm:w-72">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search leads" placeholder="Name, email, phone, address, MLS #" className="h-8 pl-8 text-[13px]" />
         </div>
+        <Select value={formId} onValueChange={setFormId}>
+          <SelectTrigger className="h-8 w-full text-[13px] sm:w-48" aria-label="Form"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All forms</SelectItem>
+            {forms.map((form) => <SelectItem key={form.id} value={form.id}>{form.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </Toolbar>
 
-        {error && <div className="m-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">{error}</div>}
+      {error && <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-700" role="status"><CircleAlert className="size-4 shrink-0" aria-hidden="true" />{error}</div>}
+
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
         {leads === null ? (
-          <div className="space-y-2 p-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 rounded-lg" />)}</div>
+          <div className="space-y-2 p-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-11 rounded-lg" />)}</div>
         ) : leads.length === 0 ? (
-          <div className="p-10 text-center text-sm text-slate-500">
-            {status === "new" ? "No leads are waiting. New website leads appear here within seconds." : "No leads match these filters."}
-            {forms.length === 0 && <div className="mt-3"><Button asChild className="cv-action-primary"><Link to="/website-forms">Create your first website form</Link></Button></div>}
+          <div className="[&>.cv-empty]:rounded-none [&>.cv-empty]:border-0">
+            <SurfaceEmpty icon={Inbox}
+              title={status === "new" ? "No leads are waiting" : "No leads match these filters"}
+              description={status === "new" ? "New website leads appear here within seconds." : "Try another status, form or search."}
+              action={forms.length === 0 ? <Button asChild size="sm"><Link to="/website-forms">Create your first website form</Link></Button> : null}
+              testid="leads-empty" />
           </div>
         ) : (
-          <ul className="divide-y divide-slate-100">
-            {leads.map((lead) => (
-              <li key={lead.id}>
-                <button type="button" onClick={() => open(lead)} className="flex w-full flex-col gap-2 px-5 py-4 text-left hover:bg-slate-50 sm:flex-row sm:items-center sm:justify-between" data-testid={`lead-${lead.id}`}>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-semibold text-foreground">{lead.name || lead.email || lead.phone || "Website visitor"}</span>
-                      <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${STATUS_STYLE[lead.status]}`}>{STATUS_LABEL[lead.status]}</span>
-                      {lead.is_test && <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">Test</span>}
-                    </div>
-                    <div className="mt-1 truncate text-sm text-slate-500">
-                      {[lead.form_name, lead.property_address, lead.listing_id && `MLS ${lead.listing_id}`, lead.phone, lead.email].filter(Boolean).join(" · ")}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-3 text-xs text-slate-500">
-                    <SlaBadge lead={lead} />
-                    <span>{lead.assigned_name || lead.assigned_to || "Unassigned"}</span>
-                    <span>{ago(lead.received_at)}</span>
-                  </div>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            <div className="hidden h-9 items-center gap-3 border-b border-border bg-muted/40 px-4 text-xs font-medium text-muted-foreground sm:flex" aria-hidden="true">
+              <span className="flex-1 pl-9">Lead</span>
+              <span className="flex shrink-0 gap-4">
+                <span className="w-44 text-right">Speed to lead</span>
+                <span className="hidden w-28 text-right md:block">Owner</span>
+                <span className="w-[4.5rem] text-right">Received</span>
+              </span>
+            </div>
+            <ul aria-label="Leads">
+              {leads.map((lead) => <LeadRow key={lead.id} lead={lead} showStatus={status === "all"} onOpen={open} />)}
+            </ul>
+          </>
         )}
-        {leads && total > leads.length && <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">Showing the newest {leads.length} of {total}. Narrow the filters to find older leads.</div>}
+        {leads && total > leads.length && <div className="border-t border-border bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">Showing the newest {leads.length} of {total}. Narrow the filters to find older leads.</div>}
       </div>
 
       <Sheet open={Boolean(selected)} onOpenChange={(value) => { if (!value) close(); }}>
-        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
-          {selected && (
-            <>
-              <SheetHeader className="mb-4">
-                <SheetTitle>{selected.name || selected.email || selected.phone || "Website visitor"}</SheetTitle>
-                <SheetDescription>{selected.form_name} · {ago(selected.received_at)}</SheetDescription>
-              </SheetHeader>
-              <LeadDetail lead={selected} onStatus={changeStatus} busy={busy} refreshKey={refreshKey} />
-            </>
-          )}
+        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[840px]">
+          {selected && <LeadPanel lead={selected} onStatus={changeStatus} busy={busy} refreshKey={refreshKey} />}
         </SheetContent>
       </Sheet>
     </div>

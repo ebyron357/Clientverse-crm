@@ -48,7 +48,7 @@ export default function AppShell() {
 
   return <div className="min-h-screen bg-canvas text-foreground">
     {mobileOpen && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-foreground/40 backdrop-blur-[1px] lg:hidden" onClick={() => setMobileOpen(false)} />}
-    <aside className={`cv-scrollbar fixed inset-y-0 left-0 z-40 flex flex-col overflow-y-auto bg-canvas transition-[width,transform] duration-200 max-lg:border-r max-lg:border-border max-lg:shadow-xl lg:translate-x-0 ${collapsed ? "w-[68px]" : "w-[252px]"} ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
+    <aside className={`fixed inset-y-0 left-0 z-40 flex flex-col overflow-hidden bg-canvas transition-[width,transform] duration-200 max-lg:border-r max-lg:border-border max-lg:shadow-xl lg:translate-x-0 ${collapsed ? "w-[68px]" : "w-[252px]"} ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
       <div className={`flex h-14 shrink-0 items-center ${collapsed ? "justify-center" : "justify-between pl-4 pr-2"}`}>
         <button className="flex min-w-0 items-center gap-2.5 rounded-md text-left" onClick={() => navigate("/dashboard")} aria-label="Go to ClientVerse command center">
           <BrandMark className="size-7" />
@@ -66,7 +66,7 @@ export default function AppShell() {
           {!collapsed && <><span className="flex-1 text-left">Search</span><kbd className="cv-kbd">⌘K</kbd></>}
         </button>
       </div>
-      <nav aria-label="Primary navigation" className={`flex flex-col gap-3 pb-4 ${collapsed ? "px-2" : "px-3"}`}>
+      <nav aria-label="Primary navigation" className={`cv-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pb-4 ${collapsed ? "px-2" : "px-3"}`}>
         {MODULE_GROUPS.map((group) => {
           const items = CLIENTVERSE_MODULES.filter((item) => item.group === group && (!item.adminOnly || user?.role === "admin"));
           if (!items.length) return null;
@@ -85,7 +85,7 @@ export default function AppShell() {
           </section>;
         })}
       </nav>
-      <div className={`mt-auto border-t border-border/70 ${collapsed ? "p-2" : "p-3"}`}>
+      <div className={`shrink-0 border-t border-border/70 ${collapsed ? "p-2" : "p-3"}`}>
         <div className={`flex items-center ${collapsed ? "flex-col gap-2" : "gap-2.5"}`}>
           <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand-strong" title={collapsed ? user?.name : undefined}>{initials}</div>
           {!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium text-foreground">{user?.name}</div><div className="truncate text-xs text-muted-foreground">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}

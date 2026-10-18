@@ -10,16 +10,17 @@ import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { Avatar, PageHeader, PropertyList, Toolbar, ViewTabs } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SurfaceEmpty, SurfaceError } from "@/components/SurfaceState";
-import { AlarmClock, CalendarClock, CheckCircle2, Circle, ListTodo, Phone, Plus, RefreshCw, RotateCcw, Timer, X } from "lucide-react";
+import { AlarmClock, ArrowUpRight, Briefcase, Building2, CalendarClock, CheckCircle2, ChevronRight, CircleAlert, ListTodo, Pencil, Phone, Plus, RefreshCw, RotateCcw, Timer, User, UserRound, X, Zap } from "lucide-react";
 
 const OPEN_STATUSES = "todo,in_progress,blocked";
 const DONE_DAYS = 7;
@@ -35,23 +36,20 @@ const TABS = [
   { key: "done", label: "Done", empty: `Tasks you finish stay here for ${DONE_DAYS} days.` },
 ];
 
-const TONE = {
-  overdue: "text-red-700",
-  soon: "text-amber-700",
-  today: "text-brand",
-  later: "text-slate-600",
-  none: "text-slate-500",
-  done: "text-emerald-700",
-};
+/** Rows are grouped by where the work stands, Linear-style; the tab already says when it is due. */
+const GROUPS = [
+  { key: "in_progress", label: "In progress" },
+  { key: "todo", label: "To do" },
+  { key: "blocked", label: "Waiting on something" },
+  { key: "done", label: "Done" },
+];
+const STATUS_LABEL = { todo: "To do", in_progress: "In progress", blocked: "Waiting on something", done: "Done", cancelled: "Cancelled" };
 
 const PRIORITY = {
-  urgent: { label: "Urgent", className: "border-red-200 bg-red-50 text-red-700" },
-  high: { label: "High priority", className: "border-amber-200 bg-amber-50 text-amber-800" },
-  low: { label: "Low priority", className: "border-slate-200 bg-slate-50 text-slate-600" },
-};
-const STATUS_CHIP = {
-  in_progress: { label: "In progress", className: "border-brand/20 bg-brand-soft text-brand" },
-  blocked: { label: "Waiting on something", className: "border-violet-200 bg-violet-50 text-violet-700" },
+  urgent: { label: "Urgent", bars: 0 },
+  high: { label: "High", bars: 3 },
+  medium: { label: "Medium", bars: 2 },
+  low: { label: "Low", bars: 1 },
 };
 
 // ------------------------------------------------------------------ dates in words
@@ -106,6 +104,17 @@ function doneWords(task, now = new Date()) {
   const completed = parseDate(task.completed_at);
   return completed ? `Done ${span(now - completed)} ago` : "Done";
 }
+
+function agoWords(value, now = new Date()) {
+  const date = parseDate(value);
+  if (!date) return "";
+  const diff = now - date;
+  if (diff < MINUTE) return "just now";
+  if (diff < 7 * DAY) return `${span(diff)} ago`;
+  return date.toLocaleDateString([], { month: "short", day: "numeric", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
+}
+
+const stamp = (date) => `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${clock(date)}`;
 
 /** Which tab a task belongs in right now. */
 function bucketOf(task, now = new Date()) {
@@ -179,6 +188,8 @@ function aboutOf(task) {
   return { ...route, name: related.name, to: route.to(encodeURIComponent(related.id)) };
 }
 
+const ABOUT_ICON = { lead: Zap, contact: User, deal: Briefcase, company: Building2, client: Building2 };
+
 function assigneeChoices({ me, isAdmin, team, current }) {
   const choices = isAdmin && team.length
     ? team.map((member) => ({ value: member.email, label: samePerson(member.email, me) ? `${member.name} (you)` : member.name }))
@@ -191,90 +202,112 @@ function choiceFor(choices, assignee) {
   return choices.find((choice) => choice.value !== UNASSIGNED && samePerson(choice.value, assignee))?.value || UNASSIGNED;
 }
 
+// ------------------------------------------------------------------ icons
+
+/** Linear-style status glyph: an open ring, a half-filled ring, a paused ring, a filled check. */
+function StatusIcon({ status, className = "" }) {
+  const common = { viewBox: "0 0 16 16", "aria-hidden": true, className: `size-4 shrink-0 ${className}` };
+  if (status === "done") {
+    return <svg {...common} className={`${common.className} text-emerald-600`}><circle cx="8" cy="8" r="7" fill="currentColor" /><path d="M5 8.2 7 10.2 11 6" fill="none" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="stroke-card" /></svg>;
+  }
+  if (status === "in_progress") {
+    return <svg {...common} className={`${common.className} text-brand`}><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M8 4.25a3.75 3.75 0 0 1 0 7.5z" fill="currentColor" /></svg>;
+  }
+  if (status === "blocked") {
+    return <svg {...common} className={`${common.className} text-violet-600`}><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M6.5 5.75v4.5M9.5 5.75v4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;
+  }
+  return <svg {...common} className={`${common.className} text-muted-foreground`}><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg>;
+}
+
+/** Signal bars for high / medium / low, a soft red mark for urgent; nothing when it has none. */
+function PriorityIcon({ priority, className = "" }) {
+  const meta = PRIORITY[priority];
+  if (!meta) return <span className={`inline-block size-4 shrink-0 ${className}`} aria-hidden="true" />;
+  const label = `${meta.label} priority`;
+  if (priority === "urgent") {
+    return <svg viewBox="0 0 16 16" role="img" aria-label={label} className={`size-4 shrink-0 text-red-600 ${className}`}>
+      <title>{label}</title>
+      <rect x="1.5" y="1.5" width="13" height="13" rx="3.5" fill="currentColor" />
+      <path d="M8 4.5v4.25" strokeWidth="1.8" strokeLinecap="round" className="stroke-card" /><circle cx="8" cy="11.25" r="1" className="fill-card" />
+    </svg>;
+  }
+  return <svg viewBox="0 0 16 16" role="img" aria-label={label} className={`size-4 shrink-0 text-foreground/70 ${className}`}>
+    <title>{label}</title>
+    {[0, 1, 2].map((index) => <rect key={index} x={2 + index * 4.5} y={10 - index * 3} width="3" height={4 + index * 3} rx="1" fill="currentColor" opacity={index < meta.bars ? 1 : 0.22} />)}
+  </svg>;
+}
+
 // ------------------------------------------------------------------ pieces
 
-function DueLabel({ task, now }) {
-  if (task.status === "done") {
-    return <span className={`inline-flex items-center gap-1 font-semibold ${TONE.done}`}><CheckCircle2 className="h-3.5 w-3.5" />{doneWords(task, now)}</span>;
-  }
+function DueText({ task, now, className = "" }) {
+  const base = `shrink-0 whitespace-nowrap ${className}`;
+  if (task.status === "done") return <span className={`text-muted-foreground ${base}`}>{doneWords(task, now)}</span>;
   const due = dueWords(task.due_date, now);
-  const Icon = due.tone === "overdue" ? AlarmClock : due.tone === "soon" ? Timer : CalendarClock;
-  return <span className={`inline-flex items-center gap-1 font-semibold ${TONE[due.tone]}`}><Icon className="h-3.5 w-3.5" />{due.text}</span>;
+  if (due.tone === "overdue") return <span className={`inline-flex items-center gap-1 font-medium text-red-700 ${base}`}><AlarmClock className="size-3.5 shrink-0" aria-hidden="true" />{due.text}</span>;
+  if (due.tone === "soon") return <span className={`inline-flex items-center gap-1 text-amber-700 ${base}`}><Timer className="size-3.5 shrink-0" aria-hidden="true" />{due.text}</span>;
+  return <span className={`text-muted-foreground ${base}`}>{due.text}</span>;
 }
 
-function Chips({ task }) {
-  const priority = PRIORITY[task.priority];
-  const status = STATUS_CHIP[task.status];
-  return (
-    <>
-      {priority && <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${priority.className}`}>{priority.label}</span>}
-      {status && <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${status.className}`}>{status.label}</span>}
-    </>
-  );
+function AssigneeMark({ email, name }) {
+  if (!email) {
+    return <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-full border border-dashed border-muted-foreground/50 text-muted-foreground" title="Unassigned">
+      <UserRound className="size-3" aria-hidden="true" /><span className="sr-only">Unassigned</span>
+    </span>;
+  }
+  const words = name === "You" ? "Assigned to you" : `Assigned to ${name}`;
+  return <span className="inline-flex" title={words}><Avatar name={name} size="sm" /><span className="sr-only">{words}</span></span>;
 }
 
-function TaskRow({ task, now, showAssignee, nameOf, busy, highlighted, onToggle, onOpen }) {
+function TaskRow({ task, now, avatarName, busy, highlighted, onToggle, onOpen }) {
   const done = task.status === "done";
   const about = aboutOf(task);
   const contact = task.related?.contact;
-  const owner = task.assignee ? nameOf(task.assignee) : null;
+  const AboutIcon = ABOUT_ICON[about?.kind] || ArrowUpRight;
   return (
-    <li id={`task-${task.id}`} className={`cv-data-row ${highlighted ? "bg-brand-soft/70 ring-2 ring-inset ring-brand" : ""}`} data-testid={`task-row-${task.id}`}>
-      <div className="flex items-start gap-3 px-4 py-3.5 sm:px-5">
-        <button type="button" onClick={() => onToggle(task)} disabled={busy} aria-pressed={done}
-          aria-label={done ? `Reopen: ${task.title}` : `Mark done: ${task.title}`}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-slate-300 transition-colors hover:bg-emerald-50 hover:text-emerald-600 disabled:opacity-50"
-          data-testid={`task-toggle-${task.id}`}>
-          {done ? <CheckCircle2 className="h-6 w-6 text-emerald-600" /> : <Circle className="h-6 w-6" />}
+    <li id={`task-${task.id}`} data-testid={`task-row-${task.id}`}
+      className={`group relative flex items-center gap-2.5 border-b border-border/70 px-3 py-2 transition-colors last:border-0 hover:bg-muted/50 sm:px-4 ${highlighted ? "bg-brand-soft/60 hover:bg-brand-soft/60" : ""}`}>
+      <button type="button" onClick={() => onToggle(task)} disabled={busy} aria-pressed={done}
+        aria-label={done ? `Reopen: ${task.title}` : `Mark done: ${task.title}`}
+        className="relative z-10 -ml-1 flex size-7 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-muted disabled:opacity-50"
+        data-testid={`task-toggle-${task.id}`}>
+        <StatusIcon status={task.status} />
+      </button>
+      <div className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-center sm:gap-2.5">
+        {/* The title is the row's link: its hit area stretches over the whole row. */}
+        <button type="button" onClick={() => onOpen(task)} data-testid={`task-open-${task.id}`}
+          className={`min-w-0 text-left text-[13px] font-medium leading-5 after:absolute after:inset-0 after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-ring ${done ? "text-muted-foreground line-through decoration-muted-foreground/50" : "text-foreground"}`}>
+          <span className="line-clamp-2 break-words sm:line-clamp-1">{task.title}</span>
         </button>
-        <div className="min-w-0 flex-1 pt-1.5">
-          <button type="button" onClick={() => onOpen(task)}
-            className={`block w-full break-words text-left text-[15px] font-semibold leading-6 hover:text-brand ${done ? "text-slate-500 line-through decoration-slate-300" : "text-foreground"}`}
-            data-testid={`task-open-${task.id}`}>
-            {task.title}
-          </button>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm">
-            <DueLabel task={task} now={now} />
-            <Chips task={task} />
-            {showAssignee || !owner
-              ? <span className="text-slate-500">{owner ? `Assigned to ${owner === "You" ? "you" : owner}` : "Unassigned"}</span>
-              : null}
-          </div>
-          {about && (
-            <div className="mt-1 break-words text-sm text-slate-500">
-              {about.label}:{" "}
-              {about.to
-                ? <Link to={about.to} className="font-semibold text-brand hover:underline" data-testid={`task-about-${task.id}`}>{about.name}</Link>
-                : <span>{about.name}</span>}
-              {about.kind === "deal" && contact?.name ? ` · ${contact.name}` : ""}
-            </div>
-          )}
+        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs sm:mt-0 sm:shrink-0">
+          <DueText task={task} now={now} className="sm:hidden" />
+          {about && (about.to
+            ? <Link to={about.to} data-testid={`task-about-${task.id}`}
+                className="relative z-10 inline-flex h-6 min-w-0 max-w-[13rem] items-center gap-1 rounded-md border border-border px-1.5 text-muted-foreground transition-colors hover:border-input hover:text-foreground">
+                <AboutIcon className="size-3 shrink-0" aria-hidden="true" /><span className="sr-only">{about.label}: </span><span className="truncate">{about.name}</span>
+                {about.kind === "deal" && contact?.name ? <span className="hidden truncate md:inline">· {contact.name}</span> : null}
+              </Link>
+            : <span className="inline-flex h-6 min-w-0 items-center gap-1 px-1.5 text-muted-foreground"><span className="truncate">{about.label}: {about.name}</span></span>)}
         </div>
-        {contact?.phone && !done && (
-          <Button asChild size="sm" variant="outline" className="mt-1 shrink-0">
-            <a href={telHref(contact.phone)} aria-label={`Call ${contact.name || "them"} at ${contact.phone}`} data-testid={`task-call-${task.id}`}>
-              <Phone className="mr-1.5 h-4 w-4" />Call
-            </a>
-          </Button>
-        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2.5 sm:gap-3">
+        <PriorityIcon priority={task.priority} className="hidden sm:block" />
+        <DueText task={task} now={now} className="tabular hidden w-[8.75rem] justify-end text-right text-xs sm:inline-flex" />
+        <AssigneeMark email={task.assignee} name={task.assignee ? avatarName(task.assignee) : null} />
+        {contact?.phone && !done
+          ? <Button asChild size="sm" variant="ghost" className="relative z-10 size-7 px-0 text-muted-foreground hover:text-foreground">
+              <a href={telHref(contact.phone)} aria-label={`Call ${contact.name || "them"} at ${contact.phone}`} title={`Call ${contact.phone}`} data-testid={`task-call-${task.id}`}>
+                <Phone aria-hidden="true" />
+              </a>
+            </Button>
+          : <span className="hidden size-7 sm:block" aria-hidden="true" />}
       </div>
     </li>
   );
 }
 
-function DetailRow({ label, children }) {
-  if (children == null || children === "" || children === false) return null;
-  return (
-    <div className="grid grid-cols-[7.5rem_1fr] gap-3 border-t border-slate-100 py-2 text-sm first:border-t-0">
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="min-w-0 break-words text-foreground">{children}</dd>
-    </div>
-  );
-}
-
 function createdLine(task, nameOf) {
   const created = parseDate(task.created_at);
-  const when = created ? `${created.toLocaleDateString([], { month: "short", day: "numeric" })}, ${clock(created)}` : "";
+  const when = created ? stamp(created) : "";
   const automatic = String(task.created_by || "").startsWith("system:");
   const lead = task.source && typeof task.source === "object" && task.source.kind === "website_form";
   const creator = task.created_by ? nameOf(task.created_by) : null;
@@ -283,8 +316,89 @@ function createdLine(task, nameOf) {
   return when ? `${who} · ${when}` : who;
 }
 
-/** One task: what it is, the quick actions, and the edits (due date, owner). */
-function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, onToggle, onSave }) {
+/** The task's history as sentences, oldest first. Each change records what it changed
+    *from*; walking back from the task as it is now tells us what it changed *to*. */
+function taskActivity(task, nameOf) {
+  const actor = (email) => {
+    if (!email) return "Someone";
+    if (String(email).startsWith("system:")) return "ClientVerse";
+    return nameOf(email);
+  };
+  const person = (email) => { const name = nameOf(email); return name === "You" ? "you" : name; };
+  const history = Array.isArray(task.history) ? task.history : [];
+  if (!history.length) {
+    const fallback = [];
+    if (task.created_at) fallback.push({ key: "created", at: task.created_at, icon: Plus, text: createdLine(task, nameOf).split(" · ")[0] });
+    if (task.completed_at) fallback.push({ key: "completed", at: task.completed_at, status: "done", text: "Marked done" });
+    return fallback;
+  }
+  const current = { status: task.status, due_date: task.due_date, assignee: task.assignee, priority: task.priority, title: task.title, notes: task.notes };
+  const out = [];
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index] || {};
+    const who = actor(entry.actor);
+    const key = `${index}`;
+    if (entry.action === "created" || entry.action === "imported") {
+      const lead = task.source && typeof task.source === "object" && task.source.kind === "website_form";
+      const automatic = String(entry.actor || "").startsWith("system:");
+      out.push({ key, at: entry.at, icon: Plus, text: automatic ? (lead ? "Added automatically when the lead came in" : "Added automatically") : `${who} ${entry.action === "imported" ? "imported" : "created"} the task` });
+      continue;
+    }
+    if (entry.action === "completed") {
+      out.push({ key, at: entry.at, status: "done", text: `${who} marked it done` });
+      current.status = undefined;
+      continue;
+    }
+    const changed = entry.detail?.changed || [];
+    const from = entry.detail?.from || {};
+    if (!changed.length) { out.push({ key, at: entry.at, icon: Pencil, text: `${who} updated the task` }); continue; }
+    changed.forEach((field) => {
+      const to = current[field];
+      const was = from[field];
+      let line;
+      if (field === "status") {
+        line = to === "done" ? { status: "done", text: `${who} marked it done` }
+          : was === "done" ? { icon: RotateCcw, text: `${who} reopened it` }
+            : { status: to, text: to ? `${who} moved it to ${STATUS_LABEL[to] || to}` : `${who} changed the status` };
+      } else if (field === "due_date") {
+        const date = parseDate(to);
+        line = { icon: CalendarClock, text: date ? `${who} set the due date to ${stamp(date)}` : to === undefined ? `${who} changed the due date` : `${who} removed the due date` };
+      } else if (field === "assignee") {
+        const took = to && samePerson(to, entry.actor);
+        line = { icon: UserRound, text: took ? `${who} took the task` : to ? `${who} assigned it to ${person(to)}` : to === undefined ? `${who} changed who it is assigned to` : `${who} unassigned it` };
+      } else if (field === "priority") {
+        line = { icon: Pencil, text: PRIORITY[to] ? `${who} set the priority to ${PRIORITY[to].label.toLowerCase()}` : `${who} changed the priority` };
+      } else if (field === "title") {
+        line = { icon: Pencil, text: `${who} renamed it` };
+      } else if (field === "notes") {
+        line = { icon: Pencil, text: `${who} edited the notes` };
+      } else {
+        line = { icon: Pencil, text: `${who} changed the ${field.replace(/_/g, " ")}` };
+      }
+      out.push({ key: `${key}-${field}`, at: entry.at, ...line });
+      current[field] = was;
+    });
+  }
+  return out.reverse();
+}
+
+function ActivityList({ entries, now }) {
+  if (!entries.length) return <p className="text-[13px] text-muted-foreground">Nothing has happened to this task yet.</p>;
+  return <ol>
+    {entries.map(({ key, at, icon: Icon, status, text }) => <li key={key} className="relative flex gap-3 pb-4 before:absolute before:bottom-0 before:left-[11px] before:top-7 before:w-px before:bg-border last:pb-0 last:before:hidden">
+      <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-card">
+        {status ? <StatusIcon status={status} className="size-3.5" /> : <Icon className="size-3.5 text-muted-foreground" aria-hidden="true" />}
+      </span>
+      <div className="min-w-0 pt-0.5 text-[13px] leading-5">
+        <span className="text-foreground/90">{text}</span>
+        {at && <time dateTime={at} title={parseDate(at)?.toLocaleString()} className="ml-1.5 whitespace-nowrap text-xs text-muted-foreground">{agoWords(at, now)}</time>}
+      </div>
+    </li>)}
+  </ol>;
+}
+
+/** One task, laid out like an issue: what it is and what happened on the left, its properties on the right. */
+function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, tabLabel, onToggle, onSave }) {
   const initial = toLocalInputs(task.due_date);
   const choices = assigneeChoices({ me, isAdmin, team, current: task.assignee });
   const [date, setDate] = useState(initial.date);
@@ -294,6 +408,9 @@ function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, onToggle, onSa
   const done = task.status === "done";
   const about = aboutOf(task);
   const contact = task.related?.contact;
+  const activity = useMemo(() => taskActivity(task, nameOf), [task, nameOf]);
+  const priority = PRIORITY[task.priority];
+  const AboutIcon = ABOUT_ICON[about?.kind] || ArrowUpRight;
 
   const save = () => {
     const changes = {};
@@ -302,60 +419,68 @@ function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, onToggle, onSa
     onSave(task, changes);
   };
 
+  const field = "h-8 text-[13px]";
+  const properties = [
+    { label: "Status", value: <span className="inline-flex items-center gap-2"><StatusIcon status={task.status} />{STATUS_LABEL[task.status] || task.status}</span> },
+    { label: "Priority", value: priority ? <span className="inline-flex items-center gap-2"><PriorityIcon priority={task.priority} />{priority.label}</span> : <span className="text-muted-foreground">No priority</span> },
+    { label: "Due", value: <DueText task={task} now={now} /> },
+    {
+      label: "Assignee", value: (
+        <Select value={assignee} onValueChange={(value) => { setAssignee(value); setTouched((current) => ({ ...current, assignee: true })); }}>
+          <SelectTrigger id="task-assignee" aria-label="Assigned to" className={`${field} -ml-2 w-[calc(100%+0.5rem)] border-transparent bg-transparent px-2 shadow-none hover:bg-muted/60 focus:border-input`} data-testid="task-detail-assignee"><SelectValue /></SelectTrigger>
+          <SelectContent>{choices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}</SelectContent>
+        </Select>
+      ),
+    },
+    { label: "Due date", value: <Input id="task-due-date" type="date" aria-label="Due date" value={date} onChange={(event) => { setDate(event.target.value); setTouched((value) => ({ ...value, due: true })); }} className={field} data-testid="task-detail-due-date" /> },
+    { label: "Time", value: <Input id="task-due-time" type="time" aria-label="Due time" value={time} onChange={(event) => { setTime(event.target.value); setTouched((value) => ({ ...value, due: true })); }} className={field} data-testid="task-detail-due-time" /> },
+    { label: "Linked to", value: about ? (about.to
+      ? <Link to={about.to} className="inline-flex max-w-full items-center gap-1.5 font-medium text-brand hover:underline"><AboutIcon className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{about.name}</span></Link>
+      : <span className="text-muted-foreground">{about.name}</span>) : null },
+    { label: "Person", value: contact?.name ? <span>{contact.name}{[contact.phone, contact.email].filter(Boolean).length ? <span className="block text-xs text-muted-foreground">{[contact.phone, contact.email].filter(Boolean).join(" · ")}</span> : null}</span> : null },
+    { label: "Created", value: parseDate(task.created_at) ? stamp(parseDate(task.created_at)) : null },
+  ].filter(({ value }) => value != null);
+
   return (
-    <div className="space-y-6 pb-10" data-testid="task-detail">
-      <div className="flex flex-wrap items-center gap-2 text-sm"><DueLabel task={task} now={now} /><Chips task={task} /></div>
-
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant={done ? "outline" : "default"} className={done ? "" : "cv-action-primary"} disabled={busy} onClick={() => onToggle(task)} data-testid="task-detail-toggle">
-          {done ? <><RotateCcw className="mr-1.5 h-4 w-4" />Reopen</> : <><CheckCircle2 className="mr-1.5 h-4 w-4" />Mark done</>}
-        </Button>
-        {contact?.phone && (
-          <Button asChild size="sm" variant="outline">
-            <a href={telHref(contact.phone)} data-testid="task-detail-call"><Phone className="mr-1.5 h-4 w-4" />Call {contact.phone}</a>
-          </Button>
-        )}
-        {about?.to && <Button asChild size="sm" variant="outline"><Link to={about.to} data-testid="task-detail-about">Open the {about.kind}</Link></Button>}
+    <div className="flex min-h-full flex-col" data-testid="task-detail">
+      <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-5 pr-14 text-[13px] text-muted-foreground sm:px-6">
+        <ListTodo className="size-4" aria-hidden="true" />Tasks<ChevronRight className="size-3.5" aria-hidden="true" /><span className="text-foreground">{tabLabel || STATUS_LABEL[task.status] || "Task"}</span>
       </div>
+      <div className="grid flex-1 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[auto_1fr]">
+        <div className="min-w-0 px-5 pb-6 pt-6 sm:px-7">
+          <SheetTitle className="break-words text-xl font-semibold leading-7 tracking-tight">{task.title}</SheetTitle>
+          <SheetDescription className="mt-1 text-[13px]">{about ? `${about.label}: ${about.name}` : "A follow-up task"}</SheetDescription>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button size="sm" variant={done ? "outline" : "default"} disabled={busy} onClick={() => onToggle(task)} data-testid="task-detail-toggle">
+              {done ? <><RotateCcw aria-hidden="true" />Reopen</> : <><CheckCircle2 aria-hidden="true" />Mark done</>}
+            </Button>
+            {contact?.phone && (
+              <Button asChild size="sm" variant="outline">
+                <a href={telHref(contact.phone)} data-testid="task-detail-call"><Phone aria-hidden="true" />Call {contact.phone}</a>
+              </Button>
+            )}
+            {about?.to && <Button asChild size="sm" variant="outline"><Link to={about.to} data-testid="task-detail-about"><ArrowUpRight aria-hidden="true" />Open the {about.kind}</Link></Button>}
+          </div>
+          <div className="mt-6">
+            {task.notes
+              ? <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">{task.notes}</p>
+              : <p className="text-sm text-muted-foreground">No notes on this task.</p>}
+          </div>
+        </div>
 
-      <section>
-        <h3 className="mb-1 text-xs font-medium text-slate-500">Details</h3>
-        <dl>
-          <DetailRow label="Person">{contact?.name ? [contact.name, contact.phone, contact.email].filter(Boolean).join(" · ") : null}</DetailRow>
-          <DetailRow label="Assigned to">{task.assignee ? nameOf(task.assignee) : "Unassigned — anyone on the team can take it"}</DetailRow>
-          <DetailRow label="Created">{createdLine(task, nameOf)}</DetailRow>
-        </dl>
-      </section>
+        <aside className="border-y border-border bg-muted/20 px-5 py-5 sm:px-6 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:border-y-0 lg:border-l lg:px-5">
+          <h3 className="mb-1.5 text-xs font-medium text-muted-foreground">Properties</h3>
+          <PropertyList className="[&>div]:grid-cols-[84px_minmax(0,1fr)] [&>div]:items-center [&>div]:min-h-[2.5rem]" items={properties} />
+          <Button size="sm" className="mt-4 w-full" disabled={busy || (!touched.due && !touched.assignee)} onClick={save} data-testid="task-detail-save">Save changes</Button>
+          {!task.assignee && <p className="mt-3 text-xs text-muted-foreground">Unassigned — anyone on the team can take it.</p>}
+          {!isAdmin && <p className="mt-2 text-xs text-muted-foreground">Only admins can see the team list, so you can take a task yourself or leave it unassigned.</p>}
+        </aside>
 
-      {task.notes && (
-        <section>
-          <h3 className="mb-1 text-xs font-medium text-slate-500">Notes</h3>
-          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{task.notes}</p>
+        <section className="min-w-0 border-border px-5 pb-10 pt-6 sm:px-7 lg:border-t" aria-label="Activity">
+          <h3 className="mb-4 text-sm font-semibold text-foreground">Activity</h3>
+          <ActivityList entries={activity} now={now} />
         </section>
-      )}
-
-      <section className="space-y-3">
-        <h3 className="text-xs font-medium text-slate-500">Change</h3>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="grid gap-1.5">
-            <Label htmlFor="task-due-date">Due date</Label>
-            <Input id="task-due-date" type="date" value={date} onChange={(event) => { setDate(event.target.value); setTouched((value) => ({ ...value, due: true })); }} data-testid="task-detail-due-date" />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="task-due-time">Time</Label>
-            <Input id="task-due-time" type="time" value={time} onChange={(event) => { setTime(event.target.value); setTouched((value) => ({ ...value, due: true })); }} data-testid="task-detail-due-time" />
-          </div>
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="task-assignee">Assigned to</Label>
-          <Select value={assignee} onValueChange={(value) => { setAssignee(value); setTouched((current) => ({ ...current, assignee: true })); }}>
-            <SelectTrigger id="task-assignee" data-testid="task-detail-assignee"><SelectValue /></SelectTrigger>
-            <SelectContent>{choices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}</SelectContent>
-          </Select>
-          {!isAdmin && <p className="text-xs text-slate-500">Only admins can see the team list, so you can take a task yourself or leave it unassigned.</p>}
-        </div>
-        <Button size="sm" className="cv-action-primary" disabled={busy || (!touched.due && !touched.assignee)} onClick={save} data-testid="task-detail-save">Save changes</Button>
-      </section>
+      </div>
     </div>
   );
 }
@@ -385,24 +510,27 @@ function ContactPicker({ value, onChange }) {
 
   if (value) {
     return (
-      <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-        <span className="min-w-0 break-words text-foreground"><span className="font-semibold">{value.name}</span>{value.phone ? ` · ${value.phone}` : value.email ? ` · ${value.email}` : ""}</span>
-        <Button type="button" size="sm" variant="ghost" onClick={() => onChange(null)} aria-label={`Remove ${value.name}`} data-testid="new-task-contact-clear"><X className="h-4 w-4" /></Button>
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 py-1 pl-2.5 pr-1 text-[13px]">
+        <span className="flex min-w-0 items-center gap-2 text-foreground"><Avatar name={value.name} size="sm" /><span className="min-w-0 break-words"><span className="font-medium">{value.name}</span><span className="text-muted-foreground">{value.phone ? ` · ${value.phone}` : value.email ? ` · ${value.email}` : ""}</span></span></span>
+        <Button type="button" size="sm" variant="ghost" className="size-7 px-0" onClick={() => onChange(null)} aria-label={`Remove ${value.name}`} data-testid="new-task-contact-clear"><X aria-hidden="true" /></Button>
       </div>
     );
   }
   return (
     <div className="space-y-1.5">
       <Input id="new-task-contact" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Type a name, email or phone" autoComplete="off" data-testid="new-task-contact-search" />
-      {searching && <p className="text-xs text-slate-500">Searching…</p>}
-      {!searching && query.trim().length >= 2 && results.length === 0 && <p className="text-xs text-slate-500">No contact matches “{query.trim()}”.</p>}
+      {searching && <p className="text-xs text-muted-foreground">Searching…</p>}
+      {!searching && query.trim().length >= 2 && results.length === 0 && <p className="text-xs text-muted-foreground">No contact matches “{query.trim()}”.</p>}
       {results.length > 0 && (
-        <ul className="max-h-48 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+        <ul className="max-h-48 overflow-y-auto rounded-lg border border-border">
           {results.map((contact) => (
-            <li key={contact.id}>
-              <button type="button" onClick={() => { onChange(contact); setQuery(""); }} className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50" data-testid={`new-task-contact-option-${contact.id}`}>
-                <span className="font-semibold text-foreground">{contact.name}</span>
-                <span className="block text-xs text-slate-500">{[contact.phone, contact.email].filter(Boolean).join(" · ") || "No phone or email yet"}</span>
+            <li key={contact.id} className="border-b border-border/70 last:border-0">
+              <button type="button" onClick={() => { onChange(contact); setQuery(""); }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-muted/50" data-testid={`new-task-contact-option-${contact.id}`}>
+                <Avatar name={contact.name} size="sm" />
+                <span className="min-w-0">
+                  <span className="block text-[13px] font-medium text-foreground">{contact.name}</span>
+                  <span className="block text-xs text-muted-foreground">{[contact.phone, contact.email].filter(Boolean).join(" · ") || "No phone or email yet"}</span>
+                </span>
               </button>
             </li>
           ))}
@@ -441,9 +569,9 @@ function NewTaskForm({ me, isAdmin, team, onCreated, onCancel }) {
   };
 
   return (
-    <form onSubmit={submit} className="grid gap-4 py-2">
+    <form onSubmit={submit} className="grid gap-4 pt-1">
       <div className="grid gap-1.5">
-        <Label htmlFor="new-task-title">What needs doing <span className="text-red-500">*</span></Label>
+        <Label htmlFor="new-task-title">What needs doing <span className="text-red-600" aria-hidden="true">*</span></Label>
         <Input id="new-task-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Call Jane about Saturday’s showing" data-testid="new-task-title" />
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -459,7 +587,7 @@ function NewTaskForm({ me, isAdmin, team, onCreated, onCancel }) {
       <div className="grid gap-1.5">
         <Label htmlFor="new-task-assignee">Assign to</Label>
         <Select value={assignee} onValueChange={setAssignee}>
-          <SelectTrigger id="new-task-assignee" data-testid="new-task-assignee"><SelectValue /></SelectTrigger>
+          <SelectTrigger id="new-task-assignee" aria-label="Assign to" data-testid="new-task-assignee"><SelectValue /></SelectTrigger>
           <SelectContent>{choices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}</SelectContent>
         </Select>
       </div>
@@ -471,9 +599,9 @@ function NewTaskForm({ me, isAdmin, team, onCreated, onCancel }) {
         <Label htmlFor="new-task-notes">Notes (optional)</Label>
         <Textarea id="new-task-notes" value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} placeholder="Anything you’ll want to remember when you do it" data-testid="new-task-notes" />
       </div>
-      <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
-        <Button type="submit" className="cv-action-primary" disabled={saving} data-testid="new-task-submit">{saving ? "Adding…" : "Add task"}</Button>
+      <DialogFooter className="gap-2 pt-1">
+        <Button type="button" variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
+        <Button type="submit" size="sm" disabled={saving} data-testid="new-task-submit">{saving ? "Adding…" : "Add task"}</Button>
       </DialogFooter>
     </form>
   );
@@ -573,6 +701,8 @@ export default function Tasks() {
     if (samePerson(email, me)) return "You";
     return team.find((member) => samePerson(member.email, email))?.name || email;
   }, [me, team]);
+  // Initials want a real name, so "You" becomes the signed-in person's own.
+  const avatarName = useCallback((email) => (samePerson(email, me) ? user?.name || email : nameOf(email)), [me, user, nameOf]);
 
   const open = (task) => setSearchParams((params) => { params.set("task", task.id); return params; });
   const close = () => setSearchParams((params) => { params.delete("task"); return params; });
@@ -635,90 +765,86 @@ export default function Tasks() {
   const now = new Date();
   const current = tab && buckets ? buckets[tab] : null;
   const activeTab = TABS.find(({ key }) => key === tab);
-  const focusedAbout = focused ? aboutOf(focused) : null;
+  const groups = useMemo(() => {
+    if (!current) return [];
+    const known = new Set(GROUPS.map(({ key }) => key));
+    return GROUPS.map((group) => ({ ...group, items: current.items.filter((task) => (known.has(task.status) ? task.status : "todo") === group.key) }))
+      .filter((group) => group.items.length);
+  }, [current]);
+
+  const tabs = TABS.map(({ key, label }) => {
+    const count = buckets?.[key]?.total;
+    const alarm = key === "overdue" && count > 0;
+    return { value: key, label, testid: `tasks-tab-${key}`, count: count == null ? "–" : alarm ? <span className="font-medium text-red-700">{count}</span> : count };
+  });
 
   return (
     <div className="cv-page" data-testid="tasks-page">
-      <div className="cv-page-header">
-        <div>
-          <div className="cv-eyebrow">Follow-through</div>
-          <h1 className="cv-page-title">Tasks</h1>
-          <p className="cv-page-description">Every call-back and follow-up in one place. When a lead comes in from your website, its call-back shows up here within seconds.</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={load} data-testid="tasks-refresh"><RefreshCw className="mr-1.5 h-4 w-4" />Refresh</Button>
-          <Button className="cv-action-primary" onClick={() => setCreating(true)} data-testid="tasks-new"><Plus className="mr-1.5 h-4 w-4" />New task</Button>
-        </div>
-      </div>
+      <PageHeader icon={ListTodo} title="Tasks"
+        description="Every call-back and follow-up in one place, with what is late at the top."
+        actions={<>
+          <Button variant="outline" size="sm" className="w-8 px-0" onClick={load} aria-label="Refresh tasks" title="Refresh" data-testid="tasks-refresh"><RefreshCw aria-hidden="true" /></Button>
+          <Button size="sm" onClick={() => setCreating(true)} data-testid="tasks-new"><Plus aria-hidden="true" />New task</Button>
+        </>} />
 
-      <div className="cv-card overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-slate-100 p-3 sm:p-4 lg:flex-row lg:items-center lg:justify-between">
-          <div role="tablist" aria-label="Tasks by when they are due" className="grid grid-cols-4 gap-1 lg:flex">
-            {TABS.map(({ key, label }) => {
-              const count = buckets?.[key]?.total;
-              const selected = tab === key;
-              const alarm = key === "overdue" && count > 0;
-              return (
-                <button key={key} type="button" role="tab" aria-selected={selected} onClick={() => setTab(key)}
-                  className={`flex min-w-0 flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 text-[13px] font-semibold sm:flex-row sm:justify-center sm:gap-2 sm:text-sm lg:px-3 ${selected ? (alarm ? "bg-red-700 text-white" : "bg-foreground text-white") : alarm ? "text-red-700 hover:bg-red-50" : "text-slate-600 hover:bg-slate-100"}`}
-                  data-testid={`tasks-tab-${key}`}>
-                  <span>{label}</span>
-                  <span className={`min-w-[1.5rem] rounded-full px-1.5 text-center text-[11px] leading-5 ${selected ? "bg-white/20" : alarm ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>{count == null ? "–" : count}</span>
-                </button>
-              );
-            })}
+      <ViewTabs label="Tasks by when they are due" items={tabs} value={tab} onChange={setTab} />
+      <Toolbar>
+        {isAdmin ? (
+          <div role="group" aria-label="Whose tasks to show" className="inline-flex h-8 items-center rounded-lg border border-border bg-card p-0.5 text-[13px] font-medium">
+            {[["mine", "My tasks"], ["everyone", "Everyone"]].map(([key, label]) => (
+              <button key={key} type="button" aria-pressed={view === key} onClick={() => switchView(key)}
+                className={`h-full rounded-md px-2.5 transition-colors ${view === key ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                data-testid={`tasks-view-${key}`}>{label}</button>
+            ))}
           </div>
-          {isAdmin ? (
-            <div role="group" aria-label="Whose tasks to show" className="grid grid-cols-2 rounded-lg border border-slate-200 p-0.5 text-sm font-semibold lg:inline-grid">
-              {[["mine", "My tasks"], ["everyone", "Everyone"]].map(([key, label]) => (
-                <button key={key} type="button" aria-pressed={view === key} onClick={() => switchView(key)}
-                  className={`rounded-md px-3 py-1.5 ${view === key ? "bg-brand-soft text-brand" : "text-slate-600 hover:bg-slate-50"}`}
-                  data-testid={`tasks-view-${key}`}>{label}</button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-        <p className="border-b border-slate-100 px-4 py-2 text-xs text-slate-500 sm:px-5">
+        ) : null}
+        <p className="text-xs text-muted-foreground">
           {view === "mine" ? "Tasks assigned to you, plus any nobody has taken yet." : "Every task on the team."}
         </p>
+      </Toolbar>
 
-        {error && buckets && <div className="m-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">{error}</div>}
-        {error && !buckets ? (
-          <div className="p-4"><SurfaceError title="Tasks could not be loaded" description={error} onRetry={load} testid="tasks-error" /></div>
-        ) : !current ? (
-          <div className="space-y-2 p-4">{[0, 1, 2].map((index) => <Skeleton key={index} className="h-16 rounded-lg" />)}</div>
-        ) : current.items.length === 0 ? (
-          <div className="p-4">
-            <SurfaceEmpty icon={tab === "done" ? ListTodo : CheckCircle2}
-              title={tab === "done" ? "Nothing finished lately" : "You're all caught up"}
-              description={activeTab?.empty}
-              action={<Button className="mt-5 cv-action-primary" onClick={() => setCreating(true)} data-testid="tasks-empty-new"><Plus className="mr-1.5 h-4 w-4" />New task</Button>}
-              testid="tasks-empty" />
-          </div>
-        ) : (
-          <ul className="divide-y divide-slate-100" data-testid={`tasks-list-${tab}`}>
-            {current.items.map((task) => (
-              <TaskRow key={task.id} task={task} now={now} showAssignee={view === "everyone"} nameOf={nameOf}
-                busy={busyId === task.id} highlighted={task.id === focusId} onToggle={toggle} onOpen={open} />
-            ))}
-          </ul>
-        )}
-        {current && current.total > current.items.length && (
-          <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">Showing the first {current.items.length} of {current.total}.</div>
-        )}
-      </div>
+      {error && buckets && <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-700" role="status"><CircleAlert className="size-4 shrink-0" aria-hidden="true" />{error}</div>}
+      {error && !buckets ? (
+        <SurfaceError title="Tasks could not be loaded" description={error} onRetry={load} testid="tasks-error" />
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border bg-card" data-testid={current && current.items.length ? `tasks-list-${tab}` : undefined}>
+          {!current ? (
+            <div className="space-y-2 p-3">{[0, 1, 2].map((index) => <Skeleton key={index} className="h-9 rounded-lg" />)}</div>
+          ) : current.items.length === 0 ? (
+            <div className="[&>.cv-empty]:rounded-none [&>.cv-empty]:border-0">
+              <SurfaceEmpty icon={tab === "done" ? ListTodo : CheckCircle2}
+                title={tab === "done" ? "Nothing finished lately" : "You're all caught up"}
+                description={activeTab?.empty}
+                action={<Button size="sm" variant="outline" onClick={() => setCreating(true)} data-testid="tasks-empty-new"><Plus aria-hidden="true" />New task</Button>}
+                testid="tasks-empty" />
+            </div>
+          ) : groups.map((group, index) => (
+            <section key={group.key} aria-label={`${group.label}: ${group.items.length}`} className={index ? "border-t border-border" : ""}>
+              <h2 className="flex h-9 items-center gap-2 border-b border-border/70 bg-muted/40 px-4 text-xs font-medium text-muted-foreground">
+                <StatusIcon status={group.key} className="size-3.5" />
+                <span className="text-foreground/80">{group.label}</span>
+                <span className="tabular">{group.items.length}</span>
+              </h2>
+              <ul>
+                {group.items.map((task) => (
+                  <TaskRow key={task.id} task={task} now={now} avatarName={avatarName}
+                    busy={busyId === task.id} highlighted={task.id === focusId} onToggle={toggle} onOpen={open} />
+                ))}
+              </ul>
+            </section>
+          ))}
+          {current && current.total > current.items.length && (
+            <div className="border-t border-border bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">Showing the first {current.items.length} of {current.total}.</div>
+          )}
+        </div>
+      )}
 
       <Sheet open={Boolean(focusId && focused)} onOpenChange={(value) => { if (!value) close(); }}>
-        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[860px]">
           {focused && (
-            <>
-              <SheetHeader className="mb-4 pr-6">
-                <SheetTitle className="break-words">{focused.title}</SheetTitle>
-                <SheetDescription>{focusedAbout ? `${focusedAbout.label}: ${focusedAbout.name}` : "A follow-up task"}</SheetDescription>
-              </SheetHeader>
-              <TaskDetail key={`${focused.id}:${focused.updated_at || ""}:${focused.status}`} task={focused} now={now} me={me}
-                isAdmin={isAdmin} team={team} nameOf={nameOf} busy={busyId === focused.id} onToggle={toggle} onSave={save} />
-            </>
+            <TaskDetail key={`${focused.id}:${focused.updated_at || ""}:${focused.status}`} task={focused} now={now} me={me}
+              isAdmin={isAdmin} team={team} nameOf={nameOf} busy={busyId === focused.id} tabLabel={TABS.find(({ key }) => key === bucketOf(focused, now))?.label}
+              onToggle={toggle} onSave={save} />
           )}
         </SheetContent>
       </Sheet>
@@ -726,8 +852,8 @@ export default function Tasks() {
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[520px]" data-testid="new-task-dialog">
           <DialogHeader>
-            <DialogTitle className="font-display text-2xl">New task</DialogTitle>
-            <DialogDescription>Write down the next thing to do and when. It shows up in Tasks for whoever you assign it to.</DialogDescription>
+            <DialogTitle>New task</DialogTitle>
+            <DialogDescription className="text-[13px]">It shows up in Tasks for whoever you assign it to.</DialogDescription>
           </DialogHeader>
           <NewTaskForm me={me} isAdmin={isAdmin} team={team} onCreated={created} onCancel={() => setCreating(false)} />
         </DialogContent>

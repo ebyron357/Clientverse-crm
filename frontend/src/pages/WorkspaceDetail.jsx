@@ -1,61 +1,83 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api, formatErr, HEALTH_BAND, STATUS_COLOR } from "@/lib/api";
+import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
-import { Badge } from "@/components/AppShell";
+import { Avatar, PropertyList, Section, StatStrip, StatusDot } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import OutcomeGraph from "@/components/OutcomeGraph";
 import WorkspaceActivity from "@/components/WorkspaceActivity";
 import WorkspaceTimeline from "@/components/WorkspaceTimeline";
 import NextBestActions from "@/components/NextBestActions";
-import { ArrowLeft, Plus, Sparkles, FileText, Mail, ShieldAlert } from "lucide-react";
+import { ArrowLeft, ChevronDown, ClipboardList, FileCheck2, FileText, Handshake, Inbox, Mail, Plus, ShieldAlert, ShieldCheck, Sparkles } from "lucide-react";
+
+const cx = (...parts) => parts.filter(Boolean).join(" ");
+const HEALTH_TONE = { healthy: "success", at_risk: "warning", critical: "danger" };
+const STATUS_TONE = { open: "info", todo: "neutral", in_progress: "info", in_review: "warning", done: "success", approved: "success", draft: "neutral", at_risk: "warning", breached: "danger", fulfilled: "success", requested: "warning", rejected: "danger" };
+const PRIORITY_TONE = { urgent: "danger", high: "warning", medium: "info", normal: "info", low: "neutral" };
+const STAGE_TONE = { onboard: "violet", serve: "brand", retain: "warning", expand: "success" };
+const humanize = (value) => String(value || "").replaceAll("_", " ").replace(/^\w/, (char) => char.toUpperCase());
+const shortDate = (value, withYear = false) => value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}) }) : null;
 
 function dueInfo(due) {
   if (!due) return null;
   const d = new Date(due);
   const ms = d.getTime() - Date.now();
   const days = Math.round(ms / 86400000);
-  if (ms < 0) return { label: `overdue ${Math.abs(days)}d`, tone: "text-red-600" };
-  if (days <= 2) return { label: `due in ${days}d`, tone: "text-amber-600" };
-  return { label: `due ${d.toLocaleDateString()}`, tone: "text-gray-400" };
+  if (ms < 0) return { date: shortDate(due), label: `${Math.abs(days)}d overdue`, overdue: true };
+  if (days === 0) return { date: shortDate(due), label: "today", overdue: false };
+  if (days <= 7) return { date: shortDate(due), label: `in ${days}d`, overdue: false };
+  return { date: shortDate(due), label: null, overdue: false };
+}
+
+function DueText({ due }) {
+  const info = dueInfo(due);
+  if (!info) return <span className="text-muted-foreground">—</span>;
+  return <span className={cx("tabular whitespace-nowrap", info.overdue ? "text-red-600" : "text-foreground/80")}>{info.date}{info.label && <span className={info.overdue ? "" : "text-muted-foreground"}> · {info.label}</span>}</span>;
+}
+
+/** Inline status picker: reads as a status dot until it is opened. */
+function StatusSelect({ value, options, onChange, testid, label }) {
+  return <Select value={value} onValueChange={onChange}>
+    <SelectTrigger aria-label={label} data-testid={testid} className="h-7 w-[136px] gap-1 border-transparent bg-transparent px-2 text-[13px] shadow-none transition-colors hover:bg-muted focus:ring-1 data-[state=open]:bg-muted">
+      <SelectValue />
+    </SelectTrigger>
+    <SelectContent>{options.map((option) => <SelectItem key={option} value={option} className="text-[13px]"><StatusDot tone={STATUS_TONE[option]}>{humanize(option)}</StatusDot></SelectItem>)}</SelectContent>
+  </Select>;
 }
 
 function Health({ health }) {
+  const fill = health.band === "healthy" ? "bg-emerald-500" : health.band === "at_risk" ? "bg-amber-500" : "bg-red-500";
   return (
-    <div className="cv-card p-5 sm:p-6" data-testid="health-panel">
-      <div className="flex items-center justify-between mb-4">
-        <div><div className="cv-eyebrow">Client health</div><h3 className="mt-1 font-display font-semibold text-lg">Explainable Client Health</h3></div>
-        <div className="flex items-center gap-2">
-          <span className="font-display text-3xl font-semibold">{health.score}</span>
-          <Badge className={`capitalize ${HEALTH_BAND[health.band]}`}>{health.band.replace("_", " ")}</Badge>
+    <Section card title="Health breakdown" testid="health-panel"
+      actions={<span className="flex items-center gap-2"><StatusDot tone={HEALTH_TONE[health.band]}>{humanize(health.band)}</StatusDot><span className="tabular text-[13px] font-semibold text-foreground">{health.score}<span className="font-normal text-muted-foreground">/100</span></span></span>}>
+      <div className="px-4 pb-1 pt-3">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted" role="img" aria-label={`Health score ${health.score} of 100`}>
+          <div className={cx("h-full rounded-full", fill)} style={{ width: `${health.score}%` }} />
         </div>
       </div>
-      <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-4">
-        <div className={`h-full ${health.band === "healthy" ? "bg-emerald-500" : health.band === "at_risk" ? "bg-amber-500" : "bg-red-500"}`} style={{ width: `${health.score}%` }} />
-      </div>
-      <div className="text-xs text-gray-500 font-semibold mb-2">Contributing factors</div>
-      <div className="space-y-2">
-        {health.factors.length === 0 && <div className="text-sm text-gray-400">No penalties. Client is healthy.</div>}
+      <div className="divide-y divide-border/70 px-4">
+        {health.factors.length === 0 && <div className="py-3 text-[13px] text-muted-foreground">No penalties. Client is healthy.</div>}
         {health.factors.map((f, i) => (
-          <div key={i} className="flex items-center justify-between text-sm border-b border-gray-50 pb-2">
-            <div>
-              <span className="font-medium">{f.factor}</span>
-              <span className="text-gray-400 ml-2">{f.detail}</span>
-              <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-slate-50 text-slate-500 border border-slate-200 border-dashed uppercase">{f.type}</span>
+          <div key={i} className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+            <div className="min-w-0">
+              <span className="font-medium text-foreground">{f.factor}</span>
+              <span className="ml-2 text-muted-foreground">{f.detail}</span>
+              <span className="ml-2 rounded border border-border px-1 py-px text-[10px] text-muted-foreground">{f.type}</span>
             </div>
-            <span className={f.impact < 0 ? "text-red-600 font-medium" : "text-emerald-600 font-medium"}>{f.impact > 0 ? "+" : ""}{f.impact}</span>
+            <span className={cx("tabular shrink-0 font-medium", f.impact < 0 ? "text-red-600" : "text-emerald-600")}>{f.impact > 0 ? "+" : ""}{f.impact}</span>
           </div>
         ))}
       </div>
-    </div>
+    </Section>
   );
 }
 
@@ -75,80 +97,104 @@ function AIPanel({ workspaceId }) {
     } finally { setBusy(false); }
   };
 
-  return (
-    <div className="cv-card p-5 sm:p-6" data-testid="ai-panel">
-      <div className="flex items-center gap-2 mb-1">
-        <Sparkles className="w-4 h-4 text-brand" />
-        <h3 className="font-display font-semibold text-lg">Evidence-backed AI</h3>
-      </div>
-      <p className="text-xs text-gray-400 mb-4">Grounded only in workspace records. Fact vs inference is always distinguished.</p>
+  const modeButton = (value, Icon, text, testid) => <button type="button" onClick={() => setMode(value)} aria-pressed={mode === value} data-testid={testid}
+    className={cx("flex h-7 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-1.5 text-xs font-medium transition-colors", mode === value ? "bg-card text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}>
+    <Icon className="size-3.5" aria-hidden="true" />{text}
+  </button>;
 
-      <div className="flex gap-2 mb-3">
-        <Button variant={mode === "health_summary" ? "default" : "outline"} size="sm" onClick={() => setMode("health_summary")} data-testid="ai-mode-summary" className={mode === "health_summary" ? "cv-action-primary" : ""}><FileText className="w-3.5 h-3.5 mr-1" />Health Summary</Button>
-        <Button variant={mode === "draft_message" ? "default" : "outline"} size="sm" onClick={() => setMode("draft_message")} data-testid="ai-mode-draft" className={mode === "draft_message" ? "cv-action-primary" : ""}><Mail className="w-3.5 h-3.5 mr-1" />Draft Message</Button>
+  return (
+    <Section testid="ai-panel" title={<span className="flex items-center gap-1.5"><Sparkles className="size-3.5 text-brand" aria-hidden="true" />Evidence-backed AI</span>} description="Grounded only in workspace records.">
+      <div className="flex rounded-lg bg-muted p-0.5" role="group" aria-label="AI output type">
+        {modeButton("health_summary", FileText, "Health summary", "ai-mode-summary")}
+        {modeButton("draft_message", Mail, "Draft message", "ai-mode-draft")}
       </div>
       {mode === "draft_message" && (
-        <Textarea placeholder="What should the message cover?" value={instruction} onChange={(e) => setInstruction(e.target.value)} className="mb-3" data-testid="ai-instruction-input" />
+        <Textarea placeholder="What should the message cover?" aria-label="What should the message cover?" value={instruction} onChange={(e) => setInstruction(e.target.value)} className="mt-2 min-h-[72px] text-[13px]" data-testid="ai-instruction-input" />
       )}
-      <Button onClick={run} disabled={busy} data-testid="ai-generate-button" className="cv-action-primary w-full">
+      <Button size="sm" onClick={run} disabled={busy} data-testid="ai-generate-button" className="mt-2 w-full">
         {busy ? "Generating…" : "Generate with evidence"}
       </Button>
 
       {result && (
-        <div className="mt-5 space-y-4" data-testid="ai-result">
-          <div className="bg-white border border-slate-900 rounded-lg p-4">
-            <div className="text-xs text-slate-500 mb-2 font-semibold">AI Output · Recommendation</div>
-            <p className="text-sm whitespace-pre-wrap leading-relaxed">{result.output}</p>
+        <div className="mt-4 space-y-3" data-testid="ai-result">
+          <div className="rounded-lg border border-border bg-muted/30 p-3">
+            <div className="mb-1.5 text-xs font-medium text-muted-foreground">AI output · Recommendation</div>
+            <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{result.output}</p>
           </div>
-
-          <div className="flex flex-wrap gap-2 text-xs">
-            <span className="px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200">Confidence: {result.confidence}</span>
-            <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">Model: {result.model_version}</span>
-            <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">Prompt {result.prompt_version} · Policy {result.policy_version}</span>
-            <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">Run {result.run_id}</span>
-          </div>
-
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+            <dt className="text-muted-foreground">Confidence</dt><dd className="text-amber-700">{result.confidence}</dd>
+            <dt className="text-muted-foreground">Model</dt><dd className="truncate text-foreground/80">{result.model_version}</dd>
+            <dt className="text-muted-foreground">Versions</dt><dd className="truncate text-foreground/80">Prompt {result.prompt_version} · Policy {result.policy_version}</dd>
+            <dt className="text-muted-foreground">Run</dt><dd className="truncate font-mono text-foreground/80">{result.run_id}</dd>
+          </dl>
           <div>
-            <div className="text-xs text-gray-500 font-semibold mb-2">Source records ({result.sources.length})</div>
-            <div className="space-y-1.5">
+            <div className="mb-1 text-xs font-medium text-muted-foreground">Source records ({result.sources.length})</div>
+            <div className="divide-y divide-border/70 rounded-lg border border-border">
               {result.sources.map((s, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 border-dashed rounded px-2.5 py-1.5">
-                  <span className="font-mono text-slate-500">{s.type}</span>
-                  <span className="text-slate-700 flex-1 truncate">{s.label}</span>
-                  <span className="text-slate-400">{s.status}</span>
+                <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 text-xs">
+                  <span className="font-mono text-muted-foreground">{s.type}</span>
+                  <span className="flex-1 truncate text-foreground/80">{s.label}</span>
+                  <span className="text-muted-foreground">{s.status}</span>
                 </div>
               ))}
-              {result.sources.length === 0 && <div className="text-xs text-gray-400">No source records — output is low-confidence.</div>}
+              {result.sources.length === 0 && <div className="px-2.5 py-1.5 text-xs text-muted-foreground">No source records — output is low-confidence.</div>}
             </div>
           </div>
         </div>
       )}
+    </Section>
+  );
+}
+
+/**
+ * One list per record type: a summary + add row, then a single bordered list.
+ * `columns[0]` is the primary cell; the last column is the status/action cell; columns in
+ * between are hidden on phones (their content is repeated in the primary cell's meta line).
+ */
+function ListSection({ items, columns, grid, summary, extra, onAdd, addLabel, emptyIcon: EmptyIcon = ClipboardList, testid }) {
+  const addButton = onAdd && <Button size="sm" variant="outline" onClick={onAdd} data-testid={`add-${testid}`}><Plus className="size-3.5" />{addLabel}</Button>;
+  return (
+    <div data-testid={testid}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="tabular text-[13px] text-muted-foreground">{summary}</p>
+        <div className="flex items-center gap-2">{extra}{items.length > 0 && addButton}</div>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
+        {items.length === 0 ? (
+          <div className="flex flex-col items-center justify-center px-6 py-12 text-center">
+            <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground"><EmptyIcon className="size-5" aria-hidden="true" /></span>
+            <p className="mt-3 text-sm font-medium text-foreground">No {addLabel?.toLowerCase() || "record"}s yet</p>
+            <p className="mt-1 text-[13px] text-muted-foreground">Add the first one to make this account actionable.</p>
+            {addButton && <div className="mt-4">{addButton}</div>}
+          </div>
+        ) : (
+          <>
+            <div className={cx("hidden h-9 items-center gap-3 border-b border-border bg-muted/40 px-4 text-xs font-medium text-muted-foreground sm:grid", grid)}>
+              {columns.map((column) => <div key={column.label} className={column.align === "right" ? "text-right" : ""}>{column.label}</div>)}
+            </div>
+            {items.map((it) => (
+              <div key={it.id} className={cx("grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border/70 px-4 py-2 text-[13px] transition-colors last:border-0 hover:bg-muted/50", grid)} data-testid={`row-${it.id}`}>
+                {columns.map((column, index) => <div key={column.label} className={cx("min-w-0", index > 0 && index < columns.length - 1 && "hidden sm:block", column.align === "right" && "text-right")}>{column.render(it)}</div>)}
+              </div>
+            ))}
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
-function ListSection({ title, items, columns, actions, onAdd, addLabel, testid }) {
-  return (
-    <div className="cv-card overflow-hidden" data-testid={testid}>
-      <div className="cv-card-header">
-        <div><h3 className="cv-card-title">{title}</h3><p className="cv-card-description">Track ownership and progress without losing the account context.</p></div>
-        {onAdd && <Button size="sm" variant="outline" onClick={onAdd} data-testid={`add-${testid}`}><Plus className="w-3.5 h-3.5 mr-1" />{addLabel}</Button>}
-      </div>
-      {items.length === 0 ? <div className="px-5 py-10 text-center text-sm text-slate-500">Nothing here yet. Add the first {addLabel?.toLowerCase() || "record"} to make this account actionable.</div> : (
-        <div className="divide-y divide-slate-100">
-          {items.map((it) => (
-            <div key={it.id} className="cv-data-row flex items-center justify-between gap-3 px-5 py-3.5" data-testid={`row-${it.id}`}>
-              <div className="min-w-0">
-                <div className="text-sm font-semibold truncate text-foreground">{it.title}</div>
-                {columns(it)}
-              </div>
-              <div className="flex items-center gap-2 shrink-0">{actions(it)}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+function PrimaryCell({ title, meta, mobileMeta }) {
+  return <div className="min-w-0 py-0.5">
+    <div className="truncate font-medium text-foreground" title={title}>{title}</div>
+    {meta && <div className="truncate text-xs text-muted-foreground">{meta}</div>}
+    {mobileMeta && <div className="truncate text-xs text-muted-foreground sm:hidden">{mobileMeta}</div>}
+  </div>;
+}
+
+function Person({ value, fallback = "Unassigned" }) {
+  if (!value) return <span className="text-muted-foreground">{fallback}</span>;
+  return <span className="flex min-w-0 items-center gap-2"><Avatar name={value} size="sm" /><span className="truncate text-foreground/80">{value}</span></span>;
 }
 
 function WorkItemDialog({ kind, title, onTitleChange, open, onOpenChange, busy, onSubmit }) {
@@ -158,9 +204,14 @@ function WorkItemDialog({ kind, title, onTitleChange, open, onOpenChange, busy, 
     request: { title: "New client request", description: "Log a request so it remains visible to the delivery team.", action: "Add request" },
     approval: { title: "New approval", description: "Create a governance request for an accountable decision.", action: "Request approval" },
   }[kind] || {};
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle className="font-display text-2xl">{meta.title}</DialogTitle><p className="text-sm leading-6 text-slate-500">{meta.description}</p></DialogHeader><div className="grid gap-1.5 py-3"><Label htmlFor="workspace-item-title">Title <span className="text-red-500">*</span></Label><Input id="workspace-item-title" value={title} onChange={(event) => onTitleChange(event.target.value)} placeholder="Describe the work clearly" /></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={busy} onClick={onSubmit} className="cv-action-primary">{busy ? "Saving…" : meta.action}</Button></DialogFooter></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{meta.title}</DialogTitle><DialogDescription>{meta.description}</DialogDescription></DialogHeader><div className="grid gap-1.5 py-3"><Label htmlFor="workspace-item-title">Title <span className="text-red-600">*</span></Label><Input id="workspace-item-title" value={title} onChange={(event) => onTitleChange(event.target.value)} placeholder="Describe the work clearly" /></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={busy} onClick={onSubmit}>{busy ? "Saving…" : meta.action}</Button></DialogFooter></DialogContent></Dialog>;
 }
 
+const TAB_LIST = "-mb-px h-auto w-full justify-start gap-4 overflow-x-auto rounded-none bg-transparent p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
+const TAB = "group -mb-px h-9 shrink-0 gap-1.5 rounded-none border-b-2 border-transparent bg-transparent px-0 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
+function TabCount({ value }) {
+  return <span className="tabular rounded px-1 text-xs text-muted-foreground group-data-[state=active]:bg-muted group-data-[state=active]:text-foreground">{value}</span>;
+}
 
 export default function WorkspaceDetail() {
   const { id } = useParams();
@@ -173,7 +224,7 @@ export default function WorkspaceDetail() {
   const [cmtDialog, setCmtDialog] = useState(false);
   const [cmtForm, setCmtForm] = useState({ title: "", owner: "", due_date: "" });
   const [slaBusy, setSlaBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState("commitments");
+  const [activeTab, setActiveTab] = useState("overview");
 
   const load = useCallback(async () => {
     const { data } = await api.get(`/workspaces/${id}`);
@@ -219,147 +270,200 @@ export default function WorkspaceDetail() {
     toast.success("Undo window updated");
   };
 
-  if (!d) return <div className="cv-page space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-xl" /></div>;
+  if (!d) return <div className="cv-page">
+    <Skeleton className="mb-5 h-4 w-40" />
+    <div className="mb-5 flex items-center gap-3"><Skeleton className="size-11 rounded-full" /><div className="space-y-2"><Skeleton className="h-6 w-56" /><Skeleton className="h-3.5 w-72" /></div></div>
+    <Skeleton className="mb-6 h-[88px] rounded-xl" />
+    <div className="flex flex-col gap-6 lg:flex-row"><Skeleton className="h-72 flex-1 rounded-xl" /><Skeleton className="h-72 rounded-xl lg:w-80" /></div>
+  </div>;
 
   const { workspace, company, tasks, deliverables, requests, approvals, commitments, health } = d;
+  const openCommitments = commitments.filter((it) => it.status !== "fulfilled");
+  const atRisk = commitments.filter((it) => it.status === "at_risk").length;
+  const breached = commitments.filter((it) => it.status === "breached").length;
+  const openTasks = tasks.filter((it) => it.status !== "done");
+  const overdueTasks = openTasks.filter((it) => it.due_date && new Date(it.due_date).getTime() < Date.now()).length;
+  const pendingApprovals = approvals.filter((it) => it.status === "requested").length;
+  const openRequests = requests.filter((it) => it.status !== "done").length;
+  const riskFactors = health.factors.filter((f) => f.impact < 0).length;
+  const isAdmin = user?.role === "admin";
+  const addItem = (kind) => setWorkItem({ kind, title: "" });
 
   return (
     <div className="cv-page">
-      <button onClick={() => navigate("/workspaces")} className="mb-4 flex items-center text-sm font-medium text-slate-500 hover:text-brand" data-testid="back-button"><ArrowLeft className="w-4 h-4 mr-1" />All client workspaces</button>
-      <div className="cv-page-header mb-6">
-        <div>
-          <div className="cv-eyebrow">Client 360 workspace</div><h1 className="cv-page-title">{workspace.name}</h1>
-          <p className="cv-page-description">{company?.name || "No company linked"} · <span className="capitalize">{workspace.stage}</span> lifecycle stage</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {user?.role === "admin" && (
-            <div className="flex items-center gap-1.5" data-testid="undo-window-config">
-              <span className="text-xs text-gray-400">Undo window</span>
-              <Input type="number" value={undoWin} onChange={(e) => setUndoWin(e.target.value)} className="h-8 w-16 text-xs" data-testid="undo-window-input" />
-              <span className="text-xs text-gray-400">min</span>
-              <Button size="sm" variant="outline" className="h-8" onClick={saveUndoWin} data-testid="undo-window-save">Save</Button>
+      <button onClick={() => navigate("/workspaces")} className="mb-4 inline-flex items-center gap-1 rounded-md text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground" data-testid="back-button"><ArrowLeft className="size-3.5" />All client workspaces</button>
+
+      <header className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <Avatar name={workspace.name} size="lg" />
+          <div className="min-w-0">
+            <h1 className="truncate text-xl font-semibold leading-7 tracking-tight text-foreground">{workspace.name}</h1>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+              <StatusDot tone={HEALTH_TONE[health.band]}>{humanize(health.band)} <span className="tabular text-muted-foreground">{health.score}</span></StatusDot>
+              <span aria-hidden="true">·</span><span className="truncate">{company?.name || "No company linked"}</span>
+              <span aria-hidden="true">·</span><span><span className="capitalize">{workspace.stage}</span> lifecycle stage</span>
+              {workspace.created_at && <><span aria-hidden="true" className="hidden sm:inline">·</span><span className="hidden sm:inline">Since {shortDate(workspace.created_at, true)}</span></>}
             </div>
-          )}
-          <Badge className={`capitalize ${HEALTH_BAND[health.band]}`}>Health {health.score}</Badge>
-        </div>
-      </div>
-
-      <NextBestActions workspaceId={id} limit={5} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        <div className="lg:col-span-2"><Health health={health} /></div>
-        <AIPanel workspaceId={id} />
-      </div>
-
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="w-full justify-start overflow-x-auto">
-          <TabsTrigger value="commitments" data-testid="tab-commitments">Commitment Ledger</TabsTrigger>
-          <TabsTrigger value="outcome" data-testid="tab-outcome">Outcome Graph</TabsTrigger>
-          <TabsTrigger value="activity" data-testid="tab-activity">Activity</TabsTrigger>
-          <TabsTrigger value="timeline" data-testid="tab-timeline">Timeline</TabsTrigger>
-          <TabsTrigger value="tasks" data-testid="tab-tasks">Tasks</TabsTrigger>
-          <TabsTrigger value="deliverables" data-testid="tab-deliverables">Deliverables</TabsTrigger>
-          <TabsTrigger value="requests" data-testid="tab-requests">Requests</TabsTrigger>
-          <TabsTrigger value="approvals" data-testid="tab-approvals">Approvals</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="commitments" className="mt-6">
-          <div className="flex justify-end mb-3">
-            <Button size="sm" variant="outline" onClick={runSlaCheck} disabled={slaBusy} data-testid="run-sla-check">
-              <ShieldAlert className="w-3.5 h-3.5 mr-1" />{slaBusy ? "Checking…" : "Run SLA check"}
-            </Button>
           </div>
-          <ListSection title="Commitment Ledger" items={commitments} testid="commitments-section" onAdd={() => setCmtDialog(true)} addLabel="Commitment"
-            columns={(it) => {
-              const di = dueInfo(it.due_date);
-              return (
-                <div className="text-xs flex items-center gap-2 flex-wrap mt-0.5">
-                  <span className="text-gray-400">{it.owner || "unassigned"}</span>
-                  {di && <span className={di.tone}>· {di.label}</span>}
-                  <Badge className={`capitalize text-[10px] ${STATUS_COLOR[it.status] || STATUS_COLOR.open}`}>{it.status.replace("_", " ")}</Badge>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button size="sm"><Plus className="size-3.5" />New<ChevronDown className="size-3.5 opacity-70" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onSelect={() => setCmtDialog(true)}><Handshake className="size-4" />Commitment</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addItem("task")}><ClipboardList className="size-4" />Task</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addItem("deliverable")}><FileCheck2 className="size-4" />Deliverable</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addItem("request")}><Inbox className="size-4" />Client request</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addItem("approval")}><ShieldCheck className="size-4" />Approval</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </header>
+
+      <StatStrip className="mb-6" items={[
+        { label: "Health score", value: health.score, tone: health.band === "healthy" ? "success" : health.band === "at_risk" ? "warning" : "danger", detail: riskFactors ? `${riskFactors} risk factor${riskFactors === 1 ? "" : "s"}` : "No penalties", onClick: () => setActiveTab("overview") },
+        { label: "Open commitments", value: openCommitments.length, detail: breached || atRisk ? <span className={breached ? "text-red-600" : "text-amber-700"}>{[atRisk && `${atRisk} at risk`, breached && `${breached} breached`].filter(Boolean).join(" · ")}</span> : "None at risk", onClick: () => setActiveTab("commitments") },
+        { label: "Open tasks", value: openTasks.length, detail: overdueTasks ? <span className="text-red-600">{overdueTasks} overdue</span> : "None overdue", onClick: () => setActiveTab("tasks") },
+        { label: "Pending approvals", value: pendingApprovals, detail: pendingApprovals ? <span className="text-amber-700">Awaiting a decision</span> : `${openRequests} open client request${openRequests === 1 ? "" : "s"}`, onClick: () => setActiveTab("approvals") },
+      ]} />
+
+      <div className="flex flex-col gap-8 lg:flex-row lg:gap-0">
+        <div className="min-w-0 flex-1 lg:pr-6">
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <div className="border-b border-border">
+              <TabsList className={TAB_LIST}>
+                <TabsTrigger value="overview" className={TAB} data-testid="tab-overview">Overview</TabsTrigger>
+                <TabsTrigger value="commitments" className={TAB} data-testid="tab-commitments">Commitments<TabCount value={commitments.length} /></TabsTrigger>
+                <TabsTrigger value="tasks" className={TAB} data-testid="tab-tasks">Tasks<TabCount value={tasks.length} /></TabsTrigger>
+                <TabsTrigger value="deliverables" className={TAB} data-testid="tab-deliverables">Deliverables<TabCount value={deliverables.length} /></TabsTrigger>
+                <TabsTrigger value="requests" className={TAB} data-testid="tab-requests">Requests<TabCount value={requests.length} /></TabsTrigger>
+                <TabsTrigger value="approvals" className={TAB} data-testid="tab-approvals">Approvals<TabCount value={approvals.length} /></TabsTrigger>
+                <TabsTrigger value="outcome" className={TAB} data-testid="tab-outcome">Outcomes</TabsTrigger>
+                <TabsTrigger value="timeline" className={TAB} data-testid="tab-timeline">Timeline</TabsTrigger>
+                <TabsTrigger value="activity" className={TAB} data-testid="tab-activity">Activity</TabsTrigger>
+              </TabsList>
+            </div>
+
+            <TabsContent value="overview" className="mt-5 space-y-6">
+              <NextBestActions workspaceId={id} limit={5} compact />
+              <Health health={health} />
+            </TabsContent>
+
+            <TabsContent value="commitments" className="mt-5">
+              <ListSection items={commitments} testid="commitments-section" onAdd={() => setCmtDialog(true)} addLabel="Commitment" emptyIcon={Handshake}
+                summary={`${commitments.length} commitment${commitments.length === 1 ? "" : "s"}${atRisk ? ` · ${atRisk} at risk` : ""}${breached ? ` · ${breached} breached` : ""}`}
+                extra={<Button size="sm" variant="outline" onClick={runSlaCheck} disabled={slaBusy} data-testid="run-sla-check"><ShieldAlert className="size-3.5" />{slaBusy ? "Checking…" : "Run SLA check"}</Button>}
+                grid="sm:grid-cols-[minmax(0,1fr)_minmax(0,200px)_150px_140px]"
+                columns={[
+                  { label: "Commitment", render: (it) => <PrimaryCell title={it.title} mobileMeta={<>{it.due_date && <><DueText due={it.due_date} /> · </>}{it.owner || "unassigned"}</>} /> },
+                  { label: "Owner", render: (it) => <Person value={it.owner} fallback="unassigned" /> },
+                  { label: "Due", render: (it) => <DueText due={it.due_date} /> },
+                  { label: "Status", render: (it) => <StatusSelect value={it.status} options={["open", "at_risk", "breached", "fulfilled"]} label={`Status of ${it.title}`} testid={`commitment-status-${it.id}`} onChange={(v) => upd(`/commitments/${it.id}`, { status: v }, "Updated")} /> },
+                ]} />
+            </TabsContent>
+
+            <TabsContent value="tasks" className="mt-5">
+              <ListSection items={tasks} testid="tasks-section" onAdd={() => addItem("task")} addLabel="Task"
+                summary={`${openTasks.length} open of ${tasks.length}${overdueTasks ? ` · ${overdueTasks} overdue` : ""}`}
+                grid="sm:grid-cols-[minmax(0,1fr)_minmax(0,200px)_150px_140px]"
+                columns={[
+                  { label: "Task", render: (it) => <PrimaryCell title={it.title} mobileMeta={<>{it.due_date && it.status !== "done" && <><DueText due={it.due_date} /> · </>}{it.assignee || "unassigned"}</>} /> },
+                  { label: "Assignee", render: (it) => <Person value={it.assignee} fallback="unassigned" /> },
+                  { label: "Due", render: (it) => it.status === "done" ? <span className="tabular text-muted-foreground">{shortDate(it.due_date) || "—"}</span> : <DueText due={it.due_date} /> },
+                  { label: "Status", render: (it) => <StatusSelect value={it.status} options={["todo", "in_progress", "done"]} label={`Status of ${it.title}`} testid={`task-status-${it.id}`} onChange={(v) => upd(`/tasks/${it.id}`, { status: v }, "Updated")} /> },
+                ]} />
+            </TabsContent>
+
+            <TabsContent value="deliverables" className="mt-5">
+              <ListSection items={deliverables} testid="deliverables-section" onAdd={() => addItem("deliverable")} addLabel="Deliverable" emptyIcon={FileCheck2}
+                summary={`${deliverables.length} deliverable${deliverables.length === 1 ? "" : "s"} · ${deliverables.filter((it) => it.status === "approved").length} approved`}
+                grid="sm:grid-cols-[minmax(0,1fr)_140px]"
+                columns={[
+                  { label: "Deliverable", render: (it) => <PrimaryCell title={it.title} meta={it.description || "—"} /> },
+                  { label: "Status", render: (it) => <StatusSelect value={it.status} options={["draft", "in_review", "approved"]} label={`Status of ${it.title}`} testid={`deliverable-status-${it.id}`} onChange={(v) => upd(`/deliverables/${it.id}`, { status: v }, "Updated")} /> },
+                ]} />
+            </TabsContent>
+
+            <TabsContent value="requests" className="mt-5">
+              <ListSection items={requests} testid="requests-section" onAdd={() => addItem("request")} addLabel="Request" emptyIcon={Inbox}
+                summary={`${openRequests} open of ${requests.length}`}
+                grid="sm:grid-cols-[minmax(0,1fr)_120px_110px_140px]"
+                columns={[
+                  { label: "Request", render: (it) => <PrimaryCell title={it.title} mobileMeta={<span className="capitalize">Priority: {it.priority}</span>} /> },
+                  { label: "Priority", render: (it) => <StatusDot tone={PRIORITY_TONE[it.priority] || "neutral"}><span className="capitalize">{it.priority || "—"}</span></StatusDot> },
+                  { label: "Created", render: (it) => <span className="tabular text-muted-foreground">{shortDate(it.created_at) || "—"}</span> },
+                  { label: "Status", render: (it) => <StatusSelect value={it.status} options={["open", "in_progress", "done"]} label={`Status of ${it.title}`} testid={`request-status-${it.id}`} onChange={(v) => upd(`/client-requests/${it.id}`, { status: v }, "Updated")} /> },
+                ]} />
+            </TabsContent>
+
+            <TabsContent value="approvals" className="mt-5">
+              <ListSection items={approvals} testid="approvals-section" onAdd={() => addItem("approval")} addLabel="Approval" emptyIcon={ShieldCheck}
+                summary={`${pendingApprovals} awaiting decision of ${approvals.length}`}
+                grid="sm:grid-cols-[minmax(0,1fr)_minmax(0,180px)_auto]"
+                columns={[
+                  { label: "Approval", render: (it) => <PrimaryCell title={it.title} meta={<span className="capitalize">{it.kind.replace("_", " ")}<span className="sm:hidden">{it.decided_by ? ` · by ${it.decided_by}` : ""}</span></span>} /> },
+                  { label: "Decided by", render: (it) => it.decided_by ? <Person value={it.decided_by} /> : <span className="text-muted-foreground">—</span> },
+                  { label: "Decision", align: "right", render: (it) => it.status === "requested" ? (
+                    isAdmin ? (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button size="sm" className="h-7" onClick={() => upd(`/approvals/${it.id}`, { status: "approved" }, "Approved")} data-testid={`approve-${it.id}`}>Approve</Button>
+                        <Button size="sm" variant="outline" className="h-7" onClick={() => upd(`/approvals/${it.id}`, { status: "rejected" }, "Rejected")} data-testid={`reject-${it.id}`}>Reject</Button>
+                      </div>
+                    ) : <StatusDot tone="warning">Awaiting admin</StatusDot>
+                  ) : <StatusDot tone={STATUS_TONE[it.status] || "neutral"}>{humanize(it.status)}</StatusDot> },
+                ]} />
+            </TabsContent>
+
+            <TabsContent value="outcome" className="mt-5">
+              <OutcomeGraph workspaceId={id} />
+            </TabsContent>
+
+            <TabsContent value="timeline" className="mt-5">
+              <WorkspaceTimeline workspaceId={id} />
+            </TabsContent>
+
+            <TabsContent value="activity" className="mt-5">
+              <WorkspaceActivity workspaceId={id} />
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        <aside className="space-y-8 border-t border-border pt-6 lg:w-72 lg:shrink-0 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-1">
+          <Section title="Details">
+            <PropertyList items={[
+              { label: "Company", value: company?.name },
+              { label: "Industry", value: company?.industry },
+              { label: "Tier", value: company?.tier ? <span className="capitalize">{company.tier}</span> : null },
+              { label: "Website", value: company?.website },
+              { label: "Lifecycle", value: <StatusDot tone={STAGE_TONE[workspace.stage] || "neutral"}><span className="capitalize">{workspace.stage}</span></StatusDot> },
+              { label: "Health", value: <StatusDot tone={HEALTH_TONE[health.band]}>{humanize(health.band)} · <span className="tabular">{health.score}</span></StatusDot> },
+              { label: "Created", value: shortDate(workspace.created_at, true) },
+              { label: "Undo window", value: isAdmin ? (
+                <div className="-my-1 flex items-center gap-1.5" data-testid="undo-window-config">
+                  <Input type="number" value={undoWin} onChange={(e) => setUndoWin(e.target.value)} aria-label="Undo window in minutes" className="h-7 w-12 px-2 md:text-[13px]" data-testid="undo-window-input" />
+                  <span className="text-xs text-muted-foreground">min</span>
+                  <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={saveUndoWin} data-testid="undo-window-save">Save</Button>
                 </div>
-              );
-            }}
-            actions={(it) => (
-              <Select value={it.status} onValueChange={(v) => upd(`/commitments/${it.id}`, { status: v }, "Updated")}>
-                <SelectTrigger className="h-8 w-32 text-xs" data-testid={`commitment-status-${it.id}`}><SelectValue /></SelectTrigger>
-                <SelectContent>{["open", "at_risk", "breached", "fulfilled"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
-              </Select>
-            )} />
-        </TabsContent>
-
-        <TabsContent value="outcome" className="mt-6">
-          <OutcomeGraph workspaceId={id} />
-        </TabsContent>
-
-        <TabsContent value="activity" className="mt-6">
-          <WorkspaceActivity workspaceId={id} />
-        </TabsContent>
-
-        <TabsContent value="timeline" className="mt-6">
-          <WorkspaceTimeline workspaceId={id} />
-        </TabsContent>
-
-        <TabsContent value="tasks" className="mt-6">
-          <ListSection title="Delivery Tasks" items={tasks} testid="tasks-section" onAdd={() => setWorkItem({ kind: "task", title: "" })} addLabel="Task"
-            columns={(it) => <div className="text-xs text-gray-400">{it.assignee || "unassigned"}</div>}
-            actions={(it) => (
-              <Select value={it.status} onValueChange={(v) => upd(`/tasks/${it.id}`, { status: v }, "Updated")}>
-                <SelectTrigger className="h-8 w-32 text-xs" data-testid={`task-status-${it.id}`}><SelectValue /></SelectTrigger>
-                <SelectContent>{["todo", "in_progress", "done"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
-              </Select>
-            )} />
-        </TabsContent>
-
-        <TabsContent value="deliverables" className="mt-6">
-          <ListSection title="Deliverables" items={deliverables} testid="deliverables-section" onAdd={() => setWorkItem({ kind: "deliverable", title: "" })} addLabel="Deliverable"
-            columns={(it) => <div className="text-xs text-gray-400">{it.description || "—"}</div>}
-            actions={(it) => (
-              <Select value={it.status} onValueChange={(v) => upd(`/deliverables/${it.id}`, { status: v }, "Updated")}>
-                <SelectTrigger className="h-8 w-32 text-xs" data-testid={`deliverable-status-${it.id}`}><SelectValue /></SelectTrigger>
-                <SelectContent>{["draft", "in_review", "approved"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
-              </Select>
-            )} />
-        </TabsContent>
-
-        <TabsContent value="requests" className="mt-6">
-          <ListSection title="Client Requests" items={requests} testid="requests-section" onAdd={() => setWorkItem({ kind: "request", title: "" })} addLabel="Request"
-            columns={(it) => <div className="text-xs text-gray-400 capitalize">Priority: {it.priority}</div>}
-            actions={(it) => (
-              <Select value={it.status} onValueChange={(v) => upd(`/client-requests/${it.id}`, { status: v }, "Updated")}>
-                <SelectTrigger className="h-8 w-32 text-xs" data-testid={`request-status-${it.id}`}><SelectValue /></SelectTrigger>
-                <SelectContent>{["open", "in_progress", "done"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
-              </Select>
-            )} />
-        </TabsContent>
-
-        <TabsContent value="approvals" className="mt-6">
-          <ListSection title="Approvals (Governance)" items={approvals} testid="approvals-section" onAdd={() => setWorkItem({ kind: "approval", title: "" })} addLabel="Approval"
-            columns={(it) => <div className="text-xs text-gray-400 capitalize">{it.kind.replace("_", " ")}{it.decided_by ? ` · by ${it.decided_by}` : ""}</div>}
-            actions={(it) => it.status === "requested" ? (
-              user?.role === "admin" ? (
-              <>
-                <Button size="sm" className="h-8 bg-emerald-600 hover:bg-emerald-700" onClick={() => upd(`/approvals/${it.id}`, { status: "approved" }, "Approved")} data-testid={`approve-${it.id}`}>Approve</Button>
-                <Button size="sm" variant="outline" className="h-8" onClick={() => upd(`/approvals/${it.id}`, { status: "rejected" }, "Rejected")} data-testid={`reject-${it.id}`}>Reject</Button>
-              </>
-              ) : <Badge className="bg-amber-50 text-amber-700 border-amber-200">Awaiting admin</Badge>
-            ) : <Badge className={`capitalize ${STATUS_COLOR[it.status] || STATUS_COLOR.requested}`}>{it.status}</Badge>} />
-        </TabsContent>
-      </Tabs>
+              ) : <span className="tabular">{undoWin} min</span> },
+            ]} />
+          </Section>
+          <AIPanel workspaceId={id} />
+        </aside>
+      </div>
 
       <WorkItemDialog kind={workItem.kind} title={workItem.title} onTitleChange={(title) => setWorkItem((current) => ({ ...current, title }))} open={Boolean(workItem.kind)} onOpenChange={(open) => !open && setWorkItem({ kind: null, title: "" })} busy={workItemBusy} onSubmit={submitWorkItem} />
 
       <Dialog open={cmtDialog} onOpenChange={setCmtDialog}>
         <DialogContent data-testid="commitment-dialog">
-          <DialogHeader><DialogTitle>New Commitment</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>New commitment</DialogTitle><DialogDescription>A promise to this client, with an owner and a due date.</DialogDescription></DialogHeader>
           <div className="space-y-3 py-2">
-            <div className="space-y-1"><Label>Title</Label><Input value={cmtForm.title} onChange={(e) => setCmtForm((f) => ({ ...f, title: e.target.value }))} placeholder="e.g. Deliver dashboard by Friday" data-testid="commitment-title-input" /></div>
-            <div className="space-y-1"><Label>Owner</Label><Input value={cmtForm.owner} onChange={(e) => setCmtForm((f) => ({ ...f, owner: e.target.value }))} placeholder="owner@example.com" data-testid="commitment-owner-input" /></div>
-            <div className="space-y-1"><Label>Due date</Label><Input type="date" value={cmtForm.due_date} onChange={(e) => setCmtForm((f) => ({ ...f, due_date: e.target.value }))} data-testid="commitment-due-input" /></div>
+            <div className="space-y-1.5"><Label htmlFor="commitment-title">Title</Label><Input id="commitment-title" value={cmtForm.title} onChange={(e) => setCmtForm((f) => ({ ...f, title: e.target.value }))} placeholder="e.g. Deliver dashboard by Friday" data-testid="commitment-title-input" /></div>
+            <div className="space-y-1.5"><Label htmlFor="commitment-owner">Owner</Label><Input id="commitment-owner" value={cmtForm.owner} onChange={(e) => setCmtForm((f) => ({ ...f, owner: e.target.value }))} placeholder="owner@example.com" data-testid="commitment-owner-input" /></div>
+            <div className="space-y-1.5"><Label htmlFor="commitment-due">Due date</Label><Input id="commitment-due" type="date" value={cmtForm.due_date} onChange={(e) => setCmtForm((f) => ({ ...f, due_date: e.target.value }))} data-testid="commitment-due-input" /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCmtDialog(false)}>Cancel</Button>
-            <Button className="bg-primary" onClick={submitCommitment} data-testid="commitment-submit">Add commitment</Button>
+            <Button onClick={submitCommitment} data-testid="commitment-submit">Add commitment</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
