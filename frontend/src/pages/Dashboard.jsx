@@ -1,40 +1,48 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { money, formatMoneyByCurrency, HEALTH_BAND } from "@/lib/api";
+import { money, formatMoneyByCurrency } from "@/lib/api";
 import { commandCenterService } from "@/lib/services";
-import { Badge } from "@/components/AppShell";
 import OnboardingChecklist from "@/components/OnboardingChecklist";
 import CommandCenterInsights from "@/components/CommandCenterInsights";
 import NextBestActions from "@/components/NextBestActions";
+import { PageHeader, StatStrip, StatusDot, Section, Avatar } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
-  AlertTriangle, ArrowRight, BriefcaseBusiness, CheckCircle2, CircleAlert,
-  CircleDollarSign, ClipboardCheck, GitBranch, RefreshCw, Sparkles, TrendingUp,
+  AlertTriangle, ArrowRight, BriefcaseBusiness, CheckCircle2, ChevronRight, CircleAlert,
+  ClipboardCheck, GitBranch, LayoutDashboard, RefreshCw, TrendingUp,
 } from "lucide-react";
 
 const STAGE_LABELS = { lead: "Lead", qualified: "Qualified", proposal: "Proposal", negotiation: "Negotiation", closed_won: "Won", closed_lost: "Lost" };
+const ICON_TONE = { amber: "text-amber-600", red: "text-red-600", emerald: "text-emerald-600", cyan: "text-brand" };
+const BAND_TONE = { healthy: "success", at_risk: "warning", critical: "danger" };
+const sentence = (value) => { const text = String(value || "").replace(/_/g, " "); return text.charAt(0).toUpperCase() + text.slice(1); };
+const BAND_BAR = { healthy: "bg-emerald-500", at_risk: "bg-amber-500", critical: "bg-red-500" };
 
-function MetricCard({ icon: Icon, label, value, detail, tone = "cyan", onClick }) {
-  const tones = {
-    cyan: "bg-brand-soft text-brand",
-    navy: "bg-foreground/[0.06] text-foreground",
-    emerald: "bg-emerald-50 text-emerald-600",
-    amber: "bg-amber-50 text-amber-600",
-  };
-  const Component = onClick ? "button" : "div";
-  return <Component onClick={onClick} className={`cv-kpi flex flex-col items-stretch justify-start p-4 text-left sm:p-5 ${onClick ? "w-full cursor-pointer" : ""}`}>
-    <div className="flex items-start justify-between gap-3"><span className="text-xs font-medium text-slate-500">{label}</span><span className={`flex size-8 shrink-0 items-center justify-center rounded-md ${tones[tone]}`}><Icon className="h-4 w-4" /></span></div>
-    <div className="tabular mt-3 text-2xl font-semibold tracking-tight text-foreground sm:mt-4 sm:text-[28px]">{value}</div>
-    <div className="mt-1.5 text-xs leading-5 text-slate-500">{detail}</div>
-    {onClick && <span className="mt-auto inline-flex items-center gap-1 pt-3 text-xs font-medium text-brand">Open view <ArrowRight className="h-3.5 w-3.5" /></span>}
-  </Component>;
+/** Small count chip that sits beside a section title. */
+function Count({ children }) {
+  return <span className="tabular rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">{children}</span>;
+}
+
+/** Quiet text link used as a section action ("Open pipeline"). */
+function SectionLink({ onClick, children }) {
+  return <button type="button" onClick={onClick} className="inline-flex items-center gap-0.5 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+    {children}<ChevronRight className="size-3.5" aria-hidden="true" />
+  </button>;
+}
+
+/** Centred empty state for a list or panel. */
+function EmptyState({ icon: Icon, title, description, action, testid, className = "", iconClassName = "bg-muted text-muted-foreground" }) {
+  return <div className={`flex flex-col items-center justify-center px-6 py-12 text-center ${className}`} data-testid={testid}>
+    <span className={`flex size-10 items-center justify-center rounded-full ${iconClassName}`}><Icon className="size-[18px]" aria-hidden="true" /></span>
+    <p className="mt-3 text-sm font-medium text-foreground">{title}</p>
+    {description && <p className="mt-1 max-w-sm text-[13px] leading-5 text-muted-foreground">{description}</p>}
+    {action && <div className="mt-4">{action}</div>}
+  </div>;
 }
 
 function HealthBar({ score, band }) {
-  const color = band === "healthy" ? "bg-emerald-500" : band === "at_risk" ? "bg-amber-500" : "bg-red-500";
-  return <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full ${color}`} style={{ width: `${Math.max(0, Math.min(score, 100))}%` }} /></div>;
+  return <div className="h-1 w-20 overflow-hidden rounded-full bg-muted"><div className={`h-full rounded-full ${BAND_BAR[band] || BAND_BAR.critical}`} style={{ width: `${Math.max(0, Math.min(score, 100))}%` }} /></div>;
 }
 
 export default function Dashboard() {
@@ -81,89 +89,144 @@ export default function Dashboard() {
     return items.slice(0, 5);
   }, [data, system]);
 
-  if (error) return <div className="cv-page"><div className="cv-empty"><CircleAlert className="h-9 w-9 text-red-500" /><h1 className="mt-4 font-display text-xl font-semibold text-foreground">Command Center unavailable</h1><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{error}</p><Button onClick={load} className="mt-5 cv-action-primary"><RefreshCw className="mr-2 h-4 w-4" />Try again</Button></div></div>;
+  if (error) return <div className="cv-page">
+    <PageHeader icon={LayoutDashboard} title="Command Center" />
+    <div className="rounded-xl border border-border bg-card" role="alert"><EmptyState icon={CircleAlert} title="Command Center unavailable" description={error} iconClassName="bg-red-50 text-red-600"
+      action={<Button size="sm" onClick={load}><RefreshCw className="size-3.5" />Try again</Button>} /></div>
+  </div>;
   if (!data) return <DashboardSkeleton />;
 
-  return <div className="cv-page">
-    <div className="cv-page-header">
-      <div><div className="cv-eyebrow">Today’s client operations</div><h1 className="cv-page-title">Good to see you</h1><p className="cv-page-description">A concise view of revenue, delivery risk, and the client relationships that need your team next.</p></div>
-      <div className="flex flex-wrap items-center gap-2"><Button variant="outline" size="sm" onClick={load}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />Refresh</Button><Button size="sm" className="cv-action-primary" onClick={() => navigate("/pipeline")}>Review pipeline <ArrowRight className="ml-1.5 h-3.5 w-3.5" /></Button></div>
-    </div>
+  const wonPositive = (data.won_value_by_currency ? Object.values(data.won_value_by_currency).some((value) => value > 0) : (data.won_value || 0) > 0);
+  const funnelMax = Math.max(1, ...funnelData.map((row) => row.count || 0));
+  const goals = (data.goal_rollup?.workspaces || []).flatMap((workspace) => workspace.goals.map((goal) => ({ ...goal, workspaceName: workspace.name, workspaceId: workspace.id }))).slice(0, 4);
 
-    <section aria-label="Key portfolio metrics" className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+  return <div className="cv-page">
+    <PageHeader icon={LayoutDashboard} title="Command Center" testid="dashboard-header"
+      description="Revenue, delivery risk and the client relationships that need your team next."
+      actions={<>
+        <Button variant="outline" size="sm" onClick={load}><RefreshCw className="size-3.5" />Refresh</Button>
+        <Button size="sm" onClick={() => navigate("/pipeline")}>Review pipeline<ArrowRight className="size-3.5" /></Button>
+      </>} />
+
+    <section aria-label="Key portfolio metrics">
       {/* Per currency, never summed across currencies; the scalar is only a fallback for an older API. */}
-      <MetricCard icon={TrendingUp} label="Open pipeline" value={data.pipeline_value_by_currency ? formatMoneyByCurrency(data.pipeline_value_by_currency) : money(data.pipeline_value)} detail={`${data.open_opportunities} active opportunit${data.open_opportunities === 1 ? "y" : "ies"}${(data.currencies || []).length > 1 ? " · shown per currency" : ""}`} onClick={() => navigate("/pipeline")} />
-      <MetricCard icon={CircleDollarSign} label="Won revenue" value={data.won_value_by_currency ? formatMoneyByCurrency(data.won_value_by_currency) : money(data.won_value)} detail="Closed-won opportunities in your portfolio" tone="emerald" onClick={() => navigate("/pipeline")} />
-      <MetricCard icon={BriefcaseBusiness} label="Active clients" value={data.active_workspaces} detail="Client workspaces currently in delivery" tone="navy" onClick={() => navigate("/workspaces")} />
-      <MetricCard icon={AlertTriangle} label="Delivery risk" value={data.at_risk_commitments} detail="Commitments flagged at risk or overdue" tone="amber" onClick={() => navigate("/workspaces")} />
+      <StatStrip items={[
+        { label: "Open pipeline", value: data.pipeline_value_by_currency ? formatMoneyByCurrency(data.pipeline_value_by_currency) : money(data.pipeline_value), detail: `${data.open_opportunities} active opportunit${data.open_opportunities === 1 ? "y" : "ies"}${(data.currencies || []).length > 1 ? " · shown per currency" : ""}`, onClick: () => navigate("/pipeline"), testid: "metric-open-pipeline" },
+        { label: "Won revenue", value: data.won_value_by_currency ? formatMoneyByCurrency(data.won_value_by_currency) : money(data.won_value), detail: "Closed-won deals", tone: wonPositive ? "success" : undefined, onClick: () => navigate("/pipeline"), testid: "metric-won-revenue" },
+        { label: "Active clients", value: data.active_workspaces, detail: "Workspaces in delivery", onClick: () => navigate("/workspaces"), testid: "metric-active-clients" },
+        { label: "Delivery risk", value: data.at_risk_commitments, detail: "At risk or overdue", tone: data.at_risk_commitments ? "warning" : undefined, onClick: () => navigate("/workspaces"), testid: "metric-delivery-risk" },
+      ]} />
     </section>
 
     <OnboardingChecklist dashboard={data} integrations={system.integrations} />
 
-    <section className="mt-5" aria-label="Priority next actions" data-testid="dashboard-priority-panel">
-      <div className="cv-card">
-        <div className="cv-card-header">
-          <div>
-            <h2 className="cv-card-title">Next actions</h2>
-            <p className="cv-card-description">Ranked follow-ups with deep links — above raw alerts so you decide what matters first.</p>
-          </div>
-          <span className="cv-status-dot bg-brand" aria-hidden="true" />
-        </div>
-        {priorityItems.length ? (
-          <div className="divide-y divide-slate-100">
-            {priorityItems.map((item, index) => {
+    <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
+      <div className="min-w-0 space-y-6 xl:col-span-2">
+        <Section title={<span className="flex items-center gap-2">Next actions{priorityItems.length > 0 && <Count>{priorityItems.length}</Count>}</span>}
+          testid="dashboard-priority-panel" className="min-w-0">
+          <div className="overflow-hidden rounded-xl border border-border bg-card" aria-label="Priority next actions" role="region">
+            {priorityItems.length ? priorityItems.map((item, index) => {
               const Icon = item.icon;
-              const tones = { amber: "bg-amber-50 text-amber-600", red: "bg-red-50 text-red-600", emerald: "bg-emerald-50 text-emerald-600", cyan: "bg-brand-soft text-brand" };
-              return (
-                <button key={index} onClick={() => navigate(item.to)} className="cv-data-row flex w-full items-start gap-3 px-5 py-4 text-left" data-testid={`priority-action-${index}`}>
-                  <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-xs font-bold text-slate-500">{index + 1}</span>
-                  <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${tones[item.tone] || tones.cyan}`}><Icon className="h-4 w-4" /></span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-foreground">{item.title}</span>
-                    <span className="mt-0.5 block text-xs leading-5 text-slate-500">{item.body}</span>
-                    <span className="mt-2 inline-flex rounded border border-dashed border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">Source: {item.source}</span>
+              return <button key={index} type="button" onClick={() => navigate(item.to)} data-testid={`priority-action-${index}`}
+                className="group flex w-full items-center gap-3 border-b border-border/70 px-4 py-2.5 text-left transition-colors last:border-0 hover:bg-muted/50">
+                <span className="tabular w-3 shrink-0 text-center text-xs font-medium text-muted-foreground">{index + 1}</span>
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background"><Icon className={`size-3.5 ${ICON_TONE[item.tone] || ICON_TONE.cyan}`} aria-hidden="true" /></span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium text-foreground">{item.title}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{item.body}</span>
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground md:hidden">Source: {item.source}</span>
+                </span>
+                <span className="hidden max-w-[15rem] shrink-0 truncate text-[11px] text-muted-foreground md:block" title={item.source}>{item.source}</span>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground" aria-hidden="true" />
+              </button>;
+            }) : <EmptyState icon={CheckCircle2} title="All clear for now" testid="priority-empty"
+              description="No urgent commitment, alert, or integration risks."
+              action={<Button size="sm" variant="outline" onClick={() => navigate("/workspaces")}>Browse workspaces</Button>} />}
+          </div>
+        </Section>
+
+        <Section title="Next best actions" testid="command-center-nba" className="min-w-0"
+          actions={<SectionLink onClick={() => navigate("/operations")}>Open operations</SectionLink>}>
+          <NextBestActions limit={8} compact title="Ranked across all clients"
+            onNavigate={(item) => navigate(`/workspaces/${item.workspace_id}`)} />
+        </Section>
+
+        <Section title={<span className="flex items-center gap-2">Client health{data.portfolio?.length > 0 && <Count>{data.portfolio.length}</Count>}</span>} className="min-w-0"
+          actions={<SectionLink onClick={() => navigate("/workspaces")}>View all clients</SectionLink>}>
+          <div className="overflow-hidden rounded-xl border border-border bg-card">
+            {data.portfolio?.length ? data.portfolio.map((portfolio) => <button key={portfolio.id} type="button" onClick={() => navigate(`/workspaces/${portfolio.id}`)}
+              className="group flex w-full items-center gap-3 border-b border-border/70 px-4 py-2.5 text-left transition-colors last:border-0 hover:bg-muted/50">
+              <Avatar name={portfolio.name} size="sm" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium text-foreground">{portfolio.name}</span>
+                <span className="block truncate text-xs capitalize text-muted-foreground">{portfolio.stage} workspace</span>
+              </span>
+              <span className="hidden items-center gap-2.5 sm:flex"><HealthBar score={portfolio.health.score} band={portfolio.health.band} /><span className="tabular w-6 text-right text-[13px] font-medium text-foreground">{portfolio.health.score}</span></span>
+              <span className="w-20 shrink-0"><StatusDot tone={BAND_TONE[portfolio.health.band] || "danger"}>{sentence(portfolio.health.band)}</StatusDot></span>
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground" aria-hidden="true" />
+            </button>) : <EmptyState icon={BriefcaseBusiness} title="No client workspaces yet" description="Close an opportunity or create a workspace to begin tracking client health." />}
+          </div>
+        </Section>
+      </div>
+
+      <div className="min-w-0 space-y-6">
+        <div className="grid grid-cols-1 items-start gap-6 md:grid-cols-2 xl:grid-cols-1">
+          <Section title="Pipeline by stage" actions={<SectionLink onClick={() => navigate("/pipeline")}>Open pipeline</SectionLink>}>
+            <div className="rounded-xl border border-border bg-card px-4 py-3">
+              {funnelData.length ? <ul aria-label="Opportunity count by pipeline stage" className="space-y-1">
+                {funnelData.map((row) => <li key={row.key} className="grid h-7 grid-cols-[5.5rem_minmax(0,1fr)_2rem] items-center gap-3 text-[13px]" title={`${row.name}: ${row.count}`}>
+                  <span className="truncate text-muted-foreground">{row.name}</span>
+                  <span className="h-2 overflow-hidden rounded-full bg-muted/70" aria-hidden="true">
+                    <span className={`block h-full rounded-full ${row.key === "closed_won" ? "bg-emerald-500" : "bg-brand"}`} style={{ width: `${((row.count || 0) / funnelMax) * 100}%` }} />
                   </span>
-                  <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-slate-300" />
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="cv-empty m-5 py-10" data-testid="priority-empty">
-            <CheckCircle2 className="h-8 w-8 text-emerald-500" />
-            <p className="mt-3 text-sm font-semibold text-slate-700">All clear for now</p>
-            <p className="mt-1 max-w-md text-xs leading-5 text-slate-500">No urgent commitment, alert, or integration risks. Use Client 360 when you are ready for the next value milestone.</p>
-            <Button size="sm" variant="outline" className="mt-4" onClick={() => navigate("/workspaces")}>Browse workspaces</Button>
-          </div>
-        )}
-      </div>
-    </section>
+                  <span className="tabular text-right font-medium text-foreground">{row.count}</span>
+                </li>)}
+              </ul> : <EmptyState icon={GitBranch} title="Your pipeline starts here" description="Create the first opportunity to begin tracking revenue movement." className="py-8"
+                action={<Button size="sm" variant="outline" onClick={() => navigate("/pipeline")}>Create opportunity</Button>} />}
+            </div>
+          </Section>
 
-    <section className="mt-5 cv-card" data-testid="command-center-nba">
-      <div className="cv-card-header">
-        <div>
-          <h2 className="cv-card-title">Next best actions</h2>
-          <p className="cv-card-description">A ranked, explainable queue across every client — each item shows the records it came from.</p>
+          <Section title="Outcome momentum">
+            <div className="rounded-xl border border-border bg-card">
+              {data.goal_rollup?.total_goals > 0 ? <>
+                <div className="flex items-end justify-between gap-3 border-b border-border/70 px-4 py-3">
+                  <div>
+                    <div className="tabular text-[22px] font-semibold leading-7 tracking-tight text-foreground">{data.goal_rollup.avg_progress}%</div>
+                    <div className="text-xs text-muted-foreground">Average outcome progress</div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <StatusDot tone="success">{data.goal_rollup.on_track} on track</StatusDot>
+                    <StatusDot tone="warning">{data.goal_rollup.at_risk} at risk</StatusDot>
+                  </div>
+                </div>
+                <div className="p-1.5">
+                  {goals.map((goal) => <button key={goal.id} type="button" onClick={() => navigate(`/workspaces/${goal.workspaceId}`)} className="block w-full rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/50">
+                    <span className="flex items-center justify-between gap-3 text-[13px]">
+                      <span className="truncate font-medium text-foreground">{goal.title}</span>
+                      <span className="tabular shrink-0 text-xs font-medium text-foreground">{goal.pct ?? "—"}{goal.pct !== null ? "%" : ""}</span>
+                    </span>
+                    <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-muted"><span className={`block h-full rounded-full ${goal.pct >= 100 ? "bg-emerald-500" : goal.pct >= 50 ? "bg-brand" : "bg-amber-500"}`} style={{ width: `${Math.max(0, Math.min(goal.pct || 0, 100))}%` }} /></span>
+                    <span className="mt-1 block truncate text-[11px] text-muted-foreground">{goal.workspaceName}</span>
+                  </button>)}
+                </div>
+              </> : <EmptyState icon={ClipboardCheck} title="No outcome targets yet" description="Define client outcomes in a workspace to connect delivery activity to value." className="py-8" />}
+            </div>
+          </Section>
         </div>
-        <button onClick={() => navigate("/operations")} className="text-xs font-semibold text-brand hover:text-brand-strong">Open operations</button>
+        <CommandCenterInsights stacked />
       </div>
-      <div className="p-5"><NextBestActions limit={8} compact title="Ranked across all clients"
-        onNavigate={(item) => navigate(`/workspaces/${item.workspace_id}`)} /></div>
-    </section>
+    </div>
 
-    <div className="mt-5"><CommandCenterInsights /></div>
-
-    <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12">
-      <div className="cv-card xl:col-span-7"><div className="cv-card-header"><div><h2 className="cv-card-title">Revenue movement</h2><p className="cv-card-description">A stage-by-stage view of qualified client demand.</p></div><button onClick={() => navigate("/pipeline")} className="text-xs font-semibold text-brand hover:text-brand-strong">Open pipeline</button></div><div className="p-5"><div role="img" aria-label="Opportunity count by pipeline stage" className="h-[250px]">{funnelData.length ? <ResponsiveContainer width="100%" height="100%"><BarChart data={funnelData} layout="vertical" margin={{ left: 4, right: 12, top: 4, bottom: 4 }}><XAxis type="number" hide /><YAxis dataKey="name" type="category" width={82} tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} /><Tooltip cursor={{ fill: "#f8fafc" }} contentStyle={{ borderRadius: 12, borderColor: "#e2e8f0", boxShadow: "0 8px 24px rgba(10,22,40,.08)" }} /><Bar dataKey="count" radius={[0, 8, 8, 0]}>{funnelData.map((entry) => <Cell key={entry.key} fill={entry.key === "closed_won" ? "#16a34a" : entry.key === "proposal" || entry.key === "negotiation" ? "#1a9fbf" : "#0a1628"} />)}</Bar></BarChart></ResponsiveContainer> : <div className="cv-empty min-h-[250px]"><GitBranch className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">Your pipeline starts here</p><p className="mt-1 text-xs text-slate-500">Create the first opportunity to begin tracking revenue movement.</p><Button size="sm" className="mt-4 cv-action-primary" onClick={() => navigate("/pipeline")}>Create opportunity</Button></div>}</div></div></div>
-      <div className="cv-card xl:col-span-5"><div className="cv-card-header"><div><h2 className="cv-card-title">Outcome momentum</h2><p className="cv-card-description">Portfolio goals that show whether client value is being delivered.</p></div><Sparkles className="h-4 w-4 text-brand" /></div>{data.goal_rollup?.total_goals > 0 ? <div className="p-5"><div className="mb-5 flex items-end justify-between"><div><div className="font-display text-3xl font-semibold text-foreground">{data.goal_rollup.avg_progress}%</div><div className="mt-1 text-xs text-slate-500">average outcome progress</div></div><div className="flex gap-1.5"><Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">{data.goal_rollup.on_track} on track</Badge><Badge className="bg-amber-50 text-amber-700 border-amber-200">{data.goal_rollup.at_risk} at risk</Badge></div></div><div className="space-y-3">{data.goal_rollup.workspaces?.flatMap((workspace) => workspace.goals.map((goal) => ({ ...goal, workspaceName: workspace.name, workspaceId: workspace.id }))).slice(0, 4).map((goal) => <button key={goal.id} onClick={() => navigate(`/workspaces/${goal.workspaceId}`)} className="group block w-full text-left"><div className="flex items-center justify-between gap-3 text-xs"><span className="truncate font-semibold text-slate-700 group-hover:text-brand">{goal.title}</span><span className="shrink-0 font-bold text-foreground">{goal.pct ?? "—"}{goal.pct !== null ? "%" : ""}</span></div><div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full ${goal.pct >= 100 ? "bg-emerald-500" : goal.pct >= 50 ? "bg-brand" : "bg-amber-500"}`} style={{ width: `${Math.max(0, Math.min(goal.pct || 0, 100))}%` }} /></div><span className="mt-1 block truncate text-[11px] text-slate-400">{goal.workspaceName}</span></button>)}</div></div> : <div className="cv-empty m-5"><ClipboardCheck className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No outcome targets yet</p><p className="mt-1 text-xs text-slate-500">Define client outcomes in a workspace to connect delivery activity to value.</p></div>}</div>
-    </section>
-
-    <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12">
-      <div className="cv-card xl:col-span-12"><div className="cv-card-header"><div><h2 className="cv-card-title">Client health portfolio</h2><p className="cv-card-description">Explainable account health across active workspaces.</p></div><button onClick={() => navigate("/workspaces")} className="text-xs font-semibold text-brand hover:text-brand-strong">View all clients</button></div>{data.portfolio?.length ? <div className="divide-y divide-slate-100">{data.portfolio.map((portfolio) => <button key={portfolio.id} onClick={() => navigate(`/workspaces/${portfolio.id}`)} className="cv-data-row flex w-full items-center gap-4 px-5 py-4 text-left"><span className={`flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold ${portfolio.health.band === "healthy" ? "bg-emerald-50 text-emerald-600" : portfolio.health.band === "at_risk" ? "bg-amber-50 text-amber-600" : "bg-red-50 text-red-600"}`}>{portfolio.health.score}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-foreground">{portfolio.name}</span><span className="mt-0.5 block text-xs capitalize text-slate-500">{portfolio.stage} workspace</span></span><span className="hidden items-center gap-2 sm:flex"><HealthBar score={portfolio.health.score} band={portfolio.health.band} /><Badge className={HEALTH_BAND[portfolio.health.band]}>{portfolio.health.band.replace("_", " ")}</Badge></span><ArrowRight className="h-4 w-4 text-slate-300" /></button>)}</div> : <div className="cv-empty m-5"><BriefcaseBusiness className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No client workspaces yet</p><p className="mt-1 text-xs text-slate-500">Close an opportunity or create a workspace to begin tracking client health.</p></div>}</div>
-    </section>
   </div>;
 }
 
 function DashboardSkeleton() {
-  return <div className="cv-page" data-testid="dashboard-skeleton"><div className="mb-8 space-y-3"><Skeleton className="h-3 w-32" /><Skeleton className="h-9 w-56" /><Skeleton className="h-4 w-96 max-w-full" /></div><div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-44 rounded-xl" />)}</div><Skeleton className="mt-5 h-56 rounded-xl" /><div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-12"><Skeleton className="h-80 rounded-xl xl:col-span-7" /><Skeleton className="h-80 rounded-xl xl:col-span-5" /></div></div>;
+  return <div className="cv-page" data-testid="dashboard-skeleton">
+    <div className="mb-5 space-y-2"><Skeleton className="h-7 w-48" /><Skeleton className="h-4 w-96 max-w-full" /></div>
+    <Skeleton className="h-[88px] rounded-xl" />
+    <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
+      <div className="space-y-6 xl:col-span-2"><Skeleton className="h-40 rounded-xl" /><Skeleton className="h-72 rounded-xl" /></div>
+      <div className="space-y-6"><Skeleton className="h-56 rounded-xl" /><Skeleton className="h-56 rounded-xl" /></div>
+    </div>
+  </div>;
 }

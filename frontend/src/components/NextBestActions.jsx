@@ -3,8 +3,8 @@ import { Link } from "react-router-dom";
 import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
-import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, Clock, X } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ArrowRight, CheckCircle2, ChevronRight, CircleAlert, Clock, RefreshCw, X } from "lucide-react";
 
 /**
  * Next Best Action queue, served by the backend recommendation service.
@@ -13,13 +13,16 @@ import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, Clock, X } fro
  * service derived, including the reason and the records it was derived from, so a
  * user can check the reasoning instead of trusting a number. Feedback (accept,
  * dismiss, complete, snooze) is persisted server-side.
+ *
+ * `compact` renders a ranked list in one bordered container (Command Center,
+ * Operations); otherwise a sticky horizontal strip for a single workspace.
  */
 
 const PRIORITY_BANDS = [
-  { max: 10, label: "Critical", className: "border-red-200 bg-red-50 text-red-800" },
-  { max: 30, label: "High", className: "border-amber-200 bg-amber-50 text-amber-900" },
-  { max: 50, label: "Medium", className: "border-brand/20 bg-brand-soft text-brand-strong" },
-  { max: Infinity, label: "Low", className: "border-slate-200 bg-slate-50 text-slate-700" },
+  { max: 10, label: "Critical", dot: "bg-red-500", text: "text-red-700" },
+  { max: 30, label: "High", dot: "bg-amber-500", text: "text-amber-700" },
+  { max: 50, label: "Medium", dot: "bg-brand", text: "text-brand" },
+  { max: Infinity, label: "Low", dot: "bg-muted-foreground/50", text: "text-muted-foreground" },
 ];
 
 function band(priority) {
@@ -36,6 +39,77 @@ function evidenceLine(recommendation) {
   if (evidence.status) parts.push(`status ${evidence.status}`);
   if (evidence.band) parts.push(`health ${String(evidence.band).replace("_", " ")}`);
   return parts.join(" · ");
+}
+
+const ACTION = "h-7 gap-1 px-2 text-xs [&_svg]:size-3.5";
+const TEXT_ACTION = "h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground [&_svg]:size-3.5";
+const ICON_ACTION = "size-7 p-0 text-muted-foreground hover:text-foreground [&_svg]:size-3.5";
+
+function Recommendation({ item, busy, onFeedback, onNavigate, layout }) {
+  const tone = band(item.priority);
+  const evidence = evidenceLine(item);
+  const strip = layout === "strip";
+  return (
+    <div className={strip
+      ? "flex min-w-[280px] flex-1 flex-col gap-2 rounded-lg bg-muted/40 p-3"
+      : "flex flex-col gap-2 border-b border-border/70 px-4 py-3 last:border-0 sm:flex-row sm:items-start sm:gap-4"}
+         data-testid={`nba-action-${item.action_type}`}>
+      <div className="flex min-w-0 flex-1 items-start gap-2.5">
+        <span className={`mt-[7px] size-1.5 shrink-0 rounded-full ${tone.dot}`} aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[13px] font-medium text-foreground" title={item.title}>{item.title}</span>
+            {item.state === "accepted" ? (
+              <span className="shrink-0 rounded border border-border bg-muted px-1.5 text-[10px] font-medium leading-4 text-foreground/80">Accepted</span>
+            ) : null}
+          </div>
+          <p className={`mt-0.5 text-xs leading-5 text-muted-foreground ${strip ? "line-clamp-2" : "line-clamp-2 sm:line-clamp-1"}`} title={item.reason}>{item.reason}</p>
+          <p className="mt-1 break-words text-[11px] leading-4 text-muted-foreground">
+            <span className={`font-medium ${tone.text}`}>{tone.label}</span>
+            {evidence ? <>{" · "}<span data-testid="nba-evidence">{evidence}</span></> : null}
+            {item.source_refs?.length ? (
+              <>{" · "}<span data-testid="nba-source-refs">Derived from {item.source_refs.join(", ")}</span></>
+            ) : null}
+          </p>
+        </div>
+      </div>
+      <div className={`flex shrink-0 flex-wrap items-center gap-0.5 ${strip ? "pl-4" : "pl-4 sm:pl-0"}`}>
+        {item.deep_link ? (
+          // Where the work itself is done. Following it records nothing: "Done"
+          // below is still the operator's own call.
+          <Button asChild size="sm" variant="outline" className={ACTION}>
+            <Link to={item.deep_link} data-testid="nba-open">
+              {item.action_type === "advance_task" ? "Open task" : "Open"}<ArrowRight className="-mr-0.5" />
+            </Link>
+          </Button>
+        ) : null}
+        {item.state !== "accepted" ? (
+          <Button size="sm" variant="ghost" className={TEXT_ACTION} disabled={busy}
+                  onClick={() => onFeedback(item, "accepted")} data-testid="nba-accept">Accept</Button>
+        ) : null}
+        <Button size="sm" variant="ghost" className={TEXT_ACTION} disabled={busy}
+                onClick={() => onFeedback(item, "completed", { outcome: "done" })} data-testid="nba-complete">
+          <CheckCircle2 className="-ml-0.5" />Done
+        </Button>
+        <Button size="sm" variant="ghost" className={ICON_ACTION} disabled={busy}
+                onClick={() => onFeedback(item, "snoozed", { snooze_minutes: 1440 })}
+                aria-label="Snooze for a day" title="Snooze for a day" data-testid="nba-snooze">
+          <Clock />
+        </Button>
+        <Button size="sm" variant="ghost" className={ICON_ACTION} disabled={busy}
+                onClick={() => onFeedback(item, "dismissed", { outcome: "not_relevant" })}
+                aria-label="Not relevant" title="Not relevant" data-testid="nba-dismiss">
+          <X />
+        </Button>
+        {onNavigate && item.workspace_id ? (
+          <Button size="sm" variant="ghost" className={ICON_ACTION} onClick={() => onNavigate(item)}
+                  aria-label="Open the related workspace" title="Open the related workspace" data-testid="nba-navigate">
+            <ChevronRight />
+          </Button>
+        ) : onNavigate && !strip ? <span className="hidden size-7 sm:block" aria-hidden="true" /> : null}
+      </div>
+    </div>
+  );
 }
 
 export default function NextBestActions({ workspaceId = null, limit = 5, title = "Next best actions",
@@ -80,117 +154,74 @@ export default function NextBestActions({ workspaceId = null, limit = 5, title =
     } finally { setBusyId(null); }
   };
 
-  if (items === null) return <SurfaceLoading rows={compact ? 1 : 2} testid="nba-loading" />;
+  const refreshing = busyId === "generate";
 
-  if (error) {
-    return <SurfaceError title="Next best actions unavailable" description={error} onRetry={load}
-                         testid="nba-error" />;
-  }
-
-  if (!items.length) {
+  if (items === null) {
     return (
-      <div className="mb-6" data-testid="nba-empty-wrapper">
-        <SurfaceEmpty
-          icon={CheckCircle2}
-          title="Nothing needs a decision right now"
-          description="No open recommendations. New ones appear as commitments, approvals, delivery work, integrations, or recovery candidates change."
-          action={<Button variant="outline" className="mt-5" onClick={regenerate}
-                          disabled={busyId === "generate"} data-testid="nba-generate">
-                    {busyId === "generate" ? "Refreshing…" : "Refresh recommendations"}
-                  </Button>}
-          testid="nba-empty"
-        />
+      <div className={compact ? "overflow-hidden rounded-xl border border-border bg-card" : "mb-6 rounded-xl border border-border bg-card p-2"} data-testid="nba-loading">
+        {Array.from({ length: compact ? 3 : 1 }).map((_, index) => (
+          <div key={index} className={`flex items-start gap-3 px-4 py-3 ${index ? "border-t border-border/70" : ""}`}>
+            <Skeleton className="mt-1 size-2 rounded-full" />
+            <div className="flex-1 space-y-2"><Skeleton className="h-3.5 w-2/3" /><Skeleton className="h-3 w-1/2" /></div>
+          </div>
+        ))}
       </div>
     );
   }
 
-  return (
-    <div className={compact ? "" : "sticky top-[72px] z-10 mb-6 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur"}
-         data-testid="nba-strip">
-      <div className="mb-2 flex items-center justify-between gap-2 px-1">
-        <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
-          <ClipboardCheck className="h-3.5 w-3.5" />{title}
-        </div>
-        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={regenerate}
-                disabled={busyId === "generate"} data-testid="nba-refresh">
-          {busyId === "generate" ? "Refreshing…" : "Refresh"}
+  if (error) {
+    return (
+      <div className={`flex flex-col items-center justify-center rounded-xl border border-border bg-card px-6 py-10 text-center ${compact ? "" : "mb-6"}`}
+           data-testid="nba-error" role="alert">
+        <span className="flex size-10 items-center justify-center rounded-full bg-red-50 text-red-600"><CircleAlert className="size-[18px]" aria-hidden="true" /></span>
+        <p className="mt-3 text-sm font-medium text-foreground">Next best actions unavailable</p>
+        <p className="mt-1 max-w-sm text-[13px] leading-5 text-muted-foreground">{error}</p>
+        <Button size="sm" variant="outline" className="mt-4" onClick={load} data-testid="nba-error-retry">
+          <RefreshCw className="size-3.5" />Retry
         </Button>
       </div>
-      <div className={compact ? "space-y-2" : "flex gap-2 overflow-x-auto pb-1"}>
-        {items.map((item) => {
-          const tone = band(item.priority);
-          const evidence = evidenceLine(item);
-          return (
-            <div key={item.id}
-                 className={`rounded-lg border px-3 py-2 ${tone.className} ${compact ? "" : "min-w-[280px] flex-1"}`}
-                 data-testid={`nba-action-${item.action_type}`}>
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-70" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium opacity-90">{tone.label}</span>
-                    {item.state === "accepted" ? (
-                      <span className="text-[10px] font-semibold uppercase opacity-90">Accepted</span>
-                    ) : null}
-                  </div>
-                  <div className="truncate text-sm font-semibold" title={item.title}>{item.title}</div>
-                  <div className="mt-0.5 text-[11px] leading-4 opacity-80">{item.reason}</div>
-                  {evidence ? (
-                    <div className="mt-1 text-xs opacity-80"
-                         data-testid="nba-evidence">{evidence}</div>
-                  ) : null}
-                  {item.source_refs?.length ? (
-                    <div className="mt-1 text-[10px] opacity-80" data-testid="nba-source-refs">
-                      Derived from {item.source_refs.join(", ")}
-                    </div>
-                  ) : null}
-                </div>
-                {onNavigate && item.workspace_id ? (
-                  <button type="button" onClick={() => onNavigate(item)}
-                          className="ml-auto shrink-0 opacity-60 hover:opacity-100"
-                          aria-label="Open the related workspace" data-testid="nba-navigate">
-                    <ArrowRight className="h-3.5 w-3.5" />
-                  </button>
-                ) : null}
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                {item.deep_link ? (
-                  // Where the work itself is done. Following it records nothing: "Done"
-                  // below is still the operator's own call.
-                  <Button asChild size="sm" variant="outline" className="h-6 px-2 text-[11px]">
-                    <Link to={item.deep_link} data-testid="nba-open">
-                      {item.action_type === "advance_task" ? "Open task" : "Open"}<ArrowRight className="ml-1 h-3 w-3" />
-                    </Link>
-                  </Button>
-                ) : null}
-                {item.state !== "accepted" ? (
-                  <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-                          disabled={busyId === item.id}
-                          onClick={() => feedback(item, "accepted")}
-                          data-testid="nba-accept">Accept</Button>
-                ) : null}
-                <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-                        disabled={busyId === item.id}
-                        onClick={() => feedback(item, "completed", { outcome: "done" })}
-                        data-testid="nba-complete">
-                  <CheckCircle2 className="mr-1 h-3 w-3" />Done
-                </Button>
-                <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]"
-                        disabled={busyId === item.id}
-                        onClick={() => feedback(item, "snoozed", { snooze_minutes: 1440 })}
-                        data-testid="nba-snooze">
-                  <Clock className="mr-1 h-3 w-3" />Snooze
-                </Button>
-                <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]"
-                        disabled={busyId === item.id}
-                        onClick={() => feedback(item, "dismissed", { outcome: "not_relevant" })}
-                        data-testid="nba-dismiss">
-                  <X className="mr-1 h-3 w-3" />Not relevant
-                </Button>
-              </div>
-            </div>
-          );
-        })}
+    );
+  }
+
+  if (!items.length) {
+    return (
+      <div className={compact ? "" : "mb-6"} data-testid="nba-empty-wrapper">
+        <div className="flex flex-col items-center justify-center rounded-xl border border-border bg-card px-6 py-10 text-center" data-testid="nba-empty">
+          <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground"><CheckCircle2 className="size-[18px]" aria-hidden="true" /></span>
+          <h2 className="mt-3 text-sm font-medium text-foreground">Nothing needs a decision right now</h2>
+          <p className="mt-1 max-w-md text-[13px] leading-5 text-muted-foreground">No open recommendations. New ones appear as commitments, approvals, delivery work, integrations, or recovery candidates change.</p>
+          <Button size="sm" variant="outline" className="mt-4" onClick={regenerate} disabled={refreshing} data-testid="nba-generate">
+            {refreshing ? "Refreshing…" : "Refresh recommendations"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const header = (
+    <div className={`flex items-center justify-between gap-2 ${compact ? "h-10 border-b border-border/70 bg-muted/30 pl-4 pr-2" : "mb-1.5 h-8 pl-1"}`}>
+      <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-muted-foreground">
+        <span className="truncate">{title}</span>
+        <span className="tabular rounded bg-muted px-1 text-[11px]">{items.length}</span>
+      </div>
+      <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground [&_svg]:size-3.5" onClick={regenerate}
+              disabled={refreshing} data-testid="nba-refresh">
+        <RefreshCw className={refreshing ? "animate-spin" : ""} />{refreshing ? "Refreshing…" : "Refresh"}
+      </Button>
+    </div>
+  );
+
+  return (
+    <div className={compact
+      ? "overflow-hidden rounded-xl border border-border bg-card"
+      : "sticky top-[72px] z-10 mb-6 rounded-xl border border-border bg-card/95 p-2 shadow-xs backdrop-blur"}
+         data-testid="nba-strip">
+      {header}
+      <div className={compact ? "" : "flex gap-2 overflow-x-auto"}>
+        {items.map((item) => (
+          <Recommendation key={item.id} item={item} busy={busyId === item.id} onFeedback={feedback}
+                          onNavigate={onNavigate} layout={compact ? "list" : "strip"} />
+        ))}
       </div>
     </div>
   );

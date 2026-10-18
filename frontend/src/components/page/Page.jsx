@@ -2,7 +2,7 @@
 // a compact header, underline view tabs, a toolbar strip, a stat strip, status dots,
 // property lists and titled sections. Layout only: no page logic lives here.
 
-const cx = (...parts) => parts.filter(Boolean).join(" ");
+import { cn as cx } from "@/lib/utils";
 
 /** Title row: icon, title, optional count and one line of description; actions on the right. */
 export function PageHeader({ icon: Icon, title, count, description, actions, children, className, testid }) {
@@ -63,7 +63,7 @@ export function StatStrip({ items, className }) {
           index % 2 === 1 && "border-l border-border", index >= 2 && "border-t border-border sm:border-t-0",
           index % 4 !== 0 && "sm:border-l", onClick && "transition-colors hover:bg-muted/50")}>
         <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
-        <dd className={cx("tabular text-[22px] font-semibold leading-7 tracking-tight", toneText[tone] || "text-foreground")}>{value}</dd>
+        <dd className={cx("tabular max-w-full text-[22px] font-semibold leading-7 tracking-tight [overflow-wrap:anywhere]", toneText[tone] || "text-foreground")}>{value}</dd>
         {detail && <dd className="line-clamp-1 text-xs text-muted-foreground">{detail}</dd>}
       </Cell>;
     })}
