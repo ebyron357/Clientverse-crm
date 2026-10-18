@@ -178,8 +178,8 @@ PRESETS: dict[str, dict] = {
         "task": {"enabled": True, "lead_minutes": 120,
                  "title": "Confirm the showing with {name}: arrange access to {address}"},
         "reminders": [24, 1],
-        "confirmation": "You're booked. If anything changes, use the link below to "
-                        "reschedule or cancel.",
+        "confirmation": "We'll meet you at the property. If anything changes, use the link "
+                        "below to reschedule or cancel.",
     },
     "buyer_consultation": {
         "label": "Buyer consultation", "duration": 45, "before": 0, "after": 15,
@@ -193,8 +193,7 @@ PRESETS: dict[str, dict] = {
         "task": {"enabled": True, "lead_minutes": 60,
                  "title": "Prepare for the buyer consultation with {name}"},
         "reminders": [24, 1],
-        "confirmation": "You're booked. Bring any questions -- and your pre-approval letter "
-                        "if you have one.",
+        "confirmation": "Bring your questions — and your pre-approval letter if you have one.",
     },
     "listing_appointment": {
         "label": "Listing appointment", "duration": 60, "before": 30, "after": 30,
@@ -207,7 +206,7 @@ PRESETS: dict[str, dict] = {
         "task": {"enabled": True, "lead_minutes": 1440,
                  "title": "Prepare a pricing analysis (CMA) for {address} before meeting {name}"},
         "reminders": [24, 1],
-        "confirmation": "You're booked. We'll come to the property at the time above.",
+        "confirmation": "We'll come to the property at the time above.",
     },
     "phone_call": {
         "label": "Phone call", "duration": 15, "before": 0, "after": 5,
@@ -219,7 +218,7 @@ PRESETS: dict[str, dict] = {
         # The calendar entry is the follow-up; a task would only repeat it.
         "task": {"enabled": False, "lead_minutes": 0, "title": "Call {name}"},
         "reminders": [1],
-        "confirmation": "You're booked. We'll call you at the number you gave.",
+        "confirmation": "We'll call you at the number you gave.",
     },
 }
 DEFAULT_PRESET_ORDER = ("home_showing", "buyer_consultation", "listing_appointment", "phone_call")
@@ -1314,10 +1313,10 @@ class BookingService:
             subject = f"Confirmed: {what} on {when_label(start, tz_name, with_zone=False)}"
             opening = (f"You're booked for a {what.lower()} with {host} on {when} "
                        f"({booking.get('duration_minutes')} minutes).")
-        body = (f"Hi {first},\n\n{opening}\n\n" + (f"Where: {where}\n\n" if where else "")
-                + f"Need to change it? Reschedule or cancel here: {manage}\n")
+        body = f"Hi {first},\n\n{opening}\n\n" + (f"Where: {where}\n\n" if where else "")
         if kind == "confirmation" and booking.get("confirmation_message"):
-            body += f"\n{booking['confirmation_message']}\n"
+            body += f"{booking['confirmation_message']}\n\n"
+        body += f"Need to change it? Reschedule or cancel here: {manage}\n"
         return subject[:300], body
 
     async def queue_person_message(self, appointment: dict, kind: str, *,
