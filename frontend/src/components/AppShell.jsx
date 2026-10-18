@@ -87,7 +87,7 @@ export default function AppShell() {
       </nav>
       <div className={`mt-auto border-t border-border/70 ${collapsed ? "p-2" : "p-3"}`}>
         <div className={`flex items-center ${collapsed ? "flex-col gap-2" : "gap-2.5"}`}>
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand" title={collapsed ? user?.name : undefined}>{initials}</div>
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand-strong" title={collapsed ? user?.name : undefined}>{initials}</div>
           {!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium text-foreground">{user?.name}</div><div className="truncate text-xs text-muted-foreground">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}
           <ThemeButton />
           <button onClick={doLogout} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out" title="Sign out"><LogOut className="size-4" /></button>
