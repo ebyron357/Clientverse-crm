@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
-import { CirclePlus, Building2, UserRound, GitBranch, BriefcaseBusiness } from "lucide-react";
+import { Building2, UserRound, GitBranch, BriefcaseBusiness } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,8 @@ const INITIAL = {
   opportunity: { name: "", value: "", company_id: "", stage: "lead" },
   workspace: { name: "", company_id: "", stage: "onboarding" },
 };
+
+const FIELD_LABEL = "text-[13px] font-medium";
 
 export default function QuickCreateDialog({ open, onOpenChange, onCreated }) {
   const [type, setType] = useState("company");
@@ -53,40 +55,53 @@ export default function QuickCreateDialog({ open, onOpenChange, onCreated }) {
     } finally { setSaving(false); }
   };
 
+  const companySelect = <CompanySelect companies={companies} value={form.company_id} onValueChange={(value) => setField("company_id", value)} />;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[520px]">
-        <DialogHeader>
-          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-lg bg-brand-soft text-brand"><CirclePlus className="h-5 w-5" /></div>
-          <DialogTitle className="font-display text-2xl">Create a record</DialogTitle>
-          <DialogDescription>Capture the essential information now; enrich the record as work progresses.</DialogDescription>
+      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[520px]">
+        <DialogHeader className="space-y-1 px-5 pb-4 pr-12 pt-5 text-left">
+          <DialogTitle className="text-base font-semibold">Create a record</DialogTitle>
+          <DialogDescription className="text-[13px]">{selected.hint}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-5 py-2">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="space-y-4 px-5 pb-5">
+          <div className="grid grid-cols-2 gap-0.5 rounded-lg bg-muted p-0.5 sm:grid-cols-4" role="group" aria-label="Record type">
             {TYPES.map((item) => {
               const Icon = item.icon;
               const active = type === item.value;
-              return <button key={item.value} type="button" onClick={() => changeType(item.value)} className={`rounded-lg border p-3 text-left transition-colors ${active ? "border-brand bg-brand-soft text-brand" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"}`}>
-                <Icon className="mb-2 h-4 w-4" />
-                <span className="block text-xs font-semibold leading-4">{item.label}</span>
+              return <button key={item.value} type="button" aria-pressed={active} onClick={() => changeType(item.value)}
+                className={`flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-[13px] font-medium transition-colors ${active ? "bg-card text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"}`}>
+                <Icon className={`size-3.5 shrink-0 ${active ? "text-brand" : ""}`} aria-hidden="true" />
+                <span className="truncate">{item.value === "workspace" ? <><span className="sm:hidden">Client workspace</span><span className="hidden sm:inline">Workspace</span></> : item.label}</span>
               </button>;
             })}
           </div>
-          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500">{selected.hint}</p>
-          <div className="grid gap-4">
-            <div className="grid gap-1.5"><Label htmlFor="quick-create-name">Name <span className="text-red-500">*</span></Label><Input id="quick-create-name" value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder={type === "company" ? "e.g. Acme Partners" : type === "contact" ? "e.g. Jordan Lee" : type === "opportunity" ? "e.g. Renewal — Acme Partners" : "e.g. Acme Partners — Client 360"} /></div>
-            {type === "company" && <><div className="grid gap-1.5"><Label htmlFor="quick-create-industry">Industry</Label><Input id="quick-create-industry" value={form.industry} onChange={(event) => setField("industry", event.target.value)} placeholder="e.g. Professional services" /></div><div className="grid gap-1.5"><Label>Client tier</Label><Select value={form.tier} onValueChange={(value) => setField("tier", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="growth">Growth</SelectItem><SelectItem value="enterprise">Enterprise</SelectItem></SelectContent></Select></div></>}
-            {type === "contact" && <><div className="grid gap-1.5"><Label htmlFor="quick-create-email">Email</Label><Input id="quick-create-email" type="email" value={form.email} onChange={(event) => setField("email", event.target.value)} placeholder="name@company.com" /></div><CompanySelect companies={companies} value={form.company_id} onValueChange={(value) => setField("company_id", value)} /></>}
-            {type === "opportunity" && <><div className="grid gap-1.5"><Label htmlFor="quick-create-value">Estimated value</Label><Input id="quick-create-value" type="number" min="0" value={form.value} onChange={(event) => setField("value", event.target.value)} placeholder="0" /></div><CompanySelect companies={companies} value={form.company_id} onValueChange={(value) => setField("company_id", value)} /></>}
-            {type === "workspace" && <CompanySelect companies={companies} value={form.company_id} onValueChange={(value) => setField("company_id", value)} />}
+          <div className="grid gap-3.5">
+            <div className="grid gap-1.5"><Label htmlFor="quick-create-name" className={FIELD_LABEL}>Name <span className="text-red-600">*</span></Label><Input id="quick-create-name" value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder={type === "company" ? "e.g. Acme Partners" : type === "contact" ? "e.g. Jordan Lee" : type === "opportunity" ? "e.g. Renewal — Acme Partners" : "e.g. Acme Partners — Client 360"} /></div>
+            {type === "company" && <div className="grid gap-3.5 sm:grid-cols-2">
+              <div className="grid gap-1.5"><Label htmlFor="quick-create-industry" className={FIELD_LABEL}>Industry</Label><Input id="quick-create-industry" value={form.industry} onChange={(event) => setField("industry", event.target.value)} placeholder="e.g. Professional services" /></div>
+              <div className="grid gap-1.5"><Label htmlFor="quick-create-tier" className={FIELD_LABEL}>Client tier</Label><Select value={form.tier} onValueChange={(value) => setField("tier", value)}><SelectTrigger id="quick-create-tier"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="growth">Growth</SelectItem><SelectItem value="enterprise">Enterprise</SelectItem></SelectContent></Select></div>
+            </div>}
+            {type === "contact" && <div className="grid gap-3.5 sm:grid-cols-2">
+              <div className="grid gap-1.5"><Label htmlFor="quick-create-email" className={FIELD_LABEL}>Email</Label><Input id="quick-create-email" type="email" value={form.email} onChange={(event) => setField("email", event.target.value)} placeholder="name@company.com" /></div>
+              {companySelect}
+            </div>}
+            {type === "opportunity" && <div className="grid gap-3.5 sm:grid-cols-2">
+              <div className="grid gap-1.5"><Label htmlFor="quick-create-value" className={FIELD_LABEL}>Estimated value</Label><Input id="quick-create-value" type="number" min="0" value={form.value} onChange={(event) => setField("value", event.target.value)} placeholder="0" className="tabular" /></div>
+              {companySelect}
+            </div>}
+            {type === "workspace" && companySelect}
           </div>
         </div>
-        <DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="button" disabled={saving} onClick={submit} className="cv-action-primary">{saving ? "Creating…" : `Create ${selected.label}`}</Button></DialogFooter>
+        <DialogFooter className="gap-2 border-t border-border bg-muted/30 px-5 py-3 sm:space-x-0">
+          <Button type="button" size="sm" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button type="button" size="sm" disabled={saving} onClick={submit} className="cv-action-primary">{saving ? "Creating…" : `Create ${selected.label}`}</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
 function CompanySelect({ companies, value, onValueChange }) {
-  return <div className="grid gap-1.5"><Label>Company</Label><Select value={value} onValueChange={onValueChange}><SelectTrigger><SelectValue placeholder="Select a company (optional)" /></SelectTrigger><SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent></Select></div>;
+  return <div className="grid gap-1.5"><Label htmlFor="quick-create-company" className={FIELD_LABEL}>Company</Label><Select value={value} onValueChange={onValueChange}><SelectTrigger id="quick-create-company"><SelectValue placeholder="Select a company (optional)" /></SelectTrigger><SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent></Select></div>;
 }

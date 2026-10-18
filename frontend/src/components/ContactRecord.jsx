@@ -1,15 +1,21 @@
 /* A contact's record: who they are, how to reach them, what has happened with them, and
-   their deals and website requests. Opens as a side panel (full width on a phone) from
-   the contact list or straight from a link to /contacts?contact=<id>. */
-import { useCallback, useEffect, useMemo, useState } from "react";
+   their deals, tasks and website requests. Opens as a side panel (full width on a phone)
+   from the contact list or straight from a link to /contacts?contact=<id>.
+
+   Layout follows the record pattern used across the app: a header (avatar, name, one meta
+   line, actions), a main column of tabs, and a details panel on the right. On narrow
+   screens the details panel becomes a "Details" tab. RecordLayout is shared with the
+   company record in pages/Directory. */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr, formatMoney } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import {
-  ACTIVITY_KINDS, CALL_OUTCOMES, LEAD_STATUS_LABEL, LEAD_STATUS_STYLE, OUTREACH_KINDS,
+  ACTIVITY_KINDS, CALL_OUTCOMES, LEAD_STATUS_LABEL, OUTREACH_KINDS,
   agoLabel, fullDateLabel, historyEntries, stageLabel,
 } from "@/lib/contactHistory";
+import { Avatar, PropertyList, StatusDot } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,78 +23,255 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Archive, ArchiveRestore, CalendarDays, CircleAlert, Globe, GitBranch, Mail, MessageSquare,
-  Pencil, Phone, StickyNote, UserRound,
+  Archive, ArchiveRestore, CalendarDays, CheckCircle2, Circle, CircleAlert, Globe, GitBranch,
+  ListTodo, Mail, MessageSquare, Pencil, Phone, StickyNote, UserRound,
 } from "lucide-react";
 
 const NONE = "none";
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 const KIND_ICON = { call: Phone, text: MessageSquare, email: Mail, meeting: CalendarDays, note: StickyNote, request: Globe, event: UserRound };
+// Timeline markers are neutral circles; only the glyph carries the kind's colour.
 const KIND_STYLE = {
-  call: "bg-emerald-50 text-emerald-700", text: "bg-brand-soft text-brand", email: "bg-violet-50 text-violet-700",
-  meeting: "bg-amber-50 text-amber-700", note: "bg-slate-100 text-slate-600", request: "bg-brand-soft text-brand",
-  event: "bg-slate-50 text-slate-400",
+  call: "text-emerald-600", text: "text-brand", email: "text-violet-600", meeting: "text-amber-600",
+  note: "text-muted-foreground", request: "text-brand", event: "text-muted-foreground",
 };
 const INFLUENCE = [["low", "Low"], ["medium", "Medium"], ["high", "High"]];
 const RELATIONSHIP = [["positive", "Good"], ["neutral", "Neutral"], ["negative", "At risk"]];
+const RELATIONSHIP_TONE = { positive: "success", neutral: "neutral", negative: "danger" };
+const LEAD_TONE = { new: "warning", responded: "success", closed: "neutral", spam: "danger" };
 
-function SectionTitle({ children, count }) {
-  return (
-    <h3 className="mb-2 text-xs font-medium text-slate-500">
-      {children}{count != null && <span className="ml-1 font-semibold text-slate-400">{count}</span>}
-    </h3>
-  );
+/* ---------- Shared record layout (also used by the company record) ---------- */
+
+/** The side panel itself: full width on a phone, wide enough for two columns on a laptop. */
+export const RECORD_SHEET = "flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl lg:max-w-[min(1040px,calc(100vw-4rem))]";
+const TAB_LIST = "sticky top-0 z-10 -mx-5 flex h-auto justify-start gap-3 overflow-x-auto rounded-none border-b border-border bg-background p-0 px-5 sm:-mx-6 sm:gap-5 sm:px-6";
+const TAB_TRIGGER = "group -mb-px h-10 shrink-0 gap-1 rounded-none border-b-2 border-transparent px-0 text-[13px] sm:gap-1.5 sm:px-0.5 text-muted-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
+
+const DOT = { neutral: "bg-muted-foreground/50", brand: "bg-brand", success: "bg-emerald-500", warning: "bg-amber-500", danger: "bg-red-500", info: "bg-sky-500", violet: "bg-violet-500" };
+/** StatusDot at meta size (12px), for secondary lines and compact rows. */
+export function MiniStatus({ tone = "neutral", children, className = "" }) {
+  return <span className={`inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground ${className}`}><span className={`size-1.5 shrink-0 rounded-full ${DOT[tone] || DOT.neutral}`} aria-hidden="true" />{children}</span>;
 }
 
-function Row({ label, children }) {
+/** True on screens wide enough to show the details panel beside the tabs. */
+export function useWideLayout(query = "(min-width: 1024px)") {
+  const [wide, setWide] = useState(() => typeof window !== "undefined" && !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia?.(query);
+    if (!media) return undefined;
+    const update = () => setWide(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, [query]);
+  return wide;
+}
+
+/** A small, quiet empty state for the inside of a record tab. */
+export function RecordEmpty({ icon: Icon = StickyNote, title, children }) {
   return (
-    <div className="grid grid-cols-[7.5rem_1fr] gap-3 border-t border-slate-100 py-2 text-sm first:border-t-0">
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="min-w-0 break-words text-foreground">{children}</dd>
+    <div className="flex flex-col items-center justify-center px-6 py-10 text-center">
+      <span className="flex size-9 items-center justify-center rounded-full bg-muted text-muted-foreground"><Icon className="size-4" aria-hidden="true" /></span>
+      {title && <p className="mt-3 text-[13px] font-medium text-foreground">{title}</p>}
+      {children && <p className="mt-1 max-w-xs text-xs leading-5 text-muted-foreground">{children}</p>}
     </div>
   );
 }
 
-function Chip({ children, className = "border-slate-200 bg-slate-50 text-slate-600" }) {
-  return <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${className}`}>{children}</span>;
+/** One bordered list of related records (deals, tasks, requests…). */
+export function RecordList({ children }) {
+  return <ul className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-card">{children}</ul>;
 }
 
-/** A list of history entries (see lib/contactHistory). Shared with the Leads inbox. */
+/**
+ * Header + tabs + details panel. `tabs`: [{ value, label, count, testid, content }]. On
+ * wide screens `details` sits in a right-hand panel; otherwise it is the second tab.
+ */
+export function RecordLayout({ avatar, title, meta, flag, actions, banner, tabs, value, onValueChange, details, detailsTitle = "Details", wide }) {
+  const first = tabs[0]?.value;
+  const listRef = useRef(null);
+  useEffect(() => { if (wide && value === "details" && first) onValueChange(first); }, [wide, value, first, onValueChange]);
+  // On a phone the tab row scrolls sideways; keep the selected tab in view when it changes.
+  useEffect(() => { listRef.current?.querySelector("[data-state='active']")?.scrollIntoView?.({ block: "nearest", inline: "nearest" }); }, [value]);
+  // Without room for a side panel, details become the second tab, right after the first.
+  const allTabs = wide ? tabs : [tabs[0], { value: "details", label: "Details", content: details }, ...tabs.slice(1)].filter(Boolean);
+  return (
+    <>
+      <div className="shrink-0 border-b border-border px-5 pb-4 pt-5 sm:px-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:pr-8">
+          <div className="flex min-w-0 items-center gap-3 pr-8 sm:pr-0">
+            {avatar}
+            <SheetHeader className="min-w-0 space-y-0.5 text-left">
+              <div className="flex min-w-0 items-center gap-2">
+                <SheetTitle className="truncate text-lg font-semibold leading-6 tracking-tight text-foreground">{title}</SheetTitle>
+                {flag}
+              </div>
+              <SheetDescription className="truncate text-[13px] leading-5">{meta}</SheetDescription>
+            </SheetHeader>
+          </div>
+          {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+        </div>
+      </div>
+      {banner}
+      <div className="flex min-h-0 flex-1">
+        <div className="min-w-0 flex-1 overflow-y-auto px-5 pb-10 sm:px-6">
+          <Tabs value={value} onValueChange={onValueChange}>
+            <TabsList ref={listRef} className={TAB_LIST}>
+              {allTabs.map((tab) => (
+                <TabsTrigger key={tab.value} value={tab.value} className={TAB_TRIGGER} data-testid={tab.testid}>
+                  {tab.label}
+                  {tab.count != null && <span className="tabular rounded px-1 text-xs text-muted-foreground group-data-[state=active]:bg-muted group-data-[state=active]:text-foreground">{tab.count}</span>}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {allTabs.map((tab) => <TabsContent key={tab.value} value={tab.value} className="mt-4">{tab.content}</TabsContent>)}
+          </Tabs>
+        </div>
+        {wide && (
+          <aside className="flex w-80 shrink-0 flex-col border-l border-border" aria-label={detailsTitle}>
+            <div className="flex h-10 shrink-0 items-center border-b border-border px-5 text-[13px] font-semibold text-foreground">{detailsTitle}</div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6 pt-2">{details}</div>
+          </aside>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** Loading placeholder shaped like the record. */
+export function RecordSkeleton({ label = "Loading" }) {
+  return (
+    <>
+      <SheetHeader className="sr-only"><SheetTitle>{label}</SheetTitle><SheetDescription>Loading</SheetDescription></SheetHeader>
+      <div className="flex items-center gap-3 border-b border-border px-6 pb-4 pt-5">
+        <Skeleton className="size-11 rounded-full" />
+        <div className="space-y-2"><Skeleton className="h-5 w-44" /><Skeleton className="h-3.5 w-28" /></div>
+      </div>
+      <div className="space-y-4 px-6 py-4">
+        <div className="flex gap-5 border-b border-border pb-3">{[56, 44, 40, 60].map((width) => <Skeleton key={width} className="h-4" style={{ width }} />)}</div>
+        <Skeleton className="h-28 w-full rounded-xl" />
+        {Array.from({ length: 4 }).map((_, index) => <div key={index} className="flex gap-3"><Skeleton className="size-6 rounded-full" /><div className="flex-1 space-y-1.5"><Skeleton className="h-3.5 w-48" /><Skeleton className="h-3 w-32" /></div></div>)}
+      </div>
+    </>
+  );
+}
+
+/** Centred error for a record that could not be opened. */
+export function RecordError({ message, title = "Record", onBack, backLabel }) {
+  return (
+    <div className="flex min-h-[60vh] flex-col items-center justify-center px-6 text-center">
+      <SheetHeader className="sr-only"><SheetTitle>{title}</SheetTitle><SheetDescription>{message}</SheetDescription></SheetHeader>
+      <span className="flex size-10 items-center justify-center rounded-full bg-muted"><CircleAlert className="size-5 text-amber-600" aria-hidden="true" /></span>
+      <p className="mt-3 max-w-sm text-[13px] leading-5 text-muted-foreground">{message}</p>
+      <Button variant="outline" size="sm" className="mt-4" onClick={onBack}>{backLabel}</Button>
+    </div>
+  );
+}
+
+/* ---------- Activity ---------- */
+
+/** A list of history entries (see lib/contactHistory), drawn as a timeline. Shared with the Leads inbox. */
 export function ActivityFeed({ entries, empty, limit, testId }) {
   const [showAll, setShowAll] = useState(false);
-  if (!entries.length) return <p className="text-sm text-slate-500">{empty}</p>;
+  if (!entries.length) return <p className="text-[13px] text-muted-foreground">{empty}</p>;
   const visible = showAll || !limit ? entries : entries.slice(0, limit);
   return (
     <div>
-      <ol className="space-y-3" data-testid={testId}>
-        {visible.map((entry) => {
+      <ol data-testid={testId}>
+        {visible.map((entry, index) => {
           const Icon = KIND_ICON[entry.kind] || StickyNote;
+          const last = index === visible.length - 1;
           return (
-            <li key={entry.id} className="flex gap-3">
-              <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${KIND_STYLE[entry.kind] || KIND_STYLE.note}`}><Icon className="h-4 w-4" /></span>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-foreground">{entry.title}</div>
-                {entry.subject && <div className="text-sm text-slate-600">{entry.subject}</div>}
-                {entry.body && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm leading-6 text-slate-600">{entry.body}</p>}
-                <div className="mt-0.5 text-xs text-slate-500" title={fullDateLabel(entry.at)}>
-                  {[entry.who, agoLabel(entry.at)].filter(Boolean).join(" · ")}
-                  {entry.leadId && <> · <Link className="font-semibold text-brand" to={`/leads?lead=${entry.leadId}`}>Open request</Link></>}
+            <li key={entry.id} className={`relative flex gap-3 ${last ? "" : "pb-5"}`}>
+              {!last && <span className="absolute bottom-0 left-3 top-7 w-px bg-border" aria-hidden="true" />}
+              <span className={`relative flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-card ${KIND_STYLE[entry.kind] || KIND_STYLE.note}`}><Icon className="size-3.5" aria-hidden="true" /></span>
+              <div className="min-w-0 flex-1 pt-0.5">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                  <span className="text-[13px] font-medium leading-5 text-foreground">{entry.title}</span>
+                  <span className="tabular shrink-0 text-xs text-muted-foreground" title={fullDateLabel(entry.at)}>{agoLabel(entry.at)}</span>
                 </div>
+                {entry.subject && <div className="text-[13px] leading-5 text-foreground/80">{entry.subject}</div>}
+                {entry.body && <p className="mt-0.5 whitespace-pre-wrap break-words text-[13px] leading-5 text-muted-foreground">{entry.body}</p>}
+                {(entry.who || entry.leadId) && (
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    {entry.who}
+                    {entry.leadId && <>{entry.who ? " · " : ""}<Link className="font-medium text-brand-strong hover:underline" to={`/leads?lead=${entry.leadId}`}>Open request</Link></>}
+                  </div>
+                )}
               </div>
             </li>
           );
         })}
       </ol>
       {limit && entries.length > limit && (
-        <Button variant="ghost" size="sm" className="mt-2 px-2 text-brand" onClick={() => setShowAll((value) => !value)}>
+        <Button variant="ghost" size="sm" className="ml-7 mt-2 px-2 text-[13px] text-brand-strong" onClick={() => setShowAll((value) => !value)}>
           {showAll ? "Show less" : `Show all ${entries.length}`}
         </Button>
       )}
     </div>
   );
 }
+
+function LogActivity({ openRequests, saving, onSave }) {
+  const [kind, setKind] = useState("call");
+  const [outcome, setOutcome] = useState("");
+  const [text, setText] = useState("");
+  const current = ACTIVITY_KINDS.find((entry) => entry.key === kind) || ACTIVITY_KINDS[0];
+  const submit = async () => {
+    if (kind === "note" && !text.trim()) { toast.error("Write the note first."); return; }
+    const saved = await onSave({ type: kind, body: text.trim() || undefined, outcome: kind === "call" && outcome ? outcome : undefined });
+    if (saved) { setText(""); setOutcome(""); }
+  };
+  return (
+    <section data-testid="contact-log" aria-labelledby="contact-log-title">
+      <h3 id="contact-log-title" className="mb-2 text-xs font-medium text-muted-foreground">Log what happened</h3>
+      <div className="rounded-xl border border-border bg-card shadow-xs transition-colors focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/15">
+        <div className="flex flex-wrap items-center gap-1 border-b border-border/70 px-2 py-1.5" role="radiogroup" aria-label="What kind of activity">
+          {ACTIVITY_KINDS.map((entry) => {
+            const Icon = KIND_ICON[entry.key];
+            const active = entry.key === kind;
+            return (
+              <button key={entry.key} type="button" role="radio" aria-checked={active} onClick={() => setKind(entry.key)}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium transition-colors ${active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"}`}
+                data-testid={`contact-log-type-${entry.key}`}>
+                <Icon className="hidden size-3.5 sm:block" aria-hidden="true" />{entry.label}
+              </button>
+            );
+          })}
+        </div>
+        {kind === "call" && (
+          <div className="flex flex-wrap items-center gap-1.5 px-3 pt-2.5" role="radiogroup" aria-label="How did the call go">
+            <span className="mr-1 text-xs text-muted-foreground">How did it go?</span>
+            {CALL_OUTCOMES.map((entry) => (
+              <button key={entry.key} type="button" role="radio" aria-checked={outcome === entry.key} onClick={() => setOutcome(outcome === entry.key ? "" : entry.key)}
+                className={`h-6 rounded-full border px-2.5 text-xs font-medium transition-colors ${outcome === entry.key ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground"}`}
+                data-testid={`contact-log-outcome-${entry.key}`}>
+                {entry.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <Textarea rows={3} value={text} onChange={(event) => setText(event.target.value)} placeholder={current.placeholder} aria-label="Details"
+          className="min-h-[76px] resize-none border-0 bg-transparent px-3 py-2.5 text-[13px] shadow-none focus-visible:ring-0 md:text-[13px]" data-testid="contact-log-text" />
+        <div className="flex flex-col gap-2 border-t border-border/70 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted-foreground">
+            {OUTREACH_KINDS.has(kind) && openRequests > 0
+              ? `Saving this marks their new website request${openRequests === 1 ? "" : "s"} as contacted.`
+              : "Saved to their history. Nothing is sent to them."}
+          </p>
+          <Button size="sm" className="cv-action-primary shrink-0 self-end sm:self-auto" disabled={saving} onClick={submit} data-testid="contact-log-save">
+            {saving ? "Saving…" : `Save ${current.label.toLowerCase()}`}
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ---------- Details ---------- */
 
 function formFrom(contact) {
   return {
@@ -98,8 +281,14 @@ function formFrom(contact) {
   };
 }
 
+const FIELD_INPUT = "h-8 text-[13px] md:text-[13px]";
+const FIELD_LABEL = "text-xs font-medium text-muted-foreground";
+
 function EditForm({ contact, companies, members, isAdmin, saving, onSave, onCancel }) {
   const [form, setForm] = useState(() => formFrom(contact));
+  // The Edit button disappears while editing, so move focus into the form rather than losing it.
+  const nameRef = useRef(null);
+  useEffect(() => { nameRef.current?.focus(); }, []);
   const setField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const ownerKnown = members.some((member) => member.email === form.owner);
   const submit = () => {
@@ -115,21 +304,19 @@ function EditForm({ contact, companies, members, isAdmin, saving, onSave, onCanc
     onSave(payload);
   };
   return (
-    <section className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4" data-testid="contact-edit-form">
-      <SectionTitle>Edit details</SectionTitle>
-      <div className="grid gap-1.5"><Label htmlFor="contact-name">Name <span className="text-red-500">*</span></Label><Input id="contact-name" value={form.name} onChange={(event) => setField("name", event.target.value)} data-testid="contact-edit-name" /></div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="grid gap-1.5"><Label htmlFor="contact-phone">Phone</Label><Input id="contact-phone" type="tel" inputMode="tel" autoComplete="tel" value={form.phone} onChange={(event) => setField("phone", event.target.value)} placeholder="(555) 010-0100" data-testid="contact-edit-phone" /></div>
-        <div className="grid gap-1.5"><Label htmlFor="contact-email">Email</Label><Input id="contact-email" type="email" inputMode="email" value={form.email} onChange={(event) => setField("email", event.target.value)} placeholder="name@example.com" data-testid="contact-edit-email" /></div>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="grid gap-1.5"><Label htmlFor="contact-role">Role</Label><Input id="contact-role" value={form.role} onChange={(event) => setField("role", event.target.value)} placeholder="e.g. Buyer, Seller, Lender" data-testid="contact-edit-role" /></div>
-        <div className="grid gap-1.5"><Label htmlFor="contact-title">Job title</Label><Input id="contact-title" value={form.title} onChange={(event) => setField("title", event.target.value)} placeholder="Optional" data-testid="contact-edit-title" /></div>
+    <section className="space-y-3" data-testid="contact-edit-form" aria-labelledby="contact-edit-title">
+      <h3 id="contact-edit-title" className="sr-only">Edit details</h3>
+      <div className="grid gap-1.5"><Label htmlFor="contact-name" className={FIELD_LABEL}>Name <span className="text-red-600">*</span></Label><Input ref={nameRef} id="contact-name" className={FIELD_INPUT} value={form.name} onChange={(event) => setField("name", event.target.value)} data-testid="contact-edit-name" /></div>
+      <div className="grid gap-1.5"><Label htmlFor="contact-phone" className={FIELD_LABEL}>Phone</Label><Input id="contact-phone" className={FIELD_INPUT} type="tel" inputMode="tel" autoComplete="tel" value={form.phone} onChange={(event) => setField("phone", event.target.value)} placeholder="(555) 010-0100" data-testid="contact-edit-phone" /></div>
+      <div className="grid gap-1.5"><Label htmlFor="contact-email" className={FIELD_LABEL}>Email</Label><Input id="contact-email" className={FIELD_INPUT} type="email" inputMode="email" value={form.email} onChange={(event) => setField("email", event.target.value)} placeholder="name@example.com" data-testid="contact-edit-email" /></div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-1.5"><Label htmlFor="contact-role" className={FIELD_LABEL}>Role</Label><Input id="contact-role" className={FIELD_INPUT} value={form.role} onChange={(event) => setField("role", event.target.value)} placeholder="e.g. Buyer" data-testid="contact-edit-role" /></div>
+        <div className="grid gap-1.5"><Label htmlFor="contact-title" className={FIELD_LABEL}>Job title</Label><Input id="contact-title" className={FIELD_INPUT} value={form.title} onChange={(event) => setField("title", event.target.value)} placeholder="Optional" data-testid="contact-edit-title" /></div>
       </div>
       <div className="grid gap-1.5">
-        <Label>Company</Label>
+        <Label htmlFor="contact-company" className={FIELD_LABEL}>Company</Label>
         <Select value={form.company_id} onValueChange={(value) => setField("company_id", value)}>
-          <SelectTrigger data-testid="contact-edit-company"><SelectValue /></SelectTrigger>
+          <SelectTrigger id="contact-company" className="h-8 text-[13px]" data-testid="contact-edit-company"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value={NONE}>No company</SelectItem>
             {companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}
@@ -138,9 +325,9 @@ function EditForm({ contact, companies, members, isAdmin, saving, onSave, onCanc
       </div>
       {isAdmin && (
         <div className="grid gap-1.5">
-          <Label>Owner</Label>
+          <Label htmlFor="contact-owner" className={FIELD_LABEL}>Owner</Label>
           <Select value={form.owner} onValueChange={(value) => setField("owner", value)}>
-            <SelectTrigger data-testid="contact-edit-owner"><SelectValue /></SelectTrigger>
+            <SelectTrigger id="contact-owner" className="h-8 text-[13px]" data-testid="contact-edit-owner"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value={NONE}>Nobody yet</SelectItem>
               {!ownerKnown && form.owner !== NONE && <SelectItem value={form.owner}>{form.owner}</SelectItem>}
@@ -151,84 +338,123 @@ function EditForm({ contact, companies, members, isAdmin, saving, onSave, onCanc
       )}
       <div className="grid grid-cols-2 gap-3">
         <div className="grid gap-1.5">
-          <Label>Influence</Label>
+          <Label htmlFor="contact-influence" className={FIELD_LABEL}>Influence</Label>
           <Select value={form.influence} onValueChange={(value) => setField("influence", value)}>
-            <SelectTrigger data-testid="contact-edit-influence"><SelectValue /></SelectTrigger>
+            <SelectTrigger id="contact-influence" className="h-8 text-[13px]" data-testid="contact-edit-influence"><SelectValue /></SelectTrigger>
             <SelectContent>{INFLUENCE.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <div className="grid gap-1.5">
-          <Label>Relationship</Label>
+          <Label htmlFor="contact-relationship" className={FIELD_LABEL}>Relationship</Label>
           <Select value={form.sentiment} onValueChange={(value) => setField("sentiment", value)}>
-            <SelectTrigger data-testid="contact-edit-relationship"><SelectValue /></SelectTrigger>
+            <SelectTrigger id="contact-relationship" className="h-8 text-[13px]" data-testid="contact-edit-relationship"><SelectValue /></SelectTrigger>
             <SelectContent>{RELATIONSHIP.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
           </Select>
         </div>
       </div>
-      <div className="flex flex-wrap gap-2">
-        <Button className="cv-action-primary" disabled={saving} onClick={submit} data-testid="contact-save">{saving ? "Saving…" : "Save changes"}</Button>
-        <Button variant="outline" disabled={saving} onClick={onCancel} data-testid="contact-edit-cancel">Cancel</Button>
+      <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <Button size="sm" variant="outline" disabled={saving} onClick={onCancel} data-testid="contact-edit-cancel">Cancel</Button>
+        <Button size="sm" className="cv-action-primary" disabled={saving} onClick={submit} data-testid="contact-save">{saving ? "Saving…" : "Save changes"}</Button>
       </div>
     </section>
   );
 }
 
-function LogActivity({ openRequests, saving, onSave }) {
-  const [kind, setKind] = useState("call");
-  const [outcome, setOutcome] = useState("");
-  const [text, setText] = useState("");
-  const current = ACTIVITY_KINDS.find((entry) => entry.key === kind) || ACTIVITY_KINDS[0];
-  const submit = async () => {
-    if (kind === "note" && !text.trim()) { toast.error("Write the note first."); return; }
-    const saved = await onSave({ type: kind, body: text.trim() || undefined, outcome: kind === "call" && outcome ? outcome : undefined });
-    if (saved) { setText(""); setOutcome(""); }
-  };
+// brand-strong rather than brand: small link text needs 4.5:1 on the dark background too.
+const linkClass = "font-medium text-brand-strong hover:underline";
+// Long addresses are cut short in the narrow details panel; the full value is in the tooltip and the link.
+const longLinkClass = `${linkClass} block truncate`;
+const notSet = (text = "Not added yet") => <span className="text-muted-foreground">{text}</span>;
+
+/* ---------- Related lists ---------- */
+
+function dueLabel(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+}
+
+function stageTone(stage) {
+  const key = String(stage || "");
+  if (/won/.test(key)) return "success";
+  if (/lost/.test(key)) return "danger";
+  return key === "lead" ? "neutral" : "brand";
+}
+
+function DealsList({ deals }) {
+  if (!deals.length) return <RecordEmpty icon={GitBranch} title="No deals yet">No deals with this person yet.</RecordEmpty>;
   return (
-    <section data-testid="contact-log">
-      <SectionTitle>Log what happened</SectionTitle>
-      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="What kind of activity">
-        {ACTIVITY_KINDS.map((entry) => {
-          const Icon = KIND_ICON[entry.key];
-          const active = entry.key === kind;
-          return (
-            <button key={entry.key} type="button" role="radio" aria-checked={active} onClick={() => setKind(entry.key)}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-semibold ${active ? "border-foreground bg-foreground text-white" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}
-              data-testid={`contact-log-type-${entry.key}`}>
-              <Icon className="h-3.5 w-3.5" />{entry.label}
-            </button>
-          );
-        })}
-      </div>
-      {kind === "call" && (
-        <div className="mt-3 flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="How did the call go">
-          <span className="mr-1 text-xs font-semibold text-slate-500">How did it go?</span>
-          {CALL_OUTCOMES.map((entry) => (
-            <button key={entry.key} type="button" role="radio" aria-checked={outcome === entry.key} onClick={() => setOutcome(outcome === entry.key ? "" : entry.key)}
-              className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${outcome === entry.key ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}
-              data-testid={`contact-log-outcome-${entry.key}`}>
-              {entry.label}
-            </button>
-          ))}
-        </div>
-      )}
-      <Textarea className="mt-3" rows={3} value={text} onChange={(event) => setText(event.target.value)} placeholder={current.placeholder} aria-label="Details" data-testid="contact-log-text" />
-      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-xs text-slate-500">
-          {OUTREACH_KINDS.has(kind) && openRequests > 0
-            ? `Saving this marks their new website request${openRequests === 1 ? "" : "s"} as contacted.`
-            : "Saved to their history. Nothing is sent to them."}
-        </p>
-        <Button size="sm" className="cv-action-primary shrink-0" disabled={saving} onClick={submit} data-testid="contact-log-save">
-          {saving ? "Saving…" : `Save ${current.label.toLowerCase()}`}
-        </Button>
-      </div>
-    </section>
+    <RecordList>
+      {deals.map((deal) => (
+        <li key={deal.id}>
+          <Link to={`/deals?deal=${deal.id}`} className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50" data-testid={`contact-deal-${deal.id}`}>
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"><GitBranch className="size-3.5" aria-hidden="true" /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[13px] font-medium text-foreground">{deal.name}</span>
+              <MiniStatus tone={stageTone(deal.stage)}>{stageLabel(deal.stage)}{deal.archived_at ? " · Archived" : ""}</MiniStatus>
+            </span>
+            <span className="tabular shrink-0 text-[13px] font-semibold text-foreground">{formatMoney(deal.value, deal.currency || "USD")}</span>
+          </Link>
+        </li>
+      ))}
+    </RecordList>
   );
 }
+
+function TasksList({ tasks }) {
+  if (!tasks.length) return <RecordEmpty icon={ListTodo} title="No tasks">No tasks about this person yet.</RecordEmpty>;
+  return (
+    <RecordList>
+      {tasks.map((task) => {
+        const done = task.status === "done";
+        const overdue = !done && task.status !== "cancelled" && task.due_date && new Date(task.due_date).getTime() < Date.now();
+        const meta = [task.due_date ? `Due ${dueLabel(task.due_date)}` : "No due date", task.priority === "high" ? "High priority" : null, task.status === "cancelled" ? "Cancelled" : null].filter(Boolean).join(" · ");
+        return (
+          <li key={task.id}>
+            <Link to={`/tasks?task=${task.id}`} className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50" data-testid={`contact-task-${task.id}`}>
+              {done ? <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-label="Done" /> : <Circle className="size-4 shrink-0 text-muted-foreground" aria-label="To do" />}
+              <span className="min-w-0 flex-1">
+                <span className={`block truncate text-[13px] font-medium ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>{task.title}</span>
+                <span className="block truncate text-xs text-muted-foreground">{meta}</span>
+              </span>
+              {overdue && <span className="shrink-0 rounded border border-red-200 bg-red-50 px-1.5 py-px text-[11px] font-medium text-red-700">Overdue</span>}
+            </Link>
+          </li>
+        );
+      })}
+    </RecordList>
+  );
+}
+
+function RequestsList({ requests }) {
+  if (!requests.length) return <RecordEmpty icon={Globe} title="No website requests">No website requests from this person yet.</RecordEmpty>;
+  return (
+    <RecordList>
+      {requests.map((lead) => (
+        <li key={lead.id}>
+          <Link to={`/leads?lead=${lead.id}`} className="flex items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50" data-testid={`contact-request-${lead.id}`}>
+            <span className="flex min-w-0 items-center gap-3">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"><Globe className="size-3.5" aria-hidden="true" /></span>
+              <span className="min-w-0">
+                <span className="block truncate text-[13px] font-medium text-foreground">{lead.form_name || "Website form"}</span>
+                <span className="block truncate text-xs text-muted-foreground">{[lead.property_address, lead.listing_id && `MLS ${lead.listing_id}`, agoLabel(lead.received_at)].filter(Boolean).join(" · ")}</span>
+              </span>
+            </span>
+            <StatusDot tone={LEAD_TONE[lead.status] || "neutral"} className="shrink-0">{LEAD_STATUS_LABEL[lead.status] || lead.status}</StatusDot>
+          </Link>
+        </li>
+      ))}
+    </RecordList>
+  );
+}
+
+/* ---------- The record ---------- */
 
 export default function ContactRecord({ contactId, open, onOpenChange, companies = [], workspaces = [], onChanged }) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const wide = useWideLayout();
   const [detail, setDetail] = useState(null);
   const [requests, setRequests] = useState([]);
   const [error, setError] = useState("");
@@ -236,6 +462,7 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
   const [members, setMembers] = useState([]);
   const [saving, setSaving] = useState(false);
   const [logging, setLogging] = useState(false);
+  const [tab, setTab] = useState("activity");
 
   const load = useCallback(async () => {
     if (!contactId) return;
@@ -255,7 +482,7 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
     setError("");
   }, [contactId]);
 
-  useEffect(() => { setDetail(null); setRequests([]); setError(""); setEditing(false); load(); }, [load]);
+  useEffect(() => { setDetail(null); setRequests([]); setError(""); setEditing(false); setTab("activity"); load(); }, [load]);
   useEffect(() => {
     if (editing && isAdmin && !members.length) {
       api.get("/team/members").then((response) => setMembers((response.data || []).filter((member) => member.status !== "disabled"))).catch(() => setMembers([]));
@@ -308,127 +535,100 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
     finally { setSaving(false); }
   };
 
+  const startEditing = () => { setEditing(true); if (!wide) setTab("details"); };
+
   const ownerLabel = detail?.owner_name || contact?.owner || "Nobody yet";
   const source = contact?.source?.kind === "website_form"
     ? `From your website${contact.source.form_name ? ` · ${contact.source.form_name}` : ""}`
-    : contact?.lead_source ? `Source: ${contact.lead_source}` : null;
+    : contact?.lead_source ? contact.lead_source.charAt(0).toUpperCase() + contact.lead_source.slice(1) : null;
   const tags = (contact?.tags || []).filter((tag) => tag !== "website-lead");
+  const relationship = RELATIONSHIP.find(([value]) => value === (contact?.sentiment || "neutral"));
+  const influence = INFLUENCE.find(([value]) => value === (contact?.influence || "medium"));
+
+  const details = contact && (editing ? (
+    <EditForm contact={contact} companies={companies} members={members} isAdmin={isAdmin} saving={saving} onSave={save} onCancel={() => setEditing(false)} />
+  ) : (
+    <div>
+      <section aria-labelledby="contact-details-title">
+        <h3 id="contact-details-title" className="sr-only">Details</h3>
+        <PropertyList items={[
+          { label: "Phone", value: contact.phone ? <a className={linkClass} href={`tel:${contact.phone}`}>{contact.phone}</a> : notSet() },
+          { label: "Email", value: contact.email ? <a className={longLinkClass} href={`mailto:${contact.email}`} title={contact.email}>{contact.email}</a> : notSet() },
+          company && { label: "Company", value: company.name },
+          contact.role && { label: "Role", value: contact.role },
+          contact.title && { label: "Job title", value: contact.title },
+          { label: "Owner", value: ownerLabel },
+          { label: "Relationship", value: <StatusDot tone={RELATIONSHIP_TONE[contact.sentiment] || "neutral"}>{relationship?.[1] || "Neutral"}</StatusDot> },
+          { label: "Influence", value: influence?.[1] || "Medium" },
+          source && { label: "Source", value: source },
+          tags.length > 0 && { label: "Tags", value: <span className="flex flex-wrap gap-1">{tags.map((tag) => <span key={tag} className="rounded-md bg-muted px-1.5 py-0.5 text-xs text-foreground/80">{tag.replace(/[-_]+/g, " ")}</span>)}</span> },
+          workspace && { label: "Client workspace", value: <Link className={linkClass} to={`/workspaces/${workspace.id}`}>{workspace.name}</Link> },
+          { label: "Added", value: fullDateLabel(contact.created_at) || "—" },
+        ].filter(Boolean)} />
+      </section>
+      {!contact.archived_at && (
+        <section className="mt-6 border-t border-border pt-4">
+          <Button variant="outline" size="sm" className="text-red-700" disabled={saving} onClick={() => setArchived(true)} data-testid="contact-archive"><Archive className="size-3.5" />Archive contact</Button>
+          <p className="mt-1.5 text-xs leading-5 text-muted-foreground">Hides them from your contact list. Nothing is deleted, and you can restore them any time.</p>
+        </section>
+      )}
+    </div>
+  ));
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-xl" data-testid="contact-record">
+      <SheetContent className={RECORD_SHEET} data-testid="contact-record">
         {error ? (
-          <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
-            <SheetHeader className="sr-only"><SheetTitle>Contact</SheetTitle><SheetDescription>{error}</SheetDescription></SheetHeader>
-            <CircleAlert className="h-9 w-9 text-amber-500" />
-            <p className="mt-3 max-w-sm text-sm leading-6 text-slate-600">{error}</p>
-            <Button variant="outline" className="mt-4" onClick={() => onOpenChange(false)}>Back to contacts</Button>
-          </div>
+          <RecordError title="Contact" message={error} onBack={() => onOpenChange(false)} backLabel="Back to contacts" />
         ) : !contact ? (
-          <div className="space-y-4">
-            <SheetHeader className="sr-only"><SheetTitle>Loading contact</SheetTitle><SheetDescription>Loading</SheetDescription></SheetHeader>
-            <Skeleton className="h-7 w-48" /><Skeleton className="h-4 w-32" /><Skeleton className="h-10 w-full" /><Skeleton className="h-40 w-full" /><Skeleton className="h-40 w-full" />
-          </div>
+          <RecordSkeleton label="Loading contact" />
         ) : (
-          <div className="space-y-6 pb-10">
-            <SheetHeader className="space-y-1 pr-6 text-left">
-              <SheetTitle className="font-display text-2xl leading-tight text-foreground">{contact.name}</SheetTitle>
-              <SheetDescription>{[contact.role, contact.title, company?.name].filter(Boolean).join(" · ") || "Contact"}</SheetDescription>
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                <Chip>Owner: {ownerLabel}</Chip>
-                {source && <Chip className="border-brand/20 bg-brand-soft text-brand">{source}</Chip>}
-                {tags.map((tag) => <Chip key={tag}>{tag.replace(/[-_]+/g, " ")}</Chip>)}
-                {contact.archived_at && <Chip className="border-amber-200 bg-amber-50 text-amber-800">Archived</Chip>}
+          <RecordLayout
+            wide={wide}
+            avatar={<Avatar name={contact.name} size="lg" />}
+            title={contact.name}
+            meta={[contact.role, contact.title, company?.name].filter(Boolean).join(" · ") || "Contact"}
+            flag={contact.archived_at && <span className="shrink-0 rounded border border-amber-200 bg-amber-50 px-1.5 py-px text-[11px] font-medium text-amber-700">Archived</span>}
+            actions={<>
+              {contact.phone && <Button asChild size="sm" className="cv-action-primary"><a href={`tel:${contact.phone}`} data-testid="contact-call"><Phone className="size-3.5" />Call {contact.phone}</a></Button>}
+              {contact.phone && <Button asChild size="sm" variant="outline"><a href={`sms:${contact.phone}`} aria-label="Text" data-testid="contact-text"><MessageSquare className="size-3.5" /><span className="hidden sm:inline">Text</span></a></Button>}
+              {contact.email && <Button asChild size="sm" variant="outline"><a href={`mailto:${contact.email}`} aria-label="Email" data-testid="contact-email"><Mail className="size-3.5" /><span className="hidden sm:inline">Email</span></a></Button>}
+              {!editing && <Button size="sm" variant="outline" onClick={startEditing} data-testid="contact-edit"><Pencil className="size-3.5" />{contact.phone ? "Edit" : "Edit · add phone"}</Button>}
+            </>}
+            banner={contact.archived_at && (
+              <div className="mx-5 mb-2 mt-4 flex flex-col gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-700 sm:mx-6 sm:flex-row sm:items-center sm:justify-between">
+                <span className="flex items-center gap-2"><Archive className="size-4 shrink-0" aria-hidden="true" />This contact is archived, so they're hidden from your contact list.</span>
+                <Button size="sm" variant="outline" className="h-7 shrink-0 self-start sm:self-auto" disabled={saving} onClick={() => setArchived(false)} data-testid="contact-restore"><ArchiveRestore className="size-3.5" />Restore</Button>
               </div>
-            </SheetHeader>
-
-            {contact.archived_at && (
-              <div className="flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm text-amber-900">This contact is archived, so they're hidden from your contact list.</p>
-                <Button size="sm" variant="outline" disabled={saving} onClick={() => setArchived(false)} data-testid="contact-restore"><ArchiveRestore className="mr-1.5 h-4 w-4" />Restore</Button>
-              </div>
             )}
-
-            <div className="flex flex-wrap gap-2">
-              {contact.phone && <Button asChild size="sm" className="cv-action-primary"><a href={`tel:${contact.phone}`} data-testid="contact-call"><Phone className="mr-1.5 h-4 w-4" />Call {contact.phone}</a></Button>}
-              {contact.phone && <Button asChild size="sm" variant="outline"><a href={`sms:${contact.phone}`} data-testid="contact-text"><MessageSquare className="mr-1.5 h-4 w-4" />Text</a></Button>}
-              {contact.email && <Button asChild size="sm" variant="outline"><a href={`mailto:${contact.email}`} data-testid="contact-email"><Mail className="mr-1.5 h-4 w-4" />Email</a></Button>}
-              {!editing && <Button size="sm" variant="outline" onClick={() => setEditing(true)} data-testid="contact-edit"><Pencil className="mr-1.5 h-4 w-4" />{contact.phone ? "Edit" : "Edit · add phone"}</Button>}
-            </div>
-
-            {editing ? (
-              <EditForm contact={contact} companies={companies} members={members} isAdmin={isAdmin} saving={saving} onSave={save} onCancel={() => setEditing(false)} />
-            ) : (
-              <section>
-                <SectionTitle>Details</SectionTitle>
-                <dl>
-                  <Row label="Phone">{contact.phone ? <a className="font-semibold text-brand" href={`tel:${contact.phone}`}>{contact.phone}</a> : <span className="text-slate-400">Not added yet</span>}</Row>
-                  <Row label="Email">{contact.email ? <a className="font-semibold text-brand" href={`mailto:${contact.email}`}>{contact.email}</a> : <span className="text-slate-400">Not added yet</span>}</Row>
-                  {company && <Row label="Company">{company.name}</Row>}
-                  {contact.role && <Row label="Role">{contact.role}</Row>}
-                  {contact.title && <Row label="Job title">{contact.title}</Row>}
-                  <Row label="Owner">{ownerLabel}</Row>
-                  {workspace && <Row label="Client workspace"><Link className="font-semibold text-brand" to={`/workspaces/${workspace.id}`}>{workspace.name}</Link></Row>}
-                  <Row label="Added">{fullDateLabel(contact.created_at) || "—"}</Row>
-                </dl>
-              </section>
-            )}
-
-            {!contact.archived_at && <LogActivity openRequests={openRequests} saving={logging} onSave={logActivity} />}
-
-            <section>
-              <SectionTitle count={requests.length}>Website requests</SectionTitle>
-              {requests.length ? (
-                <ul className="space-y-2">
-                  {requests.map((lead) => (
-                    <li key={lead.id}>
-                      <Link to={`/leads?lead=${lead.id}`} className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2.5 hover:bg-slate-50" data-testid={`contact-request-${lead.id}`}>
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-semibold text-foreground">{lead.form_name || "Website form"}</span>
-                          <span className="block truncate text-xs text-slate-500">{[lead.property_address, lead.listing_id && `MLS ${lead.listing_id}`, agoLabel(lead.received_at)].filter(Boolean).join(" · ")}</span>
-                        </span>
-                        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${LEAD_STATUS_STYLE[lead.status] || LEAD_STATUS_STYLE.closed}`}>{LEAD_STATUS_LABEL[lead.status] || lead.status}</span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              ) : <p className="text-sm text-slate-500">No website requests from this person yet.</p>}
-            </section>
-
-            <section>
-              <SectionTitle count={detail.deals.length}>Deals</SectionTitle>
-              {detail.deals.length ? (
-                <ul className="space-y-2">
-                  {detail.deals.map((deal) => (
-                    <li key={deal.id}>
-                      <Link to={`/deals?deal=${deal.id}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2.5 hover:bg-slate-50" data-testid={`contact-deal-${deal.id}`}>
-                        <span className="flex min-w-0 items-center gap-2.5">
-                          <GitBranch className="h-4 w-4 shrink-0 text-slate-400" />
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-semibold text-foreground">{deal.name}</span>
-                            <span className="block text-xs text-slate-500">{stageLabel(deal.stage)}{deal.archived_at ? " · Archived" : ""}</span>
-                          </span>
-                        </span>
-                        <span className="shrink-0 font-display text-sm font-semibold text-foreground">{formatMoney(deal.value, deal.currency || "USD")}</span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              ) : <p className="text-sm text-slate-500">No deals with this person yet.</p>}
-            </section>
-
-            <section>
-              <SectionTitle>History</SectionTitle>
-              <ActivityFeed entries={history} limit={15} empty="Nothing has been logged yet. Calls, texts and notes you save appear here." testId="contact-history" />
-            </section>
-
-            {!contact.archived_at && (
-              <section className="border-t border-slate-100 pt-4">
-                <Button variant="outline" size="sm" className="text-red-700" disabled={saving} onClick={() => setArchived(true)} data-testid="contact-archive"><Archive className="mr-1.5 h-4 w-4" />Archive contact</Button>
-                <p className="mt-1.5 text-xs text-slate-500">Hides them from your contact list. Nothing is deleted, and you can restore them any time.</p>
-              </section>
-            )}
-          </div>
+            value={tab}
+            onValueChange={setTab}
+            details={details}
+            detailsTitle={editing ? "Edit details" : "Details"}
+            tabs={[
+              {
+                value: "activity", label: "Activity", count: history.length, testid: "contact-tab-activity",
+                content: (
+                  <div className="space-y-6">
+                    {!contact.archived_at && <LogActivity openRequests={openRequests} saving={logging} onSave={logActivity} />}
+                    <section aria-labelledby="contact-history-title">
+                      <h3 id="contact-history-title" className="mb-3 text-xs font-medium text-muted-foreground">History</h3>
+                      {history.length
+                        ? <ActivityFeed entries={history} limit={15} empty="Nothing has been logged yet. Calls, texts and notes you save appear here." testId="contact-history" />
+                        : <RecordEmpty icon={CalendarDays} title="No history yet">Nothing has been logged yet. Calls, texts and notes you save appear here.</RecordEmpty>}
+                    </section>
+                  </div>
+                ),
+              },
+              { value: "deals", label: "Deals", count: detail.deals.length, testid: "contact-tab-deals", content: <DealsList deals={detail.deals} /> },
+              { value: "tasks", label: "Tasks", count: (detail.tasks || []).length, testid: "contact-tab-tasks", content: <TasksList tasks={detail.tasks || []} /> },
+              {
+                value: "requests", count: requests.length, testid: "contact-tab-requests",
+                label: <><span className="sm:hidden">Requests</span><span className="hidden sm:inline">Website requests</span></>,
+                content: <RequestsList requests={requests} />,
+              },
+            ]}
+          />
         )}
       </SheetContent>
     </Sheet>
