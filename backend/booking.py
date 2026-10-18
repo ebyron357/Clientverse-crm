@@ -580,8 +580,13 @@ def _ics_time(value: datetime) -> str:
 
 
 def _ics_text(value: str) -> str:
-    return (str(value or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
-            .replace("\r\n", "\\n").replace("\n", "\\n"))
+    # Any line break -- CRLF, LF or a lone CR -- becomes an escaped \n, so text a visitor
+    # typed can never end the property and start one of its own (ATTENDEE:, ATTACH:, ...).
+    # Other control characters are not allowed in a TEXT value and are dropped.
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(char for char in text if char == "\n" or char == "\t" or ord(char) >= 32)
+    return (text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+            .replace("\n", "\\n"))
 
 
 def _fold(line: str) -> str:
@@ -1838,6 +1843,8 @@ class BookingService:
             booking = row.get("booking") or {}
             start = _parse(row.get("start_at"))
             status = str(row.get("status") or "")
+            owner = str(row.get("owner") or "").lower()
+            can_manage = user.get("role") == "admin" or owner == str(user.get("email") or "").lower()
             mail = []
             for kind, record in (booking.get("messages") or {}).items():
                 live = messages.get(record.get("message_id") or "") or {}
@@ -1845,8 +1852,11 @@ class BookingService:
                              "detail": live.get("blocked_detail") or live.get("error") or record.get("detail"),
                              "message_id": record.get("message_id"),
                              "approval_id": live.get("approval_id") or record.get("approval_id"),
-                             "subject": live.get("subject"), "body": live.get("body"), "at": record.get("at")})
-            owner = str(row.get("owner") or "").lower()
+                             "at": record.get("at")})
+                # The wording carries the person's private manage link, which can cancel or
+                # move the booking, so it goes only to those who may do that here anyway.
+                if can_manage:
+                    mail[-1].update({"subject": live.get("subject"), "body": live.get("body")})
             out.append({
                 "id": row["id"], "title": row.get("title"), "start_at": row.get("start_at"),
                 "end_at": row.get("end_at"), "status": status, "owner": owner,
@@ -1864,7 +1874,7 @@ class BookingService:
                 "timezone": booking.get("timezone"), "cancel_reason": row.get("cancel_reason"),
                 "cancelled_by_person": row.get("cancelled_by_person"),
                 "needs_outcome": status in ACTIVE_STATUSES and bool(start and start <= now),
-                "can_manage": user.get("role") == "admin" or owner == str(user.get("email") or "").lower(),
+                "can_manage": can_manage,
                 "messages": mail, "reminders": booking.get("reminders") or {},
                 "history": booking.get("history") or row.get("history") or [],
             })

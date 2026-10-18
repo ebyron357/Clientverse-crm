@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import bcrypt
 import jwt
@@ -381,10 +381,48 @@ def _issued_before_password_change(payload: dict, user: dict) -> bool:
         issued_ms = (int(payload["exp"]) - int(timedelta(days=7).total_seconds())) * 1000
     return issued_ms is not None and int(issued_ms) < int(changed.timestamp() * 1000)
 
+def _password_state_refusal(user: dict, issued_ms: Optional[int], request: Request) -> Optional[HTTPException]:
+    """The two password rules every kind of session obeys, JWT or Google: a session from
+    before the password last changed is over, and a temporary password opens nothing but
+    the way to replace it."""
+    changed = _parse_dt(user.get("password_changed_at"))
+    if changed and issued_ms is not None and int(issued_ms) < int(changed.timestamp() * 1000):
+        return HTTPException(status_code=401, detail="Your password was changed. Please sign in again.")
+    if user.get("must_change_password") and request.url.path not in _TEMPORARY_PASSWORD_PATHS:
+        # Someone else knows a temporary password, so it opens nothing until it is replaced.
+        return HTTPException(status_code=403, detail="Choose your own password to continue.")
+    return None
+
+# The session cookie is SameSite=None, so a plain HTML form on any other site carries it:
+# a page a signed-in agent visits could post to /api and act as them. A request with an
+# Authorization header cannot come from such a form (another site cannot set that header
+# unless CORS allows it), so only writes signed in by the cookie alone are checked, and
+# they must come from ClientVerse's own pages. Browsers always say where a write comes
+# from (Sec-Fetch-Site, Origin); a caller that says neither is not a browser.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_OWN_ORIGINS = frozenset(filter(None, (website_forms.normalise_origin(origin) for origin in
+                                       (*CORS_ORIGINS, FRONTEND_URL, _RAILWAY_URL, os.environ.get("PUBLIC_BACKEND_URL")))))
+
+def _cross_site_cookie_write(request: Request) -> bool:
+    if not request.cookies.get("access_token") or request.headers.get("Authorization"):
+        return False
+    if request.method in _SAFE_METHODS:
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site in ("same-origin", "none"):
+        return False
+    origin = request.headers.get("origin")
+    if origin:
+        own = website_forms.normalise_origin(origin)
+        return own not in _OWN_ORIGINS and urlparse(origin).netloc != request.headers.get("host")
+    return site == "cross-site"
+
 async def get_current_user(request: Request) -> dict:
     token = _extract_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    if _cross_site_cookie_write(request):
+        raise HTTPException(status_code=403, detail="This change has to be made from ClientVerse itself.")
     if await _is_token_revoked(token):
         raise HTTPException(status_code=401, detail="Session has been revoked")
     # JWT path
@@ -395,9 +433,9 @@ async def get_current_user(request: Request) -> dict:
             raise HTTPException(status_code=401, detail="User not found")
         if _issued_before_password_change(payload, user):
             raise HTTPException(status_code=401, detail="Your password was changed. Please sign in again.")
-        if user.get("must_change_password") and request.url.path not in _TEMPORARY_PASSWORD_PATHS:
-            # Someone else knows a temporary password, so it opens nothing until it is replaced.
-            raise HTTPException(status_code=403, detail="Choose your own password to continue.")
+        refusal = _password_state_refusal(user, None, request)
+        if refusal:
+            raise refusal
         user.pop("password_hash", None)
         return await resolve_membership(user)
     except jwt.InvalidTokenError:
@@ -416,6 +454,12 @@ async def get_current_user(request: Request) -> dict:
     user = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    # A Google session follows the same password rules as a JWT one: dated by when it was
+    # created (a session with no date predates any change, so it is treated as oldest).
+    created = _parse_dt(sess.get("created_at"))
+    refusal = _password_state_refusal(user, int(created.timestamp() * 1000) if created else 0, request)
+    if refusal:
+        raise refusal
     user.pop("password_hash", None)
     return await resolve_membership(user)
 
@@ -994,6 +1038,8 @@ async def change_password(inp: PasswordChangeInput, request: Request, response: 
     old_token = _extract_token(request)
     if old_token:
         await _revoke_token(old_token)
+    # Google sign-in sessions end too; this browser carries on with the new token below.
+    await db.user_sessions.delete_many({"user_id": user["user_id"]})
     token = create_access_token(user["user_id"], email)
     set_auth_cookie(response, token)
     await record_event("auth.password_changed", "user", user["user_id"], user["tenant_id"], email,
@@ -1028,6 +1074,7 @@ async def reset_member_password(target_user_id: str, user=Depends(require_role("
         {"user_id": target_user_id, "tenant_id": user["tenant_id"]},
         {"$set": {"password_hash": hash_password(temporary), "password_changed_at": now_iso(),
                   "must_change_password": True}})
+    await db.user_sessions.delete_many({"user_id": target_user_id})
     await _reset_login_failures(target["email"].lower())
     await record_event("team.password_reset", "membership", target_user_id, user["tenant_id"], user["email"],
                        payload={"target": m["email"]})

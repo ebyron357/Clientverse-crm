@@ -46,16 +46,23 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
 
   // Start from the saved stages each time the dialog opens -- and only then, so a board
   // refresh in the background cannot wipe edits in progress. What each stage holds is
-  // re-read on opening: deals may have moved since the board loaded.
+  // re-read on opening: deals may have moved since the board loaded. Editing waits for that
+  // answer, which replaces the rows, and an answer meant for an earlier opening (closed and
+  // reopened before it came back) is ignored.
   const wasOpen = useRef(false);
+  const opening = useRef(0);
   useEffect(() => {
     if (open && !wasOpen.current) {
+      const current = ++opening.current;
+      const stillCurrent = () => current === opening.current;
       setRows(rowsFrom(boardStages)); setSaved({ stages: boardStages || [], inUse: {} }); setNewLabel(""); setProblem(""); setChecking(true);
       api.get("/pipelines/default").then(({ data }) => {
+        if (!stillCurrent()) return;
         setSaved({ stages: data.stages || [], inUse: data.in_use || {} });
         setRows(rowsFrom(data.stages));
-      }).catch(() => setProblem("Could not check which stages are in use. Saving still checks it for you.")).finally(() => setChecking(false));
+      }).catch(() => stillCurrent() && setProblem("Could not check which stages are in use. Saving still checks it for you.")).finally(() => stillCurrent() && setChecking(false));
     }
+    if (!open && wasOpen.current) opening.current += 1;
     wasOpen.current = open;
   }, [open, boardStages]);
 
@@ -128,19 +135,19 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
               <li key={row.key} className="rounded-xl border border-slate-200 bg-white p-3" data-testid={`stage-row-${row.key}`}>
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="flex flex-col">
-                    <button type="button" onClick={() => move(index, -1)} disabled={index === 0} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} up`} data-testid={`stage-up-${row.key}`}><ArrowUp className="h-3.5 w-3.5" /></button>
-                    <button type="button" onClick={() => move(index, 1)} disabled={index === rows.length - 1} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} down`} data-testid={`stage-down-${row.key}`}><ArrowDown className="h-3.5 w-3.5" /></button>
+                    <button type="button" onClick={() => move(index, -1)} disabled={checking || index === 0} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} up`} data-testid={`stage-up-${row.key}`}><ArrowUp className="h-3.5 w-3.5" /></button>
+                    <button type="button" onClick={() => move(index, 1)} disabled={checking || index === rows.length - 1} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} down`} data-testid={`stage-down-${row.key}`}><ArrowDown className="h-3.5 w-3.5" /></button>
                   </div>
-                  <Input value={row.label} onChange={(event) => update(index, { label: event.target.value })} aria-label="Stage name" className="h-9 min-w-[10rem] flex-1" maxLength={80} data-testid={`stage-label-${row.key}`} />
-                  <Select value={outcome} onValueChange={(value) => update(index, { ...flagsFor(value), probability: value === OUTCOME.WON ? 100 : value === OUTCOME.LOST ? 0 : row.probability })} disabled={lockOutcome}>
+                  <Input value={row.label} onChange={(event) => update(index, { label: event.target.value })} aria-label="Stage name" className="h-9 min-w-[10rem] flex-1" maxLength={80} disabled={checking} data-testid={`stage-label-${row.key}`} />
+                  <Select value={outcome} onValueChange={(value) => update(index, { ...flagsFor(value), probability: value === OUTCOME.WON ? 100 : value === OUTCOME.LOST ? 0 : row.probability })} disabled={checking || lockOutcome}>
                     <SelectTrigger className="h-9 w-[8.5rem]" aria-label={`What reaching ${row.label || "this stage"} means`} data-testid={`stage-outcome-${row.key}`}><SelectValue /></SelectTrigger>
                     <SelectContent>{Object.values(OUTCOME).map((value) => <SelectItem key={value} value={value}>{OUTCOME_LABEL[value]}</SelectItem>)}</SelectContent>
                   </Select>
                   <div className="flex items-center gap-1">
-                    <Input type="number" min="0" max="100" value={row.probability} onChange={(event) => update(index, { probability: event.target.value })} aria-label={`Chance a deal in ${row.label || "this stage"} closes, in percent`} className="h-9 w-[4.5rem]" disabled={outcome !== OUTCOME.OPEN} data-testid={`stage-probability-${row.key}`} />
+                    <Input type="number" min="0" max="100" value={row.probability} onChange={(event) => update(index, { probability: event.target.value })} aria-label={`Chance a deal in ${row.label || "this stage"} closes, in percent`} className="h-9 w-[4.5rem]" disabled={checking || outcome !== OUTCOME.OPEN} data-testid={`stage-probability-${row.key}`} />
                     <span className="text-xs text-slate-500">%</span>
                   </div>
-                  <Button type="button" variant="ghost" size="sm" onClick={() => remove(index)} disabled={Boolean(removeBlocked)} title={removeBlocked || "Remove this stage"} aria-label={`Remove ${row.label || "this stage"}`} className="h-9 px-2 text-slate-500 hover:text-red-700" data-testid={`stage-remove-${row.key}`}><Trash2 className="h-4 w-4" /></Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => remove(index)} disabled={checking || Boolean(removeBlocked)} title={removeBlocked || "Remove this stage"} aria-label={`Remove ${row.label || "this stage"}`} className="h-9 px-2 text-slate-500 hover:text-red-700" data-testid={`stage-remove-${row.key}`}><Trash2 className="h-4 w-4" /></Button>
                 </div>
                 {(hasDeals || forms.length > 0 || row.isNew) && (
                   <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 pl-7 text-xs text-slate-500">
@@ -154,8 +161,8 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
           })}
         </ol>
         <div className="flex gap-2">
-          <Input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addStage(); } }} placeholder="New stage, e.g. Showing booked" aria-label="New stage name" maxLength={80} data-testid="stage-new-label" />
-          <Button type="button" variant="outline" onClick={addStage} data-testid="stage-add"><Plus className="mr-1.5 h-4 w-4" />Add stage</Button>
+          <Input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addStage(); } }} placeholder="New stage, e.g. Showing booked" aria-label="New stage name" maxLength={80} disabled={checking} data-testid="stage-new-label" />
+          <Button type="button" variant="outline" onClick={addStage} disabled={checking} data-testid="stage-add"><Plus className="mr-1.5 h-4 w-4" />Add stage</Button>
         </div>
         <p className="text-xs leading-5 text-slate-500">“Chance” is how likely a deal at that stage is to close. It only feeds the weighted estimate; it never changes a deal's value.</p>
         {problem && <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert" data-testid="stage-editor-problem">{problem}</div>}

@@ -2719,10 +2719,16 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
         if inp.status == "responded" and lead["status"] == "new":
             await pipeline.mark_responded(lead, via="marked_in_inbox", actor=user["email"])
         elif inp.status != lead["status"]:
+            change = {"status": inp.status, "status_changed_by": user["email"],
+                      "status_changed_at": now_iso()}
+            if inp.status == "new":
+                # A reopened lead is waiting again: its old response stops counting, in the
+                # response-time figures and in lost-lead detection alike, exactly as when its
+                # call-back task is un-ticked.
+                change.update({"sla.first_response_at": None, "sla.response_minutes": None,
+                               "sla.responded_via": None})
             await db[detectors.WEB_ENQUIRIES].update_one(
-                {"id": lead_id, "tenant_id": user["tenant_id"]},
-                {"$set": {"status": inp.status, "status_changed_by": user["email"],
-                          "status_changed_at": now_iso()}})
+                {"id": lead_id, "tenant_id": user["tenant_id"]}, {"$set": change})
             if inp.status == "new" and lead.get("task_id"):
                 # Reopening a lead reopens its call-back task. Left finished, the next sweep
                 # reads the task as the response and marks the lead contacted again; left

@@ -296,8 +296,15 @@ def test_reopening_a_lead_reopens_its_call_back_task(client):
     task = find_one(client, "tasks", {"id": lead["task_id"]})
     assert task["status"] == "todo" and task["completed_at"] is None
     call(client, server.lead_pipeline.sweep, owner["tenant_id"])
-    assert find_one(client, detectors.WEB_ENQUIRIES, {"id": lead["id"]})["status"] == "new", (
+    reopened = find_one(client, detectors.WEB_ENQUIRIES, {"id": lead["id"]})
+    assert reopened["status"] == "new", (
         "a finished call-back task left behind used to mark the reopened lead contacted again")
+    # The old response no longer counts: not in the response figures, and not as a reason
+    # for lost-lead detection to skip it.
+    sla = reopened["sla"]
+    assert sla["first_response_at"] is None and sla["response_minutes"] is None
+    assert sla["responded_via"] is None
+    assert not detectors.enquiry_is_resolved(reopened)
 
 
 # ------------------------------------------------------- assignment notices

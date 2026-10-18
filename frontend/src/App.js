@@ -66,7 +66,11 @@ function Protected({ children }) {
 
 function AppRouter() {
   const location = useLocation();
-  if (location.hash?.includes("session_id=")) return <AuthCallback />;
+  // Google sign-in returns to /dashboard (see Login), which no other site may frame. Only
+  // there, and only in the browser's own window: /book/:key can sit in another site's frame,
+  // and a frame must never be able to sign this app into a session someone else picked.
+  const signInReturn = location.pathname === "/dashboard" && location.hash?.includes("session_id=") && window.top === window.self;
+  if (signInReturn) return <AuthCallback />;
   return (
     <Routes>
       <Route path="/login" element={<Login />} />

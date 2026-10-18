@@ -196,3 +196,87 @@ def test_an_admin_names_the_business_and_invitations_use_that_name():
 
         _, other_token, _ = _account(client)
         assert client.get("/api/organization", headers=_h(other_token)).json()["name"] == "Jasmine Parker's Org"
+
+
+def test_google_sign_in_sessions_obey_the_same_password_rules():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        from datetime import datetime, timedelta, timezone
+
+        _, admin_token, _ = _account(client)
+        teammate = f"assistant_{uuid.uuid4().hex[:10]}@example.com"
+        invite = client.post("/api/team/invitations", headers=_h(admin_token),
+                             json={"email": teammate, "role": "member"}).json()
+        joined = client.post("/api/team/invitations/accept-new",
+                             json={"token": invite["invite_token"], "name": "Alex Assistant", "password": CHOSEN})
+        client.cookies.clear()
+        teammate_id = joined.json()["user"]["user_id"]
+
+        def google_session(created_at):
+            token = f"gsess_{uuid.uuid4().hex}"
+
+            async def insert():
+                await server.db.user_sessions.insert_one({
+                    "user_id": teammate_id, "session_token": token, "created_at": created_at,
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()})
+            client.portal.call(insert)
+            return token
+
+        before = google_session(datetime.now(timezone.utc).isoformat())
+        assert client.get("/api/leads", headers=_h(before)).status_code == 200
+
+        # An admin reset ends the Google session along with every other one...
+        temporary = client.post(f"/api/team/members/{teammate_id}/reset-password",
+                                headers=_h(admin_token)).json()["temporary_password"]
+        assert client.get("/api/auth/me", headers=_h(before)).status_code == 401
+        # ...a leftover row from before the reset is refused even if it was not removed...
+        leftover = google_session((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
+        assert client.get("/api/auth/me", headers=_h(leftover)).status_code == 401
+        # ...and a Google sign-in after the reset is held to the temporary-password lock.
+        after = google_session((datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat())
+        assert client.get("/api/auth/me", headers=_h(after)).status_code == 200
+        blocked = client.get("/api/leads", headers=_h(after))
+        assert blocked.status_code == 403 and blocked.json()["detail"] == "Choose your own password to continue."
+
+        # Changing the password ends Google sessions too.
+        signed_in = _login(client, teammate, temporary).json()["token"]
+        assert _change(client, signed_in, temporary, "Alex-Own-Passw0rd!").status_code == 200
+        assert client.get("/api/auth/me", headers=_h(after)).status_code == 401
+
+
+def test_another_site_cannot_use_the_session_cookie_to_make_changes():
+    # The session cookie is SameSite=None, so a form on any site a signed-in admin visits
+    # would carry it. A write signed in by the cookie alone must come from ClientVerse.
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        _, admin_token, _ = _account(client)
+        teammate = f"assistant_{uuid.uuid4().hex[:10]}@example.com"
+        invite = client.post("/api/team/invitations", headers=_h(admin_token),
+                             json={"email": teammate, "role": "member"}).json()
+        joined = client.post("/api/team/invitations/accept-new",
+                             json={"token": invite["invite_token"], "name": "Alex Assistant", "password": CHOSEN})
+        client.cookies.clear()
+        teammate_id, teammate_token = joined.json()["user"]["user_id"], joined.json()["token"]
+        reset = f"/api/team/members/{teammate_id}/reset-password"
+
+        client.cookies.set("access_token", admin_token)
+        refused = client.post(reset, headers={"Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"})
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == "This change has to be made from ClientVerse itself."
+        assert client.post(reset, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+        assert client.post(reset, headers={"Origin": "null"}).status_code == 403
+        # Reading is not a change, and the cross-site attempts changed nothing.
+        assert client.get("/api/auth/me", headers={"Origin": "https://attacker.example"}).status_code == 200
+        client.cookies.clear()
+        assert client.get("/api/auth/me", headers=_h(teammate_token)).status_code == 200
+
+        # ClientVerse's own pages may: the app's origin, this host, or the browser saying so.
+        client.cookies.set("access_token", admin_token)
+        assert client.post(reset, headers={"Origin": server.CORS_ORIGINS[0]}).status_code == 200
+        assert client.post(reset, headers={"Origin": "http://testserver"}).status_code == 200
+        assert client.post(reset, headers={"Sec-Fetch-Site": "same-origin", "Origin": "https://attacker.example"}).status_code == 200
+        client.cookies.clear()
+        # A request carrying the Authorization header cannot come from another site's form.
+        renamed = client.patch("/api/organization", headers={**_h(admin_token), "Origin": "https://attacker.example"},
+                               json={"name": "Allure Realty Group"})
+        assert renamed.status_code == 200, renamed.text

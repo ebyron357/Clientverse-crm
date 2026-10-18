@@ -93,7 +93,10 @@ export default function PublicBooking() {
   const [busy, setBusy] = useState(false);
   const [booked, setBooked] = useState(null);
   const sid = useRef(newSubmissionId());
-  const detailsOpenedAt = useRef(0);
+  // Time on the page, for the server's too-fast-to-be-a-person check. Counted from opening
+  // the page and never reset: after a refused time the details are still filled in, so a
+  // visitor who picks another time can rightly send them again within seconds.
+  const pageOpenedAt = useRef(Date.now());
   const honeypot = useRef(null);
   const heading = useRef(null);
   const picker = useRef(null);
@@ -111,7 +114,6 @@ export default function PublicBooking() {
 
   useEffect(() => {
     if (step !== "pick") heading.current?.focus();
-    if (step === "details") detailsOpenedAt.current = Date.now();
   }, [step]);
 
   const loadDays = useCallback(async (first, last, tz) => {
@@ -125,7 +127,7 @@ export default function PublicBooking() {
     setErrors({}); setNotice("");
     setBusy(true);
     const body = { ...attribution(), ...values, start, timezone: zone, _sid: sid.current,
-      _elapsed_ms: Date.now() - detailsOpenedAt.current, _hp: honeypot.current?.value || "" };
+      _elapsed_ms: Date.now() - pageOpenedAt.current, _hp: honeypot.current?.value || "" };
     try {
       const response = await publicCall(`${encodeURIComponent(key)}/book`, { method: "POST", body });
       if (response.ok) {

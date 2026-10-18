@@ -745,6 +745,29 @@ def test_the_agent_reschedules_and_cancels_on_the_persons_behalf(client):
 
 # --------------------------------------------------- emails to the person: governance
 
+def test_only_the_host_or_an_admin_sees_the_wording_of_booking_emails(client):
+    # The wording carries the person's private manage link, which can cancel or move the
+    # booking: a teammate who may not do that from the Calendar must not get it there.
+    owner = register(client)
+    open_all_day(client, owner)
+    connect_email(client, owner)
+    page = create_page(client, owner)
+    response = book(client, page, slots(client, page)[0])
+    teammate = add_member(client, owner)
+
+    def emails(person):
+        listed = client.get("/api/booking/appointments", headers=person["headers"]).json()["items"]
+        return listed[0]["can_manage"], listed[0]["messages"][0]
+
+    can_manage, mail = emails(owner)
+    assert can_manage is True and token_of(response) in mail["body"] and mail["subject"]
+    can_manage, mail = emails(teammate)
+    assert can_manage is False
+    assert mail["status"] == cv.PENDING_APPROVAL, "a teammate still sees where the email stands"
+    assert "body" not in mail and "subject" not in mail
+
+
+
 def test_each_email_to_the_person_waits_for_its_own_admin_approval(client):
     owner = register(client)
     open_all_day(client, owner)
@@ -930,3 +953,17 @@ def test_the_calendar_file_folds_long_lines_and_escapes_text():
     assert "SUMMARY:Home showing — Jamie\\, Buyer\\; with notes" in text.replace("\r\n ", "")
     assert "DTSTART:20261020T140000Z" in text and "SEQUENCE:2" in text
     assert "LOCATION:12 Oak St\\, Springfield" in text
+
+
+def test_a_line_break_a_visitor_typed_cannot_start_a_calendar_property():
+    # A lone CR is a line break to some calendar parsers, so it is escaped like the rest.
+    appointment = {"id": "apt_2", "title": "Home showing — Jamie\rATTENDEE:mailto:x@attacker.example",
+                   "start_at": "2026-10-20T14:00:00+00:00", "end_at": "2026-10-20T14:30:00+00:00",
+                   "status": "confirmed", "booking": {"sequence": 0}}
+    text = booking.ics_document(appointment, description="Hi\rATTACH:https://attacker.example/x",
+                                location="12 Oak St\r\nX-EVIL:1\x0b")
+    unfolded = text.replace("\r\n ", "")
+    lines = unfolded.split("\r\n")
+    assert "\r" not in "".join(lines) and "\n" not in "".join(lines)
+    assert not any(line.startswith(("ATTENDEE", "ATTACH", "X-EVIL")) for line in lines)
+    assert "SUMMARY:Home showing — Jamie\\nATTENDEE:mailto:x@attacker.example" in lines
