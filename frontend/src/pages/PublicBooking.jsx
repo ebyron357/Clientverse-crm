@@ -23,11 +23,11 @@ function InfoPanel({ config, compact }) {
       {config.brand_name && <div className="text-xs font-medium text-[var(--booking-accent)]">{config.brand_name}</div>}
       <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">{config.name}</h1>
       <div className="space-y-2.5 text-sm">
-        <div className="flex items-center gap-2.5"><Clock className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><span className="font-semibold text-foreground">{config.duration_minutes} minutes</span></div>
+        <div className="flex items-center gap-2.5"><Clock className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="font-semibold text-foreground">{config.duration_minutes} minutes</span></div>
         <LocationLine location={config.location} />
-        {config.host_name && <div className="flex items-center gap-2.5"><UserRound className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><span className="font-semibold text-foreground">with {config.host_name}</span></div>}
+        {config.host_name && <div className="flex items-center gap-2.5"><UserRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="font-semibold text-foreground">with {config.host_name}</span></div>}
       </div>
-      {config.description && !compact && <p className="text-sm leading-6 text-slate-600">{config.description}</p>}
+      {config.description && !compact && <p className="text-sm leading-6 text-muted-foreground">{config.description}</p>}
     </div>
   );
 }
@@ -35,14 +35,14 @@ function InfoPanel({ config, compact }) {
 function FieldInput({ field, value, error, onChange }) {
   const id = `book-${field.key}`;
   const describedBy = error ? `${id}-error` : undefined;
-  const base = `w-full rounded-lg border bg-white px-3.5 text-base text-foreground outline-none transition-shadow motion-reduce:transition-none focus:ring-2 focus:ring-[var(--booking-accent)] focus:ring-offset-1 sm:text-sm ${error ? "border-red-400" : "border-slate-300"}`;
+  const base = `w-full rounded-lg border bg-card px-3.5 text-base text-foreground outline-none transition-shadow motion-reduce:transition-none focus:ring-2 focus:ring-[var(--booking-accent)] focus:ring-offset-1 sm:text-sm ${error ? "border-red-400" : "border-input"}`;
   if (field.type === "checkbox") {
     return (
       <div>
-        <label htmlFor={id} className="flex items-start gap-3 text-sm leading-5 text-slate-700">
+        <label htmlFor={id} className="flex items-start gap-3 text-sm leading-5 text-foreground/80">
           <input id={id} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)}
             aria-invalid={Boolean(error)} aria-describedby={describedBy} data-testid={`book-field-${field.key}`}
-            className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-[var(--booking-accent)]" />
+            className="mt-0.5 h-5 w-5 shrink-0 rounded border-input accent-[var(--booking-accent)]" />
           <span>{field.label}{field.required ? " *" : ""}</span>
         </label>
         {error && <p id={`${id}-error`} className="mt-1 text-sm text-red-700">{error}</p>}
@@ -52,7 +52,7 @@ function FieldInput({ field, value, error, onChange }) {
   return (
     <div>
       <label htmlFor={id} className="mb-1.5 block text-sm font-semibold text-foreground">
-        {field.label}{field.required ? <span className="text-red-700" aria-hidden="true"> *</span> : <span className="font-normal text-slate-500"> (optional)</span>}
+        {field.label}{field.required ? <span className="text-red-700" aria-hidden="true"> *</span> : <span className="font-normal text-muted-foreground"> (optional)</span>}
       </label>
       {field.type === "textarea" ? (
         <textarea id={id} rows={3} value={value || ""} onChange={(event) => onChange(event.target.value)} required={field.required}
@@ -159,7 +159,7 @@ export default function PublicBooking() {
   if (!config) {
     return (
       <PublicFrame embed={embed} testid="public-booking">
-        <div className="flex min-h-[50vh] items-center justify-center text-slate-500" aria-busy="true"><Loader2 className="h-6 w-6 animate-spin motion-reduce:animate-none" aria-label="Loading" /></div>
+        <div className="flex min-h-[50vh] items-center justify-center text-muted-foreground" aria-busy="true"><Loader2 className="h-6 w-6 animate-spin motion-reduce:animate-none" aria-label="Loading" /></div>
       </PublicFrame>
     );
   }
@@ -170,14 +170,14 @@ export default function PublicBooking() {
 
   return (
     <PublicFrame embed={embed} color={config.color} testid="public-booking">
-      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(10,22,40,0.04),0_24px_60px_rgba(10,22,40,0.08)]" style={brandStyle(config.color)}>
+      <div className="overflow-hidden rounded-2xl border border-border/80 bg-card shadow-[0_1px_2px_rgba(10,22,40,0.04),0_24px_60px_rgba(10,22,40,0.08)]" style={brandStyle(config.color)}>
         <div className="grid lg:grid-cols-[19rem_minmax(0,1fr)]">
-          <aside className="border-b border-slate-100 bg-slate-50/60 p-5 sm:p-7 lg:border-b-0 lg:border-r" data-testid="public-booking-info">
+          <aside className="border-b border-border bg-muted/50 p-5 sm:p-7 lg:border-b-0 lg:border-r" data-testid="public-booking-info">
             <InfoPanel config={config} compact={step !== "pick"} />
             {start && step === "details" && (
-              <div className="mt-5 rounded-xl border border-[var(--booking-accent)] bg-white p-3.5 text-sm" data-testid="public-booking-chosen">
+              <div className="mt-5 rounded-xl border border-[var(--booking-accent)] bg-card p-3.5 text-sm" data-testid="public-booking-chosen">
                 <div className="font-semibold text-foreground">{formatRange(start, null, zone)}</div>
-                <div className="text-slate-500">{zoneLabel(zone, new Date(start))}</div>
+                <div className="text-muted-foreground">{zoneLabel(zone, new Date(start))}</div>
               </div>
             )}
           </aside>
@@ -189,7 +189,7 @@ export default function PublicBooking() {
               <>
                 <h2 className="mb-5 font-display text-xl font-semibold text-foreground">Pick a day and time</h2>
                 {!config.available
-                  ? <p className="rounded-lg bg-slate-50 p-6 text-center text-sm text-slate-600">No times are open right now. Please contact the agent directly.</p>
+                  ? <p className="rounded-lg bg-muted/50 p-6 text-center text-sm text-muted-foreground">No times are open right now. Please contact the agent directly.</p>
                   : <SlotPicker loadDays={loadDays} zone={zone} onZoneChange={setZone} maxKey={maxKey} controlRef={picker}
                       selectedStart={start} testid="public-slots"
                       onPick={(value) => { setStart(value); setNotice(""); setStep("details"); }} />}
@@ -226,7 +226,7 @@ export default function PublicBooking() {
                   <CheckCircle2 className="h-9 w-9 shrink-0 text-emerald-600" aria-hidden="true" />
                   <div>
                     <h2 ref={heading} tabIndex={-1} className="font-display text-2xl font-semibold text-foreground outline-none">You're booked{values.first_name ? `, ${values.first_name}` : ""}!</h2>
-                    {booked.confirmation_message && <p className="mt-1 text-sm leading-6 text-slate-600">{booked.confirmation_message}</p>}
+                    {booked.confirmation_message && <p className="mt-1 text-sm leading-6 text-muted-foreground">{booked.confirmation_message}</p>}
                   </div>
                 </div>
                 <SummaryCard booking={booked} zone={zone} />
@@ -240,7 +240,7 @@ export default function PublicBooking() {
           </section>
         </div>
       </div>
-      {!embed && <p className="mt-4 text-center text-xs text-slate-500">Times are shown in {zoneLabel(zone)}. Your details go only to {config.host_name || "the agent"}.</p>}
+      {!embed && <p className="mt-4 text-center text-xs text-muted-foreground">Times are shown in {zoneLabel(zone)}. Your details go only to {config.host_name || "the agent"}.</p>}
     </PublicFrame>
   );
 }
