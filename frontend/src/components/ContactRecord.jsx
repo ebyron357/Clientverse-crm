@@ -27,8 +27,8 @@ const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 const KIND_ICON = { call: Phone, text: MessageSquare, email: Mail, meeting: CalendarDays, note: StickyNote, request: Globe, event: UserRound };
 const KIND_STYLE = {
-  call: "bg-emerald-50 text-emerald-700", text: "bg-cyan-50 text-[#127b96]", email: "bg-violet-50 text-violet-700",
-  meeting: "bg-amber-50 text-amber-700", note: "bg-slate-100 text-slate-600", request: "bg-cyan-50 text-[#1a9fbf]",
+  call: "bg-emerald-50 text-emerald-700", text: "bg-brand-soft text-brand", email: "bg-violet-50 text-violet-700",
+  meeting: "bg-amber-50 text-amber-700", note: "bg-slate-100 text-slate-600", request: "bg-brand-soft text-brand",
   event: "bg-slate-50 text-slate-400",
 };
 const INFLUENCE = [["low", "Low"], ["medium", "Medium"], ["high", "High"]];
@@ -36,7 +36,7 @@ const RELATIONSHIP = [["positive", "Good"], ["neutral", "Neutral"], ["negative",
 
 function SectionTitle({ children, count }) {
   return (
-    <h3 className="mb-2 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">
+    <h3 className="mb-2 text-xs font-medium text-slate-500">
       {children}{count != null && <span className="ml-1 font-semibold text-slate-400">{count}</span>}
     </h3>
   );
@@ -46,7 +46,7 @@ function Row({ label, children }) {
   return (
     <div className="grid grid-cols-[7.5rem_1fr] gap-3 border-t border-slate-100 py-2 text-sm first:border-t-0">
       <dt className="text-slate-500">{label}</dt>
-      <dd className="min-w-0 break-words text-[#132038]">{children}</dd>
+      <dd className="min-w-0 break-words text-foreground">{children}</dd>
     </div>
   );
 }
@@ -69,12 +69,12 @@ export function ActivityFeed({ entries, empty, limit, testId }) {
             <li key={entry.id} className="flex gap-3">
               <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${KIND_STYLE[entry.kind] || KIND_STYLE.note}`}><Icon className="h-4 w-4" /></span>
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-[#132038]">{entry.title}</div>
+                <div className="text-sm font-semibold text-foreground">{entry.title}</div>
                 {entry.subject && <div className="text-sm text-slate-600">{entry.subject}</div>}
                 {entry.body && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm leading-6 text-slate-600">{entry.body}</p>}
                 <div className="mt-0.5 text-xs text-slate-500" title={fullDateLabel(entry.at)}>
                   {[entry.who, agoLabel(entry.at)].filter(Boolean).join(" · ")}
-                  {entry.leadId && <> · <Link className="font-semibold text-[#127b96]" to={`/leads?lead=${entry.leadId}`}>Open request</Link></>}
+                  {entry.leadId && <> · <Link className="font-semibold text-brand" to={`/leads?lead=${entry.leadId}`}>Open request</Link></>}
                 </div>
               </div>
             </li>
@@ -82,7 +82,7 @@ export function ActivityFeed({ entries, empty, limit, testId }) {
         })}
       </ol>
       {limit && entries.length > limit && (
-        <Button variant="ghost" size="sm" className="mt-2 px-2 text-[#127b96]" onClick={() => setShowAll((value) => !value)}>
+        <Button variant="ghost" size="sm" className="mt-2 px-2 text-brand" onClick={() => setShowAll((value) => !value)}>
           {showAll ? "Show less" : `Show all ${entries.length}`}
         </Button>
       )}
@@ -115,7 +115,7 @@ function EditForm({ contact, companies, members, isAdmin, saving, onSave, onCanc
     onSave(payload);
   };
   return (
-    <section className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4" data-testid="contact-edit-form">
+    <section className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4" data-testid="contact-edit-form">
       <SectionTitle>Edit details</SectionTitle>
       <div className="grid gap-1.5"><Label htmlFor="contact-name">Name <span className="text-red-500">*</span></Label><Input id="contact-name" value={form.name} onChange={(event) => setField("name", event.target.value)} data-testid="contact-edit-name" /></div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -192,7 +192,7 @@ function LogActivity({ openRequests, saving, onSave }) {
           const active = entry.key === kind;
           return (
             <button key={entry.key} type="button" role="radio" aria-checked={active} onClick={() => setKind(entry.key)}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-semibold ${active ? "border-[#0a1628] bg-[#0a1628] text-white" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-semibold ${active ? "border-foreground bg-foreground text-white" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}
               data-testid={`contact-log-type-${entry.key}`}>
               <Icon className="h-3.5 w-3.5" />{entry.label}
             </button>
@@ -332,18 +332,18 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
         ) : (
           <div className="space-y-6 pb-10">
             <SheetHeader className="space-y-1 pr-6 text-left">
-              <SheetTitle className="font-display text-2xl leading-tight text-[#0a1628]">{contact.name}</SheetTitle>
+              <SheetTitle className="font-display text-2xl leading-tight text-foreground">{contact.name}</SheetTitle>
               <SheetDescription>{[contact.role, contact.title, company?.name].filter(Boolean).join(" · ") || "Contact"}</SheetDescription>
               <div className="flex flex-wrap gap-1.5 pt-1">
                 <Chip>Owner: {ownerLabel}</Chip>
-                {source && <Chip className="border-cyan-200 bg-cyan-50 text-[#0a6177]">{source}</Chip>}
+                {source && <Chip className="border-brand/20 bg-brand-soft text-brand">{source}</Chip>}
                 {tags.map((tag) => <Chip key={tag}>{tag.replace(/[-_]+/g, " ")}</Chip>)}
                 {contact.archived_at && <Chip className="border-amber-200 bg-amber-50 text-amber-800">Archived</Chip>}
               </div>
             </SheetHeader>
 
             {contact.archived_at && (
-              <div className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-amber-900">This contact is archived, so they're hidden from your contact list.</p>
                 <Button size="sm" variant="outline" disabled={saving} onClick={() => setArchived(false)} data-testid="contact-restore"><ArchiveRestore className="mr-1.5 h-4 w-4" />Restore</Button>
               </div>
@@ -362,13 +362,13 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
               <section>
                 <SectionTitle>Details</SectionTitle>
                 <dl>
-                  <Row label="Phone">{contact.phone ? <a className="font-semibold text-[#127b96]" href={`tel:${contact.phone}`}>{contact.phone}</a> : <span className="text-slate-400">Not added yet</span>}</Row>
-                  <Row label="Email">{contact.email ? <a className="font-semibold text-[#127b96]" href={`mailto:${contact.email}`}>{contact.email}</a> : <span className="text-slate-400">Not added yet</span>}</Row>
+                  <Row label="Phone">{contact.phone ? <a className="font-semibold text-brand" href={`tel:${contact.phone}`}>{contact.phone}</a> : <span className="text-slate-400">Not added yet</span>}</Row>
+                  <Row label="Email">{contact.email ? <a className="font-semibold text-brand" href={`mailto:${contact.email}`}>{contact.email}</a> : <span className="text-slate-400">Not added yet</span>}</Row>
                   {company && <Row label="Company">{company.name}</Row>}
                   {contact.role && <Row label="Role">{contact.role}</Row>}
                   {contact.title && <Row label="Job title">{contact.title}</Row>}
                   <Row label="Owner">{ownerLabel}</Row>
-                  {workspace && <Row label="Client workspace"><Link className="font-semibold text-[#127b96]" to={`/workspaces/${workspace.id}`}>{workspace.name}</Link></Row>}
+                  {workspace && <Row label="Client workspace"><Link className="font-semibold text-brand" to={`/workspaces/${workspace.id}`}>{workspace.name}</Link></Row>}
                   <Row label="Added">{fullDateLabel(contact.created_at) || "—"}</Row>
                 </dl>
               </section>
@@ -382,9 +382,9 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
                 <ul className="space-y-2">
                   {requests.map((lead) => (
                     <li key={lead.id}>
-                      <Link to={`/leads?lead=${lead.id}`} className="flex items-start justify-between gap-3 rounded-xl border border-slate-200 px-3 py-2.5 hover:bg-slate-50" data-testid={`contact-request-${lead.id}`}>
+                      <Link to={`/leads?lead=${lead.id}`} className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2.5 hover:bg-slate-50" data-testid={`contact-request-${lead.id}`}>
                         <span className="min-w-0">
-                          <span className="block truncate text-sm font-semibold text-[#132038]">{lead.form_name || "Website form"}</span>
+                          <span className="block truncate text-sm font-semibold text-foreground">{lead.form_name || "Website form"}</span>
                           <span className="block truncate text-xs text-slate-500">{[lead.property_address, lead.listing_id && `MLS ${lead.listing_id}`, agoLabel(lead.received_at)].filter(Boolean).join(" · ")}</span>
                         </span>
                         <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${LEAD_STATUS_STYLE[lead.status] || LEAD_STATUS_STYLE.closed}`}>{LEAD_STATUS_LABEL[lead.status] || lead.status}</span>
@@ -401,15 +401,15 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
                 <ul className="space-y-2">
                   {detail.deals.map((deal) => (
                     <li key={deal.id}>
-                      <Link to={`/deals?deal=${deal.id}`} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3 py-2.5 hover:bg-slate-50" data-testid={`contact-deal-${deal.id}`}>
+                      <Link to={`/deals?deal=${deal.id}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2.5 hover:bg-slate-50" data-testid={`contact-deal-${deal.id}`}>
                         <span className="flex min-w-0 items-center gap-2.5">
                           <GitBranch className="h-4 w-4 shrink-0 text-slate-400" />
                           <span className="min-w-0">
-                            <span className="block truncate text-sm font-semibold text-[#132038]">{deal.name}</span>
+                            <span className="block truncate text-sm font-semibold text-foreground">{deal.name}</span>
                             <span className="block text-xs text-slate-500">{stageLabel(deal.stage)}{deal.archived_at ? " · Archived" : ""}</span>
                           </span>
                         </span>
-                        <span className="shrink-0 font-display text-sm font-bold text-[#132038]">{formatMoney(deal.value, deal.currency || "USD")}</span>
+                        <span className="shrink-0 font-display text-sm font-semibold text-foreground">{formatMoney(deal.value, deal.currency || "USD")}</span>
                       </Link>
                     </li>
                   ))}

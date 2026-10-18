@@ -97,14 +97,14 @@ const BASIS_TONE = {
 function CurrencyBlock({ title, note, byCurrency, tone, footnote }) {
   const entries = Object.entries(byCurrency || {});
   return (
-    <div className={`rounded-xl border p-4 shadow-sm ${tone}`}>
-      <div className="text-xs font-semibold uppercase tracking-[0.06em] opacity-70">{title}</div>
+    <div className={`rounded-lg border p-4 shadow-sm ${tone}`}>
+      <div className="text-xs font-semibold opacity-70">{title}</div>
       {entries.length === 0 ? (
-        <div className="font-display mt-2 text-2xl font-bold">—</div>
+        <div className="font-display mt-2 text-2xl font-semibold">—</div>
       ) : (
         <div className="mt-2 space-y-1">
           {entries.map(([currency, amount]) => (
-            <div key={currency} className="font-display text-2xl font-bold">{money(amount, currency)}</div>
+            <div key={currency} className="font-display text-2xl font-semibold">{money(amount, currency)}</div>
           ))}
         </div>
       )}
@@ -141,7 +141,7 @@ function CloseCaseControl({ caseId, onClosed }) {
 
   return (
     <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3" data-testid="proof-case-close">
-      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Close this case</div>
+      <div className="text-xs font-semibold text-gray-500">Close this case</div>
       <p className="mt-1 text-xs text-gray-500">
         Takes it out of open potential and withdraws anything still awaiting approval on it. The reason is shown on every report.
       </p>
@@ -176,11 +176,11 @@ const OPEN_STATES = ["detected", "planned", "awaiting_approval", "approved", "ex
 
 function Counter({ icon: Icon, label, value, note }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.06em] text-gray-400">
+    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-2 text-xs font-semibold text-gray-400">
         <Icon className="h-3.5 w-3.5" />{label}
       </div>
-      <div className="font-display mt-2 text-2xl font-bold text-[#0a1628]">{value}</div>
+      <div className="font-display mt-2 text-2xl font-semibold text-foreground">{value}</div>
       {note ? <p className="mt-1 text-xs text-gray-500">{note}</p> : null}
     </div>
   );
@@ -211,9 +211,9 @@ function CaseProof({ caseId, onBack, onChanged }) {
         <ChevronLeft className="mr-1 h-4 w-4" />All cases
       </Button>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+      <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="font-display text-2xl font-bold text-[#0a1628]">{proof.case.title || "Recovery case"}</h2>
+          <h2 className="font-display text-2xl font-semibold text-foreground">{proof.case.title || "Recovery case"}</h2>
           <Badge className="bg-gray-100 text-gray-600 border-gray-200">{stateLabel(proof.case.state)}</Badge>
           <Badge className="bg-slate-100 text-slate-600 border-slate-200">{sourceLabel(proof.case.source)}</Badge>
           {proof.case.close_reason ? (
@@ -229,13 +229,13 @@ function CaseProof({ caseId, onBack, onChanged }) {
           </p>
         ) : null}
         <dl className="mt-4 grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
-          <div><dt className="text-xs uppercase tracking-wide text-gray-400">Detected</dt><dd className="mt-1 text-gray-700">{proof.case.detected_at ? new Date(proof.case.detected_at).toLocaleString() : "—"}</dd></div>
-          <div><dt className="text-xs uppercase tracking-wide text-gray-400">Owner</dt><dd className="mt-1 text-gray-700">{proof.case.owner_name || proof.case.owner || "Unassigned"}</dd></div>
+          <div><dt className="text-xs text-gray-400">Detected</dt><dd className="mt-1 text-gray-700">{proof.case.detected_at ? new Date(proof.case.detected_at).toLocaleString() : "—"}</dd></div>
+          <div><dt className="text-xs text-gray-400">Owner</dt><dd className="mt-1 text-gray-700">{proof.case.owner_name || proof.case.owner || "Unassigned"}</dd></div>
           <div>
-            <dt className="text-xs uppercase tracking-wide text-gray-400">Source record</dt>
+            <dt className="text-xs text-gray-400">Source record</dt>
             <dd className="mt-1">
               {sourceRecordLink(proof.case.source_event_id) ? (
-                <Link to={sourceRecordLink(proof.case.source_event_id).to} className="inline-flex items-center gap-1 text-sm font-semibold text-[#0a6177] hover:underline" data-testid="proof-case-source-link">
+                <Link to={sourceRecordLink(proof.case.source_event_id).to} className="inline-flex items-center gap-1 text-sm font-semibold text-brand hover:underline" data-testid="proof-case-source-link">
                   {sourceRecordLink(proof.case.source_event_id).label}<ArrowRight className="h-3.5 w-3.5" />
                 </Link>
               ) : (
@@ -243,7 +243,7 @@ function CaseProof({ caseId, onBack, onChanged }) {
               )}
             </dd>
           </div>
-          <div className="md:col-span-3"><dt className="text-xs uppercase tracking-wide text-gray-400">Why it was detected</dt><dd className="mt-1 leading-6 text-gray-700">{proof.case.reason_detected}</dd></div>
+          <div className="md:col-span-3"><dt className="text-xs text-gray-400">Why it was detected</dt><dd className="mt-1 leading-6 text-gray-700">{proof.case.reason_detected}</dd></div>
         </dl>
         {isAdmin && OPEN_STATES.includes(proof.case.state) ? (
           <CloseCaseControl caseId={caseId} onClosed={() => { load(); if (onChanged) onChanged(); }} />
@@ -273,8 +273,8 @@ function CaseProof({ caseId, onBack, onChanged }) {
         <Counter icon={ShieldQuestion} label="Outcome unknown" value={comms.messages_outcome_unknown} note="Never counted as sent" />
       </div>
 
-      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h3 className="font-display text-lg font-bold text-[#0a1628]">Attribution</h3>
+      <div className="mt-4 rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+        <h3 className="font-display text-lg font-semibold text-foreground">Attribution</h3>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Badge className={BASIS_TONE[attribution.basis] || BASIS_TONE.no_contact}>
             {BASIS_LABEL[attribution.basis] || "No claim"}
@@ -298,8 +298,8 @@ function CaseProof({ caseId, onBack, onChanged }) {
       </div>
 
       {comms.outbound?.length > 0 && (
-        <div className="mt-4 rounded-xl border border-gray-200 bg-white shadow-sm">
-          <h3 className="font-display border-b border-gray-100 px-6 py-4 text-lg font-bold text-[#0a1628]">Messages</h3>
+        <div className="mt-4 rounded-lg border border-gray-200 bg-white shadow-sm">
+          <h3 className="font-display border-b border-gray-100 px-6 py-4 text-lg font-semibold text-foreground">Messages</h3>
           <div className="divide-y divide-gray-100">
             {[...comms.outbound, ...comms.inbound].map((message) => (
               <div key={message.id} className="px-6 py-3" data-testid={`proof-message-${message.id}`}>
@@ -422,8 +422,8 @@ export default function RecoveryProof() {
             />
           </div>
 
-          <div className="mt-6 rounded-xl border border-gray-200 bg-white shadow-sm">
-            <h2 className="font-display border-b border-gray-100 px-6 py-4 text-lg font-bold text-[#0a1628]">Cases</h2>
+          <div className="mt-6 rounded-lg border border-gray-200 bg-white shadow-sm">
+            <h2 className="font-display border-b border-gray-100 px-6 py-4 text-lg font-semibold text-foreground">Cases</h2>
             {cases && cases.length > 0 ? (
               <div className="divide-y divide-gray-100">
                 {cases.map((item) => (
@@ -436,7 +436,7 @@ export default function RecoveryProof() {
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-sm font-semibold text-[#0a1628]">{item.title || item.reason}</span>
+                        <span className="truncate text-sm font-semibold text-foreground">{item.title || item.reason}</span>
                         <Badge className="border-gray-200 bg-gray-100 text-gray-600">{stateLabel(item.state)}</Badge>
                         <Badge className="border-slate-200 bg-slate-50 text-slate-600">{sourceLabel(item.source)}</Badge>
                         {item.close_reason ? <Badge className="border-amber-200 bg-amber-50 text-amber-800">{closeLabel(item.close_reason)}</Badge> : null}

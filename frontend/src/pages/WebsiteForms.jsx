@@ -38,7 +38,7 @@ function Section({ title, description, children }) {
 function Field({ label, hint, children }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-sm font-semibold text-[#132038]">{label}</Label>
+      <Label className="text-sm font-semibold text-foreground">{label}</Label>
       {children}
       {hint && <p className="text-xs leading-5 text-slate-500">{hint}</p>}
     </div>
@@ -49,7 +49,7 @@ function Toggle({ label, hint, checked, onChange, disabled }) {
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
-        <div className="text-sm font-semibold text-[#132038]">{label}</div>
+        <div className="text-sm font-semibold text-foreground">{label}</div>
         {hint && <p className="text-xs leading-5 text-slate-500">{hint}</p>}
       </div>
       <Switch checked={Boolean(checked)} onCheckedChange={onChange} disabled={disabled} />
@@ -60,10 +60,10 @@ function Toggle({ label, hint, checked, onChange, disabled }) {
 function CodeBlock({ title, description, code }) {
   const copy = () => { navigator.clipboard?.writeText(code); toast.success(`${title} copied`); };
   return (
-    <div className="rounded-xl border border-slate-200">
+    <div className="rounded-lg border border-slate-200">
       <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
         <div>
-          <div className="text-sm font-semibold text-[#132038]">{title}</div>
+          <div className="text-sm font-semibold text-foreground">{title}</div>
           {description && <p className="text-xs leading-5 text-slate-500">{description}</p>}
         </div>
         <Button size="sm" variant="outline" onClick={copy}><Copy className="mr-1 h-3.5 w-3.5" />Copy</Button>
@@ -97,7 +97,7 @@ function FieldsTab({ draft, setDraft, catalog, readOnly }) {
   return (
     <div className="space-y-5">
       <Section title="Fields" description="What the form asks, in order. Real-estate fields are captured as structured data on the lead, the contact and the deal.">
-        <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+        <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
           {draft.fields.map((field, index) => {
             const base = byKey[field.key];
             const label = field.label || base?.label || field.key;
@@ -284,7 +284,7 @@ function AutomationTab({ draft, setDraft, members, stages, readOnly }) {
         </Field>
         {s.assignment.mode !== "unassigned" && (
           <Field label={s.assignment.mode === "specific" ? "Agent (the first one ticked)" : "Agents in the rotation"}>
-            <div className="max-h-48 space-y-1 overflow-auto rounded-xl border border-slate-200 p-2">
+            <div className="max-h-48 space-y-1 overflow-auto rounded-lg border border-slate-200 p-2">
               {members.length === 0 && <p className="p-2 text-xs text-slate-500">Team members are visible to admins only.</p>}
               {members.filter((member) => member.status === "active").map((member) => (
                 <div key={member.email} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-slate-50">
@@ -375,7 +375,7 @@ function ReplyTab({ form, draft, setDraft, catalog, readOnly, isAdmin, onApprove
             <div className="space-y-3">
               <p className="text-sm text-amber-700">Waiting for approval. No reply is sent until this exact wording is approved; editing it later needs a new approval.</p>
               {isAdmin && form.auto_reply_state?.approval_id && <Button className="cv-action-primary" onClick={approve}><ShieldCheck className="mr-1.5 h-4 w-4" />Approve this wording</Button>}
-              <p className="text-xs text-slate-500">Also listed under <Link className="font-semibold text-[#127b96]" to="/operations?tab=approvals">Operations → Approvals</Link>.</p>
+              <p className="text-xs text-slate-500">Also listed under <Link className="font-semibold text-brand" to="/operations?tab=approvals">Operations → Approvals</Link>.</p>
             </div>
           )}
         <p className="text-xs leading-5 text-slate-500">Replies are sent from your connected Gmail account. If Gmail isn't connected, each lead shows the reply as blocked with the reason, and nothing is lost.</p>
@@ -449,12 +449,12 @@ function EmbedTab({ form, isAdmin, onChanged }) {
           <Button variant="outline" asChild><a href={embed.hosted_url} target="_blank" rel="noreferrer"><ExternalLink className="mr-1.5 h-4 w-4" />Open the hosted form</a></Button>
         </div>
         {result?.lead && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
             <div className="font-semibold">Worked end to end.</div>
             <ul className="mt-2 space-y-1">
               {(result.lead.automation || []).map((step, index) => <li key={index}>✓ {describeLeadStep(step, { assignee: result.lead.assigned_name })}</li>)}
             </ul>
-            <Link className="mt-2 inline-block font-semibold text-[#127b96]" to={`/leads?lead=${result.lead.id}`}>Open the test lead</Link>
+            <Link className="mt-2 inline-block font-semibold text-brand" to={`/leads?lead=${result.lead.id}`}>Open the test lead</Link>
           </div>
         )}
       </Section>
@@ -500,13 +500,13 @@ function FormEditor({ form, catalog, members, stages, isAdmin, onBack, onSaved }
     <div className="cv-page" data-testid="website-form-editor">
       <div className="cv-page-header">
         <div>
-          <button type="button" onClick={onBack} className="mb-2 inline-flex items-center gap-1 text-sm font-semibold text-[#127b96]"><ArrowLeft className="h-4 w-4" />All forms</button>
+          <button type="button" onClick={onBack} className="mb-2 inline-flex items-center gap-1 text-sm font-semibold text-brand"><ArrowLeft className="h-4 w-4" />All forms</button>
           <h1 className="cv-page-title">{form.name}</h1>
           <p className="cv-page-description">{form.stats?.views || 0} views · {form.stats?.submissions || 0} submissions{form.stats?.views ? ` (${Math.round(((form.stats?.submissions || 0) / form.stats.views) * 100)}% conversion)` : ""} · {form.lead_counts?.new || 0} waiting for a response · {form.stats?.spam_blocked || 0} spam blocked</p>
         </div>
         {isAdmin && <Button className="cv-action-primary" onClick={save} disabled={!dirty || saving}><Save className="mr-1.5 h-4 w-4" />{saving ? "Saving…" : dirty ? "Save changes" : "Saved"}</Button>}
       </div>
-      {!isAdmin && <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">Only workspace admins can change forms. You can copy the embed codes.</div>}
+      {!isAdmin && <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">Only workspace admins can change forms. You can copy the embed codes.</div>}
       <Tabs defaultValue="fields">
         <TabsList className="mb-5 flex h-auto flex-wrap justify-start">
           <TabsTrigger value="fields">Fields</TabsTrigger>
@@ -580,13 +580,13 @@ export default function WebsiteForms() {
           {isAdmin && <Button className="cv-action-primary" onClick={() => setCreating(true)} data-testid="new-website-form"><Plus className="mr-1.5 h-4 w-4" />New form</Button>}
         </div>
       </div>
-      {error && <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">{error}</div>}
+      {error && <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">{error}</div>}
       {forms === null ? (
-        <div className="grid gap-4 lg:grid-cols-2">{[0, 1].map((i) => <Skeleton key={i} className="h-40 rounded-2xl" />)}</div>
+        <div className="grid gap-4 lg:grid-cols-2">{[0, 1].map((i) => <Skeleton key={i} className="h-40 rounded-xl" />)}</div>
       ) : forms.length === 0 ? (
         <div className="cv-card p-10 text-center">
-          <Globe className="mx-auto mb-3 h-8 w-8 text-[#1a9fbf]" />
-          <h2 className="font-display text-lg font-bold text-[#132038]">No website forms yet</h2>
+          <Globe className="mx-auto mb-3 h-8 w-8 text-brand" />
+          <h2 className="font-display text-lg font-semibold text-foreground">No website forms yet</h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-slate-500">Start from a real-estate template — contact, schedule a showing, home valuation, buyer or seller consultation, open house sign-in or listing alerts.</p>
           {isAdmin && <Button className="cv-action-primary mt-4" onClick={() => setCreating(true)}><Plus className="mr-1.5 h-4 w-4" />Create a form</Button>}
         </div>
@@ -596,16 +596,16 @@ export default function WebsiteForms() {
             <article key={form.id} className="cv-card flex flex-col gap-4 p-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h2 className="font-display text-lg font-bold text-[#132038]">{form.name}</h2>
+                  <h2 className="font-display text-lg font-semibold text-foreground">{form.name}</h2>
                   <p className="text-xs text-slate-500">{catalog?.presets.find((preset) => preset.key === form.form_type)?.label || form.form_type} · {form.fields.length} fields</p>
                 </div>
                 <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${form.status === "active" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>{form.status === "active" ? "Live" : "Paused"}</span>
               </div>
               <dl className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
-                <div className="rounded-xl bg-slate-50 p-3"><dt className="text-[11px] font-semibold uppercase text-slate-500">Views</dt><dd className="font-display text-xl font-bold">{form.stats?.views || 0}</dd></div>
-                <div className="rounded-xl bg-slate-50 p-3"><dt className="text-[11px] font-semibold uppercase text-slate-500">Submissions</dt><dd className="font-display text-xl font-bold">{form.stats?.submissions || 0}</dd></div>
-                <div className="rounded-xl bg-amber-50 p-3"><dt className="text-[11px] font-semibold uppercase text-amber-700">Waiting</dt><dd className="font-display text-xl font-bold text-amber-800">{form.lead_counts?.new || 0}</dd></div>
-                <div className="rounded-xl bg-slate-50 p-3"><dt className="text-[11px] font-semibold uppercase text-slate-500">Spam blocked</dt><dd className="font-display text-xl font-bold">{form.stats?.spam_blocked || 0}</dd></div>
+                <div className="rounded-lg bg-slate-50 p-3"><dt className="text-[11px] font-semibold uppercase text-slate-500">Views</dt><dd className="font-display text-xl font-semibold">{form.stats?.views || 0}</dd></div>
+                <div className="rounded-lg bg-slate-50 p-3"><dt className="text-[11px] font-semibold uppercase text-slate-500">Submissions</dt><dd className="font-display text-xl font-semibold">{form.stats?.submissions || 0}</dd></div>
+                <div className="rounded-lg bg-amber-50 p-3"><dt className="text-[11px] font-semibold uppercase text-amber-700">Waiting</dt><dd className="font-display text-xl font-semibold text-amber-800">{form.lead_counts?.new || 0}</dd></div>
+                <div className="rounded-lg bg-slate-50 p-3"><dt className="text-[11px] font-semibold uppercase text-slate-500">Spam blocked</dt><dd className="font-display text-xl font-semibold">{form.stats?.spam_blocked || 0}</dd></div>
               </dl>
               <p className="text-xs text-slate-500">{form.stats?.last_submission_at ? `Last lead ${new Date(form.stats.last_submission_at).toLocaleString()}` : "No submissions yet — send a test lead from the editor to check the wiring."}</p>
               <div className="flex flex-wrap gap-2">

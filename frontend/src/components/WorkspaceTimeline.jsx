@@ -47,7 +47,7 @@ export default function WorkspaceTimeline({ workspaceId }) {
     <div className="space-y-6" data-testid="workspace-timeline">
       {alerts.length > 0 && (
         <div className="space-y-2" data-testid="workspace-alerts">
-          <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 flex items-center gap-2"><Bell className="w-4 h-4" />Active alerts</h3>
+          <h3 className="font-display font-semibold text-sm text-gray-500 flex items-center gap-2"><Bell className="w-4 h-4" />Active alerts</h3>
           {alerts.map((a) => (
             <div key={a.id} className="flex items-center justify-between bg-white border border-gray-200 rounded-lg p-3" data-testid={`alert-${a.id}`}>
               <div className="flex items-center gap-2">
@@ -68,7 +68,7 @@ export default function WorkspaceTimeline({ workspaceId }) {
 
       {signals.length > 0 && (
         <div data-testid="health-signals">
-          <h3 className="font-display font-bold text-sm uppercase tracking-[0.06em] text-gray-500 mb-2 flex items-center gap-2"><AlertTriangle className="w-4 h-4" />Health signals</h3>
+          <h3 className="font-display font-semibold text-sm text-gray-500 mb-2 flex items-center gap-2"><AlertTriangle className="w-4 h-4" />Health signals</h3>
           <div className="flex flex-wrap gap-2">
             {signals.map((s, i) => (
               <span key={i} className={`text-xs px-2 py-1 rounded border ${SEV[s.severity]}`} title={`${s.source_ref} · ${s.freshness || ""}`} data-testid={`signal-${i}`}>{s.signal}{s.detail ? `: ${String(s.detail).slice(0, 28)}` : ""}</span>
@@ -88,7 +88,7 @@ export default function WorkspaceTimeline({ workspaceId }) {
         <div className="flex flex-wrap gap-1.5" data-testid="timeline-source-filters">
           {(data.sources || []).map((s) => (
             <button key={s} onClick={() => toggle(setSrcFilter, srcFilter, s)} data-testid={`src-filter-${s}`}
-              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${srcFilter.has(s) ? "bg-[#0A0A0A] text-white border-[#0A0A0A]" : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"}`}>{s}</button>
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${srcFilter.has(s) ? "bg-primary text-white border-primary" : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"}`}>{s}</button>
           ))}
           <span className="w-px bg-gray-200 mx-1" />
           {["info", "warning", "critical"].map((s) => (
@@ -100,7 +100,7 @@ export default function WorkspaceTimeline({ workspaceId }) {
 
       {/* Feed */}
       {data.items.length === 0 ? (
-        <div className="text-sm text-gray-400 py-8 text-center border border-dashed border-gray-300 rounded-xl" data-testid="timeline-empty">No events match these filters.</div>
+        <div className="text-sm text-gray-400 py-8 text-center border border-dashed border-gray-300 rounded-lg" data-testid="timeline-empty">No events match these filters.</div>
       ) : (
         <div className="relative pl-4" data-testid="timeline-feed">
           <div className="absolute left-1 top-2 bottom-2 w-px bg-gray-200" />
@@ -119,7 +119,7 @@ export default function WorkspaceTimeline({ workspaceId }) {
                 </div>
                 {it.summary && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{it.summary}</div>}
                 <div className="text-[11px] text-gray-400 mt-1.5 flex items-center gap-2">
-                  <span className="uppercase tracking-wide">{it.source}</span>
+                  <span className="">{it.source}</span>
                   <span>·</span><span>{it.actor || "system"}</span>
                   {it.ref?.id && <><span>·</span><span className="font-mono">{it.ref.type}:{String(it.ref.id).slice(0, 12)}</span></>}
                   {it.external_ref && <><span>·</span><span className="font-mono">ext:{String(it.external_ref).slice(0, 12)}</span></>}

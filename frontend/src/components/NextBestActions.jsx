@@ -18,7 +18,7 @@ import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, Clock, X } fro
 const PRIORITY_BANDS = [
   { max: 10, label: "Critical", className: "border-red-200 bg-red-50 text-red-800" },
   { max: 30, label: "High", className: "border-amber-200 bg-amber-50 text-amber-900" },
-  { max: 50, label: "Medium", className: "border-cyan-200 bg-cyan-50 text-cyan-900" },
+  { max: 50, label: "Medium", className: "border-brand/20 bg-brand-soft text-brand-strong" },
   { max: Infinity, label: "Low", className: "border-slate-200 bg-slate-50 text-slate-700" },
 ];
 
@@ -105,10 +105,10 @@ export default function NextBestActions({ workspaceId = null, limit = 5, title =
   }
 
   return (
-    <div className={compact ? "" : "sticky top-[72px] z-10 mb-6 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur"}
+    <div className={compact ? "" : "sticky top-[72px] z-10 mb-6 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur"}
          data-testid="nba-strip">
       <div className="mb-2 flex items-center justify-between gap-2 px-1">
-        <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">
+        <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
           <ClipboardCheck className="h-3.5 w-3.5" />{title}
         </div>
         <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={regenerate}
@@ -128,19 +128,19 @@ export default function NextBestActions({ workspaceId = null, limit = 5, title =
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-70" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wide opacity-70">{tone.label}</span>
+                    <span className="text-xs font-medium opacity-90">{tone.label}</span>
                     {item.state === "accepted" ? (
-                      <span className="text-[10px] font-semibold uppercase opacity-70">Accepted</span>
+                      <span className="text-[10px] font-semibold uppercase opacity-90">Accepted</span>
                     ) : null}
                   </div>
                   <div className="truncate text-sm font-semibold" title={item.title}>{item.title}</div>
                   <div className="mt-0.5 text-[11px] leading-4 opacity-80">{item.reason}</div>
                   {evidence ? (
-                    <div className="mt-1 text-[10px] uppercase tracking-wide opacity-60"
+                    <div className="mt-1 text-xs opacity-80"
                          data-testid="nba-evidence">{evidence}</div>
                   ) : null}
                   {item.source_refs?.length ? (
-                    <div className="mt-1 text-[10px] opacity-55" data-testid="nba-source-refs">
+                    <div className="mt-1 text-[10px] opacity-80" data-testid="nba-source-refs">
                       Derived from {item.source_refs.join(", ")}
                     </div>
                   ) : null}

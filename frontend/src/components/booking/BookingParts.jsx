@@ -17,7 +17,7 @@ export function LocationLine({ location, className = "" }) {
     <div className={`flex items-start gap-2.5 ${className}`}>
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
       <div className="min-w-0">
-        <div className="font-semibold text-[#0a1628]">{location.label}</div>
+        <div className="font-semibold text-foreground">{location.label}</div>
         {location.text && <div className="break-words text-slate-600">{location.text}</div>}
       </div>
     </div>
@@ -46,7 +46,7 @@ export function PublicFrame({ embed, color, children, testid }) {
   }, [embed]);
   return (
     <div style={brandStyle(color)} data-testid={testid}
-      className={embed ? "min-h-0 bg-transparent px-2 py-2" : "min-h-screen bg-[radial-gradient(ellipse_at_top,_#e6f6fa,_#f7fafc_55%)] px-3 py-6 sm:px-6 sm:py-12"}>
+      className={embed ? "min-h-0 bg-transparent px-2 py-2" : "min-h-screen bg-[radial-gradient(ellipse_at_top,_hsl(var(--brand-soft)),_hsl(var(--canvas))_55%)] px-3 py-6 sm:px-6 sm:py-12"}>
       <main className="mx-auto w-full max-w-5xl">{children}</main>
     </div>
   );
@@ -55,18 +55,18 @@ export function PublicFrame({ embed, color, children, testid }) {
 export function SummaryCard({ booking, zone, testid = "booking-summary" }) {
   const shownZone = zone || booking.timezone;
   return (
-    <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm sm:p-5" data-testid={testid}>
-      <div className="font-display text-lg font-bold text-[#0a1628]">{booking.title}</div>
+    <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 text-sm sm:p-5" data-testid={testid}>
+      <div className="font-display text-lg font-semibold text-foreground">{booking.title}</div>
       <div className="flex items-start gap-2.5">
         <Clock className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
         <div>
-          <div className="font-semibold text-[#0a1628]">{formatRange(booking.start_at, booking.end_at, shownZone)}</div>
+          <div className="font-semibold text-foreground">{formatRange(booking.start_at, booking.end_at, shownZone)}</div>
           <div className="text-slate-500">{zoneLabel(shownZone, new Date(booking.start_at))}{booking.duration_minutes ? ` · ${booking.duration_minutes} minutes` : ""}</div>
         </div>
       </div>
       <LocationLine location={booking.location} />
       {booking.host_name && (
-        <div className="flex items-start gap-2.5"><UserRound className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><div><span className="font-semibold text-[#0a1628]">{booking.host_name}</span></div></div>
+        <div className="flex items-start gap-2.5"><UserRound className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><div><span className="font-semibold text-foreground">{booking.host_name}</span></div></div>
       )}
     </div>
   );
@@ -78,13 +78,13 @@ export function AddToCalendar({ links, testid = "add-to-calendar" }) {
     <div className="flex flex-col gap-2 sm:flex-row" data-testid={testid}>
       {links.google_calendar_url && (
         <a href={links.google_calendar_url} target="_blank" rel="noreferrer" data-testid={`${testid}-google`}
-          className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-[#0a1628] hover:bg-slate-50">
+          className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-foreground hover:bg-slate-50">
           <CalendarPlus className="h-4 w-4" aria-hidden="true" />Google Calendar
         </a>
       )}
       {links.ics_url && (
         <a href={links.ics_url} download data-testid={`${testid}-ics`}
-          className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-[#0a1628] hover:bg-slate-50">
+          className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-foreground hover:bg-slate-50">
           <Download className="h-4 w-4" aria-hidden="true" />Apple, Outlook (.ics)
         </a>
       )}
@@ -98,13 +98,13 @@ export function ManageLink({ url, newTab = false, testid = "manage-link" }) {
     try { await navigator.clipboard.writeText(url); toast.success("Link copied"); } catch { toast.error("Copy the link from the address shown"); }
   };
   return (
-    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm" data-testid={testid}>
-      <div className="font-semibold text-[#0a1628]">Need to change it?</div>
+    <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm" data-testid={testid}>
+      <div className="font-semibold text-foreground">Need to change it?</div>
       <p className="mt-1 text-slate-600">Keep this link — it's how you reschedule or cancel.</p>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         {/* A framed page opens it in a new tab: the manage page itself is never framed. */}
-        <a href={url} target={newTab ? "_blank" : undefined} rel={newTab ? "noreferrer" : undefined} className="inline-flex h-11 items-center justify-center rounded-xl bg-[var(--brand)] px-4 text-sm font-semibold text-white hover:opacity-90" data-testid={`${testid}-open`}>Reschedule or cancel</a>
-        <button type="button" onClick={copy} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-[#0a1628] hover:bg-slate-50" data-testid={`${testid}-copy`}>
+        <a href={url} target={newTab ? "_blank" : undefined} rel={newTab ? "noreferrer" : undefined} className="inline-flex h-11 items-center justify-center rounded-lg bg-[var(--brand)] px-4 text-sm font-semibold text-white hover:opacity-90" data-testid={`${testid}-open`}>Reschedule or cancel</a>
+        <button type="button" onClick={copy} className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-foreground hover:bg-slate-50" data-testid={`${testid}-copy`}>
           <Copy className="h-4 w-4" aria-hidden="true" />Copy link
         </button>
       </div>
@@ -114,8 +114,8 @@ export function ManageLink({ url, newTab = false, testid = "manage-link" }) {
 
 export function PublicMessage({ title, children, testid = "public-message" }) {
   return (
-    <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm" data-testid={testid} role="status">
-      <h1 className="font-display text-2xl font-extrabold text-[#0a1628]">{title}</h1>
+    <div className="mx-auto max-w-lg rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm" data-testid={testid} role="status">
+      <h1 className="font-display text-2xl font-semibold text-foreground">{title}</h1>
       <div className="mt-2 text-sm leading-6 text-slate-600">{children}</div>
     </div>
   );

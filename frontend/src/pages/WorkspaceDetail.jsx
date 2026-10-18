@@ -32,16 +32,16 @@ function Health({ health }) {
   return (
     <div className="cv-card p-5 sm:p-6" data-testid="health-panel">
       <div className="flex items-center justify-between mb-4">
-        <div><div className="cv-eyebrow">Client health</div><h3 className="mt-1 font-display font-bold text-lg">Explainable Client Health</h3></div>
+        <div><div className="cv-eyebrow">Client health</div><h3 className="mt-1 font-display font-semibold text-lg">Explainable Client Health</h3></div>
         <div className="flex items-center gap-2">
-          <span className="font-display text-3xl font-bold">{health.score}</span>
+          <span className="font-display text-3xl font-semibold">{health.score}</span>
           <Badge className={`capitalize ${HEALTH_BAND[health.band]}`}>{health.band.replace("_", " ")}</Badge>
         </div>
       </div>
       <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-4">
         <div className={`h-full ${health.band === "healthy" ? "bg-emerald-500" : health.band === "at_risk" ? "bg-amber-500" : "bg-red-500"}`} style={{ width: `${health.score}%` }} />
       </div>
-      <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-2">Contributing factors</div>
+      <div className="text-xs text-gray-500 font-semibold mb-2">Contributing factors</div>
       <div className="space-y-2">
         {health.factors.length === 0 && <div className="text-sm text-gray-400">No penalties. Client is healthy.</div>}
         {health.factors.map((f, i) => (
@@ -78,8 +78,8 @@ function AIPanel({ workspaceId }) {
   return (
     <div className="cv-card p-5 sm:p-6" data-testid="ai-panel">
       <div className="flex items-center gap-2 mb-1">
-        <Sparkles className="w-4 h-4 text-[#1a9fbf]" />
-        <h3 className="font-display font-bold text-lg">Evidence-backed AI</h3>
+        <Sparkles className="w-4 h-4 text-brand" />
+        <h3 className="font-display font-semibold text-lg">Evidence-backed AI</h3>
       </div>
       <p className="text-xs text-gray-400 mb-4">Grounded only in workspace records. Fact vs inference is always distinguished.</p>
 
@@ -97,7 +97,7 @@ function AIPanel({ workspaceId }) {
       {result && (
         <div className="mt-5 space-y-4" data-testid="ai-result">
           <div className="bg-white border border-slate-900 rounded-lg p-4">
-            <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-2 font-semibold">AI Output · Recommendation</div>
+            <div className="text-xs text-slate-500 mb-2 font-semibold">AI Output · Recommendation</div>
             <p className="text-sm whitespace-pre-wrap leading-relaxed">{result.output}</p>
           </div>
 
@@ -109,7 +109,7 @@ function AIPanel({ workspaceId }) {
           </div>
 
           <div>
-            <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-2">Source records ({result.sources.length})</div>
+            <div className="text-xs text-gray-500 font-semibold mb-2">Source records ({result.sources.length})</div>
             <div className="space-y-1.5">
               {result.sources.map((s, i) => (
                 <div key={i} className="flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 border-dashed rounded px-2.5 py-1.5">
@@ -139,7 +139,7 @@ function ListSection({ title, items, columns, actions, onAdd, addLabel, testid }
           {items.map((it) => (
             <div key={it.id} className="cv-data-row flex items-center justify-between gap-3 px-5 py-3.5" data-testid={`row-${it.id}`}>
               <div className="min-w-0">
-                <div className="text-sm font-semibold truncate text-[#132038]">{it.title}</div>
+                <div className="text-sm font-semibold truncate text-foreground">{it.title}</div>
                 {columns(it)}
               </div>
               <div className="flex items-center gap-2 shrink-0">{actions(it)}</div>
@@ -219,13 +219,13 @@ export default function WorkspaceDetail() {
     toast.success("Undo window updated");
   };
 
-  if (!d) return <div className="cv-page space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-2xl" /></div>;
+  if (!d) return <div className="cv-page space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-xl" /></div>;
 
   const { workspace, company, tasks, deliverables, requests, approvals, commitments, health } = d;
 
   return (
     <div className="cv-page">
-      <button onClick={() => navigate("/workspaces")} className="mb-4 flex items-center text-sm font-medium text-slate-500 hover:text-[#1a9fbf]" data-testid="back-button"><ArrowLeft className="w-4 h-4 mr-1" />All client workspaces</button>
+      <button onClick={() => navigate("/workspaces")} className="mb-4 flex items-center text-sm font-medium text-slate-500 hover:text-brand" data-testid="back-button"><ArrowLeft className="w-4 h-4 mr-1" />All client workspaces</button>
       <div className="cv-page-header mb-6">
         <div>
           <div className="cv-eyebrow">Client 360 workspace</div><h1 className="cv-page-title">{workspace.name}</h1>
@@ -359,7 +359,7 @@ export default function WorkspaceDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCmtDialog(false)}>Cancel</Button>
-            <Button className="bg-[#0A0A0A]" onClick={submitCommitment} data-testid="commitment-submit">Add commitment</Button>
+            <Button className="bg-primary" onClick={submitCommitment} data-testid="commitment-submit">Add commitment</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

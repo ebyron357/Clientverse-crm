@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import AuthLayout from "@/components/AuthLayout";
 
 const MIN_LENGTH = 8;
 
@@ -58,11 +59,11 @@ export function ChangePasswordForm({ temporary = false, onDone }) {
         autoComplete="new-password" shown={shown} testid="new-password-input" />
       <PasswordField id="confirm-password" label="New password again" value={confirm} onChange={setConfirm}
         autoComplete="new-password" shown={shown} testid="confirm-password-input" />
-      <button type="button" onClick={() => setShown((value) => !value)} className="flex w-fit items-center gap-1.5 text-xs font-semibold text-[#0a6177]">
+      <button type="button" onClick={() => setShown((value) => !value)} className="flex w-fit items-center gap-1.5 text-xs font-semibold text-brand">
         {shown ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}{shown ? "Hide passwords" : "Show passwords"}
       </button>
       <p className="text-xs leading-5 text-slate-500">At least {MIN_LENGTH} characters. A short sentence you'll remember works well.</p>
-      {error && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert" data-testid="change-password-error">{error}</div>}
+      {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert" data-testid="change-password-error">{error}</div>}
       <Button type="submit" className="cv-action-primary" disabled={busy || !current || !next || !confirm} data-testid="change-password-submit">
         {busy ? "Saving…" : temporary ? "Save my password" : "Change password"}
       </Button>
@@ -89,10 +90,10 @@ export function ChangePasswordDialog({ open, onOpenChange }) {
 export function ChooseOwnPassword() {
   const { user, logout } = useAuth();
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#f7fafc] p-4" data-testid="choose-own-password">
-      <div className="cv-card w-full max-w-md p-6 sm:p-7">
-        <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-cyan-50 text-[#0a6177]"><KeyRound className="h-5 w-5" /></span>
-        <h1 className="mt-4 font-display text-2xl font-bold text-[#0a1628]">Choose your own password</h1>
+    <AuthLayout>
+      <div data-testid="choose-own-password">
+        <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-soft text-brand"><KeyRound className="h-5 w-5" /></span>
+        <h1 className="mt-4 text-2xl font-semibold tracking-tight text-foreground">Choose your own password</h1>
         <p className="mt-2 text-sm leading-6 text-slate-600">
           {user?.name ? `Welcome, ${user.name.split(" ")[0]}. ` : ""}You signed in with a temporary password. Type it once more, then choose a password only you know.
         </p>
@@ -101,6 +102,6 @@ export function ChooseOwnPassword() {
           <LogOut className="h-3.5 w-3.5" />Sign out
         </button>
       </div>
-    </div>
+    </AuthLayout>
   );
 }

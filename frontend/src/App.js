@@ -58,7 +58,7 @@ function AuthCallback() {
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="flex min-h-screen items-center justify-center bg-[#f7fafc] p-6"><div className="cv-card w-full max-w-sm p-7"><div className="h-2 w-20 animate-pulse rounded-full bg-cyan-100" /><div className="mt-5 h-7 w-44 animate-pulse rounded-lg bg-slate-100" /><div className="mt-3 h-4 w-full animate-pulse rounded-lg bg-slate-100" /><div className="mt-2 h-4 w-4/5 animate-pulse rounded-lg bg-slate-100" /></div></div>;
+  if (loading) return <div className="flex min-h-screen items-center justify-center bg-canvas p-6"><div className="cv-card w-full max-w-sm p-7"><div className="h-2 w-20 animate-pulse rounded-full bg-brand-soft" /><div className="mt-5 h-7 w-44 animate-pulse rounded-lg bg-slate-100" /><div className="mt-3 h-4 w-full animate-pulse rounded-lg bg-slate-100" /><div className="mt-2 h-4 w-4/5 animate-pulse rounded-lg bg-slate-100" /></div></div>;
   if (!user) return <Navigate to="/login" replace />;
   if (user.must_change_password) return <ChooseOwnPassword />;
   return children;

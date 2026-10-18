@@ -100,19 +100,19 @@ export default function Mcp() {
   return (
     <div className="cv-page">
       <div className="mb-6">
-        <h1 className="font-display text-3xl font-bold flex items-center gap-2"><Terminal className="w-6 h-6" />MCP Console</h1>
+        <h1 className="font-display text-3xl font-semibold flex items-center gap-2"><Terminal className="w-6 h-6" />MCP Console</h1>
         <p className="text-sm text-gray-500 mt-1">Governed MCP server — Level 1 read tools execute live through the ClientVerse policy wrapper.</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" data-testid="mcp-status-cards">
-        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-server-card">
+        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm" data-testid="mcp-server-card">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${server.kill_switch ? "bg-red-50" : "bg-emerald-50"}`}>
                 <ShieldAlert className={`w-5 h-5 ${server.kill_switch ? "text-red-600" : "text-emerald-600"}`} />
               </div>
               <div className="min-w-0">
-                <div className="font-display font-bold truncate">{server.name} <span className="text-xs text-gray-400 font-normal">v{server.version}</span></div>
+                <div className="font-display font-semibold truncate">{server.name} <span className="text-xs text-gray-400 font-normal">v{server.version}</span></div>
                 <div className="text-xs text-gray-500 mt-0.5">Level 1 · {server.allowlist?.length || 0} tools allowlisted</div>
               </div>
             </div>
@@ -120,7 +120,7 @@ export default function Mcp() {
           </div>
           <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-3">
             <div>
-              <div className="text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold">Runtime</div>
+              <div className="text-xs text-gray-400 font-semibold">Runtime</div>
               <div className="text-sm font-medium mt-0.5" data-testid="mcp-runtime-label">{server.kill_switch ? "Disabled by kill switch" : serverLive ? "Live (governed)" : "Not live"}</div>
             </div>
             <div className="flex items-center gap-2">
@@ -129,16 +129,16 @@ export default function Mcp() {
             </div>
           </div>
         </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-activity-card">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold"><Activity className="w-3.5 h-3.5" />Recent activity</div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm" data-testid="mcp-activity-card">
+          <div className="flex items-center gap-2 text-xs text-gray-400 font-semibold"><Activity className="w-3.5 h-3.5" />Recent activity</div>
           <div className="mt-3 flex items-end gap-4">
-            <div><div className="font-display text-2xl font-bold text-emerald-700">{recentSuccess}</div><div className="text-xs text-gray-500">Succeeded</div></div>
-            <div><div className="font-display text-2xl font-bold text-red-600">{recentFailures}</div><div className="text-xs text-gray-500">Failed / rejected</div></div>
-            <div><div className="font-display text-2xl font-bold text-[#0a1628]">{invocations.length}</div><div className="text-xs text-gray-500">In history</div></div>
+            <div><div className="font-display text-2xl font-semibold text-emerald-700">{recentSuccess}</div><div className="text-xs text-gray-500">Succeeded</div></div>
+            <div><div className="font-display text-2xl font-semibold text-red-600">{recentFailures}</div><div className="text-xs text-gray-500">Failed / rejected</div></div>
+            <div><div className="font-display text-2xl font-semibold text-foreground">{invocations.length}</div><div className="text-xs text-gray-500">In history</div></div>
           </div>
         </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-policy-card">
-          <div className="text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold">Observability</div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm" data-testid="mcp-policy-card">
+          <div className="text-xs text-gray-400 font-semibold">Observability</div>
           <p className="text-sm text-gray-600 mt-2 leading-5">Invocations are policy-wrapped. History below is operator evidence — not a claim that external agents are running outside this console.</p>
         </div>
       </div>
@@ -146,11 +146,11 @@ export default function Mcp() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Tool catalog */}
         <div>
-          <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Tool Catalog</div>
+          <div className="text-xs text-gray-500 font-semibold mb-3">Tool Catalog</div>
           <div className="space-y-3">
             {data.length === 0 && <SurfaceEmpty icon={Terminal} title="No tools allowlisted" description="The MCP server returned an empty catalog. Check server configuration or kill-switch policy." testid="mcp-tools-empty" />}
             {data.map((tool) => (
-              <button key={tool.name} type="button" className={`w-full bg-white border rounded-xl p-4 text-left shadow-sm transition-colors ${selected?.name === tool.name ? "border-black" : "border-gray-200 hover:border-gray-300"}`}
+              <button key={tool.name} type="button" className={`w-full bg-white border rounded-lg p-4 text-left shadow-sm transition-colors ${selected?.name === tool.name ? "border-black" : "border-gray-200 hover:border-gray-300"}`}
                 onClick={() => pick(tool)} data-testid={`mcp-tool-${tool.name}`}>
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-sm font-medium">{tool.name}</span>
@@ -169,8 +169,8 @@ export default function Mcp() {
 
         {/* Run panel */}
         <div>
-          <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Invoke</div>
-          <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm" data-testid="mcp-run-panel">
+          <div className="text-xs text-gray-500 font-semibold mb-3">Invoke</div>
+          <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm" data-testid="mcp-run-panel">
             {!selected ? (
               <div className="text-sm text-gray-400 py-8 text-center">Select a tool to invoke.</div>
             ) : (
@@ -192,7 +192,7 @@ export default function Mcp() {
                     </div>
                   ))}
                 </div>
-                <Button onClick={() => invoke(selected)} disabled={busy || server.kill_switch} className="w-full mt-4 bg-[#0A0A0A] hover:bg-[#262626]" data-testid="mcp-invoke-button">
+                <Button onClick={() => invoke(selected)} disabled={busy || server.kill_switch} className="w-full mt-4 bg-primary hover:bg-primary/90" data-testid="mcp-invoke-button">
                   {busy ? "Invoking…" : server.kill_switch ? "Disabled by kill switch" : "Invoke tool"}
                 </Button>
 
@@ -200,7 +200,7 @@ export default function Mcp() {
                   <div className="mt-4" data-testid="mcp-result">
                     {result.status === "pending_approval" ? (
                       <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                        <div className="text-xs uppercase tracking-wide text-amber-700 font-semibold mb-1">Approval required (Level 2)</div>
+                        <div className="text-xs text-amber-700 font-semibold mb-1">Approval required (Level 2)</div>
                         <p className="text-sm text-amber-800">{result.message}</p>
                         <p className="text-xs text-amber-600 mt-2 font-mono">approval: {result.approval_id}</p>
                       </div>
@@ -228,10 +228,10 @@ export default function Mcp() {
 
       {/* Execution history */}
       <div className="mt-8">
-        <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Execution History</div>
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div className="text-xs text-gray-500 font-semibold mb-3">Execution History</div>
+        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
           <table className="w-full text-sm text-left">
-            <thead><tr className="border-b border-gray-200 text-xs uppercase tracking-[0.05em] text-gray-500">
+            <thead><tr className="border-b border-gray-200 text-xs text-gray-500">
               <th className="px-5 py-3 font-semibold">Tool</th><th className="px-5 py-3 font-semibold">Status</th><th className="px-5 py-3 font-semibold">Latency</th><th className="px-5 py-3 font-semibold">When</th><th className="px-5 py-3 font-semibold"></th></tr></thead>
             <tbody>
               {invocations.map((inv) => (

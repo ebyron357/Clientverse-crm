@@ -96,20 +96,20 @@ export default function IntegrationsPanel() {
 
   return (
     <div className="space-y-4" data-testid="integrations-panel">
-      <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-5 text-slate-600" data-testid="integrations-honesty-banner">
-        <strong className="font-semibold text-[#132038]">Status honesty:</strong> cards below reflect tenant connection state from the CRM API. They do not claim live Google or Stripe provider certification.
+      <div className="rounded-lg border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-5 text-slate-600" data-testid="integrations-honesty-banner">
+        <strong className="font-semibold text-foreground">Status honesty:</strong> cards below reflect tenant connection state from the CRM API. They do not claim live Google or Stripe provider certification.
       </div>
       {conns.map((c) => {
         const m = META[c.provider]; const st = STATUS[c.status] || STATUS.disconnected;
         const needsReconnect = ["expired", "revoked", "error"].includes(c.status);
         const needsAuth = st.tone === "auth";
         return (
-          <div key={c.provider} className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm" data-testid={`integration-${c.provider}`}>
+          <div key={c.provider} className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm" data-testid={`integration-${c.provider}`}>
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-start gap-3">
                 <div className="w-9 h-9 rounded-lg bg-gray-50 border border-gray-200 flex items-center justify-center"><m.icon className="w-4 h-4 text-gray-700" /></div>
                 <div>
-                  <div className="font-display font-bold text-base flex items-center gap-2 flex-wrap">{m.label}
+                  <div className="font-display font-semibold text-base flex items-center gap-2 flex-wrap">{m.label}
                     <Badge className={st.c} data-testid={`integration-status-${c.provider}`}>{st.t}</Badge>
                     {needsAuth && <Badge className="bg-orange-50 text-orange-700 border-orange-200 text-[10px]"><ShieldAlert className="w-3 h-3 mr-1" />Re-authorize</Badge>}
                     {stale(c) && c.status === "active" && <Badge className="bg-yellow-50 text-yellow-700 border-yellow-200"><Clock className="w-3 h-3 mr-1" />Stale</Badge>}
@@ -125,7 +125,7 @@ export default function IntegrationsPanel() {
                 {isAdmin ? (
                   <div className="flex gap-2">
                     {c.status === "disconnected" ? (
-                      <Button size="sm" className="h-8 bg-[#0A0A0A]" disabled={busy === c.provider} onClick={() => connect(c.provider)} data-testid={`connect-${c.provider}`}><Plug className="w-3.5 h-3.5 mr-1" />Connect</Button>
+                      <Button size="sm" className="h-8 bg-primary" disabled={busy === c.provider} onClick={() => connect(c.provider)} data-testid={`connect-${c.provider}`}><Plug className="w-3.5 h-3.5 mr-1" />Connect</Button>
                     ) : (
                       <>
                         {needsReconnect && <Button size="sm" className="h-8 bg-orange-600 hover:bg-orange-700" disabled={busy === c.provider} onClick={() => connect(c.provider)} data-testid={`reconnect-${c.provider}`}>{needsAuth ? "Re-authorize" : "Reconnect"}</Button>}

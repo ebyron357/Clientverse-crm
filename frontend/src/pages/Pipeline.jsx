@@ -174,7 +174,7 @@ export default function Pipeline() {
   const phoneColumns = columns;
   const activePhoneStage = phoneColumns.find((stage) => stage.key === phoneStage) || phoneColumns.find((stage) => dealsIn(stage).length) || phoneColumns.find((stage) => !stage.virtual) || phoneColumns[0];
 
-  if (error) return <div className="cv-page"><div className="cv-empty"><GitBranch className="h-9 w-9 text-red-500" /><h1 className="mt-4 font-display text-xl font-bold">Pipeline unavailable</h1><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{error}</p><Button onClick={load} className="mt-5 cv-action-primary"><RefreshCw className="mr-2 h-4 w-4" />Try again</Button></div></div>;
+  if (error) return <div className="cv-page"><div className="cv-empty"><GitBranch className="h-9 w-9 text-red-500" /><h1 className="mt-4 font-display text-xl font-semibold">Pipeline unavailable</h1><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{error}</p><Button onClick={load} className="mt-5 cv-action-primary"><RefreshCw className="mr-2 h-4 w-4" />Try again</Button></div></div>;
 
   const cardProps = { stages, groups, labelOf, nextStageFor, onMove: move, onOpen: openDeal, owners, companyName, draggable: !isPhone, compact: !isPhone, cardDrag, draggingId: dragId };
 
@@ -194,25 +194,25 @@ export default function Pipeline() {
 
       <section className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-[1fr_1fr_minmax(0,1.4fr)]" aria-label="Pipeline summary and filters">
         <div className="cv-card flex min-w-0 items-center gap-4 p-3 sm:p-4">
-          <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan-50 text-[#1a9fbf] sm:flex"><CircleDollarSign className="h-5 w-5" /></span>
+          <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand sm:flex"><CircleDollarSign className="h-5 w-5" /></span>
           <div className="min-w-0">
-            <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Open deals</div>
-            <div className="mt-0.5 font-display text-xl font-extrabold text-[#0a1628] sm:text-2xl" data-testid="pipeline-open-total"><MoneyTotals totals={totalsByCurrency(openDeals)} preferred={defaultCurrency} /></div>
+            <div className="text-xs font-medium text-slate-500">Open deals</div>
+            <div className="mt-0.5 font-display text-xl font-semibold text-foreground sm:text-2xl" data-testid="pipeline-open-total"><MoneyTotals totals={totalsByCurrency(openDeals)} preferred={defaultCurrency} /></div>
             <div className="text-xs text-slate-500">{openDeals.length} deal{openDeals.length === 1 ? "" : "s"} still in play</div>
           </div>
         </div>
         <div className="cv-card flex min-w-0 items-center gap-4 p-3 sm:p-4">
-          <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 sm:flex"><Trophy className="h-5 w-5" /></span>
+          <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 sm:flex"><Trophy className="h-5 w-5" /></span>
           <div className="min-w-0">
-            <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Won</div>
-            <div className="mt-0.5 font-display text-xl font-extrabold text-[#0a1628] sm:text-2xl" data-testid="pipeline-won-total"><MoneyTotals totals={totalsByCurrency(wonDeals)} preferred={defaultCurrency} /></div>
+            <div className="text-xs font-medium text-slate-500">Won</div>
+            <div className="mt-0.5 font-display text-xl font-semibold text-foreground sm:text-2xl" data-testid="pipeline-won-total"><MoneyTotals totals={totalsByCurrency(wonDeals)} preferred={defaultCurrency} /></div>
             <div className="text-xs text-slate-500">{wonDeals.length} deal{wonDeals.length === 1 ? "" : "s"} closed and won</div>
           </div>
         </div>
         <div className="cv-card col-span-2 flex flex-col gap-2 p-3 xl:col-span-1">
           <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-3">
             <Search className="h-4 w-4 shrink-0 text-slate-400" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} className="h-9 w-full min-w-0 bg-transparent text-sm text-[#0a1628] outline-none placeholder:text-slate-400" placeholder="Search deals, people or companies" aria-label="Search deals" data-testid="pipeline-search" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} className="h-9 w-full min-w-0 bg-transparent text-sm text-foreground outline-none placeholder:text-slate-400" placeholder="Search deals, people or companies" aria-label="Search deals" data-testid="pipeline-search" />
             {query && <button type="button" onClick={() => setQuery("")} className="text-slate-400 hover:text-slate-600" aria-label="Clear search"><X className="h-4 w-4" /></button>}
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -238,23 +238,23 @@ export default function Pipeline() {
       </section>
 
       {loading ? (
-        <div className="flex gap-4 overflow-hidden">{[0, 1, 2, 3].map((index) => <div key={index} className="h-72 min-w-[240px] flex-1 animate-pulse rounded-2xl border border-slate-200 bg-white" />)}</div>
+        <div className="flex gap-4 overflow-hidden">{[0, 1, 2, 3].map((index) => <div key={index} className="h-72 min-w-[240px] flex-1 animate-pulse rounded-xl border border-slate-200 bg-white" />)}</div>
       ) : !live.length ? (
-        <div className="cv-empty"><Sparkles className="h-9 w-9 text-[#4ac4e0]" /><h2 className="mt-4 font-display text-xl font-bold text-[#0a1628]">No deals yet</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">Deals appear here when a website form brings in a lead, or when you add one yourself.</p><Button onClick={() => setNewOpen(true)} className="mt-5 cv-action-primary" disabled={!groups.open.length}><Plus className="mr-1.5 h-4 w-4" />Create your first deal</Button></div>
+        <div className="cv-empty"><Sparkles className="h-9 w-9 text-brand" /><h2 className="mt-4 font-display text-xl font-semibold text-foreground">No deals yet</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">Deals appear here when a website form brings in a lead, or when you add one yourself.</p><Button onClick={() => setNewOpen(true)} className="mt-5 cv-action-primary" disabled={!groups.open.length}><Plus className="mr-1.5 h-4 w-4" />Create your first deal</Button></div>
       ) : isPhone ? (
         <section aria-label="Deals by stage" data-testid="pipeline-phone">
           <div className="mb-3 flex flex-wrap gap-1.5" role="tablist" aria-label="Stages">
             {phoneColumns.map((stage) => {
               const count = dealsIn(stage).length;
               const active = activePhoneStage?.key === stage.key;
-              return <button key={stage.key} type="button" role="tab" aria-selected={active} onClick={() => setPhoneStage(stage.key)} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-semibold ${active ? "border-[#0a1628] bg-[#0a1628] text-white" : "border-slate-200 bg-white text-slate-600"}`} data-testid={`phone-stage-${stage.key}`}><span className={`h-2 w-2 rounded-full ${stage.virtual ? "bg-slate-300" : accentByKey[stage.key]}`} />{stage.label}<span className={active ? "text-white/70" : "text-slate-400"}>{count}</span></button>;
+              return <button key={stage.key} type="button" role="tab" aria-selected={active} onClick={() => setPhoneStage(stage.key)} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-semibold ${active ? "border-foreground bg-foreground text-white" : "border-slate-200 bg-white text-slate-600"}`} data-testid={`phone-stage-${stage.key}`}><span className={`h-2 w-2 rounded-full ${stage.virtual ? "bg-slate-300" : accentByKey[stage.key]}`} />{stage.label}<span className={active ? "text-white/70" : "text-slate-400"}>{count}</span></button>;
             })}
           </div>
           {activePhoneStage && (
             <div role="tabpanel" aria-label={activePhoneStage.label}>
               <div className="mb-3 flex items-baseline justify-between gap-3 px-1">
-                <h2 className="text-sm font-bold text-[#132038]">{activePhoneStage.label}</h2>
-                <span className="text-right font-display text-base font-bold text-[#0a1628]"><MoneyTotals totals={totalsByCurrency(dealsIn(activePhoneStage))} preferred={defaultCurrency} /></span>
+                <h2 className="text-sm font-bold text-foreground">{activePhoneStage.label}</h2>
+                <span className="text-right font-display text-base font-semibold text-foreground"><MoneyTotals totals={totalsByCurrency(dealsIn(activePhoneStage))} preferred={defaultCurrency} /></span>
               </div>
               <div className="space-y-3">
                 {dealsIn(activePhoneStage).map((deal) => <DealCard key={deal.id} deal={deal} {...cardProps} />)}
@@ -270,7 +270,7 @@ export default function Pipeline() {
               <StageColumn key={stage.key} stage={stage} accent={stage.virtual ? "bg-slate-300" : accentByKey[stage.key]} deals={dealsIn(stage)} currency={defaultCurrency} isDropTarget={dropTarget === stage.key} dragging={Boolean(dragId)} dragProps={dragProps(stage)} filteredView={filtered.length !== live.length} cardProps={cardProps} />
             ))}
             {dragId && !showLost && groups.lost.map((stage) => (
-              <div key={stage.key} {...dragProps(stage)} className={`flex w-[150px] shrink-0 flex-col items-center justify-center rounded-2xl border-2 border-dashed p-3 text-center text-xs font-semibold transition-colors ${dropTarget === stage.key ? "border-rose-400 bg-rose-50 text-rose-700" : "border-slate-300 bg-white/70 text-slate-500"}`} data-testid={`drop-lost-${stage.key}`}>
+              <div key={stage.key} {...dragProps(stage)} className={`flex w-[150px] shrink-0 flex-col items-center justify-center rounded-xl border-2 border-dashed p-3 text-center text-xs font-semibold transition-colors ${dropTarget === stage.key ? "border-rose-400 bg-rose-50 text-rose-700" : "border-slate-300 bg-white/70 text-slate-500"}`} data-testid={`drop-lost-${stage.key}`}>
                 Drop here to mark as {stage.label.toLowerCase()}
               </div>
             ))}
@@ -294,14 +294,14 @@ function StageColumn({ stage, accent, deals, currency, isDropTarget, dragging, d
   const outcome = stage.virtual ? null : stageOutcome(stage);
   return (
     <section aria-label={`${stage.label}: ${deals.length} deal${deals.length === 1 ? "" : "s"}`} {...dragProps}
-      className={`flex w-[264px] shrink-0 flex-col rounded-2xl border p-2 transition-colors lg:w-auto lg:min-w-[196px] lg:flex-1 lg:basis-0 ${isDropTarget ? "border-[#1a9fbf] bg-cyan-50/70" : outcome === OUTCOME.WON ? "border-emerald-200/80 bg-emerald-50/40" : outcome === OUTCOME.LOST ? "border-rose-200/80 bg-rose-50/40" : "border-slate-200/90 bg-slate-100/55"}`}
+      className={`flex w-[264px] shrink-0 flex-col rounded-xl border p-2 transition-colors lg:w-auto lg:min-w-[196px] lg:flex-1 lg:basis-0 ${isDropTarget ? "border-brand bg-brand-soft/70" : outcome === OUTCOME.WON ? "border-emerald-200/80 bg-emerald-50/40" : outcome === OUTCOME.LOST ? "border-rose-200/80 bg-rose-50/40" : "border-slate-200/90 bg-slate-100/55"}`}
       data-testid={`stage-column-${stage.key}`}>
-      <header className="mb-2.5 rounded-xl bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(10,22,40,.03)]">
+      <header className="mb-2.5 rounded-lg bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(10,22,40,.03)]">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2"><span className={`h-2.5 w-2.5 shrink-0 rounded-full ${accent}`} /><h2 className="truncate text-sm font-bold text-[#132038]">{stage.label}</h2></div>
+          <div className="flex min-w-0 items-center gap-2"><span className={`h-2.5 w-2.5 shrink-0 rounded-full ${accent}`} /><h2 className="truncate text-sm font-bold text-foreground">{stage.label}</h2></div>
           <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-600" data-testid={`stage-count-${stage.key}`}>{deals.length}</span>
         </div>
-        <p className="mt-1 break-words font-display text-base font-bold text-[#0a1628]" data-testid={`stage-total-${stage.key}`}><MoneyTotals totals={totalsByCurrency(deals)} preferred={currency} /></p>
+        <p className="mt-1 break-words font-display text-base font-semibold text-foreground" data-testid={`stage-total-${stage.key}`}><MoneyTotals totals={totalsByCurrency(deals)} preferred={currency} /></p>
       </header>
       <div className="flex-1 space-y-2.5">
         {deals.map((deal) => <DealCard key={deal.id} deal={deal} {...cardProps} />)}
@@ -313,7 +313,7 @@ function StageColumn({ stage, accent, deals, currency, isDropTarget, dragging, d
 
 function EmptyColumn({ stage, dragging, filtered }) {
   const text = dragging ? `Drop here to move to ${stage.label}` : filtered ? "Nothing here matches your search" : `No deals in ${stage.label}`;
-  return <div className="rounded-xl border border-dashed border-slate-300 bg-white/60 px-3 py-7 text-center text-xs text-slate-400">{text}</div>;
+  return <div className="rounded-lg border border-dashed border-slate-300 bg-white/60 px-3 py-7 text-center text-xs text-slate-400">{text}</div>;
 }
 
 /** Totals per currency, each kept on one line so "CA$21,000" never splits from its digits. */
@@ -334,13 +334,13 @@ function DealCard({ deal, stages, labelOf, nextStageFor, onMove, onOpen, owners,
   const elsewhere = stages.filter((stage) => stage.key !== deal.stage);
   return (
     <article draggable={draggable} onDragStart={draggable ? cardDrag.start(deal) : undefined} onDragEnd={draggable ? cardDrag.end : undefined}
-      className={`rounded-xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(10,22,40,.03)] transition-shadow hover:shadow-[0_8px_18px_rgba(10,22,40,.08)] ${draggable ? "cursor-grab active:cursor-grabbing" : ""} ${draggingId === deal.id ? "opacity-50" : ""}`}
+      className={`rounded-lg border border-slate-200 bg-white shadow-[0_1px_2px_rgba(10,22,40,.03)] transition-shadow hover:shadow-[0_8px_18px_rgba(10,22,40,.08)] ${draggable ? "cursor-grab active:cursor-grabbing" : ""} ${draggingId === deal.id ? "opacity-50" : ""}`}
       data-testid={`opportunity-card-${deal.id}`}>
-      <button type="button" onClick={() => onOpen(deal)} className="block w-full rounded-t-xl p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4ac4e0]" data-testid={`open-deal-${deal.id}`}>
-        <h3 className="line-clamp-2 text-sm font-bold leading-5 text-[#132038]">{deal.name}</h3>
+      <button type="button" onClick={() => onOpen(deal)} className="block w-full rounded-t-lg p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand" data-testid={`open-deal-${deal.id}`}>
+        <h3 className="line-clamp-2 text-sm font-bold leading-5 text-foreground">{deal.name}</h3>
         <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-          <span className="font-display text-[15px] font-bold text-[#0a1628]">{formatMoney(deal.value, dealCurrency(deal))}</span>
-          {isWebsiteLead(deal) && <span className="inline-flex items-center gap-1 rounded-full bg-cyan-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0a6177]"><Globe className="h-3 w-3" />Website lead</span>}
+          <span className="font-display text-[15px] font-semibold text-foreground">{formatMoney(deal.value, dealCurrency(deal))}</span>
+          {isWebsiteLead(deal) && <span className="inline-flex items-center gap-1 rounded-full bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand"><Globe className="h-3 w-3" />Website lead</span>}
         </div>
         {(people || company) && <p className="mt-1.5 flex items-center gap-1 text-xs text-slate-600"><Users className="h-3 w-3 shrink-0 text-slate-400" /><span className="truncate">{people || company}</span></p>}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-500">

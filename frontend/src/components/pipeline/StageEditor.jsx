@@ -119,7 +119,7 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
           <DialogTitle className="font-display text-2xl">Customize stages</DialogTitle>
           <DialogDescription>Rename, reorder, add or remove the steps your deals move through. Renaming a stage keeps its deals and website forms pointing at it.</DialogDescription>
         </DialogHeader>
-        <div className="hidden items-center gap-2 px-3 text-[11px] font-bold uppercase tracking-[0.06em] text-slate-500 sm:flex" aria-hidden="true">
+        <div className="hidden items-center gap-2 px-3 text-xs font-medium text-slate-500 sm:flex" aria-hidden="true">
           <span className="flex-1 pl-7">Stage</span><span className="w-[8.5rem]">Reaching it means</span><span className="w-[5.5rem]">Chance</span><span className="w-9" />
         </div>
         <ol className="space-y-2" aria-busy={checking}>
@@ -132,7 +132,7 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
             const lockOutcome = hasDeals || (forms.length > 0 && originalOutcome[row.key] === OUTCOME.OPEN);
             const removeBlocked = hasDeals ? `Move its ${dealsText(usage)} to another stage first` : forms.length ? `Website form “${forms[0].name}” starts new leads here` : "";
             return (
-              <li key={row.key} className="rounded-xl border border-slate-200 bg-white p-3" data-testid={`stage-row-${row.key}`}>
+              <li key={row.key} className="rounded-lg border border-slate-200 bg-white p-3" data-testid={`stage-row-${row.key}`}>
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="flex flex-col">
                     <button type="button" onClick={() => move(index, -1)} disabled={checking || index === 0} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} up`} data-testid={`stage-up-${row.key}`}><ArrowUp className="h-3.5 w-3.5" /></button>
@@ -151,7 +151,7 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
                 </div>
                 {(hasDeals || forms.length > 0 || row.isNew) && (
                   <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 pl-7 text-xs text-slate-500">
-                    {row.isNew && <span className="font-semibold text-[#0a6177]">New stage</span>}
+                    {row.isNew && <span className="font-semibold text-brand">New stage</span>}
                     {hasDeals && <span>{dealsText(usage)} here — move them out to remove this stage or change what it means.</span>}
                     {forms.map((form) => <span key={form.id} className="inline-flex items-center gap-1"><Globe className="h-3 w-3" />Website form “{form.name}” starts new leads here</span>)}
                   </p>
@@ -165,7 +165,7 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
           <Button type="button" variant="outline" onClick={addStage} disabled={checking} data-testid="stage-add"><Plus className="mr-1.5 h-4 w-4" />Add stage</Button>
         </div>
         <p className="text-xs leading-5 text-slate-500">“Chance” is how likely a deal at that stage is to close. It only feeds the weighted estimate; it never changes a deal's value.</p>
-        {problem && <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert" data-testid="stage-editor-problem">{problem}</div>}
+        {problem && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert" data-testid="stage-editor-problem">{problem}</div>}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button disabled={saving || checking} onClick={save} className="cv-action-primary" data-testid="stage-editor-save">{saving ? "Saving…" : "Save stages"}</Button>

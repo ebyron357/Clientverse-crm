@@ -35,9 +35,9 @@ const EMAIL_NOTE = {
 // What the admin is told after creating or resending an invitation. Only a send the
 // server confirmed counts as emailed.
 function inviteMessage(invite) {
-  if (invite.emailed) return <>Invitation emailed to <span className="font-medium text-[#132038]">{invite.email}</span>. You can also copy the link:</>;
-  if (invite.emailConfigured) return <>We couldn't email <span className="font-medium text-[#132038]">{invite.email}</span> just now. Copy this link and send it to them:</>;
-  return <>Copy this link and send it to <span className="font-medium text-[#132038]">{invite.email}</span>:</>;
+  if (invite.emailed) return <>Invitation emailed to <span className="font-medium text-foreground">{invite.email}</span>. You can also copy the link:</>;
+  if (invite.emailConfigured) return <>We couldn't email <span className="font-medium text-foreground">{invite.email}</span> just now. Copy this link and send it to them:</>;
+  return <>Copy this link and send it to <span className="font-medium text-foreground">{invite.email}</span>:</>;
 }
 
 export default function Team() {
@@ -112,12 +112,12 @@ export default function Team() {
     return (
       <div className="cv-page max-w-lg mx-auto mt-20 text-center" data-testid="team-forbidden">
         <ShieldAlert className="w-10 h-10 mx-auto text-red-500 mb-4" />
-        <h1 className="font-display text-2xl font-bold">Admins only</h1>
+        <h1 className="font-display text-2xl font-semibold">Admins only</h1>
         <p className="text-sm text-gray-500 mt-2">Team management is restricted to workspace administrators.</p>
       </div>
     );
   }
-  if (members === null) return <div className="cv-page space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-xl" /></div>;
+  if (members === null) return <div className="cv-page space-y-4"><Skeleton className="h-10 w-64" /><Skeleton className="h-64 rounded-lg" /></div>;
 
   const pending = invites.filter((i) => i.status === "pending");
   const past = invites.filter((i) => i.status !== "pending");
@@ -136,10 +136,10 @@ export default function Team() {
       </div>
 
       {/* Members */}
-      <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-x-auto mb-8" data-testid="members-table">
-        <div className="px-6 py-4 border-b border-gray-100"><h3 className="font-display font-bold text-lg">Members ({members.length})</h3></div>
+      <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-x-auto mb-8" data-testid="members-table">
+        <div className="px-6 py-4 border-b border-gray-100"><h3 className="font-display font-semibold text-lg">Members ({members.length})</h3></div>
         <table className="w-full text-sm text-left">
-          <thead><tr className="border-b border-gray-100 text-xs uppercase tracking-[0.05em] text-gray-500">
+          <thead><tr className="border-b border-gray-100 text-xs text-gray-500">
             <th className="px-6 py-3 font-semibold">Member</th><th className="px-6 py-3 font-semibold">Role</th><th className="px-6 py-3 font-semibold">Status</th><th className="px-6 py-3 font-semibold text-right">Actions</th></tr></thead>
           <tbody>
             {members.map((m) => {
@@ -175,8 +175,8 @@ export default function Team() {
       </div>
 
       {/* Pending invitations */}
-      <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-x-auto mb-8" data-testid="invitations-table">
-        <div className="px-6 py-4 border-b border-gray-100"><h3 className="font-display font-bold text-lg">Pending invitations ({pending.length})</h3></div>
+      <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-x-auto mb-8" data-testid="invitations-table">
+        <div className="px-6 py-4 border-b border-gray-100"><h3 className="font-display font-semibold text-lg">Pending invitations ({pending.length})</h3></div>
         {pending.length === 0 ? (
           <div className="px-6 py-10 text-center text-sm text-gray-400" data-testid="invitations-empty">No pending invitations. Invite a teammate to get started.</div>
         ) : (
@@ -206,7 +206,7 @@ export default function Team() {
       {/* Invite history */}
       {past.length > 0 && (
         <div className="text-xs text-gray-400" data-testid="invite-history">
-          <span className="uppercase tracking-[0.06em] font-semibold text-gray-500">History: </span>
+          <span className=" font-semibold text-gray-500">History: </span>
           {past.slice(0, 12).map((inv) => (
             <span key={inv.id} className="inline-flex items-center gap-1 mr-3">{inv.email} <Badge className={`capitalize text-[10px] ${STATUS_BADGE[inv.status]}`}>{inv.status}</Badge></span>
           ))}
@@ -220,13 +220,13 @@ export default function Team() {
             <DialogTitle>{reset?.temporary ? "Temporary password ready" : `Reset ${reset?.member?.name || reset?.member?.email}'s password?`}</DialogTitle>
             <DialogDescription>
               {reset?.temporary
-                ? <>Send this to <span className="font-medium text-[#132038]">{reset.member.email}</span> by text or phone. When they sign in with it, ClientVerse asks them to choose their own password straight away. It is shown only once.</>
+                ? <>Send this to <span className="font-medium text-foreground">{reset.member.email}</span> by text or phone. When they sign in with it, ClientVerse asks them to choose their own password straight away. It is shown only once.</>
                 : "They'll be signed out everywhere and get a temporary password from you. Their leads, tasks and history stay exactly as they are."}
             </DialogDescription>
           </DialogHeader>
           {reset?.temporary ? (
-            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-              <code className="flex-1 select-all font-mono text-base tracking-wide text-[#0a1628]" data-testid="temporary-password">{reset.temporary}</code>
+            <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+              <code className="flex-1 select-all font-mono text-base tracking-wide text-foreground" data-testid="temporary-password">{reset.temporary}</code>
               <Button size="sm" variant="outline" onClick={() => copyTemporary(reset.temporary)}><Copy className="w-3.5 h-3.5 mr-1" />Copy</Button>
             </div>
           ) : null}

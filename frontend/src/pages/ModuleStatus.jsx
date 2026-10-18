@@ -23,22 +23,22 @@ export default function ModuleStatus({ moduleId: moduleIdProp }) {
     <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
       <div className="cv-card overflow-hidden">
         <div className="border-b border-border bg-secondary/50 p-6">
-          <span className="flex size-11 items-center justify-center rounded-xl border border-border bg-card text-primary"><Icon className="size-5" /></span>
-          <h2 className="mt-5 font-display text-xl font-bold text-foreground">Architectural home established</h2>
+          <span className="flex size-11 items-center justify-center rounded-lg border border-border bg-card text-primary"><Icon className="size-5" /></span>
+          <h2 className="mt-5 font-display text-xl font-semibold text-foreground">Architectural home established</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">This module is part of the approved ClientVerse product architecture. Its stable route, permissions, navigation identity, and service boundary are reserved now so implementation can activate in place without a shell or information-architecture rewrite.</p>
         </div>
         <div className="flex flex-col gap-4 p-6">
           <ContractRow icon={CheckCircle2} label="Stable module ID" value={module.id} />
           <ContractRow icon={CheckCircle2} label="Route namespace" value={module.route} />
           <ContractRow icon={LockKeyhole} label="Required backend contract" value={module.contract} />
-          <div className="rounded-xl border border-dashed border-border bg-secondary/50 p-4 text-sm leading-6 text-muted-foreground" data-testid="module-contract-honesty">No sample records or simulated writes are shown. This surface becomes operational when its versioned backend contract is implemented and the module state changes to available.</div>
+          <div className="rounded-lg border border-dashed border-border bg-secondary/50 p-4 text-sm leading-6 text-muted-foreground" data-testid="module-contract-honesty">No sample records or simulated writes are shown. This surface becomes operational when its versioned backend contract is implemented and the module state changes to available.</div>
           {module.group === "Communications" && (
-            <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 p-4 text-sm leading-6 text-[#0a6177]" data-testid="module-comms-honesty">
+            <div className="rounded-lg border border-brand-soft bg-brand-soft/60 p-4 text-sm leading-6 text-brand" data-testid="module-comms-honesty">
               Unified inbox and channel threads are reserved here for architecture honesty. Matched email already surfaces on Client 360 activity when Gmail is connected; a full mocked inbox module is intentionally not fabricated until the Conversation service contract lands.
             </div>
           )}
           {module.group === "Intelligence" && (
-            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm leading-6 text-slate-600" data-testid="module-intel-honesty">
+            <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-4 text-sm leading-6 text-slate-600" data-testid="module-intel-honesty">
               Research and relationship insights keep this route namespace stable. Command Center insights remain the live operating view until recommendation services are available.
             </div>
           )}
@@ -47,12 +47,12 @@ export default function ModuleStatus({ moduleId: moduleIdProp }) {
       <aside className="cv-card p-5">
         <div className="flex items-center gap-2"><Blocks className="size-4 text-primary" /><h2 className="cv-card-title">{module.group} domain</h2></div>
         <p className="cv-card-description">Shared architecture in the same operating domain.</p>
-        <div className="mt-4 flex flex-col gap-2">{related.map((item) => <div key={item.id} className="flex items-center gap-3 rounded-xl border border-border p-3"><item.icon className="size-4 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold text-foreground">{item.label}</div><div className="truncate text-xs text-muted-foreground">{item.state.replaceAll("_", " ")}</div></div><ArrowRight className="size-4 text-muted-foreground" /></div>)}</div>
+        <div className="mt-4 flex flex-col gap-2">{related.map((item) => <div key={item.id} className="flex items-center gap-3 rounded-lg border border-border p-3"><item.icon className="size-4 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold text-foreground">{item.label}</div><div className="truncate text-xs text-muted-foreground">{item.state.replaceAll("_", " ")}</div></div><ArrowRight className="size-4 text-muted-foreground" /></div>)}</div>
       </aside>
     </section>
   </div>;
 }
 
 function ContractRow({ icon: Icon, label, value }) {
-  return <div className="flex items-start gap-3"><Icon className="mt-0.5 size-4 shrink-0 text-primary" /><div><div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{label}</div><div className="mt-1 font-mono text-sm text-foreground">{value}</div></div></div>;
+  return <div className="flex items-start gap-3"><Icon className="mt-0.5 size-4 shrink-0 text-primary" /><div><div className="text-xs font-medium text-muted-foreground">{label}</div><div className="mt-1 font-mono text-sm text-foreground">{value}</div></div></div>;
 }

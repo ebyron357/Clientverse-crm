@@ -80,7 +80,7 @@ export default function WebhookManager() {
       <div className="flex justify-end">
         {isAdmin && (
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild><Button data-testid="new-webhook-button" className="bg-[#0A0A0A] hover:bg-[#262626]"><Plus className="w-4 h-4 mr-1" />New Endpoint</Button></DialogTrigger>
+          <DialogTrigger asChild><Button data-testid="new-webhook-button" className="bg-primary hover:bg-primary/90"><Plus className="w-4 h-4 mr-1" />New Endpoint</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>New Webhook Endpoint</DialogTitle><DialogDescription>Signed HMAC-SHA256 delivery with retries and dead-letter.</DialogDescription></DialogHeader>
             <div className="space-y-4">
@@ -91,7 +91,7 @@ export default function WebhookManager() {
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   {EVENT_OPTIONS.map((ev) => (
                     <button key={ev} type="button" onClick={() => toggleEvent(ev)} data-testid={`webhook-event-${ev}`}
-                      className={`text-[11px] font-mono px-2 py-1 rounded border transition-colors ${form.events.includes(ev) ? "bg-[#0A0A0A] text-white border-black" : "bg-gray-50 text-gray-600 border-gray-200"}`}>{ev}</button>
+                      className={`text-[11px] font-mono px-2 py-1 rounded border transition-colors ${form.events.includes(ev) ? "bg-primary text-white border-black" : "bg-gray-50 text-gray-600 border-gray-200"}`}>{ev}</button>
                   ))}
                 </div>
                 {preview && (
@@ -105,7 +105,7 @@ export default function WebhookManager() {
                 )}
               </div>
             </div>
-            <DialogFooter><Button onClick={create} data-testid="save-webhook-button" className="bg-[#0A0A0A] hover:bg-[#262626]">Create</Button></DialogFooter>
+            <DialogFooter><Button onClick={create} data-testid="save-webhook-button" className="bg-primary hover:bg-primary/90">Create</Button></DialogFooter>
           </DialogContent>
         </Dialog>
         )}
@@ -114,10 +114,10 @@ export default function WebhookManager() {
       {/* Endpoints */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {hooks.map((wh) => (
-          <div key={wh.id} className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm" data-testid={`webhook-${wh.id}`}>
+          <div key={wh.id} className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm" data-testid={`webhook-${wh.id}`}>
             <div className="flex items-start justify-between">
               <div className="min-w-0">
-                <div className="font-display font-bold">{wh.name}</div>
+                <div className="font-display font-semibold">{wh.name}</div>
                 <div className="text-xs text-gray-400 font-mono truncate">{wh.url}</div>
               </div>
               <Switch checked={wh.enabled} onCheckedChange={(v) => toggle(wh, v)} data-testid={`webhook-toggle-${wh.id}`} />
@@ -165,10 +165,10 @@ export default function WebhookManager() {
 
       {/* Delivery log */}
       <div>
-        <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Delivery Log</div>
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div className="text-xs text-gray-500 font-semibold mb-3">Delivery Log</div>
+        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
           <table className="w-full text-sm text-left">
-            <thead><tr className="border-b border-gray-200 text-xs uppercase tracking-[0.05em] text-gray-500">
+            <thead><tr className="border-b border-gray-200 text-xs text-gray-500">
               <th className="px-5 py-3 font-semibold">Endpoint</th><th className="px-5 py-3 font-semibold">Event</th><th className="px-5 py-3 font-semibold">Status</th><th className="px-5 py-3 font-semibold">Attempts</th><th className="px-5 py-3 font-semibold"></th></tr></thead>
             <tbody>
               {deliveries.map((d) => (

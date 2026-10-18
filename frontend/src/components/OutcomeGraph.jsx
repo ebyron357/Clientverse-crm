@@ -53,16 +53,16 @@ export default function OutcomeGraph({ workspaceId }) {
     load();
   };
 
-  if (!d) return <Skeleton className="h-72 rounded-xl" />;
+  if (!d) return <Skeleton className="h-72 rounded-lg" />;
 
   const cmtById = Object.fromEntries(d.commitments.map((c) => [c.id, c]));
   const chart = d.health_history.map((h) => ({ at: new Date(h.at).toLocaleDateString(undefined, { month: "short", day: "numeric" }), score: h.score }));
 
   return (
     <div className="space-y-6" data-testid="outcome-graph">
-      <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
         <div className="flex items-center justify-between mb-6">
-          <h3 className="font-display font-bold text-lg">Client Outcome Graph</h3>
+          <h3 className="font-display font-semibold text-lg">Client Outcome Graph</h3>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild><Button size="sm" variant="outline" data-testid="add-outcome-button"><Plus className="w-3.5 h-3.5 mr-1" />Add outcome</Button></DialogTrigger>
             <DialogContent>
@@ -75,7 +75,7 @@ export default function OutcomeGraph({ workspaceId }) {
                   <div><Label>Unit</Label><Input placeholder="% complete" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className="mt-1" /></div>
                 </div>
               </div>
-              <DialogFooter><Button onClick={create} data-testid="save-outcome-button" className="bg-[#0A0A0A] hover:bg-[#262626]">Create</Button></DialogFooter>
+              <DialogFooter><Button onClick={create} data-testid="save-outcome-button" className="bg-primary hover:bg-primary/90">Create</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>
@@ -83,7 +83,7 @@ export default function OutcomeGraph({ workspaceId }) {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr_auto_auto] gap-4 items-start">
           {/* Goals */}
           <div>
-            <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-2 flex items-center gap-1"><Target className="w-3.5 h-3.5" />Goals</div>
+            <div className="text-xs text-gray-500 font-semibold mb-2 flex items-center gap-1"><Target className="w-3.5 h-3.5" />Goals</div>
             <div className="space-y-2">
               {d.goals.length === 0 && <div className="text-xs text-gray-400">No goals yet.</div>}
               {d.goals.map((g) => {
@@ -128,7 +128,7 @@ export default function OutcomeGraph({ workspaceId }) {
 
           {/* Commitments */}
           <div>
-            <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-2 flex items-center gap-1"><Handshake className="w-3.5 h-3.5" />Commitments</div>
+            <div className="text-xs text-gray-500 font-semibold mb-2 flex items-center gap-1"><Handshake className="w-3.5 h-3.5" />Commitments</div>
             <div className="space-y-2">
               {d.commitments.length === 0 && <div className="text-xs text-gray-400">No commitments.</div>}
               {d.commitments.map((c) => (
@@ -144,17 +144,17 @@ export default function OutcomeGraph({ workspaceId }) {
 
           {/* Health node */}
           <div>
-            <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-2 flex items-center gap-1"><Activity className="w-3.5 h-3.5" />Health</div>
+            <div className="text-xs text-gray-500 font-semibold mb-2 flex items-center gap-1"><Activity className="w-3.5 h-3.5" />Health</div>
             <div className={`border rounded-lg p-4 text-center ${HEALTH_BAND[d.health.band]}`}>
-              <div className="font-display text-4xl font-bold">{d.health.score}</div>
+              <div className="font-display text-4xl font-semibold">{d.health.score}</div>
               <div className="text-xs capitalize mt-1">{d.health.band.replace("_", " ")}</div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
-        <h3 className="font-display font-bold text-lg mb-1">Health Over Time</h3>
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+        <h3 className="font-display font-semibold text-lg mb-1">Health Over Time</h3>
         <p className="text-xs text-gray-400 mb-4">Snapshots captured on every outcome-affecting change.</p>
         {chart.length === 0 ? <div className="text-sm text-gray-400 py-8 text-center">No snapshots yet.</div> : (
           <ResponsiveContainer width="100%" height={220}>

@@ -54,7 +54,7 @@ function messageLabel(kind) {
 function messageState(message) {
   switch (message.status) {
     case "pending_approval": return { text: "Waiting for approval", tone: "text-amber-700" };
-    case "approved": case "sending": return { text: "Approved — sending", tone: "text-[#0a6177]" };
+    case "approved": case "sending": return { text: "Approved — sending", tone: "text-brand" };
     case "sent": case "delivered": return { text: "Sent", tone: "text-emerald-700" };
     case "off": return { text: "Off for this page", tone: "text-slate-500" };
     case "not_sent": return { text: "Not emailed", tone: "text-slate-500" };
@@ -67,10 +67,10 @@ function messageState(message) {
 function CodeBlock({ title, description, code, testid }) {
   const copy = () => { navigator.clipboard?.writeText(code); toast.success(`${title} copied`); };
   return (
-    <div className="rounded-xl border border-slate-200">
+    <div className="rounded-lg border border-slate-200">
       <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-[#132038]">{title}</div>
+          <div className="text-sm font-semibold text-foreground">{title}</div>
           {description && <p className="text-xs leading-5 text-slate-500">{description}</p>}
         </div>
         <Button size="sm" variant="outline" onClick={copy} data-testid={testid}><Copy className="mr-1 h-3.5 w-3.5" />Copy</Button>
@@ -104,8 +104,8 @@ function ApproveDialog({ appointment, message, onClose, onDone }) {
           <DialogTitle>Approve this email?</DialogTitle>
           <DialogDescription>To {appointment.person.email}. Approving sends these exact words once.</DialogDescription>
         </DialogHeader>
-        <div className="min-w-0 space-y-2 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm">
-          <div className="font-semibold text-[#132038] [overflow-wrap:anywhere]">{message.subject}</div>
+        <div className="min-w-0 space-y-2 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+          <div className="font-semibold text-foreground [overflow-wrap:anywhere]">{message.subject}</div>
           <pre className="whitespace-pre-wrap font-sans text-slate-700 [overflow-wrap:anywhere]" data-testid="approve-email-body">{message.body}</pre>
         </div>
         <DialogFooter>
@@ -152,7 +152,7 @@ function RescheduleDialog({ appointment, onClose, onDone }) {
           <div style={brandStyle()}>
             <SlotPicker loadDays={loadDays} zone={zone} onZoneChange={setZone} maxKey={addDays(dayKey(new Date(), zone), 365)}
               selectedStart={start} onPick={setStart} testid="reschedule-slots" />
-            {start && <p className="mt-3 text-sm font-semibold text-[#0a6177]" data-testid="reschedule-chosen">New time: {formatRange(start, null, zone)}</p>}
+            {start && <p className="mt-3 text-sm font-semibold text-brand" data-testid="reschedule-chosen">New time: {formatRange(start, null, zone)}</p>}
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -227,22 +227,22 @@ function AppointmentCard({ appointment, showHost, highlighted, isAdmin, onAction
   useEffect(() => { if (highlighted) ref.current?.scrollIntoView({ block: "center" }); }, [highlighted]);
   return (
     <li ref={ref} id={`appointment-${appointment.id}`} data-testid={`appointment-${appointment.id}`}
-      className={`cv-data-row px-4 py-4 sm:px-5 ${highlighted ? "bg-cyan-50/70 ring-2 ring-inset ring-[#4ac4e0]" : ""} ${appointment.status === "cancelled" ? "opacity-70" : ""}`}>
+      className={`cv-data-row px-4 py-4 sm:px-5 ${highlighted ? "bg-brand-soft/70 ring-2 ring-inset ring-brand" : ""} ${appointment.status === "cancelled" ? "opacity-70" : ""}`}>
       <div className="flex flex-col gap-3 md:flex-row md:items-start">
         <div className="w-full shrink-0 md:w-36">
-          <div className={`font-display text-base font-bold ${appointment.status === "cancelled" ? "text-slate-500 line-through" : "text-[#0a1628]"}`}>{formatTime(appointment.start_at, zone)}</div>
+          <div className={`font-display text-base font-bold ${appointment.status === "cancelled" ? "text-slate-500 line-through" : "text-foreground"}`}>{formatTime(appointment.start_at, zone)}</div>
           <div className="text-xs text-slate-500">to {formatTime(appointment.end_at || appointment.start_at, zone)}</div>
         </div>
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-[#132038]">{person.name || appointment.title}</span>
-            <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold text-[#0a6177]">{appointment.type_name}</span>
+            <span className="font-semibold text-foreground">{person.name || appointment.title}</span>
+            <span className="rounded-full border border-brand/20 bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand">{appointment.type_name}</span>
             <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${status.className}`}>{status.label}</span>
             {showHost && appointment.host_name && <span className="text-xs text-slate-500">with {appointment.host_name}</span>}
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-            {person.phone && <a href={`tel:${person.phone.replace(/[^\d+]/g, "")}`} className="inline-flex items-center gap-1.5 font-semibold text-[#127b96] hover:underline" data-testid={`appointment-call-${appointment.id}`}><Phone className="h-3.5 w-3.5" />{person.phone}</a>}
-            {person.email && <a href={`mailto:${person.email}`} className="inline-flex min-w-0 items-center gap-1.5 text-[#127b96] hover:underline"><Mail className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{person.email}</span></a>}
+            {person.phone && <a href={`tel:${person.phone.replace(/[^\d+]/g, "")}`} className="inline-flex items-center gap-1.5 font-semibold text-brand hover:underline" data-testid={`appointment-call-${appointment.id}`}><Phone className="h-3.5 w-3.5" />{person.phone}</a>}
+            {person.email && <a href={`mailto:${person.email}`} className="inline-flex min-w-0 items-center gap-1.5 text-brand hover:underline"><Mail className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{person.email}</span></a>}
           </div>
           {appointment.location?.kind && <LocationLine location={appointment.location} className="text-sm" />}
           {(answers.length > 0 || appointment.notes) && (
@@ -263,7 +263,7 @@ function AppointmentCard({ appointment, showHost, highlighted, isAdmin, onAction
                     <span className={`font-semibold ${state.tone}`} title={message.detail || undefined}>{state.text}</span>
                     {message.status === "not_sent" && message.detail && <span className="text-slate-500">— {message.detail.split(".")[0]}.</span>}
                     {message.status === "pending_approval" && isAdmin && (
-                      <button type="button" onClick={() => onApprove(appointment, message)} className="font-semibold text-[#127b96] hover:underline" data-testid={`approve-email-${appointment.id}-${message.kind}`}>Review and approve</button>
+                      <button type="button" onClick={() => onApprove(appointment, message)} className="font-semibold text-brand hover:underline" data-testid={`approve-email-${appointment.id}-${message.kind}`}>Review and approve</button>
                     )}
                   </li>
                 );
@@ -271,9 +271,9 @@ function AppointmentCard({ appointment, showHost, highlighted, isAdmin, onAction
             </ul>
           )}
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold">
-            {appointment.enquiry_id && <Link to={`/leads?lead=${appointment.enquiry_id}`} className="text-[#127b96] hover:underline" data-testid={`appointment-lead-${appointment.id}`}>Lead</Link>}
-            {appointment.contact_id && <Link to={`/contacts?contact=${appointment.contact_id}`} className="text-[#127b96] hover:underline" data-testid={`appointment-contact-${appointment.id}`}>Contact</Link>}
-            {appointment.opportunity_id && <Link to={`/deals?deal=${appointment.opportunity_id}`} className="text-[#127b96] hover:underline" data-testid={`appointment-deal-${appointment.id}`}>Deal</Link>}
+            {appointment.enquiry_id && <Link to={`/leads?lead=${appointment.enquiry_id}`} className="text-brand hover:underline" data-testid={`appointment-lead-${appointment.id}`}>Lead</Link>}
+            {appointment.contact_id && <Link to={`/contacts?contact=${appointment.contact_id}`} className="text-brand hover:underline" data-testid={`appointment-contact-${appointment.id}`}>Contact</Link>}
+            {appointment.opportunity_id && <Link to={`/deals?deal=${appointment.opportunity_id}`} className="text-brand hover:underline" data-testid={`appointment-deal-${appointment.id}`}>Deal</Link>}
           </div>
         </div>
         {appointment.can_manage && (appointment.needs_outcome || upcoming) && (
@@ -313,10 +313,10 @@ function UpcomingTab({ items, loading, error, onReload, scope, setScope, isAdmin
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1" role="group" aria-label="Whose appointments">
+        <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1" role="group" aria-label="Whose appointments">
           {[["mine", "Mine"], ["all", "Everyone's"]].map(([value, label]) => (
             <button key={value} type="button" onClick={() => setScope(value)} aria-pressed={scope === value} data-testid={`calendar-scope-${value}`}
-              className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${scope === value ? "bg-[#0a6177] text-white" : "text-slate-600 hover:bg-slate-50"}`}>{label}</button>
+              className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${scope === value ? "bg-brand text-white" : "text-slate-600 hover:bg-slate-50"}`}>{label}</button>
           ))}
         </div>
         <div className="flex items-center gap-3">
@@ -325,13 +325,13 @@ function UpcomingTab({ items, loading, error, onReload, scope, setScope, isAdmin
         </div>
       </div>
       {error ? <SurfaceError title="The calendar could not be loaded" description={error} onRetry={onReload} />
-        : loading ? <div className="space-y-3">{[0, 1, 2].map((n) => <Skeleton key={n} className="h-28 rounded-2xl" />)}</div>
+        : loading ? <div className="space-y-3">{[0, 1, 2].map((n) => <Skeleton key={n} className="h-28 rounded-xl" />)}</div>
           : (
             <>
               {needOutcome.length > 0 && (
                 <section className="cv-card overflow-hidden border-amber-200" data-testid="calendar-needs-outcome">
                   <div className="border-b border-amber-100 bg-amber-50 px-5 py-3">
-                    <h2 className="font-display text-base font-bold text-amber-900">Did these happen?</h2>
+                    <h2 className="font-display text-base font-semibold text-amber-900">Did these happen?</h2>
                     <p className="text-xs text-amber-800">Say whether they came. A no-show goes to lost-revenue recovery so someone follows up.</p>
                   </div>
                   <ul className="divide-y divide-slate-100">{needOutcome.map((a) => <AppointmentCard key={a.id} appointment={a} showHost={showHost} isAdmin={isAdmin} highlighted={a.id === highlightId} onAction={onAction} onApprove={onApprove} />)}</ul>
@@ -344,9 +344,9 @@ function UpcomingTab({ items, loading, error, onReload, scope, setScope, isAdmin
               ) : groups.map(([key, list]) => {
                 const isToday = key === today;
                 return (
-                  <section key={key} className={`cv-card overflow-hidden ${isToday ? "border-[#4ac4e0] ring-1 ring-[#4ac4e0]" : ""}`} data-testid={`calendar-day-${key}`}>
-                    <div className={`flex items-baseline justify-between gap-2 border-b px-5 py-3 ${isToday ? "border-cyan-100 bg-cyan-50" : "border-slate-100"}`}>
-                      <h2 className={`font-display text-base font-bold ${isToday ? "text-[#0a6177]" : "text-[#132038]"}`}>
+                  <section key={key} className={`cv-card overflow-hidden ${isToday ? "border-brand ring-1 ring-brand" : ""}`} data-testid={`calendar-day-${key}`}>
+                    <div className={`flex items-baseline justify-between gap-2 border-b px-5 py-3 ${isToday ? "border-brand-soft bg-brand-soft" : "border-slate-100"}`}>
+                      <h2 className={`font-display text-base font-bold ${isToday ? "text-brand" : "text-foreground"}`}>
                         {isToday ? "Today" : key === tomorrow ? "Tomorrow" : formatDay(key)}
                         {(isToday || key === tomorrow) && <span className="ml-2 text-sm font-semibold text-slate-500">{formatDay(key, "short")}</span>}
                       </h2>
@@ -415,9 +415,9 @@ function BookingPagesTab({ pages, status, catalog, hosts, isAdmin, onChanged, lo
     <div className="space-y-5">
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="cv-card flex gap-3 p-4 text-sm" data-testid="booking-email-status">
-          <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#0a6177]" aria-hidden="true" />
+          <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden="true" />
           <div>
-            <div className="font-semibold text-[#132038]">Emails to the people who book</div>
+            <div className="font-semibold text-foreground">Emails to the people who book</div>
             <p className="mt-0.5 text-slate-600">
               {status?.email_channel?.authorized
                 ? "Each confirmation and reminder is written for you and waits until an admin approves its exact words."
@@ -428,9 +428,9 @@ function BookingPagesTab({ pages, status, catalog, hosts, isAdmin, onChanged, lo
           </div>
         </div>
         <div className="cv-card flex gap-3 p-4 text-sm" data-testid="booking-google-status">
-          <CalendarDays className="mt-0.5 h-5 w-5 shrink-0 text-[#0a6177]" aria-hidden="true" />
+          <CalendarDays className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden="true" />
           <div>
-            <div className="font-semibold text-[#132038]">Google Calendar</div>
+            <div className="font-semibold text-foreground">Google Calendar</div>
             <p className="mt-0.5 text-slate-600">{status?.google_calendar?.account
               ? `Busy times on ${status.google_calendar.account}'s Google Calendar are taken off that agent's pages.`
               : "Not connected. Only appointments in ClientVerse block times. Connect it in Registries → Integrations."}</p>
@@ -438,7 +438,7 @@ function BookingPagesTab({ pages, status, catalog, hosts, isAdmin, onChanged, lo
         </div>
       </div>
 
-      {loading ? <div className="grid gap-4 lg:grid-cols-2">{[0, 1].map((n) => <Skeleton key={n} className="h-44 rounded-2xl" />)}</div>
+      {loading ? <div className="grid gap-4 lg:grid-cols-2">{[0, 1].map((n) => <Skeleton key={n} className="h-44 rounded-xl" />)}</div>
         : pages.length === 0 ? (
           <SurfaceEmpty icon={Sparkles} title="Set up your booking pages" testid="booking-pages-empty"
             description="One click makes four real-estate booking pages — home showing (30 min), buyer consultation (45), listing appointment (60) and phone call (15) — using your hours, Monday to Saturday 9 to 6. You can change everything afterwards."
@@ -452,14 +452,14 @@ function BookingPagesTab({ pages, status, catalog, hosts, isAdmin, onChanged, lo
                 <article key={page.id} className="cv-card flex min-w-0 flex-col gap-4 p-5" data-testid={`booking-page-${page.id}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <h2 className="font-display text-lg font-bold text-[#132038]">{page.name}</h2>
+                      <h2 className="font-display text-lg font-semibold text-foreground">{page.name}</h2>
                       <p className="text-xs text-slate-500">{page.duration_minutes} min · {(catalog?.location_kinds || []).find((k) => k.key === page.location?.kind)?.label} · {page.hosts?.mode === "round_robin" ? `Takes turns: ${hostNames(page)}` : hostNames(page)}</p>
                     </div>
                     <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${page.status === "active" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>{page.status === "active" ? "Live" : "Paused"}</span>
                   </div>
-                  <div className="flex min-w-0 items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  <div className="flex min-w-0 items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
                     <span className="min-w-0 flex-1 truncate" data-testid={`booking-page-link-${page.id}`}>{page.links.page}</span>
-                    <button type="button" onClick={() => copy(page.links.page, "Link")} className="shrink-0 font-semibold text-[#127b96] hover:underline" data-testid={`booking-page-copy-${page.id}`}>Copy link</button>
+                    <button type="button" onClick={() => copy(page.links.page, "Link")} className="shrink-0 font-semibold text-brand hover:underline" data-testid={`booking-page-copy-${page.id}`}>Copy link</button>
                   </div>
                   <p className="text-xs text-slate-500">{page.stats?.bookings || 0} booked · {page.stats?.views || 0} views{page.location?.kind === "office" && !page.location?.text ? " · Add your office address" : ""}</p>
                   <div className="mt-auto flex flex-wrap gap-2">
@@ -599,7 +599,7 @@ export default function Calendar() {
           {availability.items.length
             ? <AvailabilityEditor items={availability.items} hosts={hosts} me={String(user?.email || "").toLowerCase()} isAdmin={isAdmin}
                 googleAccount={availability.google_calendar_account} onSaved={() => { loadSetup(); }} />
-            : <Skeleton className="h-96 rounded-2xl" />}
+            : <Skeleton className="h-96 rounded-xl" />}
         </TabsContent>
       </Tabs>
       {dialog?.type === "reschedule" && <RescheduleDialog appointment={dialog.appointment} onClose={() => setDialog(null)} onDone={() => { setDialog(null); loadAppointments(); }} />}

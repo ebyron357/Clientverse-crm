@@ -38,7 +38,7 @@ const TABS = [
 const TONE = {
   overdue: "text-red-700",
   soon: "text-amber-700",
-  today: "text-[#0a6177]",
+  today: "text-brand",
   later: "text-slate-600",
   none: "text-slate-500",
   done: "text-emerald-700",
@@ -50,7 +50,7 @@ const PRIORITY = {
   low: { label: "Low priority", className: "border-slate-200 bg-slate-50 text-slate-600" },
 };
 const STATUS_CHIP = {
-  in_progress: { label: "In progress", className: "border-cyan-200 bg-cyan-50 text-[#0a6177]" },
+  in_progress: { label: "In progress", className: "border-brand/20 bg-brand-soft text-brand" },
   blocked: { label: "Waiting on something", className: "border-violet-200 bg-violet-50 text-violet-700" },
 };
 
@@ -219,7 +219,7 @@ function TaskRow({ task, now, showAssignee, nameOf, busy, highlighted, onToggle,
   const contact = task.related?.contact;
   const owner = task.assignee ? nameOf(task.assignee) : null;
   return (
-    <li id={`task-${task.id}`} className={`cv-data-row ${highlighted ? "bg-cyan-50/70 ring-2 ring-inset ring-[#4ac4e0]" : ""}`} data-testid={`task-row-${task.id}`}>
+    <li id={`task-${task.id}`} className={`cv-data-row ${highlighted ? "bg-brand-soft/70 ring-2 ring-inset ring-brand" : ""}`} data-testid={`task-row-${task.id}`}>
       <div className="flex items-start gap-3 px-4 py-3.5 sm:px-5">
         <button type="button" onClick={() => onToggle(task)} disabled={busy} aria-pressed={done}
           aria-label={done ? `Reopen: ${task.title}` : `Mark done: ${task.title}`}
@@ -229,7 +229,7 @@ function TaskRow({ task, now, showAssignee, nameOf, busy, highlighted, onToggle,
         </button>
         <div className="min-w-0 flex-1 pt-1.5">
           <button type="button" onClick={() => onOpen(task)}
-            className={`block w-full break-words text-left text-[15px] font-semibold leading-6 hover:text-[#0a6177] ${done ? "text-slate-500 line-through decoration-slate-300" : "text-[#132038]"}`}
+            className={`block w-full break-words text-left text-[15px] font-semibold leading-6 hover:text-brand ${done ? "text-slate-500 line-through decoration-slate-300" : "text-foreground"}`}
             data-testid={`task-open-${task.id}`}>
             {task.title}
           </button>
@@ -244,7 +244,7 @@ function TaskRow({ task, now, showAssignee, nameOf, busy, highlighted, onToggle,
             <div className="mt-1 break-words text-sm text-slate-500">
               {about.label}:{" "}
               {about.to
-                ? <Link to={about.to} className="font-semibold text-[#127b96] hover:underline" data-testid={`task-about-${task.id}`}>{about.name}</Link>
+                ? <Link to={about.to} className="font-semibold text-brand hover:underline" data-testid={`task-about-${task.id}`}>{about.name}</Link>
                 : <span>{about.name}</span>}
               {about.kind === "deal" && contact?.name ? ` · ${contact.name}` : ""}
             </div>
@@ -267,7 +267,7 @@ function DetailRow({ label, children }) {
   return (
     <div className="grid grid-cols-[7.5rem_1fr] gap-3 border-t border-slate-100 py-2 text-sm first:border-t-0">
       <dt className="text-slate-500">{label}</dt>
-      <dd className="min-w-0 break-words text-[#132038]">{children}</dd>
+      <dd className="min-w-0 break-words text-foreground">{children}</dd>
     </div>
   );
 }
@@ -319,7 +319,7 @@ function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, onToggle, onSa
       </div>
 
       <section>
-        <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Details</h3>
+        <h3 className="mb-1 text-xs font-medium text-slate-500">Details</h3>
         <dl>
           <DetailRow label="Person">{contact?.name ? [contact.name, contact.phone, contact.email].filter(Boolean).join(" · ") : null}</DetailRow>
           <DetailRow label="Assigned to">{task.assignee ? nameOf(task.assignee) : "Unassigned — anyone on the team can take it"}</DetailRow>
@@ -329,13 +329,13 @@ function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, onToggle, onSa
 
       {task.notes && (
         <section>
-          <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Notes</h3>
-          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[#132038]">{task.notes}</p>
+          <h3 className="mb-1 text-xs font-medium text-slate-500">Notes</h3>
+          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{task.notes}</p>
         </section>
       )}
 
       <section className="space-y-3">
-        <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Change</h3>
+        <h3 className="text-xs font-medium text-slate-500">Change</h3>
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1.5">
             <Label htmlFor="task-due-date">Due date</Label>
@@ -386,7 +386,7 @@ function ContactPicker({ value, onChange }) {
   if (value) {
     return (
       <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-        <span className="min-w-0 break-words text-[#132038]"><span className="font-semibold">{value.name}</span>{value.phone ? ` · ${value.phone}` : value.email ? ` · ${value.email}` : ""}</span>
+        <span className="min-w-0 break-words text-foreground"><span className="font-semibold">{value.name}</span>{value.phone ? ` · ${value.phone}` : value.email ? ` · ${value.email}` : ""}</span>
         <Button type="button" size="sm" variant="ghost" onClick={() => onChange(null)} aria-label={`Remove ${value.name}`} data-testid="new-task-contact-clear"><X className="h-4 w-4" /></Button>
       </div>
     );
@@ -401,7 +401,7 @@ function ContactPicker({ value, onChange }) {
           {results.map((contact) => (
             <li key={contact.id}>
               <button type="button" onClick={() => { onChange(contact); setQuery(""); }} className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50" data-testid={`new-task-contact-option-${contact.id}`}>
-                <span className="font-semibold text-[#132038]">{contact.name}</span>
+                <span className="font-semibold text-foreground">{contact.name}</span>
                 <span className="block text-xs text-slate-500">{[contact.phone, contact.email].filter(Boolean).join(" · ") || "No phone or email yet"}</span>
               </button>
             </li>
@@ -660,7 +660,7 @@ export default function Tasks() {
               const alarm = key === "overdue" && count > 0;
               return (
                 <button key={key} type="button" role="tab" aria-selected={selected} onClick={() => setTab(key)}
-                  className={`flex min-w-0 flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 text-[13px] font-semibold sm:flex-row sm:justify-center sm:gap-2 sm:text-sm lg:px-3 ${selected ? (alarm ? "bg-red-700 text-white" : "bg-[#0a1628] text-white") : alarm ? "text-red-700 hover:bg-red-50" : "text-slate-600 hover:bg-slate-100"}`}
+                  className={`flex min-w-0 flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 text-[13px] font-semibold sm:flex-row sm:justify-center sm:gap-2 sm:text-sm lg:px-3 ${selected ? (alarm ? "bg-red-700 text-white" : "bg-foreground text-white") : alarm ? "text-red-700 hover:bg-red-50" : "text-slate-600 hover:bg-slate-100"}`}
                   data-testid={`tasks-tab-${key}`}>
                   <span>{label}</span>
                   <span className={`min-w-[1.5rem] rounded-full px-1.5 text-center text-[11px] leading-5 ${selected ? "bg-white/20" : alarm ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>{count == null ? "–" : count}</span>
@@ -672,7 +672,7 @@ export default function Tasks() {
             <div role="group" aria-label="Whose tasks to show" className="grid grid-cols-2 rounded-lg border border-slate-200 p-0.5 text-sm font-semibold lg:inline-grid">
               {[["mine", "My tasks"], ["everyone", "Everyone"]].map(([key, label]) => (
                 <button key={key} type="button" aria-pressed={view === key} onClick={() => switchView(key)}
-                  className={`rounded-md px-3 py-1.5 ${view === key ? "bg-cyan-50 text-[#0a6177]" : "text-slate-600 hover:bg-slate-50"}`}
+                  className={`rounded-md px-3 py-1.5 ${view === key ? "bg-brand-soft text-brand" : "text-slate-600 hover:bg-slate-50"}`}
                   data-testid={`tasks-view-${key}`}>{label}</button>
               ))}
             </div>
@@ -682,11 +682,11 @@ export default function Tasks() {
           {view === "mine" ? "Tasks assigned to you, plus any nobody has taken yet." : "Every task on the team."}
         </p>
 
-        {error && buckets && <div className="m-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">{error}</div>}
+        {error && buckets && <div className="m-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">{error}</div>}
         {error && !buckets ? (
           <div className="p-4"><SurfaceError title="Tasks could not be loaded" description={error} onRetry={load} testid="tasks-error" /></div>
         ) : !current ? (
-          <div className="space-y-2 p-4">{[0, 1, 2].map((index) => <Skeleton key={index} className="h-16 rounded-xl" />)}</div>
+          <div className="space-y-2 p-4">{[0, 1, 2].map((index) => <Skeleton key={index} className="h-16 rounded-lg" />)}</div>
         ) : current.items.length === 0 ? (
           <div className="p-4">
             <SurfaceEmpty icon={tab === "done" ? ListTodo : CheckCircle2}

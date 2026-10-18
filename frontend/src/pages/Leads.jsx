@@ -94,13 +94,13 @@ function SlaBadge({ lead }) {
 }
 
 function Tile({ icon: Icon, label, value, hint, tone = "slate" }) {
-  const tones = { slate: "bg-slate-50 text-slate-600", amber: "bg-amber-50 text-amber-700", emerald: "bg-emerald-50 text-emerald-700", red: "bg-red-50 text-red-700", cyan: "bg-cyan-50 text-[#1a9fbf]" };
+  const tones = { slate: "bg-slate-50 text-slate-600", amber: "bg-amber-50 text-amber-700", emerald: "bg-emerald-50 text-emerald-700", red: "bg-red-50 text-red-700", cyan: "bg-brand-soft text-brand" };
   return (
     <div className="cv-card flex items-start gap-3 p-4">
-      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${tones[tone]}`}><Icon className="h-4 w-4" /></span>
+      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${tones[tone]}`}><Icon className="h-4 w-4" /></span>
       <div className="min-w-0">
-        <div className="text-xs font-semibold uppercase tracking-[0.06em] text-slate-500">{label}</div>
-        <div className="mt-1 font-display text-2xl font-bold text-[#132038]">{value}</div>
+        <div className="text-xs font-semibold text-slate-500">{label}</div>
+        <div className="mt-1 font-display text-2xl font-semibold text-foreground">{value}</div>
         {hint && <div className="mt-0.5 text-xs text-slate-500">{hint}</div>}
       </div>
     </div>
@@ -112,7 +112,7 @@ function Row({ label, children }) {
   return (
     <div className="grid grid-cols-[9rem_1fr] gap-3 border-t border-slate-100 py-2 text-sm first:border-t-0">
       <dt className="text-slate-500">{label}</dt>
-      <dd className="min-w-0 break-words text-[#132038]">{children}</dd>
+      <dd className="min-w-0 break-words text-foreground">{children}</dd>
     </div>
   );
 }
@@ -156,7 +156,7 @@ function LeadDetail({ lead, onStatus, busy, refreshKey }) {
       </div>
 
       <section>
-        <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Request</h3>
+        <h3 className="mb-1 text-xs font-medium text-slate-500">Request</h3>
         <dl>
           <Row label="Form">{lead.form_name}</Row>
           <Row label="Email">{lead.email}</Row>
@@ -171,13 +171,13 @@ function LeadDetail({ lead, onStatus, busy, refreshKey }) {
       </section>
 
       <section>
-        <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">What happened automatically</h3>
+        <h3 className="mb-1 text-xs font-medium text-slate-500">What happened automatically</h3>
         <dl>
           <Row label="Assigned to">{lead.assigned_name || lead.assigned_to || "Unassigned — all admins alerted"}</Row>
-          <Row label="Contact">{lead.contact_id && <><Link className="font-semibold text-[#127b96]" to={`/contacts?contact=${lead.contact_id}`} data-testid="lead-contact-link">{contactName || "Open contact"}</Link><span className="text-slate-500"> · {lead.created_contact ? "new contact" : "already in your contacts"}</span></>}</Row>
+          <Row label="Contact">{lead.contact_id && <><Link className="font-semibold text-brand" to={`/contacts?contact=${lead.contact_id}`} data-testid="lead-contact-link">{contactName || "Open contact"}</Link><span className="text-slate-500"> · {lead.created_contact ? "new contact" : "already in your contacts"}</span></>}</Row>
           <Row label="Deal">{lead.opportunity_id && (deal
-            ? <><Link className="font-semibold text-[#127b96]" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">{deal.name}</Link><span className="text-slate-500"> · {dealValue}</span></>
-            : <Link className="font-semibold text-[#127b96]" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">Deal · {dealValue}</Link>)}</Row>
+            ? <><Link className="font-semibold text-brand" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">{deal.name}</Link><span className="text-slate-500"> · {dealValue}</span></>
+            : <Link className="font-semibold text-brand" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">Deal · {dealValue}</Link>)}</Row>
           <Row label="Call-back task">{lead.task_id && `Due ${lead.sla?.due_at ? new Date(lead.sla.due_at).toLocaleTimeString() : "now"}`}</Row>
           <Row label="Auto-reply">{lead.auto_reply?.status && lead.auto_reply.status !== "off" ? `${lead.auto_reply.status.replace(/_/g, " ")}${lead.auto_reply.detail ? ` — ${lead.auto_reply.detail}` : ""}` : null}</Row>
         </dl>
@@ -190,7 +190,7 @@ function LeadDetail({ lead, onStatus, busy, refreshKey }) {
 
       {(Object.keys(attribution).length > 0 || lead.origin) && (
         <section>
-          <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Source</h3>
+          <h3 className="mb-1 text-xs font-medium text-slate-500">Source</h3>
           <dl>
             <Row label="Website">{lead.origin}</Row>
             {Object.entries(attribution).map(([key, value]) => <Row key={key} label={key.replace(/_/g, " ")}>{value}</Row>)}
@@ -200,7 +200,7 @@ function LeadDetail({ lead, onStatus, busy, refreshKey }) {
 
       {consent && (
         <section>
-          <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Consent record</h3>
+          <h3 className="mb-1 text-xs font-medium text-slate-500">Consent record</h3>
           <dl>
             <Row label="Text messages">{consent.sms ? "Granted" : "Not given"}</Row>
             <Row label="Email">{consent.email ? "Granted" : "Not given"}</Row>
@@ -214,17 +214,17 @@ function LeadDetail({ lead, onStatus, busy, refreshKey }) {
       {lead.contact_id && (
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">
-            <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Notes and calls</h3>
-            <Link className="text-xs font-semibold text-[#127b96]" to={`/contacts?contact=${lead.contact_id}`}>Open contact to log a call</Link>
+            <h3 className="text-xs font-medium text-slate-500">Notes and calls</h3>
+            <Link className="text-xs font-semibold text-brand" to={`/contacts?contact=${lead.contact_id}`}>Open contact to log a call</Link>
           </div>
           {contact
             ? <ActivityFeed entries={notes} limit={5} empty="Nothing logged yet. A note you add below is saved here." testId="lead-notes" />
-            : <Skeleton className="h-12 rounded-xl" />}
+            : <Skeleton className="h-12 rounded-lg" />}
         </section>
       )}
 
       <section className="space-y-2">
-        <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Update</h3>
+        <h3 className="text-xs font-medium text-slate-500">Update</h3>
         <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional note — saved to the contact's history" rows={3} data-testid="lead-note" />
         <div className="flex flex-wrap gap-2">
           {lead.status !== "responded" && <Button size="sm" className="cv-action-primary" disabled={busy} onClick={() => setStatus("responded")}><CheckCircle2 className="mr-1.5 h-4 w-4" />Mark contacted</Button>}
@@ -338,14 +338,14 @@ export default function Leads() {
           <Tile icon={ShieldAlert} tone={summary.sla_breaches ? "red" : "slate"} label="Escalated" value={summary.sla_breaches} hint={`Last ${summary.window_days} days`} />
           <Tile icon={Globe} tone="slate" label="Leads" value={summary.total} hint={`Last ${summary.window_days} days, test leads excluded`} />
         </div>
-      ) : <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24 rounded-2xl" />)}</div>}
+      ) : <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>}
 
       <div className="cv-card">
         <div className="flex flex-col gap-3 border-b border-slate-100 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-1" role="tablist">
             {STATUS_TABS.map((tab) => (
               <button key={tab.key} type="button" role="tab" aria-selected={status === tab.key} onClick={() => setStatus(tab.key)}
-                className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${status === tab.key ? "bg-[#0a1628] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${status === tab.key ? "bg-foreground text-white" : "text-slate-600 hover:bg-slate-100"}`}>
                 {tab.label}{tab.key === "new" && summary?.open_now ? ` (${summary.open_now})` : ""}
               </button>
             ))}
@@ -365,9 +365,9 @@ export default function Leads() {
           </div>
         </div>
 
-        {error && <div className="m-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">{error}</div>}
+        {error && <div className="m-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">{error}</div>}
         {leads === null ? (
-          <div className="space-y-2 p-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 rounded-xl" />)}</div>
+          <div className="space-y-2 p-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 rounded-lg" />)}</div>
         ) : leads.length === 0 ? (
           <div className="p-10 text-center text-sm text-slate-500">
             {status === "new" ? "No leads are waiting. New website leads appear here within seconds." : "No leads match these filters."}
@@ -380,7 +380,7 @@ export default function Leads() {
                 <button type="button" onClick={() => open(lead)} className="flex w-full flex-col gap-2 px-5 py-4 text-left hover:bg-slate-50 sm:flex-row sm:items-center sm:justify-between" data-testid={`lead-${lead.id}`}>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-semibold text-[#132038]">{lead.name || lead.email || lead.phone || "Website visitor"}</span>
+                      <span className="font-semibold text-foreground">{lead.name || lead.email || lead.phone || "Website visitor"}</span>
                       <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${STATUS_STYLE[lead.status]}`}>{STATUS_LABEL[lead.status]}</span>
                       {lead.is_test && <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700">Test</span>}
                     </div>
