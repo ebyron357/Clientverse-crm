@@ -94,6 +94,10 @@ jobs:
       REACT_APP_BACKEND_URL: http://localhost:8001
       ADMIN_EMAIL: ci-admin@example.com
       DEMO_MEMBER_EMAIL: ci-member@example.com
+      # The API runs its scheduled jobs in-process by default. Here they would sweep the
+      # database the suite is asserting on at times no test controls; the scheduler has
+      # its own tests (backend/tests/test_scheduler.py).
+      IN_PROCESS_SCHEDULER: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -11,16 +11,22 @@ Three classes of mistake this catches, all of which have happened to this projec
 3. **Deployment configuration drifting from what the application needs** -- the
    healthcheck path in `railway.json` pointing somewhere that is not the health
    endpoint.
+4. **The API's own scheduler drifting from the workflow.** `backend/scheduler.py` runs
+   the same jobs in-process on the same cadence; a job one of them runs and the other
+   does not, or runs on a different schedule, is a job whose timing depends on which
+   scheduler happens to be on.
 
 Exit code 1 on any finding, with the file and the reason.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 FINDINGS: list[str] = []
@@ -75,6 +81,55 @@ def check_cron_paths() -> None:
               f"by this workflow")
 
 
+def workflow_schedule(text: str) -> dict[str, str]:
+    """Each path the scheduler workflow calls, with the cron expression that calls it."""
+    schedule: dict[str, str] = {}
+    for cron, paths in re.findall(r"'([^']+)'\)\s+paths='([^']+)'", text):
+        for path in paths.split(","):
+            if path.strip():
+                schedule[path.strip()] = cron
+    return schedule
+
+
+def _module_literal(path: Path, name: str) -> Any:
+    """A module-level literal, read without importing the module: this job installs no
+    backend dependencies, and a config check should not execute application code."""
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id == name and value is not None:
+            return ast.literal_eval(value)
+    raise KeyError(name)
+
+
+def check_in_process_schedule() -> None:
+    """The API's own scheduler runs every job the workflow does, on the same cadence."""
+    workflow = ROOT / ".github/workflows/scheduled-jobs.yml"
+    module = ROOT / "backend/scheduler.py"
+    if not workflow.exists() or not module.exists():
+        return
+    try:
+        in_process = _module_literal(module, "SCHEDULE")
+        elsewhere = _module_literal(module, "RUNS_ELSEWHERE")
+    except (KeyError, ValueError, SyntaxError) as exc:
+        fail(str(module), f"cannot read its schedule table: {exc!r}")
+        return
+    scheduled = workflow_schedule(workflow.read_text())
+    for path, cron in sorted(scheduled.items()):
+        if path in elsewhere:
+            continue
+        if path not in in_process:
+            fail(str(module), f"does not run {path}, which the workflow schedules ('{cron}')")
+        elif in_process[path] != cron:
+            fail(str(module), f"runs {path} on '{in_process[path]}'; the workflow uses '{cron}'")
+    for path in sorted(set(in_process) - set(scheduled)):
+        fail(str(module), f"runs {path}, which the workflow does not schedule")
+
+
 def check_deployment_config() -> None:
     path = ROOT / "railway.json"
     if not path.exists():
@@ -106,6 +161,7 @@ def check_ci_gates() -> None:
 def main() -> int:
     check_scheduler_contract()
     check_cron_paths()
+    check_in_process_schedule()
     check_deployment_config()
     check_ci_gates()
     if FINDINGS:

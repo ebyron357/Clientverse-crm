@@ -48,6 +48,7 @@ import recovery_lifecycle
 import recovery_proof
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
+import scheduler
 import second_chance as second_chance_service
 import security_gate as security_gate_service
 import website_forms
@@ -187,9 +188,14 @@ async def lifespan(_: FastAPI):
     # The speed-to-lead clock runs inside the API: a new lead must not wait on an
     # external scheduler to be escalated. `/api/cron/lead-sla` runs the same sweep.
     lead_pipeline.start_watcher()
+    # The same reasoning for every other scheduled job: the external scheduler has never
+    # reached production, so the API runs the `/api/cron/*` jobs itself, once per window
+    # across replicas (see scheduler.py). IN_PROCESS_SCHEDULER=0 turns it off.
+    job_scheduler.start()
     try:
         yield
     finally:
+        await job_scheduler.stop()
         await lead_pipeline.stop_watcher()
         mclient.close()
 
@@ -2476,8 +2482,7 @@ async def cron_commitment_risk(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "commitment-risk", run_id,
-        lambda: evaluate_commitment_risk(tenant_id=None, actor="cron"), entry_id))
+        "commitment-risk", run_id, _cron_job("commitment-risk", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2571,6 +2576,20 @@ async def _begin_cron(request: Request, job: str):
     return run_id, entry_id
 
 
+# The actor a job's audit events carry when an HTTP request ran it. The in-process
+# scheduler runs the same jobs as `scheduler.ACTOR`.
+CRON_ACTOR = "cron"
+
+
+def _cron_job(job: str, run_id: str):
+    """What `/api/cron/<job>` runs, as the factory `_run_cron_job` takes.
+
+    The work is looked up in `CRON_JOBS`, the table the in-process scheduler runs from as
+    well, so a route and the scheduler cannot run different code for the same job.
+    """
+    return lambda: CRON_JOBS[job](run_id, CRON_ACTOR)
+
+
 def _authorize_cron(request: Request) -> None:
     if not _cron_secret_matches(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -2586,12 +2605,8 @@ async def cron_work_queue(request: Request):
     run_id, entry_id = await _begin_cron(request, "work-queue")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    # Each tick gets a distinct worker identity so lease-ownership checks can tell a
-    # stale tick apart from the one that replaced it.
     spawn_background(_run_cron_job(
-        "work-queue", run_id,
-        lambda: run_worker_tick(work_queue, WORK_QUEUE_HANDLERS,
-                                worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE), entry_id))
+        "work-queue", run_id, _cron_job("work-queue", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2608,9 +2623,7 @@ async def cron_detect_recovery(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "detect-recovery", run_id,
-        lambda: detectors.run_detection_all_tenants(db, work_queue, actor="cron",
-                                                    audit=record_event), entry_id))
+        "detect-recovery", run_id, _cron_job("detect-recovery", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2625,7 +2638,7 @@ async def cron_lead_sla(request: Request):
     run_id, entry_id = await _begin_cron(request, "lead-sla")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    spawn_background(_run_cron_job("lead-sla", run_id, lambda: lead_pipeline.sweep(), entry_id))
+    spawn_background(_run_cron_job("lead-sla", run_id, _cron_job("lead-sla", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2636,7 +2649,7 @@ async def cron_second_chance(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron"), entry_id))
+        "second-chance", run_id, _cron_job("second-chance", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2647,7 +2660,7 @@ async def cron_next_best_actions(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron"), entry_id))
+        "next-best-actions", run_id, _cron_job("next-best-actions", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2662,8 +2675,7 @@ async def cron_recovery_strategies(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "recovery-strategies", run_id,
-        lambda: recovery_service.compose_all_tenants(db, work_queue, actor="cron"), entry_id))
+        "recovery-strategies", run_id, _cron_job("recovery-strategies", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2679,9 +2691,7 @@ async def cron_recovery_runner(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "recovery-runner", run_id,
-        lambda: recovery_runner_service.run_ready_cases_all_tenants(
-            db, work_queue, actor="cron", audit=record_event), entry_id))
+        "recovery-runner", run_id, _cron_job("recovery-runner", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2692,7 +2702,7 @@ async def cron_approval_expiry(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "approval-expiry", run_id, lambda: approval_service.expire_due(db), entry_id))
+        "approval-expiry", run_id, _cron_job("approval-expiry", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
@@ -3361,7 +3371,7 @@ async def cron_inbound_email(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "inbound-email", run_id, lambda: run_inbound_email_sweep(actor="cron"), entry_id))
+        "inbound-email", run_id, _cron_job("inbound-email", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -3376,8 +3386,7 @@ async def cron_reconcile_unknown(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "reconcile-unknown", run_id, lambda: run_reconcile_unknown_sweep(actor="cron"),
-        entry_id))
+        "reconcile-unknown", run_id, _cron_job("reconcile-unknown", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -3916,22 +3925,25 @@ async def workspace_activity(ws_id: str, user=Depends(get_current_user)):
     conns = await db.integration_connections.find({"tenant_id": user["tenant_id"]}, SAFE_CONN_FIELDS).to_list(50)
     return {"communications": comms, "meetings": meetings, "billing": billing, "connections": conns}
 
+async def run_integration_sync_sweep(actor: str = "cron") -> None:
+    """Sync every active or degraded connection, then re-evaluate its tenant's alerts."""
+    actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
+    for c in actives[:200]:
+        try:
+            await run_sync(c["tenant_id"], c["provider"], actor)
+            await evaluate_alerts(c["tenant_id"])
+        except Exception:
+            pass
+
+
 @api.post("/cron/integration-sync")
 async def cron_integration_sync(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
     run_id, entry_id = await _begin_cron(request, "integration-sync")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-
-    async def _sweep():
-        actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
-        for c in actives[:200]:
-            try:
-                await run_sync(c["tenant_id"], c["provider"], "cron")
-                await evaluate_alerts(c["tenant_id"])
-            except Exception:
-                pass
-    spawn_background(_run_cron_job("integration-sync", run_id, _sweep, entry_id))
+    spawn_background(_run_cron_job(
+        "integration-sync", run_id, _cron_job("integration-sync", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
@@ -4500,29 +4512,32 @@ async def digest_run(user=Depends(require_role("admin"))):
 async def alerts_escalate(user=Depends(require_role("admin"))):
     return {"escalated": await run_escalations(user["tenant_id"])}
 
+async def run_daily_digest_sweep() -> None:
+    """Escalate and deliver the digest for every tenant whose local digest hour it is."""
+    for t in await db.tenants.find({}, {"_id": 0, "tenant_id": 1}).to_list(500):
+        tid = t["tenant_id"]
+        try:
+            prefs = await get_prefs(tid)
+            if not prefs.get("daily_digest", True):
+                continue
+            tz = ZoneInfo(prefs.get("timezone", "UTC"))
+            local = datetime.now(tz)
+            hour = int(str(prefs.get("digest_time", "08:00")).split(":")[0])
+            if local.hour == hour:
+                await run_escalations(tid)
+                await deliver_digest(tid, local.strftime("%Y-%m-%d"))
+        except Exception:
+            pass
+
+
 @api.post("/cron/daily-digest")
 async def cron_daily_digest(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
     run_id, entry_id = await _begin_cron(request, "daily-digest")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-
-    async def _sweep():
-        for t in await db.tenants.find({}, {"_id": 0, "tenant_id": 1}).to_list(500):
-            tid = t["tenant_id"]
-            try:
-                prefs = await get_prefs(tid)
-                if not prefs.get("daily_digest", True):
-                    continue
-                tz = ZoneInfo(prefs.get("timezone", "UTC"))
-                local = datetime.now(tz)
-                hour = int(str(prefs.get("digest_time", "08:00")).split(":")[0])
-                if local.hour == hour:
-                    await run_escalations(tid)
-                    await deliver_digest(tid, local.strftime("%Y-%m-%d"))
-            except Exception:
-                pass
-    spawn_background(_run_cron_job("daily-digest", run_id, _sweep, entry_id))
+    spawn_background(_run_cron_job(
+        "daily-digest", run_id, _cron_job("daily-digest", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -4712,6 +4727,36 @@ async def run_second_chance_sweep(actor: str = "cron") -> dict:
         except Exception:
             logger.exception("Failed to queue a recommendation refresh for a tenant")
     return summary
+
+
+# What every scheduled job runs, keyed by its `/api/cron/<path>`. Each entry takes the run
+# id and the actor to record. The routes (through `_cron_job`) and the in-process
+# scheduler both run from this one table, so neither can drift into its own copy.
+CRON_JOBS: dict[str, scheduler.JobFn] = {
+    "commitment-risk": lambda run_id, actor: evaluate_commitment_risk(tenant_id=None, actor=actor),
+    # Each tick gets a distinct worker identity so lease-ownership checks can tell a
+    # stale tick apart from the one that replaced it.
+    "work-queue": lambda run_id, actor: run_worker_tick(
+        work_queue, WORK_QUEUE_HANDLERS, worker_id=f"{actor}-{run_id}", queue_name=SYSTEM_QUEUE),
+    "detect-recovery": lambda run_id, actor: detectors.run_detection_all_tenants(
+        db, work_queue, actor=actor, audit=record_event),
+    "lead-sla": lambda run_id, actor: lead_pipeline.sweep(),
+    "second-chance": lambda run_id, actor: run_second_chance_sweep(actor=actor),
+    "next-best-actions": lambda run_id, actor: nba_service.generate_all_tenants(db, actor=actor),
+    "recovery-strategies": lambda run_id, actor: recovery_service.compose_all_tenants(
+        db, work_queue, actor=actor),
+    "recovery-runner": lambda run_id, actor: recovery_runner_service.run_ready_cases_all_tenants(
+        db, work_queue, actor=actor, audit=record_event),
+    "approval-expiry": lambda run_id, actor: approval_service.expire_due(db),
+    "inbound-email": lambda run_id, actor: run_inbound_email_sweep(actor=actor),
+    "reconcile-unknown": lambda run_id, actor: run_reconcile_unknown_sweep(actor=actor),
+    "integration-sync": lambda run_id, actor: run_integration_sync_sweep(actor=actor),
+    "daily-digest": lambda run_id, actor: run_daily_digest_sweep(),
+}
+
+# Started and stopped by `lifespan()`, beside the lead watcher.
+job_scheduler = scheduler.InProcessScheduler(db, CRON_JOBS)
+
 
 def resolve_git_sha() -> Optional[str]:
     """Non-secret deploy identity for /api/health. Never invent; null if unset."""

@@ -28,6 +28,12 @@ single most common question an operator has about this subsystem.
 
 Nothing here stores the bearer token, and the ledger is only readable by a caller that
 already holds the cron secret or an admin session.
+
+Two things write here. An HTTP request to `/api/cron/*` (the external scheduler, or an
+operator) is `origin: external`; a run started by the API's own scheduler
+(`scheduler.py`) is `origin: in_process`. They are kept apart in `health()` because
+"is anything outside reaching production?" and "are the jobs running?" are different
+questions, and an in-process run must not be able to answer the first one with a yes.
 """
 
 from __future__ import annotations
@@ -45,6 +51,11 @@ UNAUTHORIZED = "unauthorized"  # the shared secret did not match (or is unset)
 RUNNING = "running"          # the background job started
 SUCCEEDED = "succeeded"      # the background job returned
 FAILED = "failed"            # the background job raised
+
+# Who started the run. Entries written before this field existed are external: until the
+# in-process scheduler, an HTTP request was the only way in.
+ORIGIN_EXTERNAL = "external"
+ORIGIN_IN_PROCESS = "in_process"
 
 RETENTION_DAYS = 30
 
@@ -73,7 +84,8 @@ async def ensure_indexes(db: Any) -> None:
 
 async def record_request(db: Any, *, job: str, run_id: Optional[str], status: str,
                          source: Optional[str] = None,
-                         detail: Optional[dict] = None) -> str:
+                         detail: Optional[dict] = None,
+                         origin: str = ORIGIN_EXTERNAL) -> str:
     """Record that production received a scheduled request, and how it was answered.
 
     Returns the ledger entry id. `status` is one of ACCEPTED / DUPLICATE / UNAUTHORIZED.
@@ -85,6 +97,7 @@ async def record_request(db: Any, *, job: str, run_id: Optional[str], status: st
         "job": job,
         "run_id": run_id,
         "status": status,
+        "origin": origin,
         "received_at": _iso(now),
         "source": source,
         "detail": detail or {},
@@ -176,28 +189,39 @@ async def health(db: Any, *, window_minutes: int = 120) -> dict:
 
     `last_authenticated_call_at` being absent while the scheduler is supposedly enabled
     is the exact failure this subsystem was blind to.
+
+    The request fields (`requests_in_window`, `by_status`, `last_authenticated_*`,
+    `receiving_scheduled_traffic`) count external requests only, so they keep meaning
+    "something outside is calling production". What the in-process scheduler ran is
+    reported under `in_process`, and `scheduled_jobs_running` answers the question an
+    operator usually means: is anything running the jobs at all.
     """
     cutoff = _iso(_now() - timedelta(minutes=max(1, int(window_minutes or 120))))
     recent = await db[COLLECTION].find(
         {"received_at": {"$gte": cutoff}}, {"_id": 0, "expires_at": 0}
     ).sort("received_at", -1).to_list(1000)
+    external = [entry for entry in recent if entry.get("origin") != ORIGIN_IN_PROCESS]
+    in_process = [entry for entry in recent if entry.get("origin") == ORIGIN_IN_PROCESS]
 
-    by_status: dict[str, int] = {}
-    for entry in recent:
-        by_status[entry["status"]] = by_status.get(entry["status"], 0) + 1
+    by_status = _count_statuses(external)
+    receiving = bool(external and any(entry["status"] != UNAUTHORIZED for entry in external))
 
+    projection = {"_id": 0, "expires_at": 0}
     latest_ok = await db[COLLECTION].find_one(
-        {"status": {"$in": [ACCEPTED, RUNNING, SUCCEEDED, DUPLICATE]}},
-        {"_id": 0, "expires_at": 0}, sort=[("received_at", -1)])
+        {"status": {"$in": [ACCEPTED, RUNNING, SUCCEEDED, DUPLICATE]},
+         "origin": {"$ne": ORIGIN_IN_PROCESS}},
+        projection, sort=[("received_at", -1)])
     latest_rejected = await db[COLLECTION].find_one(
-        {"status": UNAUTHORIZED}, {"_id": 0, "expires_at": 0},
-        sort=[("received_at", -1)])
+        {"status": UNAUTHORIZED}, projection, sort=[("received_at", -1)])
+    # A failed job is a failed job whichever path started it.
     latest_failed = await db[COLLECTION].find_one(
-        {"status": FAILED}, {"_id": 0, "expires_at": 0}, sort=[("received_at", -1)])
+        {"status": FAILED}, projection, sort=[("received_at", -1)])
+    latest_in_process = await db[COLLECTION].find_one(
+        {"origin": ORIGIN_IN_PROCESS}, projection, sort=[("received_at", -1)])
 
     return {
         "window_minutes": window_minutes,
-        "requests_in_window": len(recent),
+        "requests_in_window": len(external),
         "by_status": by_status,
         "last_authenticated_call_at": (latest_ok or {}).get("received_at"),
         "last_authenticated_job": (latest_ok or {}).get("job"),
@@ -205,8 +229,26 @@ async def health(db: Any, *, window_minutes: int = 120) -> dict:
         "last_failed_job": (latest_failed or {}).get("job"),
         "last_failed_at": (latest_failed or {}).get("received_at"),
         "last_failed_error": (latest_failed or {}).get("error"),
+        "last_failed_origin": ((latest_failed.get("origin") or ORIGIN_EXTERNAL)
+                               if latest_failed else None),
         # The honest headline. `false` here with a scheduler configured means the
-        # scheduler is not reaching production, whatever its own runs report.
-        "receiving_scheduled_traffic": bool(recent and any(
-            entry["status"] != UNAUTHORIZED for entry in recent)),
+        # scheduler is not reaching production, whatever its own runs report. In-process
+        # runs are deliberately not counted: they prove the jobs run, not that anything
+        # outside can reach production.
+        "receiving_scheduled_traffic": receiving,
+        "in_process": {
+            "runs_in_window": len(in_process),
+            "by_status": _count_statuses(in_process),
+            "last_run_at": (latest_in_process or {}).get("received_at"),
+            "last_job": (latest_in_process or {}).get("job"),
+            "last_status": (latest_in_process or {}).get("status"),
+        },
+        "scheduled_jobs_running": receiving or bool(in_process),
     }
+
+
+def _count_statuses(entries: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in entries:
+        counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+    return counts

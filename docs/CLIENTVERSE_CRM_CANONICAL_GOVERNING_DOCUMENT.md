@@ -1,6 +1,6 @@
 # ClientVerse CRM — Canonical Governing Document
 
-**Version:** 1.12 — complete replacement
+**Version:** 1.13 — complete replacement
 **Effective:** 2026-09-28
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
 **Repository:** `ebyron357/Clientverse-crm`
@@ -622,6 +622,7 @@ ClientVerse CRM is closed only when all of the following hold:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.13 | 2026-10-17 | The external scheduler is no longer the only way the `/api/cron/*` jobs run. On the website-forms branch (`TESTED`, not deployed), the API runs every scheduled job itself (`backend/scheduler.py`, `backend/tests/test_scheduler.py`): the same function each route runs, on the workflow's cadences, once per window across replicas via a MongoDB lease, recorded in the cron ledger as `origin: in_process` (`receiving_scheduled_traffic` still counts external requests only). Once deployed, what O-03 and O-16 block through the scheduler — C-16, E-01, E-23 and the work-queue worker — no longer depends on them, and the external scheduler (C-25) becomes optional. Sections that state otherwise are not yet reconciled. |
 | 1.12 | 2026-10-17 | C-30 moves to `DEPLOYED` (PR #37, `main@9bd9723`, Railway deployment healthy). Added sources #14–#22 to §5 with dispositions and licence obligations, as owner-approved next sources of value: Cal (booking, M-05), Documenso (e-signature), Pipecat (voice agent), Puck (landing pages), Listmonk (campaigns), Umami (analytics), React Email (templates), Papermark (document analytics) and scroll-craft (agent-site design). |
 | 1.11 | 2026-10-17 | Added C-30 (website forms and automatic lead handling, `TESTED` on branch). Recorded the owner-directed M-07 amendment: a standing approval may authorise one exact website-form auto-reply template, with every reply still individually approved, consented and checked at the delivery choke point. Recorded that the E-23 public intake door could not accept a lead from a real website (CORS refusal, JSON-only body, unknown fields dropped, no contact or alert, no test) and now runs through C-30's pipeline. |
 | 1.10 | 2026-09-28 | Reconciled the capability findings of the merged recovery-engine branch (`docs/ACTIVATION_REPORT.md`) into §4, each checked against the code on `main` before being recorded. Added C-27 (CRM baseline completion), C-28 (scheduled-run ledger and health), C-29 (backend CI gates, `MERGED`) and E-23 (recovery intake and the remaining detector families). M-01 keeps `BLOCKED — OWNER INPUT` but records the deployed Gmail adapter and inbound ingestion; M-08 and M-10 become deployed for their recovery halves; E-01 and E-09 move to `BLOCKED — OWNER INPUT` because every step now exists and only owner grants and the scheduler stand in the way; E-02 detection is deployed while telephony stays blocked. Nothing moves to `LIVE VERIFIED`. |
