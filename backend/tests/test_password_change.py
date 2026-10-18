@@ -170,3 +170,29 @@ def test_the_audit_trail_records_the_change_without_any_password():
         recorded = client.portal.call(events)
         assert len(recorded) == 1
         assert TEMPORARY not in str(recorded) and CHOSEN not in str(recorded)
+
+
+def test_an_admin_names_the_business_and_invitations_use_that_name():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        _, admin_token, _ = _account(client)
+        assert client.get("/api/organization", headers=_h(admin_token)).json()["name"] == "Jasmine Parker's Org"
+        renamed = client.patch("/api/organization", headers=_h(admin_token), json={"name": "  Parker   Homes "})
+        assert renamed.status_code == 200 and renamed.json()["name"] == "Parker Homes"
+        for bad in ("", "   ", "x" * 81):
+            assert client.patch("/api/organization", headers=_h(admin_token), json={"name": bad}).status_code == 422
+
+        invite = client.post("/api/team/invitations", headers=_h(admin_token),
+                             json={"email": f"assistant_{uuid.uuid4().hex[:10]}@example.com", "role": "member"}).json()
+        shown = client.get("/api/team/invitations/lookup", params={"token": invite["invite_token"]}).json()
+        assert shown["tenant_name"] == "Parker Homes"
+
+        joined = client.post("/api/team/invitations/accept-new",
+                             json={"token": invite["invite_token"], "name": "Alex Assistant", "password": CHOSEN})
+        client.cookies.clear()
+        member_token = joined.json()["token"]
+        assert client.get("/api/organization", headers=_h(member_token)).json()["name"] == "Parker Homes"
+        assert client.patch("/api/organization", headers=_h(member_token), json={"name": "Mine"}).status_code == 403
+
+        _, other_token, _ = _account(client)
+        assert client.get("/api/organization", headers=_h(other_token)).json()["name"] == "Jasmine Parker's Org"

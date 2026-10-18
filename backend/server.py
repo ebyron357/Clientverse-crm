@@ -1027,6 +1027,34 @@ async def reset_member_password(target_user_id: str, user=Depends(require_role("
                        payload={"target": m["email"]})
     return {"ok": True, "email": m["email"], "temporary_password": temporary}
 
+class OrganizationInput(BaseModel):
+    name: str
+
+
+@api.get("/organization")
+async def get_organization(user=Depends(get_current_user)):
+    """The business this account belongs to, by the name teammates and invitations see."""
+    tenant = await db.tenants.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0, "name": 1})
+    return {"name": (tenant or {}).get("name") or ""}
+
+
+@api.patch("/organization")
+async def rename_organization(inp: OrganizationInput, user=Depends(require_role("admin"))):
+    """Rename the business, e.g. from the "Jasmine Parker's Org" made at sign-up to
+    "Parker Homes". Invitations and invitation emails show this name."""
+    name = " ".join(inp.name.split())
+    if not name or len(name) > 80:
+        raise HTTPException(status_code=422, detail="Use a business name of 1 to 80 characters.")
+    tenant = await db.tenants.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0, "name": 1})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    if tenant.get("name") != name:
+        await db.tenants.update_one({"tenant_id": user["tenant_id"]},
+                                    {"$set": {"name": name, "updated_at": now_iso()}})
+        await record_event("organization.renamed", "tenant", user["tenant_id"], user["tenant_id"],
+                           user["email"], payload={"from": tenant.get("name"), "to": name})
+    return {"name": name}
+
 @api.patch("/team/members/{target_user_id}/role")
 async def change_member_role(target_user_id: str, inp: RoleInput, user=Depends(require_role("admin"))):
     if inp.role not in ("admin", "member"):
