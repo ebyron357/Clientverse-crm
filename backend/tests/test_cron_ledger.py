@@ -82,8 +82,15 @@ def test_an_authenticated_request_records_the_whole_chain():
         await cron_ledger.ensure_indexes(server.db)
         response = await server.cron_second_chance(FakeRequest(_headers(run_id)))
         # The endpoint hands the work to a background task; let it finish so the
-        # 'executed' and 'result recorded' stages are real and not raced.
-        await asyncio.sleep(0.4)
+        # 'executed' and 'result recorded' stages are real and not raced. The sweep
+        # covers every tenant in the database, so how long it takes depends on what
+        # the rest of the suite has written there: wait for the run to finish (up to
+        # 15 s) rather than for a fixed time.
+        for _ in range(150):
+            entries = await _entries_for(run_id)
+            if entries and entries[0]["status"] in (cron_ledger.SUCCEEDED, cron_ledger.FAILED):
+                break
+            await asyncio.sleep(0.1)
         return response, await _entries_for(run_id)
 
     response, entries = run(scenario())

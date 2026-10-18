@@ -672,7 +672,8 @@ def test_round_robin_spreads_bookings_and_keeps_a_returning_client_with_their_ag
     for index in range(4):
         response = book(client, page, times[index * 2], email=f"rr{index}@example.com", phone=f"555020{index:04d}")
         assert response.status_code == 200, response.text
-        hosts.append(find_one(client, "appointments", {"booking.person.email": f"rr{index}@example.com"})["owner"])
+        hosts.append(find_one(client, "appointments", {"tenant_id": owner["tenant_id"],
+                                                       "booking.person.email": f"rr{index}@example.com"})["owner"])
     assert set(hosts) == {owner["email"], member["email"]}
     # Both agents are free at one time: it stays on the page until both are booked.
     shared = times[10]

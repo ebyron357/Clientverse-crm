@@ -67,3 +67,46 @@ if _MONGO_URL.startswith("mongomock://"):
             continue
         if hasattr(_mod, "AsyncIOMotorClient"):
             _mod.AsyncIOMotorClient = _PatchedClient
+else:
+    # Against a real mongod, motor binds a client to the first event loop that uses it
+    # (`AgnosticClient.io_loop`). Each in-process `TestClient` runs the app on a loop of
+    # its own, but the route modules (crm_core, website_forms, booking, ...) keep the
+    # database handle they were registered with at import. So the second test module in
+    # a worker to start a TestClient found that client still bound to the first module's
+    # loop, already closed: "Event loop is closed" from the startup index build, every
+    # route, and every fixture call after it. Production runs one loop per process, so
+    # this never arises there. Releasing the app's clients as each TestClient starts lets
+    # them bind to that TestClient's own loop, as they would in a fresh process.
+    #
+    # The app's shutdown also closes its client, and a closed pymongo client cannot be
+    # used again ("Cannot use MongoClient after close"); the route modules would carry
+    # that closed handle into the next module. So under test the shared client stays
+    # open for the life of the worker process, and only its loop binding is released.
+    import sys as _sys
+
+    from starlette.testclient import TestClient as _TestClient
+
+    _enter = _TestClient.__enter__
+
+    def _enter_with_unbound_clients(self):
+        server = _sys.modules.get("server")
+        if server is not None:
+            # A motor client answers any unknown attribute with a database of that name,
+            # so clients and databases are told apart rather than probed.
+            clients = [getattr(server, "mclient", None)]
+            databases = [getattr(server, "db", None)]
+            for name in ("lead_pipeline", "booking_service"):
+                databases.append(getattr(getattr(server, name, None), "db", None))
+            clients += [database.client for database in databases if database is not None]
+            for client in clients:
+                if "_io_loop" in getattr(client, "__dict__", {}):
+                    client._io_loop = None
+                    # motor's own `close` is a property; the pymongo client underneath
+                    # is what actually closes, so that is the one kept open.
+                    client.delegate.close = _keep_open
+        return _enter(self)
+
+    def _keep_open():
+        """Stands in for the shared client's close() under test (see above)."""
+
+    _TestClient.__enter__ = _enter_with_unbound_clients
