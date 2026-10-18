@@ -36,6 +36,9 @@ Optional (safe degradation without them — connect endpoints return 400/503 unt
 - `EMERGENT_LLM_KEY`, `EMERGENT_EMAIL_KEY`
 - `FRONTEND_URL`, `CORS_ORIGINS`, `PUBLIC_BACKEND_URL` — only needed to override the
   auto-derived Railway domain (e.g. a custom domain).
+- `IN_PROCESS_SCHEDULER` — leave unset. The scheduled jobs run inside the API by
+  default; `0` turns that off (§6). `IN_PROCESS_SCHEDULER_JOBS` optionally limits it to a
+  comma-separated list of job paths.
 
 Do NOT set `REACT_APP_BACKEND_URL` — the Dockerfile builds the SPA with same-origin
 `/api` resolution.
@@ -90,34 +93,69 @@ Google credentials are already isolated per tenant) that takes priority over the
 `STRIPE_API_KEY` for that tenant's syncs and payment intents. Calling connect with no
 body keeps the previous shared-key behavior.
 
-## 6. Scheduler (required — the application never calls these on its own)
+## 6. Scheduled jobs (built in — no external scheduler required)
 
-The `/api/cron/*` endpoints are authenticated and safe to call concurrently or
-repeatedly (idempotent per `X-Webhook-Id`), but the application never triggers them
-itself. Without a scheduler, commitments never auto-flag at-risk or breached,
-integrations never auto-sync, digests never send, and the durable work queue has no
-worker — this is a configuration step, not a code deficiency.
+*Changed 2026-10-17.* The API runs every scheduled job itself (`backend/scheduler.py`,
+started with the application). Each job runs **once per window across all replicas**: a
+MongoDB lease per job (`scheduler_leases`) admits one instance per window, a crashed
+instance's lease expires and another takes the window over, and a finished window is
+not run again after a restart. Every run is recorded in the same ledger the endpoints
+use, as `origin: in_process`. Nothing needs configuring.
 
-**The repository ships a driver for this.** `.github/workflows/scheduled-jobs.yml`
-calls every endpoint below on its documented cadence once two repository secrets are
-set: `CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET`. Until both exist the
-workflow exits without calling anything, so an unconfigured repository produces neither
-failing runs nor silently skipped work. Configure exactly one scheduler: if you prefer a
-dedicated service, disable that workflow rather than running both.
-
-Wire an external scheduler (Railway Cron, n8n, or any HTTP-capable scheduler) to call, on
-the **production** domain:
+Until this, the jobs ran only when something called the endpoints, and nothing ever
+did: commitments never auto-flagged, integrations never auto-synced, digests never
+sent, the durable work queue had no worker and no recovery sweep ever ran.
 
 | Job | Path | Cadence |
 |---|---|---|
 | Commitment risk | `POST /api/cron/commitment-risk` | every 15 minutes |
-| Integration sync | `POST /api/cron/integration-sync` | every 30 minutes |
-| Daily digest | `POST /api/cron/daily-digest` | hourly (the job itself checks each tenant's configured local digest hour) |
 | Work-queue worker | `POST /api/cron/work-queue` | every 5 minutes — recovers leases abandoned by crashed workers, then claims and processes due durable jobs |
-| Second Chance detection | `POST /api/cron/second-chance` | hourly — detects stalled leads and missed follow-ups, then queues a recommendation refresh per tenant |
-| Next best actions | `POST /api/cron/next-best-actions` | every 30 minutes — recomputes the ranked recommendation queue |
-| Recovery strategy composition | `POST /api/cron/recovery-strategies` | hourly — composes a recovery strategy for every open Second Chance candidate and raises its approval request. Composition only: no outbound step can execute while its channel is unauthorised |
-| Approval expiry | `POST /api/cron/approval-expiry` | hourly — lapses approval requests nobody decided, so a stale request can never authorise an action |
+| Recovery runner | `POST /api/cron/recovery-runner` | every 5 minutes — queues every approved Recovery Case for execution |
+| Integration sync | `POST /api/cron/integration-sync` | every 30 minutes (:00, :30) |
+| Next best actions | `POST /api/cron/next-best-actions` | every 30 minutes (:00, :30) — recomputes the ranked recommendation queue |
+| Inbound email | `POST /api/cron/inbound-email` | every 30 minutes (:10, :40) — pulls replies back into the CRM |
+| Reconcile unknown dispatches | `POST /api/cron/reconcile-unknown` | every 30 minutes (:10, :40) — resolves messages whose dispatch outcome was never observed |
+| Daily digest | `POST /api/cron/daily-digest` | hourly at :05 (the job itself checks each tenant's configured local digest hour) |
+| Second Chance detection | `POST /api/cron/second-chance` | hourly at :05 — detects stalled leads and missed follow-ups, then queues a recommendation refresh per tenant |
+| Recovery detection | `POST /api/cron/detect-recovery` | hourly at :05 — every remaining detector family |
+| Recovery strategy composition | `POST /api/cron/recovery-strategies` | hourly at :05 — composes a recovery strategy for every open Second Chance candidate and raises its approval request. Composition only: no outbound step can execute while its channel is unauthorised |
+| Approval expiry | `POST /api/cron/approval-expiry` | hourly at :05 — lapses approval requests nobody decided, so a stale request can never authorise an action |
+| Lead SLA | `POST /api/cron/lead-sla` | every minute, by the lead watcher (`LEAD_SLA_WATCHER`), not by this scheduler |
+
+The cadences are the ones `.github/workflows/scheduled-jobs.yml` uses;
+`scripts/validate_config.py` fails the build if the two drift apart.
+
+**Is it running?** `GET /api/cron/health` (admin session or the cron secret):
+`scheduled_jobs_running: true` and a recent `in_process.last_run_at`. `GET
+/api/cron/runs` lists each run, with `origin: in_process` and a run id of the form
+`inprocess-<job>-<window>`. `receiving_scheduled_traffic` deliberately counts external
+requests only, so it stays `false` when nothing outside calls the endpoints.
+
+**Turning it off.** Set `IN_PROCESS_SCHEDULER=0` on the service and redeploy — for
+example, if a dedicated external scheduler should be the only driver. To run only some
+jobs in-process, set `IN_PROCESS_SCHEDULER_JOBS` to a comma-separated list of paths
+(e.g. `work-queue,recovery-runner`).
+
+### External scheduler (optional, redundant)
+
+The endpoints remain, authenticated and safe to call concurrently or repeatedly
+(idempotent per `X-Webhook-Id`); they are also the way to run a job *now*. The
+repository's driver, `.github/workflows/scheduled-jobs.yml`, calls them on the cadences
+above once two repository secrets are set: `CLIENTVERSE_PRODUCTION_URL` and
+`WEBHOOK_CRON_SECRET`. Until both exist the workflow fails loudly rather than reporting
+success without calling anything — so if you rely on the built-in scheduler alone,
+disable that workflow (Actions → Scheduled jobs → Disable workflow) instead of leaving
+it failing every tick.
+
+Running it alongside the built-in scheduler is safe and mostly redundant. If an
+external request has already run a job in the current window, the in-process run
+defers to it. An external request that arrives *after* the in-process run in the same
+window runs the job again — every job is an idempotent sweep that only acts on records
+still in the state it looks for, so the second run finds nothing left to do. To have
+the external scheduler be the only driver, set `IN_PROCESS_SCHEDULER=0`.
+
+To wire a different external scheduler (Railway Cron, n8n, or any HTTP-capable
+scheduler), call the paths above on the **production** domain.
 
 Every call must carry:
 

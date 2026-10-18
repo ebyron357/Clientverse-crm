@@ -67,12 +67,16 @@ def _parse(value) -> Optional[datetime]:
 
 def _recommendation(*, tenant_id: str, action_type: str, title: str, reason: str,
                     priority: int, source_refs: list[str], evidence: dict,
-                    workspace_id: Optional[str] = None, dedupe_key: str) -> dict:
+                    workspace_id: Optional[str] = None, dedupe_key: str,
+                    deep_link: Optional[str] = None) -> dict:
     now = _iso(_now())
     return {
         "id": f"nba_{uuid.uuid4().hex[:12]}",
         "tenant_id": tenant_id,
         "workspace_id": workspace_id,
+        # Where the work itself is done. Navigation only: following it changes nothing
+        # about the recommendation's state.
+        "deep_link": deep_link,
         "action_type": action_type,
         "title": title,
         "reason": reason,
@@ -179,6 +183,7 @@ async def _from_tasks(db, tenant_id: str) -> list[dict]:
                       "assignee": task.get("assignee")},
             workspace_id=task.get("workspace_id"),
             dedupe_key=f"{ACTION_ADVANCE_TASK}:{task.get('id')}",
+            deep_link=f"/tasks?task={task.get('id')}",
         ))
     return out
 
@@ -316,10 +321,11 @@ async def generate(db, tenant_id: str, *, actor: str = "system") -> dict:
             {"tenant_id": tenant_id, "dedupe_key": key},
             {"$set": {"title": candidate["title"], "reason": candidate["reason"],
                       "priority": candidate["priority"], "evidence": candidate["evidence"],
-                      "source_refs": candidate["source_refs"], "updated_at": now},
+                      "source_refs": candidate["source_refs"],
+                      "deep_link": candidate["deep_link"], "updated_at": now},
              "$setOnInsert": {k: v for k, v in candidate.items()
                               if k not in ("title", "reason", "priority", "evidence",
-                                           "source_refs", "updated_at")}},
+                                           "source_refs", "deep_link", "updated_at")}},
             upsert=True,
         )
         if getattr(result, "upserted_id", None) is not None:

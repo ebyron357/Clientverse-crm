@@ -208,6 +208,16 @@ class CrossTenantReference(RecoveryCaseError):
     """Raised when a case is asked to reference a record another tenant owns."""
 
 
+def plural(count: int, unit: str) -> str:
+    """'1 day', '3 days': a count read the way people say it, never 'day(s)'."""
+    return f"{count} {unit}{'' if count == 1 else 's'}"
+
+
+def hours_words(hours: int) -> str:
+    """'5 hours' under two days, then '3 days': how long something has waited."""
+    return plural(hours, "hour") if hours < 48 else plural(hours // 24, "day")
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 

@@ -81,7 +81,7 @@ def test_an_unanswered_inbound_call_with_no_callback_is_detected(env):
     assert len(found) == 1
     assert found[0]["external_identity"] == {"kind": rc.IDENTITY_PHONE,
                                              "value": "+441632960001"}
-    assert "unanswered" in found[0]["reason"]
+    assert "was missed" in found[0]["reason"] and "called back" in found[0]["reason"]
     assert found[0]["record_collection"] == detectors.CALL_LOGS
 
 
@@ -289,6 +289,24 @@ def test_an_appointment_that_only_just_ended_is_inside_the_grace_period(env):
     db, _ = env
     insert(db, "appointments", {"title": "Consultation", "status": "scheduled",
                                 "start_at": ago(hours=1), "end_at": ago(hours=0)})
+    assert run(detectors.detect_no_shows(db, TENANT)) == []
+
+
+def test_a_no_show_recorded_by_a_person_is_detected_without_waiting(env):
+    """Marking the no-show used to take it out of the statuses this lane read, so the one
+    no-show somebody actually recorded was the one never recovered."""
+    db, _ = env
+    insert(db, "appointments", {"title": "Showing", "status": "no_show", "contact_id": "ct_1",
+                                "start_at": ago(hours=1), "end_at": ago(hours=0)})
+    found = run(detectors.detect_no_shows(db, TENANT))
+    assert len(found) == 1
+    assert "recorded as a no-show" in found[0]["reason"]
+
+
+def test_a_no_show_cannot_be_recorded_for_the_future(env):
+    db, _ = env
+    insert(db, "appointments", {"title": "Next week", "status": "no_show",
+                                "start_at": ahead(days=7), "end_at": ahead(days=7)})
     assert run(detectors.detect_no_shows(db, TENANT)) == []
 
 

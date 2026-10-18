@@ -230,7 +230,7 @@ function CaseProof({ caseId, onBack, onChanged }) {
         ) : null}
         <dl className="mt-4 grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
           <div><dt className="text-xs uppercase tracking-wide text-gray-400">Detected</dt><dd className="mt-1 text-gray-700">{proof.case.detected_at ? new Date(proof.case.detected_at).toLocaleString() : "—"}</dd></div>
-          <div><dt className="text-xs uppercase tracking-wide text-gray-400">Owner</dt><dd className="mt-1 text-gray-700">{proof.case.owner || "Unassigned"}</dd></div>
+          <div><dt className="text-xs uppercase tracking-wide text-gray-400">Owner</dt><dd className="mt-1 text-gray-700">{proof.case.owner_name || proof.case.owner || "Unassigned"}</dd></div>
           <div>
             <dt className="text-xs uppercase tracking-wide text-gray-400">Source record</dt>
             <dd className="mt-1">

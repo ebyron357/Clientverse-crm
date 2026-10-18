@@ -29,13 +29,17 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import math
 import re
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, EmailStr, Field, field_validator
+
+logger = logging.getLogger("clientverse.crm_core")
 
 # --------------------------------------------------------------------------- constants
 
@@ -51,6 +55,9 @@ CURRENCY_PATTERN = r"^[A-Z]{3}$"
 TASKS = "tasks"
 ACTIVITIES = "crm_activities"
 PIPELINES = "pipelines"
+# `website_forms.FORMS`. Named here rather than imported because website_forms imports
+# this module; the pipeline only reads which stage each form sends its new deals to.
+WEBSITE_FORMS = "website_forms"
 
 # The stage set the product shipped with. It stays the default so every existing tenant
 # and every existing opportunity keeps working unchanged; a tenant that configures its
@@ -64,7 +71,10 @@ DEFAULT_STAGES = [
     {"key": "closed_lost", "label": "Closed lost", "probability": 0, "is_closed": True, "is_won": False},
 ]
 
-ACTIVITY_TYPES = ("note", "call", "meeting", "email", "status_change")
+ACTIVITY_TYPES = ("note", "call", "meeting", "email", "text", "status_change")
+# The activity types that mean somebody reached out to the person. A note is a person
+# writing something down; it is not contact, and it must never stop a lead's clock.
+OUTREACH_TYPES = ("call", "email", "meeting", "text")
 TASK_STATUSES = ("todo", "in_progress", "blocked", "done", "cancelled")
 
 # What a search or filter is allowed to reach. Anything not listed is not queryable,
@@ -79,7 +89,8 @@ SORTABLE = {
     CONTACTS: ("created_at", "updated_at", "name", "owner"),
     COMPANIES: ("created_at", "updated_at", "name", "owner"),
     DEALS: ("created_at", "updated_at", "name", "value", "stage", "expected_close_date", "owner"),
-    TASKS: ("created_at", "updated_at", "due_date", "status", "assignee", "title"),
+    TASKS: ("created_at", "updated_at", "due_date", "status", "assignee", "title",
+            "completed_at"),
 }
 
 MAX_PAGE = 200
@@ -119,6 +130,42 @@ def csv_safe(value: Any) -> Any:
 
 def _escape_regex(value: str) -> str:
     return re.escape(value.strip())[:200]
+
+
+def phone_digits(value: Optional[str]) -> str:
+    """The comparable part of a phone number: its last ten digits.
+
+    Stored beside the number as typed so a website lead from "555.010.0100" finds the
+    contact someone entered as "(555) 010-0100".
+    """
+    return re.sub(r"\D", "", str(value or ""))[-10:]
+
+
+async def display_names(db, tenant_id: str, emails: Iterable[Optional[str]]) -> dict[str, str]:
+    """Each teammate's name, keyed by the email address it was asked for.
+
+    Records store who did something as an email address, which is right for an audit
+    trail and wrong for a person reading it. Only members of `tenant_id` are resolved,
+    so an address on a record can never be used to read another tenant's user names;
+    anything else (a system actor, a former teammate with no name) is simply absent and
+    the caller shows the address it already has.
+    """
+    wanted = {str(email): str(email).strip().lower() for email in emails
+              if email and "@" in str(email)}
+    if not wanted:
+        return {}
+    members = await db.memberships.find(
+        {"tenant_id": tenant_id}, {"_id": 0, "email": 1, "user_id": 1}).to_list(500)
+    user_ids = {str(m.get("email") or "").lower(): m["user_id"]
+                for m in members if m.get("user_id")}
+    ids = sorted({user_ids[lowered] for lowered in wanted.values() if lowered in user_ids})
+    if not ids:
+        return {}
+    users = await db.users.find(
+        {"user_id": {"$in": ids}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(len(ids))
+    names = {u["user_id"]: str(u["name"]).strip() for u in users if u.get("name")}
+    return {email: names[user_ids[lowered]] for email, lowered in wanted.items()
+            if lowered in user_ids and user_ids[lowered] in names}
 
 
 def _parse_date(value: Optional[str], field: str) -> Optional[str]:
@@ -275,6 +322,17 @@ def classify_stage(stage: Optional[str], classes: dict[str, set[str]]) -> str:
     return STAGE_OPEN
 
 
+def stage_outcome(stage: dict) -> str:
+    """Whether one configured stage is open, closed-won or closed-lost.
+
+    The same rule `stage_classes` applies, for a single stage definition: `is_won` only
+    counts on a closed stage.
+    """
+    if not stage.get("is_closed"):
+        return STAGE_OPEN
+    return STAGE_WON if stage.get("is_won") else STAGE_LOST
+
+
 # ------------------------------------------------------------------- request payloads
 
 class ContactPatch(BaseModel):
@@ -376,12 +434,19 @@ class ImportInput(BaseModel):
 # ------------------------------------------------------------------------ registration
 
 def register_crm_core_routes(router, db, new_id, now_iso, record_event,
-                             get_current_user, require_role):
+                             get_current_user, require_role,
+                             on_activity_logged: Optional[
+                                 Callable[[dict], Awaitable[Any]]] = None,
+                             *, on_task_status_changed=None):
     """Attach the baseline CRM routes, using the application's own helpers.
 
     Injection rather than import keeps this module free of a circular dependency on
     `server`, and keeps every audit event flowing through the one `record_event` the
-    rest of the application uses.
+    rest of the application uses. `on_activity_logged` is told about every activity a
+    person logs, after it is stored, so work that depends on it (a lead's speed-to-lead
+    clock) moves at once instead of on the next sweep. `on_task_status_changed(task,
+    previous_status, actor)` is awaited after a task changes status through
+    `PATCH /crm/tasks/{id}`.
     """
 
     # ------------------------------------------------------------------ shared helpers
@@ -481,7 +546,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             {"kind": "activity", "at": item.get("occurred_at") or item.get("created_at"),
              "type": item.get("type"), "subject": item.get("subject"),
              "body": item.get("body"), "actor": item.get("actor"), "id": item.get("id"),
-             "outcome": item.get("outcome")}
+             "outcome": item.get("outcome"), "direction": item.get("direction")}
             for item in activities
         ] + [
             {"kind": "event", "at": item.get("timestamp"), "type": item.get("event_type"),
@@ -490,7 +555,13 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             for item in events
         ]
         merged.sort(key=lambda entry: entry.get("at") or "", reverse=True)
-        return merged[:limit]
+        merged = merged[:limit]
+        # Who did it, as a name a person recognises. The address stays on `actor`.
+        names = await display_names(db, tenant_of(user),
+                                    (entry.get("actor") for entry in merged))
+        for entry in merged:
+            entry["actor_name"] = names.get(entry.get("actor") or "")
+        return merged
 
     # ------------------------------------------------------------------------ contacts
 
@@ -515,8 +586,10 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                      {"participants": {"$elemMatch": {"kind": "contact",
                                                       "id": contact_id}}}]},
             {"_id": 0}).sort("last_message_at", -1).to_list(25)
+        owner_names = await display_names(db, tenant, [contact.get("owner")])
         return {"contact": contact, "company": company, "deals": deals, "tasks": tasks,
                 "conversations": conversations,
+                "owner_name": owner_names.get(contact.get("owner") or ""),
                 "timeline": await timeline_for(user, "contact", contact_id)}
 
     @router.patch("/contacts/{contact_id}")
@@ -525,6 +598,11 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         changes = dict(inp.model_dump(exclude_unset=True))
         if "email" in changes and changes["email"] is not None:
             changes["email"] = str(changes["email"])
+        if "phone" in changes:
+            # Kept in step with the number, or the next website lead from this person
+            # would be matched against the number they used to have.
+            changes["phone"] = (changes["phone"] or "").strip() or None
+            changes["phone_digits"] = phone_digits(changes["phone"]) or None
         await assert_exists(COMPANIES, changes.get("company_id"), user, "company_id")
         return await apply_patch(CONTACTS, contact_id, user, changes,
                                  "contact.updated", "contact")
@@ -606,6 +684,29 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     # --------------------------------------------------------------------------- deals
 
+    # Registered before `/opportunities/{deal_id}` so the path is not read as a deal id.
+    @router.get("/opportunities/owner-options")
+    async def deal_owner_options(user=Depends(get_current_user)):
+        """The people a deal can be given to: this tenant's active members.
+
+        Names and emails only. A member needs this to hand a deal to a colleague; roles,
+        status and invitations stay on the admin-only team page.
+        """
+        tenant = tenant_of(user)
+        members = await db.memberships.find(
+            {"tenant_id": tenant, "status": "active"},
+            {"_id": 0, "user_id": 1, "email": 1}).sort("created_at", 1).to_list(500)
+        user_ids = [m["user_id"] for m in members if m.get("user_id")]
+        people = await db.users.find(
+            {"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "name": 1}
+        ).to_list(len(user_ids) or 1)
+        names = {person["user_id"]: person.get("name") for person in people}
+        options = [{"email": m["email"], "name": names.get(m.get("user_id")) or None}
+                   for m in members if m.get("email")]
+        if not any(option["email"] == user["email"] for option in options):
+            options.insert(0, {"email": user["email"], "name": user.get("name")})
+        return {"items": options}
+
     @router.get("/opportunities/{deal_id}")
     async def get_deal(deal_id: str, user=Depends(get_current_user)):
         deal = await load(DEALS, deal_id, user)
@@ -681,6 +782,42 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     # ----------------------------------------------------------------------- pipelines
 
+    async def stage_usage(tenant: str, keys: list[str]) -> dict[str, dict]:
+        """What depends on each stage: the deals in it and the website forms feeding it.
+
+        Archived deals count. Restoring one would otherwise put it back in a stage the
+        pipeline no longer has, or in one that now means something else. A website form
+        counts unless it is archived: a paused form can be switched back on.
+        """
+        usage: dict[str, dict] = {key: {"deals": 0, "archived_deals": 0, "website_forms": []}
+                                  for key in keys}
+        if not keys:
+            return usage
+        for key in keys:
+            scope = {"tenant_id": tenant, "stage": key}
+            usage[key]["deals"] = await db[DEALS].count_documents(scope)
+            usage[key]["archived_deals"] = await db[DEALS].count_documents(
+                {**scope, "archived_at": {"$ne": None}})
+        forms = await db[WEBSITE_FORMS].find(
+            {"tenant_id": tenant, "status": {"$ne": "archived"},
+             "settings.opportunity.stage": {"$in": keys}},
+            {"_id": 0, "id": 1, "name": 1, "settings": 1}).to_list(200)
+        for form in forms:
+            target = ((form.get("settings") or {}).get("opportunity") or {}).get("stage")
+            if target in usage:
+                usage[target]["website_forms"].append(
+                    {"id": form.get("id"), "name": form.get("name")})
+        return usage
+
+    def deals_phrase(usage: dict) -> str:
+        total, archived = usage["deals"], usage["archived_deals"]
+        noun = "deal" if total == 1 else "deals"
+        if archived and archived == total:
+            return f"{total} archived {noun}"
+        if archived:
+            return f"{total} {noun} ({archived} archived)"
+        return f"{total} {noun}"
+
     @router.get("/pipelines/default")
     async def get_pipeline(user=Depends(get_current_user)):
         stages = await resolve_stages(db, tenant_of(user))
@@ -699,42 +836,81 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 "weighted_value_estimate": round(total * stage.get("probability", 0) / 100.0, 2),
             }
         return {"id": "default", "stages": stages, "is_customised": bool(configured),
-                "totals": counts}
+                "totals": counts,
+                # What the stage editor needs to say up front which stages cannot be
+                # removed or reclassified, instead of finding out from a refusal.
+                "in_use": await stage_usage(tenant_of(user),
+                                            [stage["key"] for stage in stages])}
 
     @router.put("/pipelines/default")
     async def set_pipeline(inp: PipelineInput, user=Depends(require_role("admin"))):
         """Configure this tenant's stages.
 
-        A stage that still holds deals cannot be removed. Rewriting the stage set out
-        from under live records would leave them in a stage the pipeline does not have,
-        which is how a deal becomes invisible.
+        Three changes are refused, because each would change deals nobody touched:
+
+        * removing a stage that still holds deals. Rewriting the stage set out from under
+          live records would leave them in a stage the pipeline does not have, which is
+          how a deal becomes invisible;
+        * switching a stage that holds deals between open, won and lost. Every deal in it
+          would become revenue, or be written off, without anyone moving it -- and the
+          recovery engine settles its cases on exactly that classification;
+        * removing or closing a stage a website form sends its new leads to. The form
+          would quietly start filing leads somewhere else.
         """
         stages = [stage.model_dump() for stage in inp.stages]
+        for stage in stages:
+            stage["label"] = stage["label"].strip()
+            if not stage["label"]:
+                raise HTTPException(status_code=422, detail="Every stage needs a name")
         keys = [stage["key"] for stage in stages]
         if len(set(keys)) != len(keys):
             raise HTTPException(status_code=422, detail="Stage keys must be unique")
         if not any(stage["is_closed"] and stage["is_won"] for stage in stages):
             raise HTTPException(status_code=422,
                                 detail="At least one stage must be a closed-won stage")
-        current = await stage_keys(db, tenant_of(user))
-        removed = [key for key in current if key not in keys]
-        if removed:
-            blocking = await db[DEALS].count_documents(
-                {"tenant_id": tenant_of(user), "stage": {"$in": removed}})
-            if blocking:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(f"{blocking} deal(s) are still in stage(s) "
-                            f"{', '.join(removed)}; move them before removing"))
+        if not any(stage_outcome(stage) == STAGE_OPEN for stage in stages):
+            raise HTTPException(
+                status_code=422,
+                detail="Keep at least one open stage: new deals and website leads start there")
+        tenant = tenant_of(user)
+        previous = {stage["key"]: stage for stage in await resolve_stages(db, tenant)}
+        removed = [key for key in previous if key not in keys]
+        reclassified = [stage["key"] for stage in stages if stage["key"] in previous
+                        and stage_outcome(stage) != stage_outcome(previous[stage["key"]])]
+        newly_closed = [key for key in reclassified
+                        if stage_outcome(previous[key]) == STAGE_OPEN]
+        usage = await stage_usage(tenant, removed + reclassified)
+        # The name the admin knows the stage by, which is the old one if it was renamed.
+        labels = {key: stage.get("label") or key for key, stage in previous.items()}
+        problems: list[str] = []
+        for key in removed:
+            if usage[key]["deals"]:
+                problems.append(
+                    f"“{labels[key]}” still has {deals_phrase(usage[key])}. "
+                    "Move them to another stage before removing it.")
+        for key in reclassified:
+            if usage[key]["deals"]:
+                problems.append(
+                    f"“{labels[key]}” has {deals_phrase(usage[key])}, so it cannot switch "
+                    "between open, won and lost: that would change those deals without "
+                    "anyone moving them. Move them to another stage first.")
+        for key in removed + newly_closed:
+            for form in usage[key]["website_forms"]:
+                problems.append(
+                    f"Your website form “{form['name']}” puts new leads in "
+                    f"“{labels[key]}”. Choose a different starting stage for that form first.")
+        if problems:
+            raise HTTPException(status_code=409, detail=" ".join(problems))
         await db[PIPELINES].update_one(
-            {"tenant_id": tenant_of(user), "id": "default"},
+            {"tenant_id": tenant, "id": "default"},
             {"$set": {"stages": stages, "updated_at": now_iso(),
                       "updated_by": user["email"]},
              "$setOnInsert": {"created_at": now_iso()}},
             upsert=True)
         await record_event("pipeline.configured", "pipeline", "default",
-                           tenant_of(user), user["email"],
-                           payload={"stages": keys, "removed": removed})
+                           tenant, user["email"],
+                           payload={"stages": keys, "removed": removed,
+                                    "reclassified": reclassified})
         return {"id": "default", "stages": stages, "is_customised": True}
 
     # --------------------------------------------------------------------------- tasks
@@ -757,27 +933,114 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         await assert_exists(collection, related_id, user, f"{related_type} id")
         return related_type, related_id
 
+    def same_person(first: Optional[str], second: Optional[str]) -> bool:
+        return bool(first and second) and str(first).strip().lower() == str(second).strip().lower()
+
+    def email_match(email: str) -> dict:
+        # Assignees are typed by people and written by automation, so the case an address
+        # was stored in says nothing about who it belongs to.
+        return {"$regex": f"^{re.escape(email.strip())}$", "$options": "i"}
+
+    async def attach_related(user, tasks: list[dict]) -> list[dict]:
+        """Say what each task is about, in a form a person can act on.
+
+        A row reading "related_type: contact, related_id: c_91f2" is not something an agent
+        can call back. Each task gets a `related` summary: the record's name, the person
+        to call (the contact itself, or a deal's first contact) with their phone, and --
+        for a website lead's call-back task -- the lead it came from. One tenant-scoped
+        query per collection, however many tasks there are.
+        """
+        tenant = tenant_of(user)
+        wanted: dict[str, set[str]] = {collection: set() for collection in RELATABLE.values()}
+        for task in tasks:
+            collection = RELATABLE.get(task.get("related_type") or "")
+            if collection and task.get("related_id"):
+                wanted[collection].add(task["related_id"])
+        projection = {"_id": 0, "id": 1, "name": 1, "phone": 1, "email": 1, "contact_ids": 1}
+
+        async def fetch(collection: str) -> dict[str, dict]:
+            ids = sorted(wanted[collection])
+            if not ids:
+                return {}
+            rows = await db[collection].find({"tenant_id": tenant, "id": {"$in": ids}},
+                                             projection).to_list(len(ids))
+            return {row["id"]: row for row in rows}
+
+        found = {collection: await fetch(collection)
+                 for collection in (DEALS, COMPANIES, "workspaces")}
+        for deal in found[DEALS].values():
+            if deal.get("contact_ids"):
+                wanted[CONTACTS].add(deal["contact_ids"][0])
+        found[CONTACTS] = await fetch(CONTACTS)
+
+        def person(contact_id: Optional[str]) -> Optional[dict]:
+            contact = found[CONTACTS].get(contact_id or "")
+            if not contact:
+                return None
+            return {"id": contact["id"], "name": contact.get("name"),
+                    "phone": contact.get("phone"), "email": contact.get("email")}
+
+        for task in tasks:
+            related_type = task.get("related_type")
+            record = found.get(RELATABLE.get(related_type or "", ""), {}).get(
+                task.get("related_id") or "")
+            if related_type == "contact":
+                contact = person(task.get("related_id"))
+            elif related_type == "deal" and record and record.get("contact_ids"):
+                contact = person(record["contact_ids"][0])
+            else:
+                contact = None
+            source = task.get("source")
+            lead_id = None
+            if isinstance(source, dict) and source.get("kind") == "website_form":
+                lead_id = source.get("enquiry_id")
+            task["related"] = {
+                "type": related_type, "id": task.get("related_id"),
+                "name": (record or {}).get("name"), "contact": contact, "lead_id": lead_id,
+            }
+        return tasks
+
     @router.get("/tasks")
     async def list_tasks(
         q: Optional[str] = None,
         status: Optional[str] = None,
         assignee: Optional[str] = None,
+        mine: bool = False,
+        include_unassigned: bool = False,
         related_type: Optional[str] = None,
         related_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         due_before: Optional[str] = None,
         due_after: Optional[str] = None,
+        include_undated: bool = False,
+        completed_after: Optional[str] = None,
+        expand: Optional[str] = None,
         sort: Optional[str] = "due_date",
         order: Optional[str] = "asc",
         limit: int = 50,
         offset: int = 0,
         user=Depends(get_current_user),
     ):
-        """Every task in the tenant, not just the ones inside a delivery workspace."""
+        """Every task in the tenant, not just the ones inside a delivery workspace.
+
+        The Tasks page reads its tabs from here. `mine` narrows to the caller's own work,
+        and `include_unassigned` keeps the tasks nobody owns yet beside it -- a website
+        lead that no one was assigned is everyone's call to make, and hiding it from every
+        "My tasks" view is how a call-back goes unmade. `status` takes a comma-separated
+        set ("todo,in_progress,blocked" is "still open"); a due window can keep undated
+        tasks with `include_undated`; `expand=related` says what each task is about.
+        """
         query: dict[str, Any] = {**text_filter(TASKS, q)}
+        clauses: list[dict] = []
         if status:
-            query["status"] = status
-        if assignee:
+            statuses = [value.strip() for value in status.split(",") if value.strip()]
+            query["status"] = statuses[0] if len(statuses) == 1 else {"$in": statuses}
+        if mine:
+            owned: list[dict] = [{"assignee": email_match(user["email"])}]
+            if include_unassigned:
+                owned += [{"assignee": None}, {"assignee": ""}]
+            clauses.append({"$or": owned})
+        elif assignee:
             query["assignee"] = assignee
         if related_type:
             query["related_type"] = related_type
@@ -790,10 +1053,25 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             due["$lte"] = _parse_date(due_before, "due_before") or ""
         if due_after:
             due["$gte"] = _parse_date(due_after, "due_after") or ""
-        if due:
+        if due and include_undated:
+            clauses.append({"$or": [{"due_date": due}, {"due_date": None}]})
+        elif due:
             query["due_date"] = due
-        return await listing(TASKS, user, query=query, sort=sort, order=order,
+        if completed_after:
+            query["completed_at"] = {"$gte": _parse_date(completed_after, "completed_after")}
+        if clauses:
+            query["$and"] = clauses
+        page = await listing(TASKS, user, query=query, sort=sort, order=order,
                              limit=limit, offset=offset)
+        if expand == "related":
+            await attach_related(user, page["items"])
+        return page
+
+    @router.get("/crm/tasks/{task_id}")
+    async def get_crm_task(task_id: str, user=Depends(get_current_user)):
+        """One task with what it is about, for a link that names it (`/tasks?task=`)."""
+        task = await load(TASKS, task_id, user)
+        return (await attach_related(user, [task]))[0]
 
     @router.post("/crm/tasks")
     async def create_crm_task(inp: TaskCreate, user=Depends(get_current_user)):
@@ -824,22 +1102,34 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                            user["email"], workspace_id=workspace_id,
                            payload={"title": inp.title, "assignee": inp.assignee,
                                     "related_type": related_type, "related_id": related_id})
-        if inp.assignee and inp.assignee != user["email"]:
+        if inp.assignee and not same_person(inp.assignee, user["email"]):
             await notify_assignment(user, doc)
         return _public(doc)
 
     async def notify_assignment(user, task: dict) -> None:
-        """Tell someone a task landed on them.
+        """Tell someone a task landed on them -- and only them.
 
-        An assignment nobody is told about is not an assignment.
+        An assignment nobody is told about is not an assignment, and one the whole team
+        is told about is noise: a notice with no `user_id` is a team-wide one, which is
+        how every user used to read "a task was assigned to you". So it is addressed to
+        the assignee's own user. Someone who is not an active member here has no bell to
+        ring, and nothing is stored for them.
         """
+        assignee = str(task.get("assignee") or "").strip()
+        if not assignee:
+            return
+        member = await db.memberships.find_one(
+            {"tenant_id": tenant_of(user), "email": email_match(assignee), "status": "active"},
+            {"_id": 0, "user_id": 1})
+        if not (member or {}).get("user_id"):
+            return
         await db.notifications.insert_one({
-            "id": new_id("ntf"), "tenant_id": tenant_of(user), "user_id": None,
-            "recipient": task.get("assignee"), "workspace_id": task.get("workspace_id"),
-            "type": "assignment", "severity": "info", "source": "crm",
-            "title": "A task was assigned to you",
+            "id": new_id("ntf"), "tenant_id": tenant_of(user), "user_id": member["user_id"],
+            "recipient": assignee, "workspace_id": task.get("workspace_id"),
+            "type": "assignment", "severity": "info", "source": "crm", "category": "tasks",
+            "task_id": task["id"], "title": "A task was assigned to you",
             "body": f"{user['email']} assigned you \"{task['title']}\"",
-            "deep_link": f"/tasks/{task['id']}", "read": False, "created_at": now_iso(),
+            "deep_link": f"/tasks?task={task['id']}", "read": False, "created_at": now_iso(),
         })
 
     @router.patch("/crm/tasks/{task_id}")
@@ -860,7 +1150,12 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             await record_event("task.completed", "task", task_id, tenant_of(user),
                                user["email"], workspace_id=before.get("workspace_id"),
                                payload={"title": before.get("title")})
-        if changes.get("assignee") and changes["assignee"] != before.get("assignee"):
+        if updated.get("status") != before.get("status") and on_task_status_changed:
+            # Whatever else hangs off a task -- a website lead's response clock -- moves
+            # with it now, not on the next sweep.
+            await on_task_status_changed(updated, before.get("status"), user["email"])
+        if changes.get("assignee") and changes["assignee"] != before.get("assignee") \
+                and not same_person(changes["assignee"], user["email"]):
             await notify_assignment(user, updated)
         return updated
 
@@ -890,11 +1185,12 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     @router.post("/activities")
     async def log_activity(inp: ActivityCreate, user=Depends(get_current_user)):
-        """Log something that happened: a note, a call, a meeting, an email already sent.
+        """Log something that happened: a note, a call, a meeting, an email or a text
+        already sent.
 
-        This records history. It sends nothing and schedules nothing -- an email logged
-        here is one a person already sent, which is a different fact from one this
-        system delivered, and the two are never merged.
+        This records history. It sends nothing and schedules nothing -- an email or text
+        logged here is one a person already sent from their own phone or mailbox, which
+        is a different fact from one this system delivered, and the two are never merged.
         """
         if inp.type not in ACTIVITY_TYPES:
             raise HTTPException(status_code=422,
@@ -918,6 +1214,14 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         await record_event(f"activity.{inp.type}_logged", related_type, related_id,
                            tenant_of(user), user["email"],
                            payload={"activity_id": doc["id"], "subject": inp.subject})
+        if on_activity_logged:
+            try:
+                await on_activity_logged(dict(doc))
+            except Exception:
+                # The activity is stored and on the record's timeline. A fault in what
+                # follows from it must not turn a logged call into a failed request; the
+                # periodic sweep recognises it later all the same.
+                logger.exception("Follow-up for activity %s failed", doc["id"])
         return _public(doc)
 
     @router.get("/activities")

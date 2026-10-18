@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
+import { activityEntries } from "@/lib/contactHistory";
+import { ActivityFeed } from "@/components/ContactRecord";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlarmClock, CheckCircle2, Clock3, Download, Globe, Mail, Phone, RefreshCw, Search, ShieldAlert, Timer, Zap } from "lucide-react";
+import { describeLeadStep } from "@/lib/leadSteps";
 
 const STATUS_TABS = [
   { key: "new", label: "New" },
@@ -53,6 +56,17 @@ function minutesBetween(fromIso, to = Date.now()) {
   return Math.round((to - new Date(fromIso).getTime()) / 60000);
 }
 
+/** "12 min", "3 h 5 min", "4 days": a wait or response time in words people read at a glance. */
+export function duration(minutes) {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${m} min`;
+  if (m < 60 * 24) return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
+  const days = Math.floor(m / (60 * 24));
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+const MONEY_FIELDS = new Set(["price_min", "price_max", "estimated_home_value"]);
+
 function ago(iso) {
   if (!iso) return "—";
   const minutes = minutesBetween(iso);
@@ -66,17 +80,17 @@ function SlaBadge({ lead }) {
   const sla = lead.sla || {};
   if (lead.status === "responded" && sla.response_minutes != null) {
     const fast = sla.response_minutes <= 5;
-    return <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${fast ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}><CheckCircle2 className="h-3 w-3" />Responded in {sla.response_minutes} min</span>;
+    return <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${fast ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}><CheckCircle2 className="h-3 w-3" />Responded in {duration(sla.response_minutes)}</span>;
   }
   if (lead.status !== "new" || !sla.due_at) return null;
   if (sla.escalated_at) {
-    return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><ShieldAlert className="h-3 w-3" />Escalated · waiting {minutesBetween(lead.received_at)} min</span>;
+    return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><ShieldAlert className="h-3 w-3" />Escalated · waiting {duration(minutesBetween(lead.received_at))}</span>;
   }
   const remaining = -minutesBetween(sla.due_at);
   if (remaining >= 0) {
-    return <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700"><Timer className="h-3 w-3" />Call within {Math.max(remaining, 0)} min</span>;
+    return <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700"><Timer className="h-3 w-3" />Call within {duration(remaining)}</span>;
   }
-  return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><AlarmClock className="h-3 w-3" />Overdue {-remaining} min</span>;
+  return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><AlarmClock className="h-3 w-3" />Overdue {duration(-remaining)}</span>;
 }
 
 function Tile({ icon: Icon, label, value, hint, tone = "slate" }) {
@@ -103,12 +117,29 @@ function Row({ label, children }) {
   );
 }
 
-function LeadDetail({ lead, onStatus, busy }) {
+function LeadDetail({ lead, onStatus, busy, refreshKey }) {
   const [note, setNote] = useState("");
+  // The contact this lead became: its name, its deals and what has been logged on it.
+  // Read again after every update so a note saved below appears straight away.
+  const [loaded, setLoaded] = useState(null);
+  useEffect(() => {
+    if (!lead.contact_id) return undefined;
+    let current = true;
+    api.get(`/contacts/${lead.contact_id}`)
+      .then((response) => { if (current) setLoaded(response.data); })
+      .catch(() => { if (current) setLoaded(null); });
+    return () => { current = false; };
+  }, [lead.contact_id, refreshKey]);
+  // Kept while a refresh is in flight so the list does not flicker; never shown for a different lead.
+  const contact = loaded?.contact?.id === lead.contact_id ? loaded : null;
   const fields = lead.fields || {};
   const attribution = lead.attribution || {};
   const extra = lead.extra || {};
   const consent = lead.consent;
+  const contactName = contact?.contact?.name || lead.name || lead.email || lead.phone;
+  const deal = (contact?.deals || []).find((item) => item.id === lead.opportunity_id);
+  const dealValue = formatMoney(deal ? deal.value : lead.estimated_value, (deal && deal.currency) || lead.currency);
+  const notes = useMemo(() => activityEntries(contact?.timeline, contactName), [contact, contactName]);
   const setStatus = async (status) => { await onStatus(lead, status, note); setNote(""); };
   return (
     <div className="space-y-6 pb-10">
@@ -132,7 +163,7 @@ function LeadDetail({ lead, onStatus, busy }) {
           <Row label="Phone">{lead.phone}</Row>
           <Row label="Message">{lead.message && <span className="whitespace-pre-wrap">{lead.message}</span>}</Row>
           {Object.entries(fields).filter(([key]) => !SKIP_FIELDS.has(key)).map(([key, value]) => (
-            <Row key={key} label={FIELD_LABELS[key] || key.replace(/^custom_/, "").replace(/_/g, " ")}>{value === true ? "Yes" : String(value)}</Row>
+            <Row key={key} label={FIELD_LABELS[key] || key.replace(/^custom_/, "").replace(/_/g, " ")}>{value === true ? "Yes" : value === false ? "No" : MONEY_FIELDS.has(key) && value !== "" && !Number.isNaN(Number(value)) ? formatMoney(value) : String(value)}</Row>
           ))}
           {Object.entries(extra).map(([key, value]) => <Row key={`x-${key}`} label={key}>{String(value)}</Row>)}
           <Row label="Received">{lead.received_at && new Date(lead.received_at).toLocaleString()}</Row>
@@ -142,15 +173,17 @@ function LeadDetail({ lead, onStatus, busy }) {
       <section>
         <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.06em] text-slate-500">What happened automatically</h3>
         <dl>
-          <Row label="Assigned to">{lead.assigned_to || "Unassigned — all admins alerted"}</Row>
-          <Row label="Contact">{lead.contact_id && <Link className="font-semibold text-[#127b96]" to="/contacts">{lead.created_contact ? "Created" : "Matched existing"} ({lead.contact_id})</Link>}</Row>
-          <Row label="Deal">{lead.opportunity_id && <Link className="font-semibold text-[#127b96]" to="/deals">{formatMoney(lead.estimated_value, lead.currency)} · {lead.opportunity_id}</Link>}</Row>
+          <Row label="Assigned to">{lead.assigned_name || lead.assigned_to || "Unassigned — all admins alerted"}</Row>
+          <Row label="Contact">{lead.contact_id && <><Link className="font-semibold text-[#127b96]" to={`/contacts?contact=${lead.contact_id}`} data-testid="lead-contact-link">{contactName || "Open contact"}</Link><span className="text-slate-500"> · {lead.created_contact ? "new contact" : "already in your contacts"}</span></>}</Row>
+          <Row label="Deal">{lead.opportunity_id && (deal
+            ? <><Link className="font-semibold text-[#127b96]" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">{deal.name}</Link><span className="text-slate-500"> · {dealValue}</span></>
+            : <Link className="font-semibold text-[#127b96]" to={`/deals?deal=${lead.opportunity_id}`} data-testid="lead-deal-link">Deal · {dealValue}</Link>)}</Row>
           <Row label="Call-back task">{lead.task_id && `Due ${lead.sla?.due_at ? new Date(lead.sla.due_at).toLocaleTimeString() : "now"}`}</Row>
           <Row label="Auto-reply">{lead.auto_reply?.status && lead.auto_reply.status !== "off" ? `${lead.auto_reply.status.replace(/_/g, " ")}${lead.auto_reply.detail ? ` — ${lead.auto_reply.detail}` : ""}` : null}</Row>
         </dl>
         {lead.automation?.length > 0 && (
           <ol className="mt-3 space-y-1 text-xs text-slate-500">
-            {lead.automation.map((step, index) => <li key={index}><span className="font-semibold text-slate-600">{step.step}</span> · {step.result}{step.detail ? ` · ${step.detail}` : ""}</li>)}
+            {lead.automation.map((step, index) => <li key={index} className="flex gap-1.5">{step.result === "failed" ? <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-red-500" /> : <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-slate-400" />}{describeLeadStep(step, { assignee: lead.assigned_name || lead.assigned_to })}</li>)}
           </ol>
         )}
       </section>
@@ -178,9 +211,21 @@ function LeadDetail({ lead, onStatus, busy }) {
         </section>
       )}
 
+      {lead.contact_id && (
+        <section>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Notes and calls</h3>
+            <Link className="text-xs font-semibold text-[#127b96]" to={`/contacts?contact=${lead.contact_id}`}>Open contact to log a call</Link>
+          </div>
+          {contact
+            ? <ActivityFeed entries={notes} limit={5} empty="Nothing logged yet. A note you add below is saved here." testId="lead-notes" />
+            : <Skeleton className="h-12 rounded-xl" />}
+        </section>
+      )}
+
       <section className="space-y-2">
         <h3 className="text-xs font-bold uppercase tracking-[0.06em] text-slate-500">Update</h3>
-        <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional note — saved to the contact's history" rows={3} />
+        <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional note — saved to the contact's history" rows={3} data-testid="lead-note" />
         <div className="flex flex-wrap gap-2">
           {lead.status !== "responded" && <Button size="sm" className="cv-action-primary" disabled={busy} onClick={() => setStatus("responded")}><CheckCircle2 className="mr-1.5 h-4 w-4" />Mark contacted</Button>}
           {lead.status !== "closed" && <Button size="sm" variant="outline" disabled={busy} onClick={() => setStatus("closed")}>Close</Button>}
@@ -204,6 +249,7 @@ export default function Leads() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [, setTick] = useState(0);
   const selectedId = searchParams.get("lead");
 
@@ -245,6 +291,7 @@ export default function Leads() {
     try {
       const { data } = await api.patch(`/leads/${lead.id}`, { status: next, note: note || undefined });
       setSelected(data);
+      setRefreshKey((value) => value + 1);
       toast.success(next === "responded" ? "Marked as contacted" : `Lead marked ${STATUS_LABEL[next].toLowerCase()}`);
       load();
     } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
@@ -277,7 +324,7 @@ export default function Leads() {
           <h1 className="cv-page-title">Leads</h1>
           <p className="cv-page-description">Every lead from your website forms, the speed-to-lead clock on each one, and what the CRM already did with it.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" asChild><Link to="/website-forms"><Globe className="mr-1.5 h-4 w-4" />Website forms</Link></Button>
           <Button variant="outline" onClick={exportCsv}><Download className="mr-1.5 h-4 w-4" />Export CSV</Button>
           <Button variant="outline" onClick={load} data-testid="leads-refresh"><RefreshCw className="mr-1.5 h-4 w-4" />Refresh</Button>
@@ -287,7 +334,7 @@ export default function Leads() {
       {summary ? (
         <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <Tile icon={Zap} tone={summary.open_now ? "amber" : "emerald"} label="Waiting for a response" value={summary.open_now} hint={summary.open_now ? "New leads nobody has contacted" : "Every lead has been contacted"} />
-          <Tile icon={Clock3} tone="cyan" label="Median response" value={summary.median_response_minutes == null ? "—" : `${summary.median_response_minutes} min`} hint={responseHint} />
+          <Tile icon={Clock3} tone="cyan" label="Median response" value={summary.median_response_minutes == null ? "—" : duration(summary.median_response_minutes)} hint={responseHint} />
           <Tile icon={ShieldAlert} tone={summary.sla_breaches ? "red" : "slate"} label="Escalated" value={summary.sla_breaches} hint={`Last ${summary.window_days} days`} />
           <Tile icon={Globe} tone="slate" label="Leads" value={summary.total} hint={`Last ${summary.window_days} days, test leads excluded`} />
         </div>
@@ -343,7 +390,7 @@ export default function Leads() {
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-3 text-xs text-slate-500">
                     <SlaBadge lead={lead} />
-                    <span>{lead.assigned_to || "Unassigned"}</span>
+                    <span>{lead.assigned_name || lead.assigned_to || "Unassigned"}</span>
                     <span>{ago(lead.received_at)}</span>
                   </div>
                 </button>
@@ -362,7 +409,7 @@ export default function Leads() {
                 <SheetTitle>{selected.name || selected.email || selected.phone || "Website visitor"}</SheetTitle>
                 <SheetDescription>{selected.form_name} · {ago(selected.received_at)}</SheetDescription>
               </SheetHeader>
-              <LeadDetail lead={selected} onStatus={changeStatus} busy={busy} />
+              <LeadDetail lead={selected} onStatus={changeStatus} busy={busy} refreshKey={refreshKey} />
             </>
           )}
         </SheetContent>

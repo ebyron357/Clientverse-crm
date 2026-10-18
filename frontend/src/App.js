@@ -26,8 +26,13 @@ import ClientPortal from "@/pages/ClientPortal";
 import ModuleStatus from "@/pages/ModuleStatus";
 import RecoveryProof from "@/pages/RecoveryProof";
 import Leads from "@/pages/Leads";
+import Tasks, { TaskRedirect } from "@/pages/Tasks";
 import WebsiteForms from "@/pages/WebsiteForms";
+import CalendarPage from "@/pages/Calendar";
+import PublicBooking from "@/pages/PublicBooking";
+import ManageBooking from "@/pages/ManageBooking";
 import { CLIENTVERSE_MODULES, MODULE_STATES } from "@/platform/modules";
+import { ChooseOwnPassword } from "@/components/ChangePassword";
 
 function AuthCallback() {
   const navigate = useNavigate();
@@ -55,17 +60,25 @@ function Protected({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex min-h-screen items-center justify-center bg-[#f7fafc] p-6"><div className="cv-card w-full max-w-sm p-7"><div className="h-2 w-20 animate-pulse rounded-full bg-cyan-100" /><div className="mt-5 h-7 w-44 animate-pulse rounded-lg bg-slate-100" /><div className="mt-3 h-4 w-full animate-pulse rounded-lg bg-slate-100" /><div className="mt-2 h-4 w-4/5 animate-pulse rounded-lg bg-slate-100" /></div></div>;
   if (!user) return <Navigate to="/login" replace />;
+  if (user.must_change_password) return <ChooseOwnPassword />;
   return children;
 }
 
 function AppRouter() {
   const location = useLocation();
-  if (location.hash?.includes("session_id=")) return <AuthCallback />;
+  // Google sign-in returns to /dashboard (see Login), which no other site may frame. Only
+  // there, and only in the browser's own window: /book/:key can sit in another site's frame,
+  // and a frame must never be able to sign this app into a session someone else picked.
+  const signInReturn = location.pathname === "/dashboard" && location.hash?.includes("session_id=") && window.top === window.self;
+  if (signInReturn) return <AuthCallback />;
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/invite" element={<AcceptInvite />} />
       <Route path="/portal/:token" element={<ClientPortal />} />
+      {/* Public booking pages: outside the signed-in app, and /book/:key may be framed. */}
+      <Route path="/book/:key" element={<PublicBooking />} />
+      <Route path="/booking/manage/:token" element={<ManageBooking />} />
       <Route element={<Protected><AppShell /></Protected>}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/pipeline" element={<Pipeline />} />
@@ -85,7 +98,10 @@ function AppRouter() {
         <Route path="/client-ops" element={<ClientOps />} />
         <Route path="/proof" element={<RecoveryProof />} />
         <Route path="/leads" element={<Leads />} />
+        <Route path="/tasks" element={<Tasks />} />
+        <Route path="/tasks/:taskId" element={<TaskRedirect />} />
         <Route path="/website-forms" element={<WebsiteForms />} />
+        <Route path="/scheduling/calendar" element={<CalendarPage />} />
         <Route path="/field" element={<FieldOps />} />
         {CLIENTVERSE_MODULES.filter((module) => module.state !== MODULE_STATES.AVAILABLE).map((module) => <Route key={module.id} path={module.route} element={<ModuleStatus moduleId={module.id} />} />)}
       </Route>

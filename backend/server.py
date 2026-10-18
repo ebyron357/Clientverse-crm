@@ -6,6 +6,7 @@ import json as _json
 import logging
 import math
 import os
+import re
 import secrets
 import time
 import uuid
@@ -13,7 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import bcrypt
 import jwt
@@ -34,6 +35,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 import approval_queue as approval_service
 import attribution as attribution_service
+import booking
 import conversations as conversation_service
 import crm_core
 import cron_ledger
@@ -47,6 +49,7 @@ import recovery_lifecycle
 import recovery_proof
 import recovery_runner as recovery_runner_service
 import recovery_strategy as recovery_service
+import scheduler
 import second_chance as second_chance_service
 import security_gate as security_gate_service
 import website_forms
@@ -158,6 +161,7 @@ async def lifespan(_: FastAPI):
         ("detectors", lambda: detectors.ensure_indexes(db)),
         ("recovery_intake", lambda: recovery_intake.ensure_indexes(db)),
         ("website_forms", lambda: lead_pipeline.ensure_indexes()),
+        ("booking", lambda: booking_service.ensure_indexes()),
         ("work_queue", lambda: WorkQueue(db).ensure_indexes()),
         ("next_best_action", lambda: nba_service.ensure_indexes(db)),
         ("second_chance", lambda: second_chance_service.ensure_indexes(db)),
@@ -186,9 +190,14 @@ async def lifespan(_: FastAPI):
     # The speed-to-lead clock runs inside the API: a new lead must not wait on an
     # external scheduler to be escalated. `/api/cron/lead-sla` runs the same sweep.
     lead_pipeline.start_watcher()
+    # The same reasoning for every other scheduled job: the external scheduler has never
+    # reached production, so the API runs the `/api/cron/*` jobs itself, once per window
+    # across replicas (see scheduler.py). IN_PROCESS_SCHEDULER=0 turns it off.
+    job_scheduler.start()
     try:
         yield
     finally:
+        await job_scheduler.stop()
         await lead_pipeline.stop_watcher()
         mclient.close()
 
@@ -224,7 +233,11 @@ async def production_security_headers(request: Request, call_next):
     # The hosted website-form page is the one document meant to be framed by an
     # agent's website. It carries its own CSP (`frame-ancestors *`) and holds no
     # session-backed content, so it is exempt from the same-origin framing rule.
-    if not website_forms.HOSTED_PAGE_PATH.match(request.url.path):
+    # The public booking page (`/book/<key>`) is the other: same policy, any framer.
+    if booking.FRAMEABLE_PAGE_PATH.match(request.url.path):
+        response.headers.setdefault("Content-Security-Policy",
+                                    booking.frameable_csp(CONTENT_SECURITY_POLICY))
+    elif not website_forms.HOSTED_PAGE_PATH.match(request.url.path):
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
@@ -253,8 +266,12 @@ def create_access_token(user_id: str, email: str) -> str:
     # jti keeps two tokens issued in the same second from being byte-identical (JWT
     # exp/iat only have second granularity) -- without it, revoking one login's token
     # would also revoke a different login's token that happened to match exactly.
+    now = datetime.now(timezone.utc)
+    # `iat_ms` dates the session to the millisecond, so a password change made a moment
+    # after a sign-in still ends it.
     payload = {"sub": user_id, "email": email, "type": "access", "jti": secrets.token_hex(16),
-               "exp": datetime.now(timezone.utc) + timedelta(days=7)}
+               "iat": int(now.timestamp()), "iat_ms": int(now.timestamp() * 1000),
+               "exp": now + timedelta(days=7)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 def set_auth_cookie(response: Response, token: str):
@@ -347,10 +364,65 @@ async def _is_token_revoked(token: str) -> bool:
     except AttributeError:
         return False
 
+# All a temporary password can reach: who am I, choose a new password, sign out.
+_TEMPORARY_PASSWORD_PATHS = ("/api/auth/me", "/api/auth/change-password", "/api/auth/logout")
+
+def _issued_before_password_change(payload: dict, user: dict) -> bool:
+    """A password change ends every session that existed before it.
+
+    Sessions are dated by `iat_ms`; one issued before tokens carried it is dated from its
+    7-day expiry. The session that made the change is re-issued after it, so it survives.
+    """
+    changed = _parse_dt(user.get("password_changed_at"))
+    if not changed:
+        return False
+    issued_ms = payload.get("iat_ms")
+    if issued_ms is None and payload.get("exp"):
+        issued_ms = (int(payload["exp"]) - int(timedelta(days=7).total_seconds())) * 1000
+    return issued_ms is not None and int(issued_ms) < int(changed.timestamp() * 1000)
+
+def _password_state_refusal(user: dict, issued_ms: Optional[int], request: Request) -> Optional[HTTPException]:
+    """The two password rules every kind of session obeys, JWT or Google: a session from
+    before the password last changed is over, and a temporary password opens nothing but
+    the way to replace it."""
+    changed = _parse_dt(user.get("password_changed_at"))
+    if changed and issued_ms is not None and int(issued_ms) < int(changed.timestamp() * 1000):
+        return HTTPException(status_code=401, detail="Your password was changed. Please sign in again.")
+    if user.get("must_change_password") and request.url.path not in _TEMPORARY_PASSWORD_PATHS:
+        # Someone else knows a temporary password, so it opens nothing until it is replaced.
+        return HTTPException(status_code=403, detail="Choose your own password to continue.")
+    return None
+
+# The session cookie is SameSite=None, so a plain HTML form on any other site carries it:
+# a page a signed-in agent visits could post to /api and act as them. A request with an
+# Authorization header cannot come from such a form (another site cannot set that header
+# unless CORS allows it), so only writes signed in by the cookie alone are checked, and
+# they must come from ClientVerse's own pages. Browsers always say where a write comes
+# from (Sec-Fetch-Site, Origin); a caller that says neither is not a browser.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_OWN_ORIGINS = frozenset(filter(None, (website_forms.normalise_origin(origin) for origin in
+                                       (*CORS_ORIGINS, FRONTEND_URL, _RAILWAY_URL, os.environ.get("PUBLIC_BACKEND_URL")))))
+
+def _cross_site_cookie_write(request: Request) -> bool:
+    if not request.cookies.get("access_token") or request.headers.get("Authorization"):
+        return False
+    if request.method in _SAFE_METHODS:
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site in ("same-origin", "none"):
+        return False
+    origin = request.headers.get("origin")
+    if origin:
+        own = website_forms.normalise_origin(origin)
+        return own not in _OWN_ORIGINS and urlparse(origin).netloc != request.headers.get("host")
+    return site == "cross-site"
+
 async def get_current_user(request: Request) -> dict:
     token = _extract_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    if _cross_site_cookie_write(request):
+        raise HTTPException(status_code=403, detail="This change has to be made from ClientVerse itself.")
     if await _is_token_revoked(token):
         raise HTTPException(status_code=401, detail="Session has been revoked")
     # JWT path
@@ -359,6 +431,11 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        if _issued_before_password_change(payload, user):
+            raise HTTPException(status_code=401, detail="Your password was changed. Please sign in again.")
+        refusal = _password_state_refusal(user, None, request)
+        if refusal:
+            raise refusal
         user.pop("password_hash", None)
         return await resolve_membership(user)
     except jwt.InvalidTokenError:
@@ -377,6 +454,12 @@ async def get_current_user(request: Request) -> dict:
     user = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    # A Google session follows the same password rules as a JWT one: dated by when it was
+    # created (a session with no date predates any change, so it is treated as oldest).
+    created = _parse_dt(sess.get("created_at"))
+    refusal = _password_state_refusal(user, int(created.timestamp() * 1000) if created else 0, request)
+    if refusal:
+        raise refusal
     user.pop("password_hash", None)
     return await resolve_membership(user)
 
@@ -597,9 +680,127 @@ async def assert_workspace(user, workspace_id: str):
 # ----------------------------- Team: invitations & members -----------------------------
 
 INVITE_TTL_DAYS = 7
+# A new account made from an invitation lands straight inside somebody else's team, so it
+# has to meet a minimum. 72 bytes is bcrypt's limit: beyond it the extra characters are
+# silently ignored, so refuse rather than store a password that is not what it looks like.
+NEW_PASSWORD_MIN_LENGTH = 8
+NEW_PASSWORD_MAX_BYTES = 72
+_EXISTING_ACCOUNT_DETAIL = "An account already exists for {email}. Sign in with that email to accept this invitation."
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+async def _find_invitation_by_token(token: str):
+    """Invitations store only a hash of their token. Look the hash up, then confirm the
+    match with a constant-time comparison before trusting it."""
+    token_hash = hash_token(token or "")
+    inv = await db.invitations.find_one({"token_hash": token_hash}, {"_id": 0})
+    if not inv or not hmac.compare_digest(inv.get("token_hash") or "", token_hash):
+        return None
+    return inv
+
+async def _pending_invitation(token: str):
+    inv = await _find_invitation_by_token(token)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    inv = await _expire_if_needed(inv)
+    if inv["status"] == "expired":
+        raise HTTPException(status_code=400, detail="This invitation has expired")
+    if inv["status"] == "revoked":
+        raise HTTPException(status_code=400, detail="This invitation has been revoked")
+    if inv["status"] == "accepted":
+        raise HTTPException(status_code=400, detail="This invitation has already been used")
+    return inv
+
+async def _claim_invitation(inv) -> bool:
+    """Consume a pending invitation exactly once. Status and token hash are part of the
+    filter, so of two concurrent submits only one write matches; the other gets False."""
+    res = await db.invitations.update_one(
+        {"id": inv["id"], "status": "pending", "token_hash": inv["token_hash"]},
+        {"$set": {"status": "accepted", "accepted_at": now_iso(), "token_hash": None}})
+    return res.modified_count == 1
+
+async def _release_invitation(inv):
+    """Undo _claim_invitation when the work it guarded could not be completed."""
+    await db.invitations.update_one(
+        {"id": inv["id"], "status": "accepted", "token_hash": None},
+        {"$set": {"status": "pending", "accepted_at": None, "token_hash": inv["token_hash"]}})
+
+async def _account_exists(email: str) -> bool:
+    return await db.users.find_one({"email": email}, {"_id": 0, "user_id": 1}) is not None
+
+def _one_line(text: str) -> str:
+    return " ".join((text or "").split())
+
+def _new_password_problem(password: str) -> Optional[str]:
+    if len(password) < NEW_PASSWORD_MIN_LENGTH or not password.strip():
+        return f"Choose a password with at least {NEW_PASSWORD_MIN_LENGTH} characters."
+    if len(password.encode()) > NEW_PASSWORD_MAX_BYTES:
+        return f"That password is too long. Please use {NEW_PASSWORD_MAX_BYTES} characters or fewer."
+    return None
+
+# Inviting a teammate by email. The recipient is a person the admin typed in, the message
+# goes out because the admin asked for it, and its wording is fixed system text: internal
+# account mail on the same transactional mailer as alert and digest emails (C-08). It is
+# not client communication, so the consent and approval gate that governs messages to
+# clients (CommunicationMessage, M-01/M-07) does not apply. The link carries the token, so
+# neither the link nor the body is ever logged.
+from html import escape as html_escape
+
+# The example domains reserved by RFC 2606 can never receive mail (EmailStr already refuses
+# the reserved top-level names). Not attempting them also keeps the release smoke -- which
+# invites @example.com addresses, against production -- true to its promise that it sends
+# nothing outbound.
+_RESERVED_EMAIL_DOMAINS = ("example.com", "example.net", "example.org")
+
+
+def _undeliverable_address(email: str) -> bool:
+    domain = email.rsplit("@", 1)[-1].lower().rstrip(".")
+    return any(domain == reserved or domain.endswith(f".{reserved}") for reserved in _RESERVED_EMAIL_DOMAINS)
+
+def _invitation_email(inviter_name: str, org_name: str, role: str, invite_url: str):
+    inviter, org = _one_line(inviter_name), _one_line(org_name)
+    role_label = "an admin" if role == "admin" else "a team member"
+    subject = f"{inviter} invited you to join {org} on ClientVerse"
+    url = html_escape(invite_url, quote=True)
+    body = (
+        "<div style=\"font-family:Arial,Helvetica,sans-serif;max-width:520px;color:#0a1628;font-size:15px;line-height:1.55\">"
+        "<p>Hello,</p>"
+        f"<p><strong>{html_escape(inviter)}</strong> invited you to join <strong>{html_escape(org)}</strong> "
+        f"on ClientVerse as {role_label}.</p>"
+        "<p style=\"margin:28px 0\">"
+        f"<a href=\"{url}\" style=\"background:#0a1628;color:#ffffff;padding:12px 22px;border-radius:8px;"
+        "text-decoration:none;font-weight:bold;display:inline-block\">Accept invitation</a></p>"
+        f"<p style=\"color:#5b6577;font-size:13px\">This invitation expires in {INVITE_TTL_DAYS} days and can be used once. "
+        "If the button does not work, copy this link into your browser:<br>"
+        f"<span style=\"word-break:break-all\">{url}</span></p>"
+        "<p style=\"color:#5b6577;font-size:13px\">If you were not expecting this invitation, you can ignore this email.</p>"
+        "</div>"
+    )
+    return subject, body
+
+async def _email_invitation(inv_id: str, email: str, role: str, invite_url: str, inviter: dict, tenant_id: str) -> str:
+    """Email the invitation when the mailer is configured, and record the outcome on it:
+    "sent" only for a send the provider accepted, so the Team screen never says an email
+    went out when it did not; otherwise "failed", or "not_sent" when there is no mailer or
+    the address is a reserved one that cannot receive mail."""
+    if not email_configured() or _undeliverable_address(email):
+        await db.invitations.update_one({"id": inv_id}, {"$set": {"email_status": "not_sent"}})
+        return "not_sent"
+    tenant = await db.tenants.find_one({"tenant_id": tenant_id}, {"_id": 0})
+    org = (tenant or {}).get("name") or "your team"
+    inviter_name = inviter.get("name") or inviter.get("email") or "A teammate"
+    subject, body = _invitation_email(inviter_name, org, role, invite_url)
+    try:
+        await send_email(email, subject, body)
+    except Exception as exc:
+        # send_email fails with its own fixed reason codes; anything else is named by type.
+        reason = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+        logger.warning("Invitation %s was not emailed: %s", inv_id, reason)
+        await db.invitations.update_one({"id": inv_id}, {"$set": {"email_status": "failed"}})
+        return "failed"
+    await db.invitations.update_one({"id": inv_id}, {"$set": {"email_status": "sent", "emailed_at": now_iso()}})
+    return "sent"
 
 async def count_active_admins(tenant_id):
     return await db.memberships.count_documents({"tenant_id": tenant_id, "role": "admin", "status": "active"})
@@ -617,11 +818,13 @@ async def _expire_if_needed(inv):
             pass
     return inv
 
-def _invite_public(inv, tenant_name=None):
+def _invite_public(inv, tenant_name=None, inviter_name=None):
     return {"id": inv["id"], "email": inv["email"], "role": inv["role"], "status": inv["status"],
             "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
             "expires_at": inv.get("expires_at"), "accepted_at": inv.get("accepted_at"),
-            "revoked_at": inv.get("revoked_at"), "tenant_name": tenant_name}
+            "revoked_at": inv.get("revoked_at"), "tenant_name": tenant_name,
+            "invited_by_name": inviter_name, "email_status": inv.get("email_status"),
+            "emailed_at": inv.get("emailed_at")}
 
 class InviteInput(BaseModel):
     email: EmailStr
@@ -629,6 +832,11 @@ class InviteInput(BaseModel):
 
 class TokenInput(BaseModel):
     token: str
+
+class InviteSignupInput(BaseModel):
+    token: str
+    name: str
+    password: str
 
 class RoleInput(BaseModel):
     role: str
@@ -671,7 +879,10 @@ async def create_invitation(inp: InviteInput, user=Depends(require_role("admin")
            "accepted_at": None, "revoked_at": None, "created_at": now_iso()}
     await db.invitations.insert_one(dict(inv))
     await record_event("team.invitation_created", "invitation", inv["id"], user["tenant_id"], user["email"], payload={"email": email, "role": inp.role})
-    return {"invitation": _invite_public(inv), "invite_token": token, "invite_url": f"{FRONTEND_URL}/invite?token={token}"}
+    invite_url = f"{FRONTEND_URL}/invite?token={token}"
+    inv["email_status"] = await _email_invitation(inv["id"], email, inp.role, invite_url, user, user["tenant_id"])
+    return {"invitation": _invite_public(inv), "invite_token": token, "invite_url": invite_url,
+            "emailed": inv["email_status"] == "sent", "email_configured": email_configured()}
 
 @api.post("/team/invitations/{inv_id}/resend")
 async def resend_invitation(inv_id: str, user=Depends(require_role("admin"))):
@@ -686,7 +897,10 @@ async def resend_invitation(inv_id: str, user=Depends(require_role("admin"))):
         "status": "pending", "token_hash": hash_token(token), "invited_at": now_iso(), "invited_by": user["email"],
         "expires_at": (datetime.now(timezone.utc) + timedelta(days=INVITE_TTL_DAYS)).isoformat()}})
     await record_event("team.invitation_resent", "invitation", inv_id, user["tenant_id"], user["email"], payload={"email": inv["email"]})
-    return {"invite_token": token, "invite_url": f"{FRONTEND_URL}/invite?token={token}"}
+    invite_url = f"{FRONTEND_URL}/invite?token={token}"
+    email_status = await _email_invitation(inv_id, inv["email"], inv["role"], invite_url, user, user["tenant_id"])
+    return {"invite_token": token, "invite_url": invite_url, "emailed": email_status == "sent",
+            "email_configured": email_configured()}
 
 @api.post("/team/invitations/{inv_id}/revoke")
 async def revoke_invitation(inv_id: str, user=Depends(require_role("admin"))):
@@ -702,27 +916,21 @@ async def revoke_invitation(inv_id: str, user=Depends(require_role("admin"))):
 
 @api.get("/team/invitations/lookup")
 async def lookup_invitation(token: str = Query(...)):
-    inv = await db.invitations.find_one({"token_hash": hash_token(token)}, {"_id": 0})
+    inv = await _find_invitation_by_token(token)
     if not inv:
         raise HTTPException(status_code=404, detail="Invitation not found")
     inv = await _expire_if_needed(inv)
     tenant = await db.tenants.find_one({"tenant_id": inv["tenant_id"]}, {"_id": 0})
-    return _invite_public(inv, tenant_name=(tenant or {}).get("name"))
+    inviter = await db.users.find_one({"email": inv.get("invited_by")}, {"_id": 0, "name": 1}) if inv.get("invited_by") else None
+    return _invite_public(inv, tenant_name=(tenant or {}).get("name"), inviter_name=(inviter or {}).get("name"))
 
 @api.post("/team/invitations/accept")
 async def accept_invitation(inp: TokenInput, user=Depends(get_current_user)):
-    inv = await db.invitations.find_one({"token_hash": hash_token(inp.token)}, {"_id": 0})
-    if not inv:
-        raise HTTPException(status_code=404, detail="Invitation not found")
-    inv = await _expire_if_needed(inv)
-    if inv["status"] == "expired":
-        raise HTTPException(status_code=400, detail="This invitation has expired")
-    if inv["status"] == "revoked":
-        raise HTTPException(status_code=400, detail="This invitation has been revoked")
-    if inv["status"] == "accepted":
-        raise HTTPException(status_code=400, detail="This invitation has already been used")
+    inv = await _pending_invitation(inp.token)
     if user["email"].lower() != inv["email"].lower():
         raise HTTPException(status_code=403, detail=f"This invitation was sent to {inv['email']}. Sign in with that email to accept.")
+    if not await _claim_invitation(inv):
+        raise HTTPException(status_code=400, detail="This invitation has already been used")
     tenant_id = inv["tenant_id"]
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"tenant_id": tenant_id, "role": inv["role"]}})
     existing = await db.memberships.find_one({"tenant_id": tenant_id, "user_id": user["user_id"]}, {"_id": 0})
@@ -733,9 +941,172 @@ async def accept_invitation(inp: TokenInput, user=Depends(get_current_user)):
         await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": tenant_id, "user_id": user["user_id"], "email": user["email"],
             "role": inv["role"], "status": "active", "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
-    await db.invitations.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": now_iso(), "token_hash": None}})
     await record_event("team.invitation_accepted", "invitation", inv["id"], tenant_id, user["email"], payload={"email": user["email"], "role": inv["role"]})
     return {"ok": True, "tenant_id": tenant_id, "role": inv["role"]}
+
+@api.post("/team/invitations/accept-new")
+async def accept_invitation_new_account(inp: InviteSignupInput, response: Response):
+    """Create an account from an invitation, directly inside the inviting team.
+
+    For someone who has never used ClientVerse. Unlike /auth/register it never creates an
+    organisation: the invitation fixes the tenant, the role and the email, and the session
+    is issued the way login issues it. An email that already has an account is sent to
+    sign in and accept instead, so this path can never put a second password on an
+    existing identity. That refusal tells the token holder nothing new: the invited email
+    is already on the invitation, and /auth/register answers the same question for any
+    address."""
+    inv = await _pending_invitation(inp.token)
+    email = inv["email"].lower()
+    name = _one_line(inp.name)
+    if not name:
+        raise HTTPException(status_code=422, detail="Please enter your name.")
+    if len(name) > 120:
+        raise HTTPException(status_code=422, detail="Please use a shorter name (120 characters or fewer).")
+    problem = _new_password_problem(inp.password)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    if await _login_is_locked(email):
+        # The brute-force lock login honours: a locked address does not get a fresh
+        # session through a side door.
+        raise HTTPException(status_code=429, detail="Too many sign-in attempts for this email. Please wait a few minutes and try again.")
+    if await _account_exists(email):
+        raise HTTPException(status_code=409, detail=_EXISTING_ACCOUNT_DETAIL.format(email=email))
+    if not await _claim_invitation(inv):
+        raise HTTPException(status_code=400, detail="This invitation has already been used")
+    tenant_id, role, uid = inv["tenant_id"], inv["role"], new_id("user")
+    try:
+        await db.users.insert_one({
+            "user_id": uid, "email": email, "name": name, "role": role,
+            "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
+            "picture": None, "created_at": now_iso(), "auth": "password",
+        })
+    except Exception as exc:
+        # Hand the invitation back whatever went wrong. A duplicate key means an account
+        # for this email appeared after the check above (a concurrent sign-up); the unique
+        # email index refused the second one, and the invitation can still be accepted by
+        # signing in.
+        await _release_invitation(inv)
+        if getattr(exc, "code", None) == 11000 or "E11000" in str(exc):
+            raise HTTPException(status_code=409, detail=_EXISTING_ACCOUNT_DETAIL.format(email=email))
+        raise
+    await db.memberships.insert_one({
+        "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
+        "role": role, "status": "active", "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
+        "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso(),
+    })
+    await record_event("team.invitation_accepted", "invitation", inv["id"], tenant_id, email,
+                       payload={"email": email, "role": role, "new_account": True})
+    await _reset_login_failures(email)
+    token = create_access_token(uid, email)
+    set_auth_cookie(response, token)
+    u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
+    u = await resolve_membership(u)
+    return {"user": u, "token": token, "tenant_id": tenant_id, "role": role}
+
+class PasswordChangeInput(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(max_length=256)
+
+@api.post("/auth/change-password")
+async def change_password(inp: PasswordChangeInput, request: Request, response: Response,
+                          user=Depends(get_current_user)):
+    """Replace your own password, given the current one.
+
+    Every other session ends (tokens issued before the change are refused) and this
+    browser gets a fresh session, so the person changing it stays signed in. Wrong
+    current passwords count towards the same lockout as sign-in, so this is no side
+    door for guessing."""
+    email = user["email"].lower()
+    record = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 1})
+    if not record or not record.get("password_hash"):
+        raise HTTPException(status_code=400, detail="You sign in with Google, so there is no ClientVerse password to change.")
+    if await _login_is_locked(email):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please wait a few minutes and try again.")
+    if not verify_password(inp.current_password, record["password_hash"]):
+        await _record_login_failure(email)
+        raise HTTPException(status_code=400, detail="Your current password isn't right.")
+    problem = _new_password_problem(inp.new_password)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    if inp.new_password == inp.current_password:
+        raise HTTPException(status_code=422, detail="Choose a password different from your current one.")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"password_hash": hash_password(inp.new_password), "password_changed_at": now_iso(),
+                  "must_change_password": False}})
+    await _reset_login_failures(email)
+    old_token = _extract_token(request)
+    if old_token:
+        await _revoke_token(old_token)
+    # Google sign-in sessions end too; this browser carries on with the new token below.
+    await db.user_sessions.delete_many({"user_id": user["user_id"]})
+    token = create_access_token(user["user_id"], email)
+    set_auth_cookie(response, token)
+    await record_event("auth.password_changed", "user", user["user_id"], user["tenant_id"], email,
+                       payload={"temporary_cleared": bool(user.get("must_change_password"))})
+    u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
+    return {"user": await resolve_membership(u), "token": token}
+
+def _temporary_password() -> str:
+    # Easy to read aloud or type from a text message, and 70+ bits of randomness.
+    alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "-".join("".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3))
+
+@api.post("/team/members/{target_user_id}/reset-password")
+async def reset_member_password(target_user_id: str, user=Depends(require_role("admin"))):
+    """Give a teammate a temporary password, for a forgotten one.
+
+    The teammate's sessions all end, and on their next sign-in they must choose their
+    own password before anything else. The temporary password is returned once, to the
+    admin, and never stored or logged in plain text. Your own password is changed under
+    Settings instead, with your current one."""
+    if target_user_id == user["user_id"]:
+        raise HTTPException(status_code=400, detail="Change your own password under Settings.")
+    m = await db.memberships.find_one({"tenant_id": user["tenant_id"], "user_id": target_user_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Member not found")
+    target = await db.users.find_one({"user_id": target_user_id, "tenant_id": user["tenant_id"]},
+                                     {"_id": 0, "password_hash": 1, "email": 1})
+    if not target or not target.get("password_hash"):
+        raise HTTPException(status_code=400, detail="This teammate signs in with Google, so there is no password to reset.")
+    temporary = _temporary_password()
+    await db.users.update_one(
+        {"user_id": target_user_id, "tenant_id": user["tenant_id"]},
+        {"$set": {"password_hash": hash_password(temporary), "password_changed_at": now_iso(),
+                  "must_change_password": True}})
+    await db.user_sessions.delete_many({"user_id": target_user_id})
+    await _reset_login_failures(target["email"].lower())
+    await record_event("team.password_reset", "membership", target_user_id, user["tenant_id"], user["email"],
+                       payload={"target": m["email"]})
+    return {"ok": True, "email": m["email"], "temporary_password": temporary}
+
+class OrganizationInput(BaseModel):
+    name: str
+
+
+@api.get("/organization")
+async def get_organization(user=Depends(get_current_user)):
+    """The business this account belongs to, by the name teammates and invitations see."""
+    tenant = await db.tenants.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0, "name": 1})
+    return {"name": (tenant or {}).get("name") or ""}
+
+
+@api.patch("/organization")
+async def rename_organization(inp: OrganizationInput, user=Depends(require_role("admin"))):
+    """Rename the business, e.g. from the "Jasmine Parker's Org" made at sign-up to
+    "Parker Homes". Invitations and invitation emails show this name."""
+    name = " ".join(inp.name.split())
+    if not name or len(name) > 80:
+        raise HTTPException(status_code=422, detail="Use a business name of 1 to 80 characters.")
+    tenant = await db.tenants.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0, "name": 1})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    if tenant.get("name") != name:
+        await db.tenants.update_one({"tenant_id": user["tenant_id"]},
+                                    {"$set": {"name": name, "updated_at": now_iso()}})
+        await record_event("organization.renamed", "tenant", user["tenant_id"], user["tenant_id"],
+                           user["email"], payload={"from": tenant.get("name"), "to": name})
+    return {"name": name}
 
 @api.patch("/team/members/{target_user_id}/role")
 async def change_member_role(target_user_id: str, inp: RoleInput, user=Depends(require_role("admin"))):
@@ -823,6 +1194,7 @@ async def create_company(inp: CompanyInput, user=Depends(get_current_user)):
 class ContactInput(BaseModel):
     name: str
     email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(default=None, max_length=60)
     role: Optional[str] = None
     company_id: Optional[str] = None
     influence: Optional[str] = "medium"
@@ -850,6 +1222,7 @@ async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
     payload = inp.model_dump()
     if payload.get("email") is not None:
         payload["email"] = str(payload["email"])
+    payload["phone"] = (payload.get("phone") or "").strip() or None
     if payload.get("company_id"):
         known = await db.companies.find_one(
             {"id": payload["company_id"], "tenant_id": user["tenant_id"]}, {"_id": 1})
@@ -859,7 +1232,9 @@ async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
             raise HTTPException(status_code=422, detail="Unknown company_id")
     doc = {"id": new_id("ct"), "tenant_id": user["tenant_id"], "created_at": now_iso(),
            "updated_at": now_iso(), "archived_at": None, "owner": user["email"],
-           "phone": None, "title": None,
+           "title": None,
+           # Matched against website leads, so a lead from this person finds this record.
+           "phone_digits": crm_core.phone_digits(payload["phone"]) or None,
            "history": [crm_core.created_history(user["email"])],
            **payload}
     await db.contacts.insert_one(doc)
@@ -900,13 +1275,28 @@ async def list_opps(
     order: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
+    expand: Optional[str] = None,
     user=Depends(get_current_user),
 ):
     filters = {k: v for k, v in (("stage", stage), ("owner", owner),
                                  ("company_id", company_id)) if v}
-    return await crm_core.query_records(
+    deals = await crm_core.query_records(
         db, crm_core.DEALS, user["tenant_id"], q=q, filters=filters, sort=sort,
         order=order, limit=limit, offset=offset, include_archived=include_archived)
+    if "contacts" in (expand or "").split(","):
+        # The pipeline board shows who each deal is with. One read for the whole page
+        # rather than one per card, and tenant-scoped like every other read: an id that
+        # is not this tenant's resolves to nothing.
+        contact_ids = list({cid for deal in deals for cid in deal.get("contact_ids") or []})
+        found = await db.contacts.find(
+            {"tenant_id": user["tenant_id"], "id": {"$in": contact_ids}},
+            {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(len(contact_ids) or 1)
+        by_id = {contact["id"]: contact for contact in found}
+        for deal in deals:
+            deal["contacts"] = [
+                {"id": cid, "name": by_id[cid].get("name") or by_id[cid].get("email")}
+                for cid in deal.get("contact_ids") or [] if cid in by_id]
+    return deals
 
 @api.post("/opportunities")
 async def create_opp(inp: OppInput, user=Depends(get_current_user)):
@@ -953,10 +1343,12 @@ class StageInput(BaseModel):
 @api.patch("/opportunities/{opp_id}/stage")
 async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user)):
     # Validated against this tenant's configured pipeline, not a module constant, so a
-    # tenant that added a stage can actually move deals into it.
-    stages = await crm_core.stage_keys(db, user["tenant_id"])
-    if inp.stage not in stages:
+    # tenant that added a stage can actually move deals into it. Won and lost are read
+    # from the same pipeline: a tenant that renamed "closed_won" to "signed" still won.
+    classes = await crm_core.stage_classes(db, user["tenant_id"])
+    if inp.stage not in set().union(*classes.values()):
         raise HTTPException(status_code=400, detail="Invalid stage")
+    outcome = crm_core.classify_stage(inp.stage, classes)
     opp = await db.opportunities.find_one({"id": opp_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not opp:
         raise HTTPException(status_code=404, detail="Not found")
@@ -967,19 +1359,27 @@ async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user
         {"$set": {"stage": inp.stage, "updated_at": now_iso()},
          "$push": {"stage_history": transition,
                    "history": crm_core.stage_history(user["email"], transition)}})
-    et = "opportunity.closed_won" if inp.stage == "closed_won" else ("opportunity.closed_lost" if inp.stage == "closed_lost" else "opportunity.stage_changed")
+    et = {crm_core.STAGE_WON: "opportunity.closed_won",
+          crm_core.STAGE_LOST: "opportunity.closed_lost"}.get(outcome, "opportunity.stage_changed")
     await record_event(et, "opportunity", opp_id, user["tenant_id"], user["email"], payload={"from": opp["stage"], "to": inp.stage})
-    # auto-create workspace on won
-    if inp.stage == "closed_won" and opp.get("company_id"):
-        exists = await db.workspaces.find_one({"opportunity_id": opp_id, "tenant_id": user["tenant_id"]})
-        if not exists:
+    # A won deal with a company becomes a client workspace. Without a company there is
+    # nothing to open one for, and the response says so rather than letting the screen
+    # announce a workspace that does not exist.
+    workspace_id, workspace_created = None, False
+    if outcome == crm_core.STAGE_WON and opp.get("company_id"):
+        exists = await db.workspaces.find_one({"opportunity_id": opp_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "id": 1})
+        if exists:
+            workspace_id = exists.get("id")
+        else:
             wid = new_id("ws")
             await db.workspaces.insert_one({"id": wid, "tenant_id": user["tenant_id"], "name": opp["name"],
                 "company_id": opp["company_id"], "opportunity_id": opp_id, "stage": "onboard",
                 "created_at": now_iso()})
             await record_event("client_workspace.created", "workspace", wid, user["tenant_id"], user["email"], workspace_id=wid, payload={"from_opportunity": opp_id})
             await record_event("onboarding.started", "workspace", wid, user["tenant_id"], user["email"], workspace_id=wid)
-    return {"ok": True, "stage": inp.stage}
+            workspace_id, workspace_created = wid, True
+    return {"ok": True, "stage": inp.stage, "outcome": outcome,
+            "workspace_created": workspace_created, "workspace_id": workspace_id}
 
 # ----------------------------- Workspaces -----------------------------
 
@@ -2163,8 +2563,7 @@ async def cron_commitment_risk(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "commitment-risk", run_id,
-        lambda: evaluate_commitment_risk(tenant_id=None, actor="cron"), entry_id))
+        "commitment-risk", run_id, _cron_job("commitment-risk", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2258,6 +2657,20 @@ async def _begin_cron(request: Request, job: str):
     return run_id, entry_id
 
 
+# The actor a job's audit events carry when an HTTP request ran it. The in-process
+# scheduler runs the same jobs as `scheduler.ACTOR`.
+CRON_ACTOR = "cron"
+
+
+def _cron_job(job: str, run_id: str):
+    """What `/api/cron/<job>` runs, as the factory `_run_cron_job` takes.
+
+    The work is looked up in `CRON_JOBS`, the table the in-process scheduler runs from as
+    well, so a route and the scheduler cannot run different code for the same job.
+    """
+    return lambda: CRON_JOBS[job](run_id, CRON_ACTOR)
+
+
 def _authorize_cron(request: Request) -> None:
     if not _cron_secret_matches(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -2273,12 +2686,8 @@ async def cron_work_queue(request: Request):
     run_id, entry_id = await _begin_cron(request, "work-queue")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    # Each tick gets a distinct worker identity so lease-ownership checks can tell a
-    # stale tick apart from the one that replaced it.
     spawn_background(_run_cron_job(
-        "work-queue", run_id,
-        lambda: run_worker_tick(work_queue, WORK_QUEUE_HANDLERS,
-                                worker_id=f"cron-{run_id}", queue_name=SYSTEM_QUEUE), entry_id))
+        "work-queue", run_id, _cron_job("work-queue", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2295,9 +2704,7 @@ async def cron_detect_recovery(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "detect-recovery", run_id,
-        lambda: detectors.run_detection_all_tenants(db, work_queue, actor="cron",
-                                                    audit=record_event), entry_id))
+        "detect-recovery", run_id, _cron_job("detect-recovery", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2312,7 +2719,22 @@ async def cron_lead_sla(request: Request):
     run_id, entry_id = await _begin_cron(request, "lead-sla")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-    spawn_background(_run_cron_job("lead-sla", run_id, lambda: lead_pipeline.sweep(), entry_id))
+    spawn_background(_run_cron_job("lead-sla", run_id, _cron_job("lead-sla", run_id), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
+@api.post("/cron/booking-reminders")
+async def cron_booking_reminders(request: Request):
+    """Send due booking reminders (each exactly once) and the booking emails admins approved.
+
+    The in-process scheduler runs the same sweep every five minutes; a reminder is claimed
+    with a conditional update, so running both never reminds twice.
+    """
+    run_id, entry_id = await _begin_cron(request, "booking-reminders")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job("booking-reminders", run_id,
+                                   _cron_job("booking-reminders", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2323,7 +2745,7 @@ async def cron_second_chance(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "second-chance", run_id, lambda: run_second_chance_sweep(actor="cron"), entry_id))
+        "second-chance", run_id, _cron_job("second-chance", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2334,7 +2756,7 @@ async def cron_next_best_actions(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "next-best-actions", run_id, lambda: nba_service.generate_all_tenants(db, actor="cron"), entry_id))
+        "next-best-actions", run_id, _cron_job("next-best-actions", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2349,8 +2771,7 @@ async def cron_recovery_strategies(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "recovery-strategies", run_id,
-        lambda: recovery_service.compose_all_tenants(db, work_queue, actor="cron"), entry_id))
+        "recovery-strategies", run_id, _cron_job("recovery-strategies", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2366,9 +2787,7 @@ async def cron_recovery_runner(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "recovery-runner", run_id,
-        lambda: recovery_runner_service.run_ready_cases_all_tenants(
-            db, work_queue, actor="cron", audit=record_event), entry_id))
+        "recovery-runner", run_id, _cron_job("recovery-runner", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -2379,7 +2798,7 @@ async def cron_approval_expiry(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "approval-expiry", run_id, lambda: approval_service.expire_due(db), entry_id))
+        "approval-expiry", run_id, _cron_job("approval-expiry", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
@@ -3048,7 +3467,7 @@ async def cron_inbound_email(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "inbound-email", run_id, lambda: run_inbound_email_sweep(actor="cron"), entry_id))
+        "inbound-email", run_id, _cron_job("inbound-email", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -3063,8 +3482,7 @@ async def cron_reconcile_unknown(request: Request):
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
     spawn_background(_run_cron_job(
-        "reconcile-unknown", run_id, lambda: run_reconcile_unknown_sweep(actor="cron"),
-        entry_id))
+        "reconcile-unknown", run_id, _cron_job("reconcile-unknown", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
@@ -3603,22 +4021,25 @@ async def workspace_activity(ws_id: str, user=Depends(get_current_user)):
     conns = await db.integration_connections.find({"tenant_id": user["tenant_id"]}, SAFE_CONN_FIELDS).to_list(50)
     return {"communications": comms, "meetings": meetings, "billing": billing, "connections": conns}
 
+async def run_integration_sync_sweep(actor: str = "cron") -> None:
+    """Sync every active or degraded connection, then re-evaluate its tenant's alerts."""
+    actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
+    for c in actives[:200]:
+        try:
+            await run_sync(c["tenant_id"], c["provider"], actor)
+            await evaluate_alerts(c["tenant_id"])
+        except Exception:
+            pass
+
+
 @api.post("/cron/integration-sync")
 async def cron_integration_sync(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
     run_id, entry_id = await _begin_cron(request, "integration-sync")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-
-    async def _sweep():
-        actives = await db.integration_connections.find({"status": {"$in": ["active", "degraded"]}}, {"_id": 0}).to_list(500)
-        for c in actives[:200]:
-            try:
-                await run_sync(c["tenant_id"], c["provider"], "cron")
-                await evaluate_alerts(c["tenant_id"])
-            except Exception:
-                pass
-    spawn_background(_run_cron_job("integration-sync", run_id, _sweep, entry_id))
+    spawn_background(_run_cron_job(
+        "integration-sync", run_id, _cron_job("integration-sync", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 # ============================================================================
@@ -4098,9 +4519,22 @@ async def deliver_digest(tenant_id, date_str, force=False):
 
 # ---- Endpoints ----
 
+def _notification_scope(user):
+    """The notifications one person sees: the ones addressed to them, and team-wide ones.
+
+    Team-wide means no `user_id`. Task-assignment notices stored before they were
+    addressed to a user also have none, but they do name their `recipient`; those stay
+    with the person they name instead of telling everyone "a task was assigned to you".
+    """
+    recipient = {"$regex": f"^{re.escape(str(user.get('email') or ''))}$", "$options": "i"}
+    return {"tenant_id": user["tenant_id"],
+            "$or": [{"user_id": user["user_id"]},
+                    {"user_id": None, "type": {"$ne": "assignment"}},
+                    {"user_id": None, "type": "assignment", "recipient": recipient}]}
+
 @api.get("/notifications")
 async def list_notifications(user=Depends(get_current_user)):
-    q = {"tenant_id": user["tenant_id"], "$or": [{"user_id": None}, {"user_id": user["user_id"]}]}
+    q = _notification_scope(user)
     rows = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
     unread = await db.notifications.count_documents({**q, "read": False})
     active_alerts = await db.alerts.find(
@@ -4125,14 +4559,15 @@ async def list_notifications(user=Depends(get_current_user)):
 
 @api.post("/notifications/{nid}/read")
 async def mark_notification_read(nid: str, user=Depends(get_current_user)):
-    r = await db.notifications.update_one({"id": nid, "tenant_id": user["tenant_id"]}, {"$set": {"read": True}})
+    # Only a notification this person can see: someone else's is "not found", not "read".
+    r = await db.notifications.update_one({"id": nid, **_notification_scope(user)}, {"$set": {"read": True}})
     if not r.matched_count:
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
 
 @api.post("/notifications/read-all")
 async def mark_all_read(user=Depends(get_current_user)):
-    await db.notifications.update_many({"tenant_id": user["tenant_id"], "$or": [{"user_id": None}, {"user_id": user["user_id"]}], "read": False}, {"$set": {"read": True}})
+    await db.notifications.update_many({**_notification_scope(user), "read": False}, {"$set": {"read": True}})
     return {"ok": True}
 
 @api.get("/notifications/preferences")
@@ -4173,36 +4608,56 @@ async def digest_run(user=Depends(require_role("admin"))):
 async def alerts_escalate(user=Depends(require_role("admin"))):
     return {"escalated": await run_escalations(user["tenant_id"])}
 
+async def run_daily_digest_sweep() -> None:
+    """Escalate and deliver the digest for every tenant whose local digest hour it is."""
+    for t in await db.tenants.find({}, {"_id": 0, "tenant_id": 1}).to_list(500):
+        tid = t["tenant_id"]
+        try:
+            prefs = await get_prefs(tid)
+            if not prefs.get("daily_digest", True):
+                continue
+            tz = ZoneInfo(prefs.get("timezone", "UTC"))
+            local = datetime.now(tz)
+            hour = int(str(prefs.get("digest_time", "08:00")).split(":")[0])
+            if local.hour == hour:
+                await run_escalations(tid)
+                await deliver_digest(tid, local.strftime("%Y-%m-%d"))
+        except Exception:
+            pass
+
+
 @api.post("/cron/daily-digest")
 async def cron_daily_digest(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
     run_id, entry_id = await _begin_cron(request, "daily-digest")
     if entry_id is None:
         return {"accepted": True, "duplicate": True, "run_id": run_id}
-
-    async def _sweep():
-        for t in await db.tenants.find({}, {"_id": 0, "tenant_id": 1}).to_list(500):
-            tid = t["tenant_id"]
-            try:
-                prefs = await get_prefs(tid)
-                if not prefs.get("daily_digest", True):
-                    continue
-                tz = ZoneInfo(prefs.get("timezone", "UTC"))
-                local = datetime.now(tz)
-                hour = int(str(prefs.get("digest_time", "08:00")).split(":")[0])
-                if local.hour == hour:
-                    await run_escalations(tid)
-                    await deliver_digest(tid, local.strftime("%Y-%m-%d"))
-            except Exception:
-                pass
-    spawn_background(_run_cron_job("daily-digest", run_id, _sweep, entry_id))
+    spawn_background(_run_cron_job(
+        "daily-digest", run_id, _cron_job("daily-digest", run_id), entry_id))
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
 # Client portal, field operations, commercial coordination, and safe automation
 # are registered here so they inherit the existing tenant, event, and permission helpers.
 register_client_value_routes(api, db, new_id, now_iso, record_event, assert_workspace, get_current_user, require_role)
-crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+
+
+async def _after_activity_logged(activity: dict) -> None:
+    # A call, email, meeting or text logged on a lead's contact is the response its
+    # speed-to-lead clock is waiting for. `lead_pipeline` is created just below and is
+    # looked up when an activity is logged, by which time it always exists.
+    await lead_pipeline.recognise_activity(activity)
+
+
+async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: str) -> None:
+    # A call-back task ticked off on the Tasks page is the lead's response, so the lead
+    # pipeline hears about it at once. `lead_pipeline` is created just below.
+    await lead_pipeline.task_status_changed(task, previous, actor)
+
+
+crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
+                                  on_activity_logged=_after_activity_logged,
+                                  on_task_status_changed=_lead_task_status_changed)
 # Website forms: the public door an agent's website posts leads through, and the
 # automation that turns each lead into a contact, an owner, a deal, a call-back task and
 # an alert within seconds. The legacy intake-token door runs through the same pipeline.
@@ -4213,6 +4668,16 @@ lead_pipeline = website_forms.register_website_form_routes(
     public_base_url=FRONTEND_URL, encrypt=enc_secret, decrypt=dec_secret)
 recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user,
                                        require_role, lead_pipeline=lead_pipeline)
+# Online booking (M-05): booking pages, agents' hours, free times, and a public door that
+# books a real time and runs the person through the lead pipeline above. Manage links are
+# signed with a key derived from JWT_SECRET; Google Calendar busy times are subtracted
+# when that calendar is connected.
+booking_service = booking.register_booking_routes(
+    api, db, pipeline=lead_pipeline, new_id=new_id, now_iso=now_iso, record_event=record_event,
+    get_current_user=get_current_user, require_role=require_role,
+    manage_secret=hashlib.sha256(f"booking-manage|{JWT_SECRET}".encode()).digest(),
+    public_base_url=FRONTEND_URL, send_email=send_email, email_configured=email_configured,
+    google_access_token=_google_access_token)
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
@@ -4368,6 +4833,37 @@ async def run_second_chance_sweep(actor: str = "cron") -> dict:
         except Exception:
             logger.exception("Failed to queue a recommendation refresh for a tenant")
     return summary
+
+
+# What every scheduled job runs, keyed by its `/api/cron/<path>`. Each entry takes the run
+# id and the actor to record. The routes (through `_cron_job`) and the in-process
+# scheduler both run from this one table, so neither can drift into its own copy.
+CRON_JOBS: dict[str, scheduler.JobFn] = {
+    "commitment-risk": lambda run_id, actor: evaluate_commitment_risk(tenant_id=None, actor=actor),
+    # Each tick gets a distinct worker identity so lease-ownership checks can tell a
+    # stale tick apart from the one that replaced it.
+    "work-queue": lambda run_id, actor: run_worker_tick(
+        work_queue, WORK_QUEUE_HANDLERS, worker_id=f"{actor}-{run_id}", queue_name=SYSTEM_QUEUE),
+    "detect-recovery": lambda run_id, actor: detectors.run_detection_all_tenants(
+        db, work_queue, actor=actor, audit=record_event),
+    "lead-sla": lambda run_id, actor: lead_pipeline.sweep(),
+    "booking-reminders": lambda run_id, actor: booking_service.send_due_reminders(),
+    "second-chance": lambda run_id, actor: run_second_chance_sweep(actor=actor),
+    "next-best-actions": lambda run_id, actor: nba_service.generate_all_tenants(db, actor=actor),
+    "recovery-strategies": lambda run_id, actor: recovery_service.compose_all_tenants(
+        db, work_queue, actor=actor),
+    "recovery-runner": lambda run_id, actor: recovery_runner_service.run_ready_cases_all_tenants(
+        db, work_queue, actor=actor, audit=record_event),
+    "approval-expiry": lambda run_id, actor: approval_service.expire_due(db),
+    "inbound-email": lambda run_id, actor: run_inbound_email_sweep(actor=actor),
+    "reconcile-unknown": lambda run_id, actor: run_reconcile_unknown_sweep(actor=actor),
+    "integration-sync": lambda run_id, actor: run_integration_sync_sweep(actor=actor),
+    "daily-digest": lambda run_id, actor: run_daily_digest_sweep(),
+}
+
+# Started and stopped by `lifespan()`, beside the lead watcher.
+job_scheduler = scheduler.InProcessScheduler(db, CRON_JOBS)
+
 
 def resolve_git_sha() -> Optional[str]:
     """Non-secret deploy identity for /api/health. Never invent; null if unset."""

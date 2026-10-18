@@ -1,7 +1,7 @@
 import {
   Activity, BadgeCheck, BarChart3, Bell, BookOpenCheck, Boxes, BriefcaseBusiness, CalendarDays,
   CircleDollarSign, ClipboardCheck, FileInput, GitBranch, Globe, Handshake, Headphones,
-  Inbox, LayoutDashboard, Mail, MessageSquareText, Phone, Settings, ShieldCheck,
+  Inbox, LayoutDashboard, ListTodo, Mail, MessageSquareText, Phone, Settings, ShieldCheck,
   Sparkles, Terminal, UserPlus, Users, Workflow,
 } from "lucide-react";
 
@@ -15,6 +15,7 @@ export const CLIENTVERSE_MODULES = [
   { id: "command-center", group: "Command", label: "Command Center", description: "Portfolio metrics, alerts, and priority follow-ups", route: "/dashboard", icon: LayoutDashboard, state: MODULE_STATES.AVAILABLE, contract: "GET /api/dashboard", actions: ["view", "navigate"] },
   { id: "action-center", group: "Command", label: "Action Center", description: "Alerts, approvals, and owned follow-through", route: "/notifications", icon: Bell, state: MODULE_STATES.AVAILABLE, contract: "GET /api/alerts", actions: ["view", "acknowledge", "resolve"] },
   { id: "leads", group: "CRM", label: "Leads", description: "Website leads with their speed-to-lead clock and follow-through", route: "/leads", icon: UserPlus, state: MODULE_STATES.AVAILABLE, contract: "GET /api/leads | GET /api/leads/summary | PATCH /api/leads/{id}", actions: ["view", "respond", "close", "spam"] },
+  { id: "tasks", group: "CRM", label: "Tasks", description: "Call-backs and follow-ups: what is overdue, due today and coming up", route: "/tasks", icon: ListTodo, state: MODULE_STATES.AVAILABLE, contract: "GET /api/tasks | GET|PATCH /api/crm/tasks/{id} | POST /api/crm/tasks", actions: ["view", "create", "complete", "reopen", "reschedule", "reassign"] },
   { id: "website-forms", group: "CRM", label: "Website Forms", description: "Real-estate website forms, embed codes and lead automation", route: "/website-forms", icon: Globe, state: MODULE_STATES.AVAILABLE, contract: "GET|POST|PATCH /api/website-forms | POST /api/public/forms/{key}/submit", actions: ["view", "create", "configure", "embed", "test"] },
   { id: "contacts", group: "CRM", label: "Contacts", description: "People and relationship context", route: "/contacts", icon: Users, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/contacts", actions: ["view", "create"] },
   { id: "companies", group: "CRM", label: "Companies", description: "Account and commercial context", route: "/companies", icon: BriefcaseBusiness, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/companies", actions: ["view", "create"] },
@@ -24,7 +25,7 @@ export const CLIENTVERSE_MODULES = [
   { id: "inbox", group: "Communications", label: "Unified Inbox", description: "Cross-channel relationship conversations, assignment, and the agent/human boundary", route: "/operations?tab=conversations", icon: Inbox, state: MODULE_STATES.AVAILABLE, contract: "GET|POST /api/conversations", actions: ["view", "create", "assign", "handoff", "consent", "draft", "close"] },
   { id: "sms", group: "Communications", label: "SMS", description: "Consent-aware client messaging", route: "/communications/sms", icon: MessageSquareText, state: MODULE_STATES.CONFIGURATION_REQUIRED, contract: "CommunicationMessage service (delivered) + an authorised SMS provider", actions: [] },
   { id: "calling", group: "Communications", label: "Calling", description: "Call activity and outcomes", route: "/communications/calling", icon: Phone, state: MODULE_STATES.CONTRACT_PENDING, contract: "Call activity service", actions: [] },
-  { id: "calendar", group: "Scheduling", label: "Calendar", description: "Meetings and relationship moments", route: "/scheduling/calendar", icon: CalendarDays, state: MODULE_STATES.CONTRACT_PENDING, contract: "Calendar event service", actions: [] },
+  { id: "calendar", group: "Scheduling", label: "Calendar", description: "Booked showings, consultations and calls; booking pages and agents' hours", route: "/scheduling/calendar", icon: CalendarDays, state: MODULE_STATES.AVAILABLE, contract: "GET /api/booking/appointments | GET|POST|PATCH /api/booking/event-types | PUT /api/booking/availability/{email} | POST /api/public/booking/{key}/book", actions: ["view", "book", "reschedule", "cancel", "attended", "no-show", "configure", "embed"] },
   { id: "client-360", group: "Client Success", label: "Client 360", description: "Health, outcomes, commitments, and delivery", route: "/workspaces", icon: BriefcaseBusiness, state: MODULE_STATES.AVAILABLE, contract: "GET /api/workspaces", actions: ["view", "create", "update"] },
   { id: "client-operations", group: "Client Success", label: "Client Operations", description: "Portal, commercial, and playbook workflows", route: "/client-ops", icon: Handshake, state: MODULE_STATES.AVAILABLE, contract: "Client operations endpoint set", actions: ["view", "manage"] },
   { id: "workflows", group: "Automation", label: "Workflows", description: "Deterministic, auditable orchestration", route: "/automation/workflows", icon: Workflow, state: MODULE_STATES.CONTRACT_PENDING, contract: "Workflow definition and run services", actions: [] },

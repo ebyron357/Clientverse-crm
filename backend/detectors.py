@@ -96,6 +96,8 @@ DECIDED_OFFER_STATUSES = ("approved", "accepted", "rejected", "declined", "won",
 CANCELLED_APPOINTMENT_STATUSES = ("cancelled", "canceled")
 COMPLETED_APPOINTMENT_STATUSES = ("completed", "done", "attended", "fulfilled")
 PENDING_APPOINTMENT_STATUSES = ("scheduled", "confirmed", "booked")
+# An outcome a person recorded: the client did not turn up.
+NO_SHOW_APPOINTMENT_STATUSES = ("no_show", "no-show", "noshow", "missed")
 
 # External events worth recovering. An event kind nobody declared is ignored rather than
 # guessed at: an unknown event is not an opportunity, it is an unknown.
@@ -268,9 +270,10 @@ async def detect_missed_calls(db: Any, tenant_id: str, *,
             "record_collection": CALL_LOGS,
             "record_id": call["id"],
             "title": f"Missed call from {number or 'an unknown number'}",
-            "reason": (f"An inbound call from {number or 'an unknown number'} went "
-                       f"unanswered {waited} hour(s) ago and no one has called back "
-                       f"(threshold {grace_hours} hour(s))."),
+            "reason": (f"A call from {number or 'an unknown number'} was missed "
+                       f"{recovery_case.hours_words(waited)} ago and no one has called back. "
+                       f"Missed calls are flagged after "
+                       f"{recovery_case.plural(grace_hours, 'hour')} without a call back."),
             "occurred_at": occurred.isoformat(),
             "external_identity": ({"kind": recovery_case.IDENTITY_PHONE, "value": number}
                                   if number else None),
@@ -347,9 +350,11 @@ async def detect_web_enquiries(db: Any, tenant_id: str, *,
             "record_kind": "web_enquiry",
             "record_collection": WEB_ENQUIRIES,
             "record_id": enquiry["id"],
-            "title": f"Web enquiry from {enquiry.get('name') or email or 'an unknown visitor'}",
-            "reason": (f"A web enquiry received {waited} hour(s) ago has no recorded "
-                       f"response (threshold {grace_hours} hour(s))."),
+            "title": f"Website lead from {enquiry.get('name') or email or 'an unknown visitor'}",
+            "reason": (f"This website lead came in {recovery_case.hours_words(waited)} ago "
+                       f"and nobody has responded. Website leads are flagged after "
+                       f"{recovery_case.plural(grace_hours, 'hour')} without a response."),
+            "owner": enquiry.get("assigned_to"),
             "occurred_at": received.isoformat(),
             "external_identity": ({"kind": recovery_case.IDENTITY_EMAIL, "value": email}
                                   if email else None),
@@ -422,8 +427,9 @@ async def _detect_open_offers(db: Any, tenant_id: str, *, collection: str, detec
             "record_collection": collection,
             "record_id": row["id"],
             "title": row.get("title") or f"Untitled {label}",
-            "reason": (f"A {label} sent {waited} day(s) ago is still '{status or 'open'}' "
-                       f"with no recorded decision (threshold {grace_days} day(s))."),
+            "reason": (f"A {label} sent {recovery_case.plural(waited, 'day')} ago is still "
+                       f"'{status or 'open'}' with no recorded decision. These are flagged "
+                       f"after {recovery_case.plural(grace_days, 'day')}."),
             "occurred_at": sent_at.isoformat(),
             "workspace_id": row.get("workspace_id"),
             "company_id": row.get("company_id"),
@@ -513,9 +519,10 @@ async def detect_no_response(db: Any, tenant_id: str, *,
             "record_collection": conversation_service.CONVERSATIONS,
             "record_id": conversation["id"],
             "title": conversation.get("subject") or "Unanswered conversation",
-            "reason": (f"{len(sent)} message(s) reached the client and the most recent "
-                       f"went unanswered for {waited} day(s) (threshold {grace_days} "
-                       f"day(s))."),
+            "reason": (f"{recovery_case.plural(len(sent), 'message')} reached the client and "
+                       f"the most recent has gone unanswered for "
+                       f"{recovery_case.plural(waited, 'day')}. Conversations are flagged after "
+                       f"{recovery_case.plural(grace_days, 'day')}."),
             "occurred_at": last_sent.isoformat(),
             "workspace_id": conversation.get("workspace_id"),
             "company_id": conversation.get("company_id"),
@@ -595,16 +602,21 @@ def is_rebooked(appointment: dict, latest: dict[str, datetime]) -> bool:
 
 async def detect_no_shows(db: Any, tenant_id: str, *,
                           grace_hours: int = NO_SHOW_GRACE_HOURS) -> list[dict]:
-    """A booking whose time passed while it was still merely scheduled.
+    """A booking whose time passed while it was still merely scheduled, or one a person
+    recorded as a no-show.
 
     Grace exists because "nobody marked it complete yet" and "nobody turned up" look the
-    same for the first hour or two, and only one of them is a recovery opportunity.
+    same for the first hour or two, and only one of them is a recovery opportunity. A
+    recorded no-show needs no grace -- somebody said what happened -- only a start time
+    that has passed. It used to be invisible here: an agent who marked the no-show before
+    the first sweep took it out of the pending statuses this lane read, so the clearest
+    no-show of all was the one never recovered.
     """
     now = _now()
     cutoff = now - timedelta(hours=max(0, int(grace_hours)))
     appointments = await db.appointments.find(
         {"tenant_id": tenant_id,
-         "status": {"$in": list(PENDING_APPOINTMENT_STATUSES)}},
+         "status": {"$in": list(PENDING_APPOINTMENT_STATUSES) + list(NO_SHOW_APPOINTMENT_STATUSES)}},
         {"_id": 0}).sort("start_at", -1).to_list(DETECTION_LIMIT)
     responded = await _responded_records(db, tenant_id, "appointment",
                                          [a["id"] for a in appointments])
@@ -613,9 +625,16 @@ async def detect_no_shows(db: Any, tenant_id: str, *,
     for appointment in appointments:
         if appointment["id"] in responded:
             continue
-        end = _parse(appointment.get("end_at")) or _parse(appointment.get("start_at"))
-        if not end or end > cutoff:
+        start = _parse(appointment.get("start_at"))
+        end = _parse(appointment.get("end_at")) or start
+        recorded = _status(appointment.get("status")) in NO_SHOW_APPOINTMENT_STATUSES
+        if recorded:
+            if not start or not end or start > now:
+                continue
+        elif not end or end > cutoff:
             continue
+        # A no-show recorded during the appointment occurred when it was recorded.
+        end = min(end, now)
         elapsed = _hours(now - end)
         detections.append({
             "tenant_id": tenant_id,
@@ -624,9 +643,12 @@ async def detect_no_shows(db: Any, tenant_id: str, *,
             "record_collection": "appointments",
             "record_id": appointment["id"],
             "title": appointment.get("title") or "Appointment with no outcome",
-            "reason": (f"The appointment ended {elapsed} hour(s) ago and is still "
-                       f"'{_status(appointment.get('status')) or 'scheduled'}' with no "
-                       f"recorded outcome (threshold {grace_hours} hour(s))."),
+            "reason": ("The appointment was recorded as a no-show and nobody has followed "
+                       "up yet." if recorded else
+                       f"The appointment ended {recovery_case.hours_words(elapsed)} ago and "
+                       f"is still '{_status(appointment.get('status')) or 'scheduled'}' with no "
+                       f"recorded outcome. Appointments are flagged after "
+                       f"{recovery_case.plural(grace_hours, 'hour')}."),
             "occurred_at": end.isoformat(),
             "workspace_id": appointment.get("workspace_id"),
             "company_id": appointment.get("company_id"),

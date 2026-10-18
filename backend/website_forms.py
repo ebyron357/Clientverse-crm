@@ -95,7 +95,8 @@ ATTEMPTS = "form_submission_attempts"
 SYSTEM_ACTOR = "system:website-forms"
 
 # Paths a browser on any website may call. Nothing under them reads tenant data.
-PUBLIC_PATH_PREFIXES = ("/api/public/forms/", "/api/intake/public/")
+# `/api/public/booking/` is the booking module's public door (booking.PUBLIC_PATH_PREFIX).
+PUBLIC_PATH_PREFIXES = ("/api/public/forms/", "/api/intake/public/", "/api/public/booking/")
 HOSTED_PAGE_PATH = re.compile(r"^/api/public/forms/[A-Za-z0-9_\-]+/page$")
 
 LEAD_STATUSES = ("new", "responded", "closed", "spam")
@@ -289,9 +290,28 @@ def _is_duplicate_key(exc: Exception) -> bool:
         or "duplicate key" in str(exc).lower()
 
 
-def phone_digits(value: Optional[str]) -> str:
-    """The comparable part of a phone number: its last ten digits."""
-    return re.sub(r"\D", "", str(value or ""))[-10:]
+# One definition of "the same number", shared with contact editing so a number changed
+# by hand is matched exactly as one that arrived through a form.
+phone_digits = crm_core.phone_digits
+
+
+def form_label(form: dict) -> str:
+    """The form as the agent named it, so a lead, its alerts, its task and its deal all
+    read the same; the preset's wording only for a form that has no name."""
+    return (str(form.get("name") or "").strip()
+            or PRESETS.get(form.get("form_type") or "", {}).get("label") or "Website form")
+
+
+def wait_words(minutes: int) -> str:
+    """'12 minutes', '3 h 5 min', '4 days': how long a lead has waited, in words read at a glance."""
+    m = max(0, int(minutes))
+    if m < 60:
+        return f"{m} minute{'' if m == 1 else 's'}"
+    if m < 60 * 24:
+        hours, rest = divmod(m, 60)
+        return f"{hours} h {rest} min" if rest else f"{hours} h"
+    days = m // (60 * 24)
+    return f"{days} day{'' if days == 1 else 's'}"
 
 
 def normalise_origin(value: Optional[str]) -> Optional[str]:
@@ -1468,7 +1488,7 @@ class LeadPipeline:
 
         stage = cfg.get("stage") if cfg.get("stage") in open_keys else (open_keys[0] if open_keys else "lead")
         value = self.expected_value(cfg, enquiry.get("fields") or {})
-        label = PRESETS.get(form.get("form_type") or "", {}).get("label") or form["name"]
+        label = form_label(form)
         parts = [contact.get("name") or "Website lead", label]
         if enquiry.get("property_address"):
             parts.append(enquiry["property_address"])
@@ -1526,7 +1546,7 @@ class LeadPipeline:
 
     async def _task(self, form: dict, enquiry: dict, contact: dict,
                     assignee: Optional[str]) -> dict:
-        label = PRESETS.get(form.get("form_type") or "", {}).get("label") or form["name"]
+        label = form_label(form)
         lines = [f"{k.replace('_', ' ').title()}: {v}" for k, v in (enquiry.get("fields") or {}).items()
                  if k not in ("first_name", "last_name") and v not in (None, "", False)]
         if enquiry.get("source_page"):
@@ -1779,11 +1799,57 @@ class LeadPipeline:
                                 payload={"via": via, "response_minutes": minutes})
         return True
 
-    async def sync_responses(self, tenant_id: Optional[str] = None) -> int:
-        """Recognise responses that happened elsewhere in the CRM."""
+    async def task_status_changed(self, task: dict, previous: Optional[str],
+                                  actor: str = SYSTEM_ACTOR) -> None:
+        """Keep a lead in step with its call-back task, both ways.
+
+        Ticking the task off is the agent saying "I called them", so the lead is marked
+        responded there and then -- timed from the moment it was ticked -- instead of on
+        the next sweep. Un-ticking it withdraws exactly that and nothing more: only a
+        response this task recorded goes back to "new", so a lead marked contacted another
+        way (from the lead itself, or by a logged call) keeps its response. The sweep
+        still catches a completion this misses, so a failure here never fails the edit.
+        """
+        try:
+            lead = await self.db[detectors.WEB_ENQUIRIES].find_one(
+                {"tenant_id": task["tenant_id"], "task_id": task["id"]}, {"_id": 0})
+            if not lead:
+                return
+            status = task.get("status")
+            if status == "done" and previous != "done":
+                await self.mark_responded(lead, via="task_completed",
+                                          at=task.get("completed_at"), actor=actor)
+                return
+            if previous != "done" or status in ("done", "cancelled"):
+                return
+            reopened = await self.db[detectors.WEB_ENQUIRIES].update_one(
+                {"id": lead["id"], "tenant_id": lead["tenant_id"], "status": "responded",
+                 "sla.responded_via": "task_completed"},
+                {"$set": {"status": "new", "sla.first_response_at": None,
+                          "sla.response_minutes": None, "sla.responded_via": None,
+                          "responded_by": None}})
+            if reopened.modified_count:
+                await self.record_event("lead.reopened", "web_enquiry", lead["id"],
+                                        lead["tenant_id"], actor,
+                                        payload={"via": "task_reopened", "task_id": task["id"]})
+        except Exception:
+            logger.exception("Could not update the lead behind task %s", task.get("id"))
+
+    async def sync_responses(self, tenant_id: Optional[str] = None,
+                             contact_id: Optional[str] = None) -> int:
+        """Recognise responses that happened elsewhere in the CRM.
+
+        A response is the call-back task being completed, or a call, email, meeting or
+        text logged on the lead's contact after the lead arrived. An email the lead sent
+        *in* (a reply to the automatic reply, say) is logged on the contact too, but it
+        is the lead reaching the agent, not the agent reaching the lead, so it never
+        stops the clock.
+        """
         query: dict[str, Any] = {"status": "new"}
         if tenant_id:
             query["tenant_id"] = tenant_id
+        if contact_id:
+            query["contact_id"] = contact_id
         open_leads = await self.db[detectors.WEB_ENQUIRIES].find(
             query, {"_id": 0}).to_list(2000)
         count = 0
@@ -1800,13 +1866,31 @@ class LeadPipeline:
                 activity = await self.db.crm_activities.find_one(
                     {"tenant_id": lead["tenant_id"], "related_type": "contact",
                      "related_id": lead["contact_id"],
-                     "type": {"$in": ["call", "email", "meeting"]},
+                     "type": {"$in": list(crm_core.OUTREACH_TYPES)},
+                     "direction": {"$ne": "inbound"},
                      "occurred_at": {"$gte": lead["received_at"]}},
-                    {"_id": 0, "occurred_at": 1, "type": 1}, sort=[("occurred_at", 1)])
+                    {"_id": 0, "occurred_at": 1, "type": 1, "actor": 1},
+                    sort=[("occurred_at", 1)])
                 if activity:
                     count += await self.mark_responded(
-                        lead, via=f"activity_{activity['type']}", at=activity["occurred_at"])
+                        lead, via=f"activity_{activity['type']}", at=activity["occurred_at"],
+                        actor=activity.get("actor") or SYSTEM_ACTOR)
         return count
+
+    async def recognise_activity(self, activity: dict) -> int:
+        """Stop the clock on a lead the moment someone logs reaching its contact.
+
+        The watcher would notice within a minute, but an agent who logs a call from the
+        contact record should see the lead marked contacted, and its call-back task
+        done, straight away -- the same as pressing "Mark contacted" in the inbox.
+        """
+        if (activity.get("related_type") != "contact"
+                or activity.get("type") not in crm_core.OUTREACH_TYPES
+                or activity.get("direction") == "inbound"
+                or not activity.get("tenant_id") or not activity.get("related_id")):
+            return 0
+        return await self.sync_responses(activity["tenant_id"],
+                                          contact_id=activity["related_id"])
 
     async def escalate_overdue(self, tenant_id: Optional[str] = None) -> int:
         now = self.now_iso()
@@ -1827,17 +1911,22 @@ class LeadPipeline:
             waited = int(((_parse(now) or _now()) - (_parse(lead["received_at"]) or _now()))
                          .total_seconds() // 60)
             who = lead.get("name") or lead.get("email") or lead.get("phone") or "a visitor"
+            waited_words = wait_words(waited)
+            assignee = lead.get("assigned_to")
+            if assignee:
+                names = await crm_core.display_names(self.db, lead["tenant_id"], [assignee])
+                assignee = names.get(assignee) or assignee
             recipients = sorted(set(await self._admins(lead["tenant_id"])
                                     + ([lead["assigned_to"]] if lead.get("assigned_to") else [])))
             await self._notify(
                 lead["tenant_id"], recipients=recipients,
-                title=f"Lead waiting {waited} min with no response: {who}",
+                title=f"Lead waiting {waited_words} with no response: {who}",
                 body=(f"{who} came in through {lead.get('form_name')} and nobody has responded. "
-                      f"Assigned to {lead.get('assigned_to') or 'nobody'}."),
+                      f"Assigned to {assignee or 'nobody'}."),
                 deep_link=f"/leads?lead={lead['id']}", severity="critical",
                 ntype="lead.sla_breached", dedupe_key=f"lead:{lead['id']}:escalated",
-                email_subject=f"Uncontacted lead: {who} has waited {waited} minutes",
-                email_html=self._email_html(f"No response after {waited} minutes", lead,
+                email_subject=f"Uncontacted lead: {who} has waited {waited_words}",
+                email_html=self._email_html(f"No response after {waited_words}", lead,
                                             "Escalated because the speed-to-lead window passed."))
             await self.record_event("lead.sla_breached", "web_enquiry", lead["id"],
                                     lead["tenant_id"], SYSTEM_ACTOR,
@@ -2483,12 +2572,23 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             raise HTTPException(status_code=422, detail={"errors": exc.errors})
         lead = await db[detectors.WEB_ENQUIRIES].find_one(
             {"id": result["id"], "tenant_id": user["tenant_id"]}, {"_id": 0})
+        if lead:
+            await with_assignee_names(user["tenant_id"], [lead])
         return {"result": result, "lead": lead}
 
     # ---------------------------------------------------------------- leads
 
+    async def with_assignee_names(tenant_id: str, leads: list[dict]) -> list[dict]:
+        """Each lead's agent by name, beside the address it is assigned by."""
+        names = await crm_core.display_names(
+            db, tenant_id, (lead.get("assigned_to") for lead in leads))
+        for lead in leads:
+            lead["assigned_name"] = names.get(lead.get("assigned_to") or "")
+        return leads
+
     @router.get("/leads")
     async def list_leads(status: Optional[str] = None, form_id: Optional[str] = None,
+                         contact_id: Optional[str] = None,
                          q: Optional[str] = None, include_tests: bool = True,
                          limit: int = 50, offset: int = 0,
                          user=Depends(get_current_user)):
@@ -2500,6 +2600,10 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             query["status"] = status
         if form_id:
             query["form_id"] = form_id
+        if contact_id:
+            # A contact's own website requests, for its record. Scoped by tenant above,
+            # so another tenant's contact id simply matches nothing.
+            query["contact_id"] = contact_id
         if not include_tests:
             query["is_test"] = {"$ne": True}
         if q:
@@ -2510,7 +2614,7 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
         offset = max(0, int(offset or 0))
         items = await db[detectors.WEB_ENQUIRIES].find(query, {"_id": 0, "visitor": 0}).sort(
             "received_at", -1).skip(offset).limit(limit).to_list(limit)
-        return {"items": items,
+        return {"items": await with_assignee_names(user["tenant_id"], items),
                 "total": await db[detectors.WEB_ENQUIRIES].count_documents(query),
                 "limit": limit, "offset": offset}
 
@@ -2601,7 +2705,7 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             {"id": lead_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "visitor": 0})
         if not lead:
             raise HTTPException(status_code=404, detail="Not found")
-        return lead
+        return (await with_assignee_names(user["tenant_id"], [lead]))[0]
 
     @router.patch("/leads/{lead_id}")
     async def update_lead(lead_id: str, inp: LeadPatch, user=Depends(get_current_user)):
@@ -2615,10 +2719,26 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
         if inp.status == "responded" and lead["status"] == "new":
             await pipeline.mark_responded(lead, via="marked_in_inbox", actor=user["email"])
         elif inp.status != lead["status"]:
+            change = {"status": inp.status, "status_changed_by": user["email"],
+                      "status_changed_at": now_iso()}
+            if inp.status == "new":
+                # A reopened lead is waiting again: its old response stops counting, in the
+                # response-time figures and in lost-lead detection alike, exactly as when its
+                # call-back task is un-ticked.
+                change.update({"sla.first_response_at": None, "sla.response_minutes": None,
+                               "sla.responded_via": None})
             await db[detectors.WEB_ENQUIRIES].update_one(
-                {"id": lead_id, "tenant_id": user["tenant_id"]},
-                {"$set": {"status": inp.status, "status_changed_by": user["email"],
-                          "status_changed_at": now_iso()}})
+                {"id": lead_id, "tenant_id": user["tenant_id"]}, {"$set": change})
+            if inp.status == "new" and lead.get("task_id"):
+                # Reopening a lead reopens its call-back task. Left finished, the next sweep
+                # reads the task as the response and marks the lead contacted again; left
+                # cancelled (by "spam"), the lead has no call-back on anyone's list.
+                await db.tasks.update_one(
+                    {"id": lead["task_id"], "tenant_id": user["tenant_id"],
+                     "status": {"$in": ["done", "cancelled"]}},
+                    {"$set": {"status": "todo", "completed_at": None, "updated_at": now_iso()},
+                     "$push": {"history": crm_core._history_entry(
+                         "reopened", user["email"], {"via": "lead_reopened"})}})
             if inp.status == "spam" and lead.get("created_contact"):
                 # The contact and deal exist only because of this submission, so they go
                 # with it -- archived, never deleted, and restorable.
@@ -2644,8 +2764,9 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
                 "actor": user["email"], "created_at": now_iso(), "logged_by": user["email"]})
         await record_event("lead.status_changed", "web_enquiry", lead_id, user["tenant_id"],
                            user["email"], payload={"from": lead["status"], "to": inp.status})
-        return await db[detectors.WEB_ENQUIRIES].find_one(
+        updated = await db[detectors.WEB_ENQUIRIES].find_one(
             {"id": lead_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "visitor": 0})
+        return (await with_assignee_names(user["tenant_id"], [updated]))[0]
 
     # --------------------------------------------------------------- public
 

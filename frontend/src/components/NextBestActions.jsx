@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -153,6 +154,15 @@ export default function NextBestActions({ workspaceId = null, limit = 5, title =
                 ) : null}
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {item.deep_link ? (
+                  // Where the work itself is done. Following it records nothing: "Done"
+                  // below is still the operator's own call.
+                  <Button asChild size="sm" variant="outline" className="h-6 px-2 text-[11px]">
+                    <Link to={item.deep_link} data-testid="nba-open">
+                      {item.action_type === "advance_task" ? "Open task" : "Open"}<ArrowRight className="ml-1 h-3 w-3" />
+                    </Link>
+                  </Button>
+                ) : null}
                 {item.state !== "accepted" ? (
                   <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
                           disabled={busyId === item.id}
