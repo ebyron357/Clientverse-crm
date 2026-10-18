@@ -167,7 +167,7 @@ export default function Audit() {
                       <th className={TH}>Event</th>
                       <th className={`${TH} hidden sm:table-cell`}>Record</th>
                       <th className={`${TH} hidden md:table-cell`}>Actor</th>
-                      <th className={`${TH_BASE} text-right`}>Time</th>
+                      <th className={`${TH_BASE} hidden text-right sm:table-cell`}>Time</th>
                       <th className={`${TH} hidden xl:table-cell`}>Correlation</th>
                       <th className={`${TH} w-0`}><span className="sr-only">Actions</span></th>
                     </tr>
@@ -178,9 +178,10 @@ export default function Audit() {
                       return (
                         <tr key={e.id} className="border-b border-border/70 transition-colors last:border-0 hover:bg-muted/50" data-testid={`event-${e.id}`}>
                           <td className="px-4 py-2.5">
-                            <div className="max-w-[200px] sm:max-w-[18rem]">
+                            <div className="max-w-[240px] sm:max-w-[18rem]">
                               <StatusDot tone={CATEGORY_TONE(e.event_type)} className="flex min-w-0"><code className="min-w-0 truncate font-mono text-xs text-foreground">{e.event_type}</code></StatusDot>
                               <div className="truncate pl-3 text-xs text-muted-foreground sm:hidden">{subject || e.resource_type} · {e.actor}</div>
+                              <div className="tabular truncate pl-3 text-xs text-muted-foreground sm:hidden">{formatTime(e.timestamp)}</div>
                             </div>
                           </td>
                           <td className="hidden max-w-[20rem] px-4 py-2.5 sm:table-cell">
@@ -190,7 +191,7 @@ export default function Audit() {
                             </div>
                           </td>
                           <td className="hidden max-w-[14rem] px-4 py-2.5 md:table-cell"><span className="block truncate font-mono text-xs text-muted-foreground">{e.actor}</span></td>
-                          <td className="tabular whitespace-nowrap px-4 py-2.5 text-right text-xs text-muted-foreground">{formatTime(e.timestamp)}</td>
+                          <td className="tabular hidden whitespace-nowrap px-4 py-2.5 text-right text-xs text-muted-foreground sm:table-cell">{formatTime(e.timestamp)}</td>
                           <td className="hidden px-4 py-2.5 xl:table-cell"><span className="font-mono text-[11px] text-muted-foreground">{e.correlation_id}</span></td>
                           <td className="px-4 py-2.5 text-right">
                             {canUndo(e) && (

@@ -55,19 +55,23 @@ export function Toolbar({ children, className }) {
  */
 export function StatStrip({ items, className }) {
   const toneText = { danger: "text-red-700", warning: "text-amber-700", success: "text-emerald-700", brand: "text-brand" };
-  return <dl className={cx("grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card sm:grid-cols-4", className)}>
+  // A <button> may not hold <dt>/<dd>, so a strip with clickable cells is a plain grid of
+  // buttons whose text reads "label value detail"; a read-only strip stays a <dl>.
+  const clickable = items.some((item) => item.onClick);
+  const [Root, Term, Desc] = clickable ? ["div", "span", "span"] : ["dl", "dt", "dd"];
+  return <Root className={cx("grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card sm:grid-cols-4", className)}>
     {items.map(({ label, value, detail, tone, onClick, testid }, index) => {
       const Cell = onClick ? "button" : "div";
       return <Cell key={label} type={onClick ? "button" : undefined} onClick={onClick} data-testid={testid}
         className={cx("flex min-w-0 flex-col items-start gap-1 px-4 py-3.5 text-left",
           index % 2 === 1 && "border-l border-border", index >= 2 && "border-t border-border sm:border-t-0",
           index % 4 !== 0 && "sm:border-l", onClick && "transition-colors hover:bg-muted/50")}>
-        <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
-        <dd className={cx("tabular max-w-full text-[22px] font-semibold leading-7 tracking-tight [overflow-wrap:anywhere]", toneText[tone] || "text-foreground")}>{value}</dd>
-        {detail && <dd className="line-clamp-1 text-xs text-muted-foreground">{detail}</dd>}
+        <Term className="block text-xs font-medium text-muted-foreground">{label}</Term>
+        <Desc className={cx("tabular block max-w-full text-[22px] font-semibold leading-7 tracking-tight [overflow-wrap:anywhere]", toneText[tone] || "text-foreground")}>{value}</Desc>
+        {detail && <Desc className="line-clamp-1 block text-xs text-muted-foreground">{detail}</Desc>}
       </Cell>;
     })}
-  </dl>;
+  </Root>;
 }
 
 const DOT = { neutral: "bg-muted-foreground/50", brand: "bg-brand", success: "bg-emerald-500", warning: "bg-amber-500", danger: "bg-red-500", info: "bg-sky-500", violet: "bg-violet-500" };
