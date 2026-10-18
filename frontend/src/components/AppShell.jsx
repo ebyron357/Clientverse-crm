@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "next-themes";
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
@@ -81,7 +81,7 @@ export default function AppShell() {
                   <span className="flex-1 text-left">{group}</span>
                   <ChevronDown className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`} aria-hidden="true" />
                 </button>)}
-            {open && <div id={listId} className="flex flex-col gap-px">{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} />)}</div>}
+            {open && <div id={listId} className="flex flex-col gap-px">{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} active={item.id === navModule?.id} />)}</div>}
           </section>;
         })}
       </nav>
@@ -135,15 +135,16 @@ function ThemeButton() {
   return <button type="button" onClick={() => setTheme(next.value)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={`Theme: ${current.label}. Switch to ${next.label}`} title={`Theme: ${current.label}`} data-testid="theme-toggle"><Icon className="size-4" /></button>;
 }
 
-function SidebarLink({ item, collapsed }) {
+/** One module link. Active is decided by the shell (path plus query), so two links that share a path never light up together. */
+function SidebarLink({ item, collapsed, active }) {
   const Icon = item.icon;
   const pending = item.state !== MODULE_STATES.AVAILABLE;
-  return <NavLink to={item.route} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={({ isActive }) => `group relative flex h-8 items-center rounded-md text-[13.5px] font-medium transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2"} ${isActive ? "bg-card text-foreground shadow-xs ring-1 ring-border" : "text-foreground/70 hover:bg-accent hover:text-foreground"}`}>
-    {({ isActive }) => <>
-      <Icon className={`size-4 shrink-0 ${isActive ? "text-brand" : "text-muted-foreground group-hover:text-foreground"}`} />
+  return <Link to={item.route} aria-current={active ? "page" : undefined} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={`group relative flex h-8 items-center rounded-md text-[13.5px] font-medium transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2"} ${active ? "bg-card text-foreground shadow-xs ring-1 ring-border" : "text-foreground/70 hover:bg-accent hover:text-foreground"}`}>
+    <>
+      <Icon className={`size-4 shrink-0 ${active ? "text-brand" : "text-muted-foreground group-hover:text-foreground"}`} />
       {!collapsed && <><span className="min-w-0 flex-1 truncate">{item.label}</span>{pending && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Contract pending" aria-label="Backend contract pending" />}</>}
-    </>}
-  </NavLink>;
+    </>
+  </Link>;
 }
 
 export function Badge({ children, className = "" }) {

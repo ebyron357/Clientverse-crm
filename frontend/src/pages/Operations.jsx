@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
-import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { PageHeader, Section, StatStrip, StatusDot, ViewTabs } from "@/components/page/Page";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
 import NextBestActions from "@/components/NextBestActions";
-import { ClipboardCheck, Inbox, ListChecks, Lock, MessagesSquare, RefreshCw, Route, ShieldCheck, Undo2 } from "lucide-react";
+import {
+  Activity, ArrowDownLeft, ArrowUpRight, Check, CircleAlert, ClipboardCheck, Inbox, ListChecks, Lock,
+  MessagesSquare, RefreshCw, Route, ShieldCheck, TriangleAlert, Undo2, X,
+} from "lucide-react";
 
 /**
  * Operations — operator visibility for the durable work queue, Second Chance recovery
@@ -24,39 +26,114 @@ import { ClipboardCheck, Inbox, ListChecks, Lock, MessagesSquare, RefreshCw, Rou
  */
 
 const STATUS_TONE = {
-  queued: "bg-slate-50 text-slate-700 border-slate-200",
-  claimed: "bg-brand-soft text-brand-strong border-brand/20",
-  processing: "bg-brand-soft text-brand-strong border-brand/20",
-  retry_scheduled: "bg-amber-50 text-amber-900 border-amber-200",
-  completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  failed: "bg-red-50 text-red-700 border-red-200",
-  dead_letter: "bg-red-50 text-red-800 border-red-300",
+  queued: "neutral",
+  claimed: "brand",
+  processing: "brand",
+  retry_scheduled: "warning",
+  completed: "success",
+  failed: "danger",
+  dead_letter: "danger",
 };
 
 const GATE_STATE_TONE = {
-  DISCOVERED: "bg-slate-50 text-slate-700 border-slate-200",
-  UNDER_REVIEW: "bg-brand-soft text-brand-strong border-brand/20",
-  APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  APPROVED_LIMITED: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  QUARANTINED: "bg-amber-50 text-amber-900 border-amber-200",
-  REJECTED: "bg-red-50 text-red-700 border-red-200",
-  REVOKED: "bg-red-50 text-red-800 border-red-300",
+  DISCOVERED: "neutral",
+  UNDER_REVIEW: "info",
+  APPROVED: "success",
+  APPROVED_LIMITED: "success",
+  QUARANTINED: "warning",
+  REJECTED: "danger",
+  REVOKED: "danger",
 };
 
-function StatTile({ label, value, tone = "text-foreground" }) {
+const RISK_TONE = { low: "neutral", medium: "info", high: "warning", critical: "danger" };
+
+const CONSENT_TONE = { granted: "success", unknown: "neutral", denied: "danger", withdrawn: "danger" };
+
+const CONVERSATION_TONE = { open: "brand", pending: "warning", snoozed: "neutral", closed: "neutral" };
+
+const cx = (...parts) => parts.filter(Boolean).join(" ");
+const sentence = (value) => {
+  const text = String(value ?? "").replace(/_/g, " ").toLowerCase();
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+
+const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: "auto", style: "short" });
+/** "3 min ago" / "in 2 days"; the exact timestamp goes in a title attribute beside it. */
+function relativeTime(value) {
+  const at = value ? new Date(value).getTime() : NaN;
+  if (Number.isNaN(at)) return "";
+  const seconds = Math.round((at - Date.now()) / 1000);
+  const size = Math.abs(seconds);
+  if (size < 45) return "just now";
+  const [amount, unit] = size < 3600 ? [seconds / 60, "minute"] : size < 86400 ? [seconds / 3600, "hour"]
+    : size < 604800 ? [seconds / 86400, "day"] : size < 2629800 ? [seconds / 604800, "week"]
+      : size < 31557600 ? [seconds / 2629800, "month"] : [seconds / 31557600, "year"];
+  return RELATIVE.format(Math.round(amount), unit);
+}
+const exact = (value) => (value ? new Date(value).toLocaleString() : undefined);
+
+function Time({ value, className }) {
+  if (!value) return <span className={cx("text-muted-foreground", className)}>—</span>;
+  return <time dateTime={value} title={exact(value)} className={cx("tabular whitespace-nowrap text-muted-foreground", className)}>{relativeTime(value)}</time>;
+}
+
+/** A thin, soft notice: one icon, a title and a little detail. */
+function Notice({ title, children, testid }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-      <div className="text-xs font-medium text-slate-500">{label}</div>
-      <div className={`mt-1 font-display text-2xl font-semibold ${tone}`}>{value}</div>
+    <div className="flex gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-[13px] leading-5" data-testid={testid}>
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-700" aria-hidden="true" />
+      <div className="min-w-0 text-foreground/80">
+        {title ? <div className="font-medium text-amber-700">{title}</div> : null}
+        {children}
+      </div>
     </div>
   );
 }
 
-function WorkQueuePanel({ isAdmin }) {
+const CHANNEL_LABEL = { email: "Email", sms: "SMS", phone: "Phone", internal: "Internal" };
+const channelLabel = (channel) => CHANNEL_LABEL[channel] || sentence(channel);
+
+/** The strip between the numbers and the list: when it was read, then the panel's actions. */
+function PanelBar({ loadedAt, children }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <span className="text-xs text-muted-foreground">
+        {loadedAt ? <>Updated <time className="tabular" dateTime={loadedAt.toISOString()}>{loadedAt.toLocaleTimeString()}</time></> : null}
+      </span>
+      <div className="flex flex-wrap items-center gap-2">{children}</div>
+    </div>
+  );
+}
+
+function RefreshButton({ onClick, testid, label }) {
+  return (
+    <Button size="sm" variant="outline" onClick={onClick} data-testid={testid} aria-label={label}>
+      <RefreshCw aria-hidden="true" />Refresh
+    </Button>
+  );
+}
+
+const listShell = "overflow-hidden rounded-xl border border-border bg-card";
+const rowButton = "h-7 px-2.5 text-xs";
+const mono = "font-mono text-[11.5px] text-muted-foreground";
+
+// One table per list so columns line up across rows; below `sm` each row stacks into a card.
+const T = {
+  table: "w-full border-collapse text-[13px]",
+  head: "hidden sm:table-header-group",
+  headRow: "h-9 border-b border-border bg-muted/40 text-left text-xs text-muted-foreground",
+  th: "px-3 font-medium first:pl-4 last:pr-4",
+  row: "block space-y-1.5 border-b border-border/70 px-4 py-3 transition-colors last:border-0 hover:bg-muted/40 sm:table-row sm:space-y-0 sm:p-0",
+  td: "block sm:table-cell sm:px-3 sm:py-2.5 sm:align-top sm:first:pl-4 sm:last:pr-4",
+  wide: "hidden sm:table-cell sm:px-3 sm:py-2.5 sm:align-top sm:first:pl-4 sm:last:pr-4",
+};
+
+function WorkQueuePanel({ isAdmin, onCount }) {
   const [items, setItems] = useState(null);
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const [loadedAt, setLoadedAt] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -72,11 +149,13 @@ function WorkQueuePanel({ isAdmin }) {
       ]);
       setItems([...(dead.data || []), ...(failed.data || []), ...(queue.data || [])]);
       setStats(summary.data || null);
+      setLoadedAt(new Date());
+      onCount?.(queueCount(summary.data));
     } catch (e) {
       setItems([]);
       setError(formatErr(e.response?.data?.detail) || "The work queue could not be read.");
     }
-  }, []);
+  }, [onCount]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -106,116 +185,129 @@ function WorkQueuePanel({ isAdmin }) {
   if (error) return <SurfaceError title="Work queue unavailable" description={error} onRetry={load}
                                   testid="work-queue-error" />;
 
+
   return (
-    <div data-testid="work-queue-panel">
+    <div className="space-y-4" data-testid="work-queue-panel">
       {stats ? (
-        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatTile label="Open" value={stats.open} />
-          <StatTile label="Retry scheduled" value={stats.retry_scheduled}
-                    tone={stats.retry_scheduled ? "text-amber-700" : "text-foreground"} />
-          <StatTile label="Dead letter" value={stats.dead_letter}
-                    tone={stats.dead_letter ? "text-red-700" : "text-foreground"} />
-          <StatTile label="Needs operator" value={stats.needs_operator}
-                    tone={stats.needs_operator ? "text-red-700" : "text-foreground"} />
-        </div>
+        <StatStrip items={[
+          { label: "Open", value: stats.open },
+          { label: "Retry scheduled", value: stats.retry_scheduled, tone: stats.retry_scheduled ? "warning" : undefined },
+          { label: "Dead letter", value: stats.dead_letter, tone: stats.dead_letter ? "danger" : undefined },
+          { label: "Needs operator", value: stats.needs_operator, tone: stats.needs_operator ? "danger" : undefined },
+        ]} />
       ) : null}
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <PanelBar loadedAt={loadedAt}>
+        <RefreshButton onClick={load} testid="work-queue-refresh" label="Refresh work queue" />
         {isAdmin ? (
-          <Button size="sm" className="cv-action-primary" onClick={detect} disabled={busyId === "detect"}
-                  data-testid="run-detection">
+          <Button size="sm" onClick={detect} disabled={busyId === "detect"} data-testid="run-detection">
             {busyId === "detect" ? "Detecting…" : "Run recovery detection"}
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" onClick={load} data-testid="work-queue-refresh">
-          <RefreshCw className="mr-2 h-3.5 w-3.5" />Refresh
-        </Button>
-      </div>
+      </PanelBar>
 
       {items.length === 0 ? (
         <SurfaceEmpty icon={Inbox} title="No open work"
                       description="Recovery candidates and queued jobs appear here as they are detected."
                       testid="work-queue-empty" />
       ) : (
-        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
-          {items.map((item) => (
-            <div key={item.id} className="flex flex-wrap items-start gap-3 px-4 py-3"
-                 data-testid={`work-item-${item.type}`}>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className={STATUS_TONE[item.status] || STATUS_TONE.queued}>
-                    {String(item.status).replace("_", " ")}
-                  </Badge>
-                  <span className="text-xs text-slate-500">{item.type}</span>
-                  {item.occurrence_count > 1 ? (
-                    <span className="text-[11px] text-slate-400">seen {item.occurrence_count}×</span>
+        <div className={listShell}>
+          <table className={T.table}>
+            <thead className={T.head}>
+              <tr className={T.headRow}>
+                <th className={cx(T.th, "w-36")}>Status</th><th className={T.th}>Item</th>
+                <th className={cx(T.th, "w-20 text-right")}>Attempts</th><th className={cx(T.th, "w-28 text-right")}>Updated</th>
+                <th className={T.th}><span className="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+          {items.map((item) => {
+            const title = item.payload?.title;
+            return (
+              <tr key={item.id} className={T.row} data-testid={`work-item-${item.type}`}>
+                <td className={T.td}>
+                  <div className="flex items-center gap-2 sm:pt-0.5">
+                    <StatusDot tone={STATUS_TONE[item.status] || "neutral"}>{sentence(item.status)}</StatusDot>
+                    <span className="tabular text-xs text-muted-foreground sm:hidden">
+                      · attempt {item.attempts}/{item.max_attempts} · <Time value={item.updated_at || item.created_at} />
+                    </span>
+                  </div>
+                </td>
+                <td className={cx(T.td, "min-w-0")}>
+                  <div className={cx("truncate font-medium text-foreground", !title && "font-mono text-[12.5px]")}>
+                    {title || item.type}
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                    {title ? <span className={mono}>{item.type}</span> : null}
+                    {item.source_ref ? <span>source <span className={mono}>{item.source_ref}</span></span> : null}
+                    {item.occurrence_count > 1 ? <span className="tabular">seen {item.occurrence_count}×</span> : null}
+                    {item.acknowledged_by ? <span>acknowledged by {item.acknowledged_by}</span> : null}
+                  </div>
+                  {item.payload?.reason ? (
+                    <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{item.payload.reason}</div>
                   ) : null}
-                </div>
-                <div className="mt-1 truncate text-sm font-semibold text-foreground">
-                  {item.payload?.title || item.type}
-                </div>
-                {item.payload?.reason ? (
-                  <div className="mt-0.5 text-xs leading-5 text-slate-500">{item.payload.reason}</div>
-                ) : null}
-                <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-400">
-                  {item.source_ref ? <span>source {item.source_ref}</span> : null}
-                  <span>attempt {item.attempts}/{item.max_attempts}</span>
-                  {item.last_error ? <span className="text-red-500">{item.last_error}</span> : null}
-                  {item.acknowledged_by ? <span>acknowledged by {item.acknowledged_by}</span> : null}
-                </div>
-              </div>
-              <div className="flex shrink-0 flex-wrap gap-1.5">
-                {!item.acknowledged_at ? (
-                  <Button size="sm" variant="outline" className="h-7 text-xs" disabled={busyId === item.id}
-                          onClick={() => act(item, "acknowledge", {}, "Acknowledged")}
-                          data-testid="work-item-acknowledge">Acknowledge</Button>
-                ) : null}
-                <Button size="sm" variant="outline" className="h-7 text-xs" disabled={busyId === item.id}
-                        onClick={() => act(item, "resolve", { resolution: "resolved" }, "Resolved")}
-                        data-testid="work-item-resolve">Resolve</Button>
-                {isAdmin && (item.status === "dead_letter" || item.status === "failed") ? (
-                  <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busyId === item.id}
-                          onClick={() => act(item, "replay", {}, "Replayed")}
-                          data-testid="work-item-replay">
-                    <Undo2 className="mr-1 h-3 w-3" />Replay
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-          ))}
+                  {item.last_error ? (
+                    <div className="mt-1 flex items-start gap-1.5 text-xs leading-5 text-red-700">
+                      <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{item.last_error}
+                    </div>
+                  ) : null}
+                </td>
+                <td className={cx(T.wide, "tabular text-right text-xs text-muted-foreground")}>
+                  {item.attempts}/{item.max_attempts}
+                </td>
+                <td className={cx(T.wide, "text-right text-xs")}>
+                  <Time value={item.updated_at || item.created_at} />
+                </td>
+                <td className={T.td}>
+                  <div className="flex flex-wrap gap-1.5 pt-1 sm:flex-nowrap sm:justify-end sm:pt-0">
+                    {!item.acknowledged_at ? (
+                      <Button size="sm" variant="outline" className={rowButton} disabled={busyId === item.id}
+                              onClick={() => act(item, "acknowledge", {}, "Acknowledged")}
+                              data-testid="work-item-acknowledge">Acknowledge</Button>
+                    ) : null}
+                    <Button size="sm" variant="outline" className={rowButton} disabled={busyId === item.id}
+                            onClick={() => act(item, "resolve", { resolution: "resolved" }, "Resolved")}
+                            data-testid="work-item-resolve">Resolve</Button>
+                    {isAdmin && (item.status === "dead_letter" || item.status === "failed") ? (
+                      <Button size="sm" variant="ghost" className={rowButton} disabled={busyId === item.id}
+                              onClick={() => act(item, "replay", {}, "Replayed")}
+                              data-testid="work-item-replay">
+                        <Undo2 aria-hidden="true" />Replay
+                      </Button>
+                    ) : null}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
   );
 }
 
-const RISK_TONE = {
-  low: "bg-slate-50 text-slate-700 border-slate-200",
-  medium: "bg-brand-soft text-brand-strong border-brand/20",
-  high: "bg-amber-50 text-amber-900 border-amber-200",
-  critical: "bg-red-50 text-red-700 border-red-200",
-};
-
 function StepRow({ step }) {
   const blocked = step.status === "blocked";
   return (
-    <div className="flex flex-wrap items-start gap-2 py-1" data-testid={`strategy-step-${step.status}`}>
-      {blocked
-        ? <Lock className="mt-0.5 h-3 w-3 shrink-0 text-amber-600" />
-        : <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />}
-      <div className="min-w-0 flex-1">
-        <div className="text-xs font-semibold text-foreground">
-          {step.action.replace(/_/g, " ")}
-          <span className="ml-2 text-xs font-normal text-slate-400">
-            {step.channel}
-          </span>
+    <li className="flex items-start gap-2.5 py-1.5" data-testid={`strategy-step-${step.status}`}>
+      <span className="mt-[3px] flex size-3.5 shrink-0 items-center justify-center" aria-hidden="true">
+        {blocked
+          ? <Lock className="size-3.5 text-amber-700" />
+          : <span className="size-1.5 rounded-full bg-emerald-500" />}
+      </span>
+      <div className="min-w-0 flex-1 text-[13px] leading-5">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-medium text-foreground">{sentence(step.action)}</span>
+          <span className={mono}>{step.channel}</span>
         </div>
-        <div className="text-[11px] leading-5 text-slate-500">{step.detail}</div>
+        {step.detail ? <div className="text-xs leading-5 text-muted-foreground">{step.detail}</div> : null}
         {blocked ? (
-          <div className="text-[11px] leading-5 text-amber-700">Blocked — {step.blocked_reason}</div>
+          <div className="text-xs leading-5 text-amber-700">Blocked — {step.blocked_reason}</div>
         ) : null}
       </div>
-    </div>
+    </li>
   );
 }
 
@@ -228,17 +320,18 @@ function strategyLabel(strategy) {
 }
 
 function strategyTone(strategy) {
-  if (strategy.blocked_reasons?.length) return "bg-amber-50 text-amber-900 border-amber-200";
-  if (strategy.state !== "approved") return "bg-brand-soft text-brand-strong border-brand/20";
-  return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (strategy.blocked_reasons?.length) return "warning";
+  if (strategy.state !== "approved") return "brand";
+  return "success";
 }
 
-function RecoveryStrategiesPanel({ isAdmin }) {
+function RecoveryStrategiesPanel({ isAdmin, onCount }) {
   const [strategies, setStrategies] = useState(null);
   const [summary, setSummary] = useState(null);
   const [channels, setChannels] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [loadedAt, setLoadedAt] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -251,11 +344,13 @@ function RecoveryStrategiesPanel({ isAdmin }) {
       setStrategies(list.data || []);
       setSummary(totals.data || null);
       setChannels(authority.data || null);
+      setLoadedAt(new Date());
+      onCount?.(totals.data?.proposed);
     } catch (e) {
       setStrategies([]);
       setError(formatErr(e.response?.data?.detail) || "Recovery strategies could not be read.");
     }
-  }, []);
+  }, [onCount]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -274,89 +369,88 @@ function RecoveryStrategiesPanel({ isAdmin }) {
   if (error) return <SurfaceError title="Recovery strategies unavailable" description={error}
                                   onRetry={load} testid="recovery-error" />;
 
-  const unauthorized = Object.entries(channels || {})
-    .filter(([, verdict]) => !verdict.authorized);
+  const verdicts = Object.entries(channels || {});
+  const unauthorized = verdicts.filter(([, verdict]) => !verdict.authorized);
 
   return (
-    <div data-testid="recovery-strategies-panel">
+    <div className="space-y-4" data-testid="recovery-strategies-panel">
       {summary ? (
-        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <StatTile label="Proposed" value={summary.proposed} />
-          <StatTile label="Blocked on a channel" value={summary.proposed_blocked}
-                    tone={summary.proposed_blocked ? "text-amber-700" : "text-foreground"} />
-          <StatTile label="Lanes in use" value={Object.keys(summary.by_lane || {}).length} />
-        </div>
+        <StatStrip items={[
+          { label: "Proposed", value: summary.proposed },
+          { label: "Blocked on a channel", value: summary.proposed_blocked, tone: summary.proposed_blocked ? "warning" : undefined },
+          { label: "Lanes in use", value: Object.keys(summary.by_lane || {}).length },
+          {
+            label: "Channels authorised",
+            value: verdicts.length ? `${verdicts.length - unauthorized.length}/${verdicts.length}` : "—",
+            detail: unauthorized.length ? `${unauthorized.length} not authorised` : verdicts.length ? "All authorised" : undefined,
+            tone: unauthorized.length ? "warning" : undefined,
+          },
+        ]} />
       ) : null}
 
       {unauthorized.length ? (
-        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50/60 p-4"
-             data-testid="channel-authority">
-          <div className="text-xs font-medium text-amber-900">
-            Outbound channels not authorised
-          </div>
-          <ul className="mt-2 space-y-1">
+        <Notice title="Outbound channels not authorised" testid="channel-authority">
+          <ul className="mt-1 space-y-0.5">
             {unauthorized.map(([channel, verdict]) => (
-              <li key={channel} className="text-[11px] leading-5 text-amber-900">
-                <span className="font-semibold uppercase">{channel}</span> — {verdict.reason}
+              <li key={channel} className="text-xs leading-5">
+                <span className="font-medium text-foreground">{channelLabel(channel)}</span> — {verdict.reason}
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-[11px] leading-5 text-amber-800">
+          <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
             Strategies are composed and queued for approval regardless. Approving one does not
             unblock its outbound steps; the block is re-checked before anything can execute.
           </p>
-        </div>
+        </Notice>
       ) : null}
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <PanelBar loadedAt={loadedAt}>
+        <RefreshButton onClick={load} testid="recovery-refresh" label="Refresh recovery strategies" />
         {isAdmin ? (
-          <Button size="sm" className="cv-action-primary" onClick={compose} disabled={busy}
-                  data-testid="compose-strategies">
+          <Button size="sm" onClick={compose} disabled={busy} data-testid="compose-strategies">
             {busy ? "Composing…" : "Compose strategies"}
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" onClick={load} data-testid="recovery-refresh">
-          <RefreshCw className="mr-2 h-3.5 w-3.5" />Refresh
-        </Button>
-      </div>
+      </PanelBar>
 
       {strategies.length === 0 ? (
         <SurfaceEmpty icon={Route} title="No proposed strategies"
-                      description="Recovery candidates are turned into a recommended motion here, each with the rule that selected it and the facts it cites."
+                      description="Each recovery candidate becomes a recommended motion here, with the rule that selected it and the facts it cites."
                       testid="recovery-empty" />
       ) : (
-        <div className="space-y-3">
+        <div className={cx(listShell, "divide-y divide-border/70")}>
           {strategies.map((strategy) => (
-            <div key={strategy.id} className="rounded-lg border border-slate-200 bg-white p-4"
-                 data-testid={`strategy-${strategy.lane}`}>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge className={strategyTone(strategy)}>{strategyLabel(strategy)}</Badge>
-                <span className="text-sm font-semibold text-foreground">{strategy.title}</span>
-                <span className="text-xs text-slate-500">
-                  {strategy.lane.replace(/_/g, " ")}
-                </span>
+            <article key={strategy.id} className="px-4 py-3.5" data-testid={`strategy-${strategy.lane}`}>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <StatusDot tone={strategyTone(strategy)}>{strategyLabel(strategy)}</StatusDot>
+                <h3 className="min-w-0 text-[13.5px] font-medium text-foreground">{strategy.title}</h3>
+                <span className="text-xs text-muted-foreground">{sentence(strategy.lane)}</span>
               </div>
-              <p className="mt-2 text-xs leading-5 text-slate-600">{strategy.rationale}</p>
-              <div className="mt-1 text-[11px] text-slate-400">rule: {strategy.rule}</div>
-
-              {strategy.facts?.length ? (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {strategy.facts.map((fact, index) => (
-                    <span key={`${strategy.id}-fact-${index}`}
-                          className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600"
-                          title={fact.source ? `source: ${fact.source}` : undefined}>
-                      {fact.label}: {String(fact.value)}
-                    </span>
-                  ))}
-                </div>
+              {strategy.rationale ? (
+                <p className="mt-1 max-w-3xl text-[13px] leading-5 text-muted-foreground">{strategy.rationale}</p>
               ) : null}
 
-              <div className="mt-3 border-t border-slate-100 pt-2">
-                {(strategy.steps || []).map((step, index) => (
-                  <StepRow key={`${strategy.id}-step-${index}`} step={step} />
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                  rule: {strategy.rule}
+                </span>
+                {(strategy.facts || []).map((fact, index) => (
+                  <span key={`${strategy.id}-fact-${index}`}
+                        className="rounded-md border border-border px-1.5 py-0.5 text-[11.5px] text-muted-foreground"
+                        title={fact.source ? `source: ${fact.source}` : undefined}>
+                    {fact.label}: <span className="tabular text-foreground/80">{String(fact.value)}</span>
+                  </span>
                 ))}
               </div>
-            </div>
+
+              {strategy.steps?.length ? (
+                <ol className="mt-2.5 border-l border-border pl-3">
+                  {strategy.steps.map((step, index) => (
+                    <StepRow key={`${strategy.id}-step-${index}`} step={step} />
+                  ))}
+                </ol>
+              ) : null}
+            </article>
           ))}
         </div>
       )}
@@ -364,11 +458,12 @@ function RecoveryStrategiesPanel({ isAdmin }) {
   );
 }
 
-function ApprovalQueuePanel({ isAdmin }) {
+function ApprovalQueuePanel({ isAdmin, onCount }) {
   const [requests, setRequests] = useState(null);
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const [loadedAt, setLoadedAt] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -379,11 +474,13 @@ function ApprovalQueuePanel({ isAdmin }) {
       ]);
       setRequests(list.data || []);
       setSummary(totals.data || null);
+      setLoadedAt(new Date());
+      onCount?.(totals.data?.awaiting_decision);
     } catch (e) {
       setRequests([]);
       setError(formatErr(e.response?.data?.detail) || "The approval queue could not be read.");
     }
-  }, []);
+  }, [onCount]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -403,98 +500,107 @@ function ApprovalQueuePanel({ isAdmin }) {
                                   onRetry={load} testid="approval-queue-error" />;
 
   return (
-    <div data-testid="approval-queue-panel">
+    <div className="space-y-4" data-testid="approval-queue-panel">
       {summary ? (
-        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <StatTile label="Awaiting decision" value={summary.awaiting_decision} />
-          <StatTile label="Blocked on a prerequisite" value={summary.awaiting_decision_blocked}
-                    tone={summary.awaiting_decision_blocked ? "text-amber-700" : "text-foreground"} />
-          <StatTile label="Approved, not yet executed" value={summary.approved_awaiting_execution} />
-        </div>
+        <StatStrip items={[
+          { label: "Awaiting decision", value: summary.awaiting_decision },
+          { label: "Blocked on a prerequisite", value: summary.awaiting_decision_blocked, tone: summary.awaiting_decision_blocked ? "warning" : undefined },
+          { label: "Approved, not yet executed", value: summary.approved_awaiting_execution },
+          {
+            label: "High or critical risk",
+            value: (summary.by_risk?.high || 0) + (summary.by_risk?.critical || 0),
+            tone: summary.by_risk?.critical ? "danger" : summary.by_risk?.high ? "warning" : undefined,
+          },
+        ]} />
       ) : null}
 
-      <div className="mb-4">
-        <Button size="sm" variant="outline" onClick={load} data-testid="approval-queue-refresh">
-          <RefreshCw className="mr-2 h-3.5 w-3.5" />Refresh
-        </Button>
-      </div>
+      <PanelBar loadedAt={loadedAt}>
+        <RefreshButton onClick={load} testid="approval-queue-refresh" label="Refresh approval queue" />
+      </PanelBar>
 
       {requests.length === 0 ? (
         <SurfaceEmpty icon={ClipboardCheck} title="Nothing waiting on a decision"
-                      description="Actions that need a person appear here — each one bound to the exact thing that would run if it is approved."
+                      description="Actions that need a person appear here, each bound to the exact thing that would run if approved."
                       testid="approval-queue-empty" />
       ) : (
-        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
-          {requests.map((request) => (
-            <div key={request.id} className="flex flex-wrap items-start gap-3 px-4 py-3"
-                 data-testid={`approval-${request.kind}`}>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className={RISK_TONE[request.risk] || RISK_TONE.medium}>
-                    {request.risk || "medium"} risk
-                  </Badge>
-                  <span className="text-xs text-slate-500">
-                    {request.kind}
-                  </span>
-                  <span className="text-[11px] text-slate-400">
-                    raised by {request.requester_kind === "agent" ? "an agent" : request.requested_by}
-                  </span>
-                </div>
-                <div className="mt-1 text-sm font-semibold text-foreground">{request.title}</div>
-                {request.summary ? (
-                  <div className="mt-0.5 text-xs leading-5 text-slate-500">{request.summary}</div>
-                ) : null}
-                {request.blocked_reasons?.length ? (
-                  <div className="mt-1 text-[11px] leading-5 text-amber-700">
-                    Approving this will not unblock it — {request.blocked_reasons.join("; ")}
-                  </div>
-                ) : null}
-                {request.expires_at ? (
-                  <div className="mt-1 text-[11px] text-slate-400">
-                    expires {new Date(request.expires_at).toLocaleString()}
-                  </div>
-                ) : null}
-              </div>
-              {isAdmin ? (
-                <div className="flex shrink-0 flex-wrap gap-1.5">
-                  <Button size="sm" className="h-7 bg-emerald-600 text-xs hover:bg-emerald-700"
-                          disabled={busyId === request.id}
-                          onClick={() => decide(request, "approved")}
-                          data-testid="approval-approve">Approve</Button>
-                  <Button size="sm" variant="outline" className="h-7 text-xs"
-                          disabled={busyId === request.id}
-                          onClick={() => decide(request, "rejected")}
-                          data-testid="approval-reject">Reject</Button>
-                </div>
-              ) : null}
-            </div>
-          ))}
+        <div className={listShell}>
+          <table className={T.table}>
+            <thead className={T.head}>
+              <tr className={T.headRow}>
+                <th className={cx(T.th, "w-32")}>Risk</th><th className={T.th}>Request</th>
+                <th className={cx(T.th, "w-44")}>Raised by</th><th className={cx(T.th, "w-28 text-right")}>Expires</th>
+                {isAdmin ? <th className={T.th}><span className="sr-only">Decision</span></th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {requests.map((request) => (
+                <tr key={request.id} className={T.row} data-testid={`approval-${request.kind}`}>
+                  <td className={T.td}>
+                    <div className="sm:pt-0.5">
+                      <StatusDot tone={RISK_TONE[request.risk] || RISK_TONE.medium}>
+                        {sentence(request.risk || "medium")} risk
+                      </StatusDot>
+                    </div>
+                  </td>
+                  <td className={T.td}>
+                    <div className="font-medium text-foreground">{request.title}</div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                      <span className={mono}>{request.kind}</span>
+                      <span className="sm:hidden">raised by {request.requester_kind === "agent" ? "an agent" : request.requested_by}</span>
+                      {request.expires_at ? <span className="sm:hidden">expires <Time value={request.expires_at} /></span> : null}
+                    </div>
+                    {request.summary ? (
+                      <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{request.summary}</div>
+                    ) : null}
+                    {request.blocked_reasons?.length ? (
+                      <div className="mt-1 flex items-start gap-1.5 text-xs leading-5 text-amber-700">
+                        <Lock className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                        <span>Approving this will not unblock it — {request.blocked_reasons.join("; ")}</span>
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className={cx(T.wide, "text-xs text-muted-foreground")}>
+                    <div className="max-w-44 truncate pt-0.5">
+                      {request.requester_kind === "agent" ? "An agent" : request.requested_by || "—"}
+                    </div>
+                  </td>
+                  <td className={cx(T.wide, "text-right text-xs")}>
+                    <div className="pt-0.5"><Time value={request.expires_at} /></div>
+                  </td>
+                  {isAdmin ? (
+                    <td className={T.td}>
+                      <div className="flex gap-1.5 pt-1 sm:justify-end sm:pt-0">
+                        <Button size="sm" variant="outline" className={rowButton} disabled={busyId === request.id}
+                                onClick={() => decide(request, "approved")}
+                                data-testid="approval-approve">
+                          <Check className="text-emerald-600" aria-hidden="true" />Approve
+                        </Button>
+                        <Button size="sm" variant="outline" className={rowButton}
+                                disabled={busyId === request.id}
+                                onClick={() => decide(request, "rejected")}
+                                data-testid="approval-reject">
+                          <X className="text-muted-foreground" aria-hidden="true" />Reject
+                        </Button>
+                      </div>
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
   );
 }
 
-const CONSENT_TONE = {
-  granted: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  unknown: "bg-slate-50 text-slate-700 border-slate-200",
-  denied: "bg-red-50 text-red-700 border-red-200",
-  withdrawn: "bg-red-50 text-red-700 border-red-200",
-};
-
-const CONVERSATION_TONE = {
-  open: "bg-brand-soft text-brand-strong border-brand/20",
-  pending: "bg-amber-50 text-amber-900 border-amber-200",
-  snoozed: "bg-slate-50 text-slate-700 border-slate-200",
-  closed: "bg-slate-50 text-slate-500 border-slate-200",
-};
-
-function ConversationsPanel({ isAdmin }) {
+function ConversationsPanel({ isAdmin, onCount }) {
   const [threads, setThreads] = useState(null);
   const [summary, setSummary] = useState(null);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [loadedAt, setLoadedAt] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -505,11 +611,13 @@ function ConversationsPanel({ isAdmin }) {
       ]);
       setThreads(list.data || []);
       setSummary(totals.data || null);
+      setLoadedAt(new Date());
+      onCount?.(totals.data?.open_conversations);
     } catch (e) {
       setThreads([]);
       setError(formatErr(e.response?.data?.detail) || "Conversations could not be read.");
     }
-  }, []);
+  }, [onCount]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -544,140 +652,135 @@ function ConversationsPanel({ isAdmin }) {
   const registered = providers.filter((p) => p.registered);
 
   return (
-    <div data-testid="conversations-panel">
+    <div className="space-y-4" data-testid="conversations-panel">
       {summary ? (
-        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatTile label="Open threads" value={summary.open_conversations} />
-          <StatTile label="Agent handled" value={summary.agent_handled_open} />
-          <StatTile label="Awaiting approval" value={summary.messages_awaiting_approval} />
-          <StatTile label="Blocked messages" value={summary.messages_blocked}
-                    tone={summary.messages_blocked ? "text-amber-700" : "text-foreground"} />
-        </div>
+        <StatStrip items={[
+          { label: "Open threads", value: summary.open_conversations },
+          { label: "Agent handled", value: summary.agent_handled_open },
+          { label: "Awaiting approval", value: summary.messages_awaiting_approval },
+          { label: "Blocked messages", value: summary.messages_blocked, tone: summary.messages_blocked ? "warning" : undefined },
+        ]} />
       ) : null}
 
       {registered.length === 0 ? (
-        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50/60 p-4"
-             data-testid="no-provider-notice">
-          <div className="text-xs font-medium text-amber-900">
-            No delivery provider is registered
-          </div>
-          <p className="mt-2 text-[11px] leading-5 text-amber-900">
+        <Notice title="No delivery provider is registered" testid="no-provider-notice">
+          <p className="text-xs leading-5">
             Conversations, drafts, consent and handoff all work. Nothing can be sent: no channel
             adapter has been built or certified, so every outbound attempt is refused and the
             refusal names the precondition that stopped it.
           </p>
-        </div>
+        </Notice>
       ) : null}
 
-      <div className="mb-4">
-        <Button size="sm" variant="outline" onClick={load} data-testid="conversations-refresh">
-          <RefreshCw className="mr-2 h-3.5 w-3.5" />Refresh
-        </Button>
-      </div>
+      <PanelBar loadedAt={loadedAt}>
+        <RefreshButton onClick={load} testid="conversations-refresh" label="Refresh conversations" />
+      </PanelBar>
 
       {threads.length === 0 ? (
         <SurfaceEmpty icon={MessagesSquare} title="No open conversations"
                       description="Threads appear here with their channel, who is handling them, and what the counterparty has consented to."
                       testid="conversations-empty" />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
-          <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
-            {threads.map((thread) => (
-              <button key={thread.id} type="button" onClick={() => open(thread)}
-                      className={`block w-full px-4 py-3 text-left transition hover:bg-slate-50 ${
-                        selected?.id === thread.id ? "bg-slate-50" : ""}`}
-                      data-testid={`conversation-${thread.channel}`}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className={CONVERSATION_TONE[thread.status] || CONVERSATION_TONE.open}>
-                    {thread.status}
-                  </Badge>
-                  <span className="text-xs text-slate-500">
-                    {thread.channel}
-                  </span>
-                  <Badge className={CONSENT_TONE[thread.consent?.state] || CONSENT_TONE.unknown}>
-                    consent {thread.consent?.state}
-                  </Badge>
-                </div>
-                <div className="mt-1 truncate text-sm font-semibold text-foreground">
-                  {thread.subject || "No subject"}
-                </div>
-                <div className="mt-1 text-[11px] text-slate-400">
-                  handled by {thread.handled_by}
-                  {thread.assignee ? ` · ${thread.assignee}` : ""}
-                  {` · ${thread.message_count} message(s)`}
-                </div>
-              </button>
-            ))}
+        <div className={cx(listShell, "lg:grid lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]")}>
+          <div className="divide-y divide-border/70 lg:border-r lg:border-border">
+            {threads.map((thread) => {
+              const active = selected?.id === thread.id;
+              return (
+                <button key={thread.id} type="button" onClick={() => open(thread)} aria-current={active ? "true" : undefined}
+                        className={cx("relative block w-full px-4 py-3 text-left transition-colors hover:bg-muted/50",
+                          active && "bg-muted/60 before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-foreground")}
+                        data-testid={`conversation-${thread.channel}`}>
+                  <div className="truncate text-[13px] font-medium text-foreground">{thread.subject || "No subject"}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                    <StatusDot tone={CONVERSATION_TONE[thread.status] || CONVERSATION_TONE.open} className="text-xs">
+                      {sentence(thread.status)}
+                    </StatusDot>
+                    <span className={mono}>{thread.channel}</span>
+                    <StatusDot tone={CONSENT_TONE[thread.consent?.state] || CONSENT_TONE.unknown} className="text-xs">
+                      consent {thread.consent?.state}
+                    </StatusDot>
+                  </div>
+                  <div className="mt-1 truncate text-xs text-muted-foreground">
+                    handled by {thread.handled_by}
+                    {thread.assignee ? ` · ${thread.assignee}` : ""}
+                    {` · ${thread.message_count} message(s)`}
+                  </div>
+                </button>
+              );
+            })}
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="border-t border-border p-4 lg:border-t-0">
             {!selected ? (
-              <p className="text-xs text-slate-500">Select a conversation to read it.</p>
+              <div className="flex h-full min-h-[160px] items-center justify-center text-[13px] text-muted-foreground">
+                Select a conversation to read it.
+              </div>
             ) : (
               <div data-testid="conversation-detail">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-semibold text-foreground">
-                    {selected.subject || "No subject"}
-                  </span>
-                  <Badge className={CONSENT_TONE[selected.consent?.state] || CONSENT_TONE.unknown}>
-                    consent {selected.consent?.state}
-                  </Badge>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-foreground">{selected.subject || "No subject"}</h3>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                      <StatusDot tone={CONSENT_TONE[selected.consent?.state] || CONSENT_TONE.unknown} className="text-xs">
+                        consent {selected.consent?.state}
+                      </StatusDot>
+                      {selected.consent?.basis ? (
+                        <span className="text-xs text-muted-foreground">Basis: {selected.consent.basis}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button size="sm" variant="outline" className={rowButton} disabled={busy}
+                            onClick={() => act("handoff",
+                              { to: selected.handled_by === "agent" ? "human" : "agent" },
+                              "Handoff recorded")}
+                            data-testid="conversation-handoff">
+                      Hand to {selected.handled_by === "agent" ? "human" : "agent"}
+                    </Button>
+                    {selected.status !== "closed" ? (
+                      <Button size="sm" variant="ghost" className={rowButton} disabled={busy}
+                              onClick={() => act("status", { status: "closed" }, "Closed")}
+                              data-testid="conversation-close">Close</Button>
+                    ) : null}
+                  </div>
                 </div>
-                {selected.consent?.basis ? (
-                  <p className="mt-1 text-[11px] leading-5 text-slate-500">
-                    Basis: {selected.consent.basis}
+                {isAdmin && selected.consent?.state !== "granted" ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Consent is recorded by an administrator with a stated basis.
                   </p>
                 ) : null}
 
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  <Button size="sm" variant="outline" className="h-7 text-xs" disabled={busy}
-                          onClick={() => act("handoff",
-                            { to: selected.handled_by === "agent" ? "human" : "agent" },
-                            "Handoff recorded")}
-                          data-testid="conversation-handoff">
-                    Hand to {selected.handled_by === "agent" ? "human" : "agent"}
-                  </Button>
-                  {selected.status !== "closed" ? (
-                    <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy}
-                            onClick={() => act("status", { status: "closed" }, "Closed")}
-                            data-testid="conversation-close">Close</Button>
-                  ) : null}
-                  {isAdmin && selected.consent?.state !== "granted" ? (
-                    <span className="self-center text-[11px] text-slate-400">
-                      Consent is recorded by an administrator with a stated basis.
-                    </span>
-                  ) : null}
-                </div>
-
-                <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+                <ol className="mt-4 space-y-3 border-t border-border pt-4">
                   {(selected.messages || []).length === 0 ? (
-                    <p className="text-xs text-slate-500">No messages yet.</p>
+                    <li className="text-[13px] text-muted-foreground">No messages yet.</li>
                   ) : (
-                    selected.messages.map((message) => (
-                      <div key={message.id} className="rounded-lg border border-slate-200 px-3 py-2"
-                           data-testid={`message-${message.status}`}>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs text-slate-500">
-                            {message.direction}
+                    selected.messages.map((message) => {
+                      const DirectionIcon = message.direction === "inbound" ? ArrowDownLeft : ArrowUpRight;
+                      return (
+                        <li key={message.id} className="flex gap-3" data-testid={`message-${message.status}`}>
+                          <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground" aria-hidden="true">
+                            <DirectionIcon className="size-3.5" />
                           </span>
-                          <Badge className={message.status === "blocked"
-                            ? "bg-amber-50 text-amber-900 border-amber-200"
-                            : "bg-slate-50 text-slate-700 border-slate-200"}>
-                            {message.status.replace(/_/g, " ")}
-                          </Badge>
-                        </div>
-                        <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-slate-600">
-                          {message.body}
-                        </p>
-                        {message.blocked_detail ? (
-                          <p className="mt-1 text-[11px] leading-5 text-amber-700">
-                            {message.blocked_detail}
-                          </p>
-                        ) : null}
-                      </div>
-                    ))
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
+                              <span className="font-medium capitalize text-foreground">{message.direction}</span>
+                              <StatusDot tone={message.status === "blocked" ? "warning" : "neutral"} className="text-xs">
+                                {sentence(message.status)}
+                              </StatusDot>
+                              <Time value={message.sent_at || message.created_at} className="text-xs" />
+                            </div>
+                            <p className="mt-1 whitespace-pre-wrap text-[13px] leading-5 text-foreground/80">
+                              {message.body}
+                            </p>
+                            {message.blocked_detail ? (
+                              <p className="mt-1 text-xs leading-5 text-amber-700">{message.blocked_detail}</p>
+                            ) : null}
+                          </div>
+                        </li>
+                      );
+                    })
                   )}
-                </div>
+                </ol>
               </div>
             )}
           </div>
@@ -713,55 +816,76 @@ function SecurityGatePanel() {
   if (error) return <SurfaceError title="Security gate unavailable" description={error} onRetry={load}
                                   testid="security-gate-error" />;
 
+  const scanners = status?.scanners || [];
+  const configured = scanners.filter((scanner) => scanner.configured).length;
+
   return (
-    <div data-testid="security-gate-panel">
-      <div className="mb-5 rounded-lg border border-slate-200 bg-white p-4">
-        <div className="flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-brand" />
-          <span className="text-sm font-semibold text-foreground">Dual gate pipeline</span>
-          <Badge className={status?.operational
-            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-            : "bg-amber-50 text-amber-900 border-amber-200"}>
+    <div className="space-y-5" data-testid="security-gate-panel">
+      <Section card
+        title={<span className="flex items-center gap-2"><ShieldCheck className="size-4 text-muted-foreground" aria-hidden="true" />Dual gate pipeline</span>}
+        actions={(
+          <StatusDot tone={status?.operational ? "success" : "warning"}>
             {status?.operational ? "Operational" : "Scanners not configured"}
-          </Badge>
+          </StatusDot>
+        )}>
+        {status?.note ? <p className="px-4 pt-3 text-[13px] leading-5 text-muted-foreground">{status.note}</p> : null}
+        <div className="px-4 pb-4 pt-3">
+          <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+            <span className="font-medium">Scanners</span>
+            <span className="tabular">{configured} of {scanners.length} configured</span>
+          </div>
+          <ul className="divide-y divide-border/70 rounded-lg border border-border">
+            {scanners.map((scanner) => (
+              <li key={scanner.scanner} className="flex items-center justify-between gap-3 px-3 py-2"
+                  data-testid={`scanner-${scanner.scanner}`}>
+                <span className="truncate font-mono text-xs text-foreground">{scanner.scanner}</span>
+                <StatusDot tone={scanner.configured ? "success" : "warning"} className="text-xs">
+                  {scanner.configured ? "configured" : "not configured"}
+                </StatusDot>
+              </li>
+            ))}
+          </ul>
         </div>
-        <p className="mt-2 text-xs leading-5 text-slate-500">{status?.note}</p>
-        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-          {(status?.scanners || []).map((scanner) => (
-            <div key={scanner.scanner} className="rounded-lg border border-slate-200 px-3 py-2"
-                 data-testid={`scanner-${scanner.scanner}`}>
-              <div className="text-xs font-semibold text-foreground">{scanner.scanner}</div>
-              <div className={`mt-0.5 text-[11px] ${scanner.configured ? "text-emerald-600" : "text-amber-700"}`}>
-                {scanner.configured ? "configured" : "not configured"}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      </Section>
 
       {components.length === 0 ? (
         <SurfaceEmpty icon={ShieldCheck} title="No external components registered"
                       description="External skills, MCP servers, plugins and packages appear here once registered. Registration alone grants nothing — both gates must pass before anything can execute."
                       testid="security-gate-empty" />
       ) : (
-        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
-          {components.map((component) => (
-            <div key={component.id} className="px-4 py-3" data-testid={`component-${component.kind}`}>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge className={GATE_STATE_TONE[component.state] || GATE_STATE_TONE.DISCOVERED}>
-                  {component.state}
-                </Badge>
-                <span className="text-sm font-semibold text-foreground">{component.name}</span>
-                <span className="text-xs text-slate-500">{component.kind}</span>
-              </div>
-              <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-400">
-                <span className="truncate">{component.source_url}</span>
-                <span>version {component.version}</span>
-                <span>gate A {component.gate_a?.status}</span>
-                <span>gate B {component.gate_b?.status}</span>
-              </div>
-            </div>
-          ))}
+        <div className={cx(listShell, "overflow-x-auto")}>
+          <table className={T.table}>
+            <thead className={T.head}>
+              <tr className={T.headRow}>
+                <th className={cx(T.th, "w-36")}>State</th><th className={T.th}>Component</th><th className={T.th}>Source</th>
+                <th className={cx(T.th, "w-24")}>Version</th><th className={cx(T.th, "w-28")}>Gate A</th><th className={cx(T.th, "w-28")}>Gate B</th>
+              </tr>
+            </thead>
+            <tbody>
+              {components.map((component) => (
+                <tr key={component.id} className={T.row} data-testid={`component-${component.kind}`}>
+                  <td className={T.td}>
+                    <StatusDot tone={GATE_STATE_TONE[component.state] || "neutral"}>{sentence(component.state)}</StatusDot>
+                  </td>
+                  <td className={T.td}>
+                    <div className="font-medium text-foreground">{component.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {component.kind}
+                      <span className="sm:hidden"> · version <span className="tabular">{component.version}</span> · gate A {sentence(component.gate_a?.status)} · gate B {sentence(component.gate_b?.status)}</span>
+                    </div>
+                  </td>
+                  <td className={T.td}>
+                    <div className="max-w-full truncate font-mono text-[11.5px] text-muted-foreground sm:max-w-[280px]" title={component.source_url}>
+                      {component.source_url}
+                    </div>
+                  </td>
+                  <td className={cx(T.wide, "tabular font-mono text-[11.5px] text-muted-foreground")}>{component.version}</td>
+                  <td className={cx(T.wide, "text-xs text-muted-foreground")}>{sentence(component.gate_a?.status)}</td>
+                  <td className={cx(T.wide, "text-xs text-muted-foreground")}>{sentence(component.gate_b?.status)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
@@ -769,6 +893,40 @@ function SecurityGatePanel() {
 }
 
 const TABS = ["actions", "queue", "recovery", "approvals", "conversations", "gate"];
+
+const queueCount = (stats) => (stats ? (stats.open || 0) + (stats.failed || 0) + (stats.dead_letter || 0) : undefined);
+
+/**
+ * Counts for the view tabs, read from the same summaries each panel shows, so a tab says how
+ * much is waiting before it is opened. A panel reports its fresh figure after every reload.
+ */
+function useTabCounts() {
+  const [counts, setCounts] = useState({});
+  useEffect(() => {
+    let live = true;
+    Promise.allSettled([
+      api.get("/work-queue/stats"),
+      api.get("/recovery-strategies/summary"),
+      api.get("/approval-queue/summary"),
+      api.get("/conversations/summary"),
+    ]).then(([queue, recovery, approvals, conversations]) => {
+      if (!live) return;
+      const read = (result, pick) => (result.status === "fulfilled" ? pick(result.value.data || {}) : undefined);
+      setCounts((current) => ({
+        queue: read(queue, queueCount),
+        recovery: read(recovery, (data) => data.proposed),
+        approvals: read(approvals, (data) => data.awaiting_decision),
+        conversations: read(conversations, (data) => data.open_conversations),
+        ...current,
+      }));
+    });
+    return () => { live = false; };
+  }, []);
+  const report = useCallback((key) => (value) => {
+    setCounts((current) => (current[key] === value ? current : { ...current, [key]: value }));
+  }, []);
+  return [counts, report];
+}
 
 export default function Operations() {
   const { user } = useAuth();
@@ -779,61 +937,54 @@ export default function Operations() {
   // the URL rather than local state.
   const requested = params.get("tab");
   const tab = TABS.includes(requested) ? requested : "actions";
+  const [counts, report] = useTabCounts();
+  const onQueue = useMemo(() => report("queue"), [report]);
+  const onRecovery = useMemo(() => report("recovery"), [report]);
+  const onApprovals = useMemo(() => report("approvals"), [report]);
+  const onConversations = useMemo(() => report("conversations"), [report]);
+
+  const views = [
+    { value: "actions", label: "Next best actions", icon: ListChecks, testid: "tab-actions" },
+    { value: "queue", label: "Work queue", icon: Inbox, count: counts.queue, testid: "tab-queue" },
+    { value: "recovery", label: "Recovery strategies", icon: Route, count: counts.recovery, testid: "tab-recovery" },
+    { value: "approvals", label: "Approvals", icon: ClipboardCheck, count: counts.approvals, testid: "tab-approvals" },
+    { value: "conversations", label: "Conversations", icon: MessagesSquare, count: counts.conversations, testid: "tab-conversations" },
+    { value: "gate", label: "Security gate", icon: ShieldCheck, testid: "tab-gate" },
+  ];
+  const active = views.find((view) => view.value === tab);
+
+  // On a narrow screen the tab strip scrolls sideways; keep the open view's tab in sight,
+  // including when the page is opened on a deep link such as ?tab=gate.
+  const tabsRef = useRef(null);
+  useEffect(() => {
+    const node = tabsRef.current?.querySelector(`[data-testid="tab-${tab}"]`);
+    const strip = node?.parentElement;
+    if (!node || !strip || strip.scrollWidth <= strip.clientWidth) return;
+    const offset = node.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+    strip.scrollTo({ left: strip.scrollLeft + offset - (strip.clientWidth - node.offsetWidth) / 2 });
+  }, [tab, counts]);
 
   return (
     <div className="cv-page">
-      <div className="cv-page-header mb-6">
-        <div>
-          <div className="cv-eyebrow">Operations</div>
-          <h1 className="cv-page-title">Recovery &amp; automation control</h1>
-          <p className="cv-page-description">
-            The durable work queue, Second Chance recovery candidates and the strategies
-            composed from them, the approvals those strategies wait on, client conversations,
-            ranked next best actions, and the security gate that governs external agent
-            capability.
-          </p>
-        </div>
+      <PageHeader icon={Activity} title="Operations"
+                  description="Work queue, recovery strategies, approvals, conversations and the security gate." />
+
+      <div ref={tabsRef}>
+        <ViewTabs label="Operations views" items={views} value={tab}
+                  onChange={(next) => setParams(next === "actions" ? {} : { tab: next }, { replace: true })} />
       </div>
 
-      <Tabs value={tab} onValueChange={(next) => setParams(next === "actions" ? {} : { tab: next },
-                                                          { replace: true })}>
-        <TabsList className="w-full justify-start overflow-x-auto">
-          <TabsTrigger value="actions" data-testid="tab-actions">
-            <ListChecks className="mr-2 h-3.5 w-3.5" />Next best actions
-          </TabsTrigger>
-          <TabsTrigger value="queue" data-testid="tab-queue">
-            <Inbox className="mr-2 h-3.5 w-3.5" />Work queue
-          </TabsTrigger>
-          <TabsTrigger value="recovery" data-testid="tab-recovery">
-            <Route className="mr-2 h-3.5 w-3.5" />Recovery strategies
-          </TabsTrigger>
-          <TabsTrigger value="approvals" data-testid="tab-approvals">
-            <ClipboardCheck className="mr-2 h-3.5 w-3.5" />Approvals
-          </TabsTrigger>
-          <TabsTrigger value="conversations" data-testid="tab-conversations">
-            <MessagesSquare className="mr-2 h-3.5 w-3.5" />Conversations
-          </TabsTrigger>
-          <TabsTrigger value="gate" data-testid="tab-gate">
-            <ShieldCheck className="mr-2 h-3.5 w-3.5" />Security gate
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="actions" className="mt-5">
+      <div role="tabpanel" aria-label={active?.label} className="pt-5">
+        {tab === "actions" ? (
           <NextBestActions limit={25} compact title="Ranked across all clients"
                            onNavigate={(item) => navigate(`/workspaces/${item.workspace_id}`)} />
-        </TabsContent>
-        <TabsContent value="queue" className="mt-5"><WorkQueuePanel isAdmin={isAdmin} /></TabsContent>
-        <TabsContent value="recovery" className="mt-5">
-          <RecoveryStrategiesPanel isAdmin={isAdmin} />
-        </TabsContent>
-        <TabsContent value="approvals" className="mt-5">
-          <ApprovalQueuePanel isAdmin={isAdmin} />
-        </TabsContent>
-        <TabsContent value="conversations" className="mt-5">
-          <ConversationsPanel isAdmin={isAdmin} />
-        </TabsContent>
-        <TabsContent value="gate" className="mt-5"><SecurityGatePanel /></TabsContent>
-      </Tabs>
+        ) : null}
+        {tab === "queue" ? <WorkQueuePanel isAdmin={isAdmin} onCount={onQueue} /> : null}
+        {tab === "recovery" ? <RecoveryStrategiesPanel isAdmin={isAdmin} onCount={onRecovery} /> : null}
+        {tab === "approvals" ? <ApprovalQueuePanel isAdmin={isAdmin} onCount={onApprovals} /> : null}
+        {tab === "conversations" ? <ConversationsPanel isAdmin={isAdmin} onCount={onConversations} /> : null}
+        {tab === "gate" ? <SecurityGatePanel /> : null}
+      </div>
     </div>
   );
 }
