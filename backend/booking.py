@@ -308,7 +308,7 @@ def validate_availability(timezone_name: Any, weekly: Any, overrides: Any) -> di
     if not isinstance(weekly, dict):
         raise ValueError("weekly hours must list each day")
     clean_weekly = {day: _clean_intervals(weekly.get(day), day.title()) for day in WEEKDAYS}
-    clean_overrides = []
+    clean_overrides: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in (overrides or [])[:MAX_OVERRIDES + 1]:
         day = _parse_day((item or {}).get("date")).isoformat()
@@ -320,7 +320,7 @@ def validate_availability(timezone_name: Any, weekly: Any, overrides: Any) -> di
                                 "label": str((item or {}).get("label") or "").strip()[:80] or None})
     if len(clean_overrides) > MAX_OVERRIDES:
         raise ValueError(f"At most {MAX_OVERRIDES} days off or special days")
-    clean_overrides.sort(key=lambda o: o["date"])
+    clean_overrides.sort(key=lambda o: str(o["date"]))
     return {"timezone": str(timezone_name).strip(), "weekly": clean_weekly,
             "overrides": clean_overrides}
 
@@ -587,7 +587,8 @@ def _ics_text(value: str) -> str:
 def _fold(line: str) -> str:
     """RFC 5545 line folding: at most 75 octets per line, continuation lines start with
     a space, and a multi-byte character is never split."""
-    out, current, size = [], "", 0
+    out: list[str] = []
+    current, size = "", 0
     for char in line:
         width = len(char.encode("utf-8"))
         limit = 75 if not out else 74
@@ -1212,7 +1213,8 @@ class BookingService:
         if await self.db.notification_deliveries.find_one(
                 {"tenant_id": tenant_id, "dedupe_key": dedupe_key}, {"_id": 1}):
             return
-        for recipient in list(recipients) or [None]:
+        targets: list[Optional[str]] = list(recipients) or [None]
+        for recipient in targets:
             await self.db.notifications.insert_one({
                 "id": self.new_id("ntf"), "tenant_id": tenant_id,
                 "user_id": await self._user_id(tenant_id, recipient), "recipient": recipient,
