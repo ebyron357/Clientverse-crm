@@ -294,6 +294,25 @@ def _is_duplicate_key(exc: Exception) -> bool:
 phone_digits = crm_core.phone_digits
 
 
+def form_label(form: dict) -> str:
+    """The form as the agent named it, so a lead, its alerts, its task and its deal all
+    read the same; the preset's wording only for a form that has no name."""
+    return (str(form.get("name") or "").strip()
+            or PRESETS.get(form.get("form_type") or "", {}).get("label") or "Website form")
+
+
+def wait_words(minutes: int) -> str:
+    """'12 minutes', '3 h 5 min', '4 days': how long a lead has waited, in words read at a glance."""
+    m = max(0, int(minutes))
+    if m < 60:
+        return f"{m} minute{'' if m == 1 else 's'}"
+    if m < 60 * 24:
+        hours, rest = divmod(m, 60)
+        return f"{hours} h {rest} min" if rest else f"{hours} h"
+    days = m // (60 * 24)
+    return f"{days} day{'' if days == 1 else 's'}"
+
+
 def normalise_origin(value: Optional[str]) -> Optional[str]:
     """`https://Example.com/path` -> `https://example.com`. None for anything else."""
     if not value:
@@ -1468,7 +1487,7 @@ class LeadPipeline:
 
         stage = cfg.get("stage") if cfg.get("stage") in open_keys else (open_keys[0] if open_keys else "lead")
         value = self.expected_value(cfg, enquiry.get("fields") or {})
-        label = PRESETS.get(form.get("form_type") or "", {}).get("label") or form["name"]
+        label = form_label(form)
         parts = [contact.get("name") or "Website lead", label]
         if enquiry.get("property_address"):
             parts.append(enquiry["property_address"])
@@ -1526,7 +1545,7 @@ class LeadPipeline:
 
     async def _task(self, form: dict, enquiry: dict, contact: dict,
                     assignee: Optional[str]) -> dict:
-        label = PRESETS.get(form.get("form_type") or "", {}).get("label") or form["name"]
+        label = form_label(form)
         lines = [f"{k.replace('_', ' ').title()}: {v}" for k, v in (enquiry.get("fields") or {}).items()
                  if k not in ("first_name", "last_name") and v not in (None, "", False)]
         if enquiry.get("source_page"):
@@ -1891,17 +1910,22 @@ class LeadPipeline:
             waited = int(((_parse(now) or _now()) - (_parse(lead["received_at"]) or _now()))
                          .total_seconds() // 60)
             who = lead.get("name") or lead.get("email") or lead.get("phone") or "a visitor"
+            waited_words = wait_words(waited)
+            assignee = lead.get("assigned_to")
+            if assignee:
+                names = await crm_core.display_names(self.db, lead["tenant_id"], [assignee])
+                assignee = names.get(assignee) or assignee
             recipients = sorted(set(await self._admins(lead["tenant_id"])
                                     + ([lead["assigned_to"]] if lead.get("assigned_to") else [])))
             await self._notify(
                 lead["tenant_id"], recipients=recipients,
-                title=f"Lead waiting {waited} min with no response: {who}",
+                title=f"Lead waiting {waited_words} with no response: {who}",
                 body=(f"{who} came in through {lead.get('form_name')} and nobody has responded. "
-                      f"Assigned to {lead.get('assigned_to') or 'nobody'}."),
+                      f"Assigned to {assignee or 'nobody'}."),
                 deep_link=f"/leads?lead={lead['id']}", severity="critical",
                 ntype="lead.sla_breached", dedupe_key=f"lead:{lead['id']}:escalated",
-                email_subject=f"Uncontacted lead: {who} has waited {waited} minutes",
-                email_html=self._email_html(f"No response after {waited} minutes", lead,
+                email_subject=f"Uncontacted lead: {who} has waited {waited_words}",
+                email_html=self._email_html(f"No response after {waited_words}", lead,
                                             "Escalated because the speed-to-lead window passed."))
             await self.record_event("lead.sla_breached", "web_enquiry", lead["id"],
                                     lead["tenant_id"], SYSTEM_ACTOR,
@@ -2547,6 +2571,8 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             raise HTTPException(status_code=422, detail={"errors": exc.errors})
         lead = await db[detectors.WEB_ENQUIRIES].find_one(
             {"id": result["id"], "tenant_id": user["tenant_id"]}, {"_id": 0})
+        if lead:
+            await with_assignee_names(user["tenant_id"], [lead])
         return {"result": result, "lead": lead}
 
     # ---------------------------------------------------------------- leads

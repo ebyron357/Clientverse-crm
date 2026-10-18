@@ -81,7 +81,7 @@ def test_an_unanswered_inbound_call_with_no_callback_is_detected(env):
     assert len(found) == 1
     assert found[0]["external_identity"] == {"kind": rc.IDENTITY_PHONE,
                                              "value": "+441632960001"}
-    assert "unanswered" in found[0]["reason"]
+    assert "was missed" in found[0]["reason"] and "called back" in found[0]["reason"]
     assert found[0]["record_collection"] == detectors.CALL_LOGS
 
 

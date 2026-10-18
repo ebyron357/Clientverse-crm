@@ -56,6 +56,17 @@ function minutesBetween(fromIso, to = Date.now()) {
   return Math.round((to - new Date(fromIso).getTime()) / 60000);
 }
 
+/** "12 min", "3 h 5 min", "4 days": a wait or response time in words people read at a glance. */
+export function duration(minutes) {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${m} min`;
+  if (m < 60 * 24) return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
+  const days = Math.floor(m / (60 * 24));
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+const MONEY_FIELDS = new Set(["price_min", "price_max", "estimated_home_value"]);
+
 function ago(iso) {
   if (!iso) return "—";
   const minutes = minutesBetween(iso);
@@ -69,17 +80,17 @@ function SlaBadge({ lead }) {
   const sla = lead.sla || {};
   if (lead.status === "responded" && sla.response_minutes != null) {
     const fast = sla.response_minutes <= 5;
-    return <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${fast ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}><CheckCircle2 className="h-3 w-3" />Responded in {sla.response_minutes} min</span>;
+    return <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${fast ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}><CheckCircle2 className="h-3 w-3" />Responded in {duration(sla.response_minutes)}</span>;
   }
   if (lead.status !== "new" || !sla.due_at) return null;
   if (sla.escalated_at) {
-    return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><ShieldAlert className="h-3 w-3" />Escalated · waiting {minutesBetween(lead.received_at)} min</span>;
+    return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><ShieldAlert className="h-3 w-3" />Escalated · waiting {duration(minutesBetween(lead.received_at))}</span>;
   }
   const remaining = -minutesBetween(sla.due_at);
   if (remaining >= 0) {
-    return <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700"><Timer className="h-3 w-3" />Call within {Math.max(remaining, 0)} min</span>;
+    return <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700"><Timer className="h-3 w-3" />Call within {duration(remaining)}</span>;
   }
-  return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><AlarmClock className="h-3 w-3" />Overdue {-remaining} min</span>;
+  return <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><AlarmClock className="h-3 w-3" />Overdue {duration(-remaining)}</span>;
 }
 
 function Tile({ icon: Icon, label, value, hint, tone = "slate" }) {
@@ -152,7 +163,7 @@ function LeadDetail({ lead, onStatus, busy, refreshKey }) {
           <Row label="Phone">{lead.phone}</Row>
           <Row label="Message">{lead.message && <span className="whitespace-pre-wrap">{lead.message}</span>}</Row>
           {Object.entries(fields).filter(([key]) => !SKIP_FIELDS.has(key)).map(([key, value]) => (
-            <Row key={key} label={FIELD_LABELS[key] || key.replace(/^custom_/, "").replace(/_/g, " ")}>{value === true ? "Yes" : String(value)}</Row>
+            <Row key={key} label={FIELD_LABELS[key] || key.replace(/^custom_/, "").replace(/_/g, " ")}>{value === true ? "Yes" : value === false ? "No" : MONEY_FIELDS.has(key) && value !== "" && !Number.isNaN(Number(value)) ? formatMoney(value) : String(value)}</Row>
           ))}
           {Object.entries(extra).map(([key, value]) => <Row key={`x-${key}`} label={key}>{String(value)}</Row>)}
           <Row label="Received">{lead.received_at && new Date(lead.received_at).toLocaleString()}</Row>
@@ -313,7 +324,7 @@ export default function Leads() {
           <h1 className="cv-page-title">Leads</h1>
           <p className="cv-page-description">Every lead from your website forms, the speed-to-lead clock on each one, and what the CRM already did with it.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" asChild><Link to="/website-forms"><Globe className="mr-1.5 h-4 w-4" />Website forms</Link></Button>
           <Button variant="outline" onClick={exportCsv}><Download className="mr-1.5 h-4 w-4" />Export CSV</Button>
           <Button variant="outline" onClick={load} data-testid="leads-refresh"><RefreshCw className="mr-1.5 h-4 w-4" />Refresh</Button>
@@ -323,7 +334,7 @@ export default function Leads() {
       {summary ? (
         <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <Tile icon={Zap} tone={summary.open_now ? "amber" : "emerald"} label="Waiting for a response" value={summary.open_now} hint={summary.open_now ? "New leads nobody has contacted" : "Every lead has been contacted"} />
-          <Tile icon={Clock3} tone="cyan" label="Median response" value={summary.median_response_minutes == null ? "—" : `${summary.median_response_minutes} min`} hint={responseHint} />
+          <Tile icon={Clock3} tone="cyan" label="Median response" value={summary.median_response_minutes == null ? "—" : duration(summary.median_response_minutes)} hint={responseHint} />
           <Tile icon={ShieldAlert} tone={summary.sla_breaches ? "red" : "slate"} label="Escalated" value={summary.sla_breaches} hint={`Last ${summary.window_days} days`} />
           <Tile icon={Globe} tone="slate" label="Leads" value={summary.total} hint={`Last ${summary.window_days} days, test leads excluded`} />
         </div>

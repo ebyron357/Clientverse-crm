@@ -541,6 +541,37 @@ def test_an_unanswered_lead_is_escalated_once(client):
     assert len(breaches) == 1 and breaches[0]["severity"] == "critical"
 
 
+def test_an_escalation_reads_in_plain_words(client):
+    owner = register(client, name="Dana Agent")
+    form = create_form(client, owner, settings={
+        "assignment": {"mode": "specific", "users": [owner["email"]]}})
+    lead_id = browser_submit(client, form, lead()).json()["id"]
+    days_ago = (datetime.now(timezone.utc) - timedelta(days=3, minutes=5)).isoformat()
+    call(client, server.db[detectors.WEB_ENQUIRIES].update_one,
+         {"id": lead_id}, {"$set": {"received_at": days_ago, "sla.escalate_at": days_ago}})
+    call(client, server.lead_pipeline.sweep, owner["tenant_id"])
+    alert = find_one(client, "notifications", {"tenant_id": owner["tenant_id"],
+                                               "type": "lead.sla_breached"})
+    assert alert["title"].startswith("Lead waiting 3 days with no response")
+    assert alert["body"].endswith("Assigned to Dana Agent.")
+
+
+def test_the_task_and_deal_carry_the_form_name_the_agent_chose(client):
+    owner = register(client)
+    form = create_form(client, owner, name="Saturday tours")
+    stored = client.get(f"/api/leads/{browser_submit(client, form, lead()).json()['id']}",
+                        headers=owner["headers"]).json()
+    assert stored["form_name"] == "Saturday tours"
+    assert find_one(client, "tasks", {"id": stored["task_id"]})["title"].endswith("(Saturday tours)")
+    assert find_one(client, "opportunities", {"id": stored["opportunity_id"]})["name"] == (
+        "Jane Buyer · Saturday tours · 12 Oak St")
+
+
+def test_wait_words():
+    assert [wf.wait_words(m) for m in (0, 1, 45, 60, 125, 1439, 1440, 4325)] == [
+        "0 minutes", "1 minute", "45 minutes", "1 h", "2 h 5 min", "23 h 59 min", "1 day", "3 days"]
+
+
 def test_marking_spam_archives_what_the_submission_created(client):
     owner = register(client)
     form = create_form(client, owner)
@@ -696,12 +727,14 @@ def test_members_cannot_create_forms(client):
 
 
 def test_the_test_button_runs_the_real_pipeline(client):
-    owner = register(client)
-    form = create_form(client, owner, preset="home_valuation")
+    owner = register(client, name="Dana Agent")
+    form = create_form(client, owner, preset="home_valuation", settings={
+        "assignment": {"mode": "specific", "users": [owner["email"]]}})
     response = client.post(f"/api/website-forms/{form['id']}/test", headers=owner["headers"], json={})
     assert response.status_code == 200, response.text
     stored = response.json()["lead"]
     assert stored["is_test"] is True and stored["contact_id"] and stored["task_id"]
+    assert stored["assigned_name"] == "Dana Agent"  # the result names the agent, not an address
     summary = client.get("/api/leads/summary", headers=owner["headers"]).json()
     assert summary["total"] == 0  # tests never count in reporting
 

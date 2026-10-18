@@ -75,7 +75,7 @@ def test_stalled_lead_detected_after_threshold(env):
     detection = detections[0]
     assert detection["record_id"] == "opp_stale"
     assert detection["idle_days"] >= 30
-    assert "No qualifying activity" in detection["reason"]
+    assert "Nothing has happened on this deal" in detection["reason"]
     assert detection["stage"] == "proposal"
 
 
@@ -155,7 +155,7 @@ def test_overdue_task_is_a_missed_followup(env):
     }))
     detections = run(second_chance.detect_missed_followups(db, queue, TENANT))
     assert [d["record_kind"] for d in detections] == ["task"]
-    assert detections[0]["reason"] == "Task was due 3 day(s) ago and is still open."
+    assert detections[0]["reason"] == "Task was due 3 days ago and is still open."
 
 
 def test_website_lead_call_back_task_is_left_to_the_web_enquiry_lane(env):

@@ -37,6 +37,7 @@ from typing import Any, Optional
 import approval_queue
 import attribution
 import conversations as conversation_service
+import crm_core
 import recovery_case as recovery_case_service
 import recovery_strategy as recovery_strategy_service
 
@@ -122,12 +123,17 @@ async def case_proof(db: Any, tenant_id: str, case_id: str) -> Optional[dict]:
             }
             break
 
+    owner = (case.get("evidence") or {}).get("owner")
+    owner_names = await crm_core.display_names(db, tenant_id, [owner]) if owner else {}
+
     return {
         "case": {
             "id": case["id"],
             "title": case.get("title"),
             "state": case.get("state"),
-            "owner": (case.get("evidence") or {}).get("owner"),
+            "owner": owner,
+            # The teammate's name for a person reading the case; the address stays the key.
+            "owner_name": owner_names.get(owner) if owner else None,
             "source": case.get("source"),
             "source_event_id": case.get("source_event_id"),
             "source_is_internal": case.get("source_is_internal"),

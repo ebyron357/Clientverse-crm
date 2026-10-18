@@ -268,9 +268,10 @@ async def detect_missed_calls(db: Any, tenant_id: str, *,
             "record_collection": CALL_LOGS,
             "record_id": call["id"],
             "title": f"Missed call from {number or 'an unknown number'}",
-            "reason": (f"An inbound call from {number or 'an unknown number'} went "
-                       f"unanswered {waited} hour(s) ago and no one has called back "
-                       f"(threshold {grace_hours} hour(s))."),
+            "reason": (f"A call from {number or 'an unknown number'} was missed "
+                       f"{recovery_case.hours_words(waited)} ago and no one has called back. "
+                       f"Missed calls are flagged after "
+                       f"{recovery_case.plural(grace_hours, 'hour')} without a call back."),
             "occurred_at": occurred.isoformat(),
             "external_identity": ({"kind": recovery_case.IDENTITY_PHONE, "value": number}
                                   if number else None),
@@ -347,9 +348,11 @@ async def detect_web_enquiries(db: Any, tenant_id: str, *,
             "record_kind": "web_enquiry",
             "record_collection": WEB_ENQUIRIES,
             "record_id": enquiry["id"],
-            "title": f"Web enquiry from {enquiry.get('name') or email or 'an unknown visitor'}",
-            "reason": (f"A web enquiry received {waited} hour(s) ago has no recorded "
-                       f"response (threshold {grace_hours} hour(s))."),
+            "title": f"Website lead from {enquiry.get('name') or email or 'an unknown visitor'}",
+            "reason": (f"This website lead came in {recovery_case.hours_words(waited)} ago "
+                       f"and nobody has responded. Website leads are flagged after "
+                       f"{recovery_case.plural(grace_hours, 'hour')} without a response."),
+            "owner": enquiry.get("assigned_to"),
             "occurred_at": received.isoformat(),
             "external_identity": ({"kind": recovery_case.IDENTITY_EMAIL, "value": email}
                                   if email else None),
@@ -422,8 +425,9 @@ async def _detect_open_offers(db: Any, tenant_id: str, *, collection: str, detec
             "record_collection": collection,
             "record_id": row["id"],
             "title": row.get("title") or f"Untitled {label}",
-            "reason": (f"A {label} sent {waited} day(s) ago is still '{status or 'open'}' "
-                       f"with no recorded decision (threshold {grace_days} day(s))."),
+            "reason": (f"A {label} sent {recovery_case.plural(waited, 'day')} ago is still "
+                       f"'{status or 'open'}' with no recorded decision. These are flagged "
+                       f"after {recovery_case.plural(grace_days, 'day')}."),
             "occurred_at": sent_at.isoformat(),
             "workspace_id": row.get("workspace_id"),
             "company_id": row.get("company_id"),
@@ -513,9 +517,10 @@ async def detect_no_response(db: Any, tenant_id: str, *,
             "record_collection": conversation_service.CONVERSATIONS,
             "record_id": conversation["id"],
             "title": conversation.get("subject") or "Unanswered conversation",
-            "reason": (f"{len(sent)} message(s) reached the client and the most recent "
-                       f"went unanswered for {waited} day(s) (threshold {grace_days} "
-                       f"day(s))."),
+            "reason": (f"{recovery_case.plural(len(sent), 'message')} reached the client and "
+                       f"the most recent has gone unanswered for "
+                       f"{recovery_case.plural(waited, 'day')}. Conversations are flagged after "
+                       f"{recovery_case.plural(grace_days, 'day')}."),
             "occurred_at": last_sent.isoformat(),
             "workspace_id": conversation.get("workspace_id"),
             "company_id": conversation.get("company_id"),
@@ -624,9 +629,10 @@ async def detect_no_shows(db: Any, tenant_id: str, *,
             "record_collection": "appointments",
             "record_id": appointment["id"],
             "title": appointment.get("title") or "Appointment with no outcome",
-            "reason": (f"The appointment ended {elapsed} hour(s) ago and is still "
-                       f"'{_status(appointment.get('status')) or 'scheduled'}' with no "
-                       f"recorded outcome (threshold {grace_hours} hour(s))."),
+            "reason": (f"The appointment ended {recovery_case.hours_words(elapsed)} ago and "
+                       f"is still '{_status(appointment.get('status')) or 'scheduled'}' with no "
+                       f"recorded outcome. Appointments are flagged after "
+                       f"{recovery_case.plural(grace_hours, 'hour')}."),
             "occurred_at": end.isoformat(),
             "workspace_id": appointment.get("workspace_id"),
             "company_id": appointment.get("company_id"),

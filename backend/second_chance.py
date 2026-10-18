@@ -151,11 +151,14 @@ async def detect_stalled_leads(db, queue, tenant_id: str, *, actor: str = "secon
             "record_id": opp.get("id"),
             "title": opp.get("title") or opp.get("name") or "Untitled opportunity",
             "reason": (
-                f"No qualifying activity for {idle_days} days while the opportunity is "
-                f"open at stage '{stage or 'unknown'}' (threshold {cutoff_days} days)."
+                f"Nothing has happened on this deal for {recovery_case.plural(idle_days, 'day')} "
+                f"(no update, stage move or logged activity) while it is open in "
+                f"{(stage or 'an unknown stage').replace('_', ' ').capitalize()}. "
+                f"Deals are flagged after {recovery_case.plural(cutoff_days, 'quiet day')}."
             ),
             "idle_days": idle_days,
             "stage": stage,
+            "owner": opp.get("owner"),
             "value": opp.get("value") or opp.get("amount"),
             # The deal's own currency. Without it every dormant deal was recorded as USD,
             # so a £40,000 deal appeared as $40,000 of open potential.
@@ -191,7 +194,7 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
             "record_id": cmt.get("id"),
             "title": cmt.get("title") or "Untitled commitment",
             "reason": (
-                f"Commitment was due {overdue_days} day(s) ago and is still '{status or 'open'}' "
+                f"Commitment was due {recovery_case.plural(overdue_days, 'day')} ago and is still '{status or 'open'}' "
                 f"with no qualifying completion."
             ),
             "overdue_days": overdue_days,
@@ -222,7 +225,7 @@ async def detect_missed_followups(db, queue, tenant_id: str, *,
             "record_id": task.get("id"),
             "title": task.get("title") or "Untitled task",
             "reason": (
-                f"Task was due {overdue_days} day(s) ago and is still "
+                f"Task was due {recovery_case.plural(overdue_days, 'day')} ago and is still "
                 f"{'open' if status in ('', 'todo') else status.replace('_', ' ')}."
             ),
             "overdue_days": overdue_days,

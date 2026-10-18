@@ -121,9 +121,11 @@ export default function NotificationBell() {
                   >
                     <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${cls}`} />
                     <div className="min-w-0 flex-1">
-                      <div className={`text-sm truncate ${n.read ? "text-gray-600" : "text-gray-900 font-medium"}`}>{n.title}</div>
-                      {n.body && <div className="text-xs text-gray-400 truncate mt-0.5">{n.body}</div>}
-                      <div className="text-[10px] text-gray-300 mt-1">{timeAgo(n.created_at)}</div>
+                      {/* Wrapped, not truncated: one-line truncation inside the scroll area widened the row
+                          past the panel and cut titles off mid-word ("…no response: Dana Brook"). */}
+                      <div className={`text-sm leading-5 line-clamp-2 break-words ${n.read ? "text-gray-600" : "text-gray-900 font-medium"}`}>{n.title}</div>
+                      {n.body && <div className="text-xs text-gray-500 line-clamp-2 break-words mt-0.5">{n.body}</div>}
+                      <div className="text-[11px] text-gray-400 mt-1">{timeAgo(n.created_at)}</div>
                     </div>
                     {!n.read && <span className="w-2 h-2 rounded-full bg-indigo-500 mt-1.5 shrink-0" />}
                   </button>
