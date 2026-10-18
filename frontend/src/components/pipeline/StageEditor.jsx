@@ -149,7 +149,7 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
                         <span className={`size-2 shrink-0 rounded-full ${accentOf(row)}`} aria-hidden="true" />
                       </div>
                       <Input value={row.label} onChange={(event) => update(index, { label: event.target.value })} aria-label="Stage name" className="h-8 min-w-[9rem] flex-1 text-[13px] md:text-[13px]" maxLength={80} disabled={checking} data-testid={`stage-label-${row.key}`} />
-                      <div className="flex w-full items-center gap-2 pl-[2.625rem] sm:w-auto sm:pl-0">
+                      <div className="flex w-full flex-wrap items-center gap-2 pl-[2.625rem] sm:w-auto sm:flex-nowrap sm:pl-0">
                         <Select value={outcome} onValueChange={(value) => update(index, { ...flagsFor(value), probability: value === OUTCOME.WON ? 100 : value === OUTCOME.LOST ? 0 : row.probability })} disabled={checking || lockOutcome}>
                           <SelectTrigger className="h-8 w-[8.5rem] shrink-0 bg-card text-[13px] shadow-xs" aria-label={`What reaching ${row.label || "this stage"} means`} data-testid={`stage-outcome-${row.key}`}><SelectValue /></SelectTrigger>
                           <SelectContent>{Object.values(OUTCOME).map((value) => <SelectItem key={value} value={value} className="text-[13px]">{OUTCOME_LABEL[value]}</SelectItem>)}</SelectContent>

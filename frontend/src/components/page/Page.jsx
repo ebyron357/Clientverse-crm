@@ -2,6 +2,7 @@
 // a compact header, underline view tabs, a toolbar strip, a stat strip, status dots,
 // property lists and titled sections. Layout only: no page logic lives here.
 
+import { useRef } from "react";
 import { cn as cx } from "@/lib/utils";
 
 /** Title row: icon, title, optional count and one line of description; actions on the right. */
@@ -27,12 +28,23 @@ export function PageHeader({ icon: Icon, title, count, description, actions, chi
  * Rendered as a tablist of buttons; the caller owns the selected value.
  */
 export function ViewTabs({ items, value, onChange, label = "Views", className, trailing }) {
+  const listRef = useRef(null);
+  const selected = Math.max(0, items.findIndex((item) => item.value === value));
+  // One tab stop for the whole list; arrows, Home and End move between tabs and select them.
+  const onKeyDown = (event) => {
+    const last = items.length - 1;
+    const next = { ArrowRight: selected === last ? 0 : selected + 1, ArrowLeft: selected === 0 ? last : selected - 1, Home: 0, End: last }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    onChange(items[next].value);
+    listRef.current?.querySelectorAll('[role="tab"]')[next]?.focus();
+  };
   return <div className={cx("flex items-end justify-between gap-3 border-b border-border", className)}>
-    <div role="tablist" aria-label={label} className="-mb-px flex min-w-0 gap-4 overflow-x-auto">
-      {items.map(({ value: key, label: text, count, icon: Icon, testid }) => {
+    <div ref={listRef} role="tablist" aria-label={label} className="-mb-px flex min-w-0 gap-4 overflow-x-auto">
+      {items.map(({ value: key, label: text, count, icon: Icon, testid }, index) => {
         const active = key === value;
-        return <button key={key} type="button" role="tab" aria-selected={active} onClick={() => onChange(key)} data-testid={testid}
-          className={cx("flex h-9 shrink-0 items-center gap-1.5 border-b-2 px-0.5 text-[13.5px] font-medium transition-colors",
+        return <button key={key} type="button" role="tab" aria-selected={active} tabIndex={index === selected ? 0 : -1} onClick={() => onChange(key)} onKeyDown={onKeyDown} data-testid={testid}
+          className={cx("flex h-9 shrink-0 items-center gap-1.5 border-b-2 px-0.5 text-[13.5px] font-medium transition-colors focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             active ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
           {Icon && <Icon className="size-4" aria-hidden="true" />}
           {text}

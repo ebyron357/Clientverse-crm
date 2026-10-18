@@ -180,7 +180,7 @@ export default function Audit() {
                           <td className="px-4 py-2.5">
                             <div className="max-w-[240px] sm:max-w-[18rem]">
                               <StatusDot tone={CATEGORY_TONE(e.event_type)} className="flex min-w-0"><code className="min-w-0 truncate font-mono text-xs text-foreground">{e.event_type}</code></StatusDot>
-                              <div className="truncate pl-3 text-xs text-muted-foreground sm:hidden">{subject || e.resource_type} · {e.actor}</div>
+                              <div className="truncate pl-3 text-xs text-muted-foreground md:hidden"><span className="sm:hidden">{subject || e.resource_type} · </span>{e.actor}</div>
                               <div className="tabular truncate pl-3 text-xs text-muted-foreground sm:hidden">{formatTime(e.timestamp)}</div>
                             </div>
                           </td>
