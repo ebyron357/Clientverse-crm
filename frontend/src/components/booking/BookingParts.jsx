@@ -46,7 +46,7 @@ export function PublicFrame({ embed, color, children, testid }) {
   }, [embed]);
   return (
     <div style={brandStyle(color)} data-testid={testid}
-      className={embed ? "min-h-0 bg-transparent px-2 py-2" : "min-h-screen bg-[radial-gradient(ellipse_at_top,_hsl(var(--brand-soft)),_hsl(var(--canvas))_55%)] px-3 py-6 sm:px-6 sm:py-12"}>
+      className={embed ? "min-h-0 bg-transparent px-2 py-2" : "min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--booking-accent-soft),_hsl(var(--canvas))_55%)] px-3 py-6 sm:px-6 sm:py-12"}>
       <main className="mx-auto w-full max-w-5xl">{children}</main>
     </div>
   );
@@ -103,7 +103,7 @@ export function ManageLink({ url, newTab = false, testid = "manage-link" }) {
       <p className="mt-1 text-slate-600">Keep this link — it's how you reschedule or cancel.</p>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         {/* A framed page opens it in a new tab: the manage page itself is never framed. */}
-        <a href={url} target={newTab ? "_blank" : undefined} rel={newTab ? "noreferrer" : undefined} className="inline-flex h-11 items-center justify-center rounded-lg bg-[var(--brand)] px-4 text-sm font-semibold text-white hover:opacity-90" data-testid={`${testid}-open`}>Reschedule or cancel</a>
+        <a href={url} target={newTab ? "_blank" : undefined} rel={newTab ? "noreferrer" : undefined} className="inline-flex h-11 items-center justify-center rounded-lg bg-[var(--booking-accent)] px-4 text-sm font-semibold text-white hover:opacity-90" data-testid={`${testid}-open`}>Reschedule or cancel</a>
         <button type="button" onClick={copy} className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-foreground hover:bg-slate-50" data-testid={`${testid}-copy`}>
           <Copy className="h-4 w-4" aria-hidden="true" />Copy link
         </button>

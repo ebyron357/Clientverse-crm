@@ -20,7 +20,7 @@ const PREFILL = { first_name: "first_name", last_name: "last_name", email: "emai
 function InfoPanel({ config, compact }) {
   return (
     <div className={compact ? "space-y-3" : "space-y-4"}>
-      {config.brand_name && <div className="text-xs font-medium text-[var(--brand)]">{config.brand_name}</div>}
+      {config.brand_name && <div className="text-xs font-medium text-[var(--booking-accent)]">{config.brand_name}</div>}
       <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">{config.name}</h1>
       <div className="space-y-2.5 text-sm">
         <div className="flex items-center gap-2.5"><Clock className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" /><span className="font-semibold text-foreground">{config.duration_minutes} minutes</span></div>
@@ -35,14 +35,14 @@ function InfoPanel({ config, compact }) {
 function FieldInput({ field, value, error, onChange }) {
   const id = `book-${field.key}`;
   const describedBy = error ? `${id}-error` : undefined;
-  const base = `w-full rounded-lg border bg-white px-3.5 text-base text-foreground outline-none transition-shadow motion-reduce:transition-none focus:ring-2 focus:ring-[var(--brand)] focus:ring-offset-1 sm:text-sm ${error ? "border-red-400" : "border-slate-300"}`;
+  const base = `w-full rounded-lg border bg-white px-3.5 text-base text-foreground outline-none transition-shadow motion-reduce:transition-none focus:ring-2 focus:ring-[var(--booking-accent)] focus:ring-offset-1 sm:text-sm ${error ? "border-red-400" : "border-slate-300"}`;
   if (field.type === "checkbox") {
     return (
       <div>
         <label htmlFor={id} className="flex items-start gap-3 text-sm leading-5 text-slate-700">
           <input id={id} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)}
             aria-invalid={Boolean(error)} aria-describedby={describedBy} data-testid={`book-field-${field.key}`}
-            className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-[var(--brand)]" />
+            className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-[var(--booking-accent)]" />
           <span>{field.label}{field.required ? " *" : ""}</span>
         </label>
         {error && <p id={`${id}-error`} className="mt-1 text-sm text-red-700">{error}</p>}
@@ -175,7 +175,7 @@ export default function PublicBooking() {
           <aside className="border-b border-slate-100 bg-slate-50/60 p-5 sm:p-7 lg:border-b-0 lg:border-r" data-testid="public-booking-info">
             <InfoPanel config={config} compact={step !== "pick"} />
             {start && step === "details" && (
-              <div className="mt-5 rounded-xl border border-[var(--brand)] bg-white p-3.5 text-sm" data-testid="public-booking-chosen">
+              <div className="mt-5 rounded-xl border border-[var(--booking-accent)] bg-white p-3.5 text-sm" data-testid="public-booking-chosen">
                 <div className="font-semibold text-foreground">{formatRange(start, null, zone)}</div>
                 <div className="text-slate-500">{zoneLabel(zone, new Date(start))}</div>
               </div>
@@ -198,7 +198,7 @@ export default function PublicBooking() {
 
             {step === "details" && (
               <form onSubmit={submit} noValidate data-testid="public-booking-form" className="max-w-xl">
-                <button type="button" onClick={() => setStep("pick")} className="mb-4 inline-flex items-center gap-1.5 rounded-lg px-1 py-1 text-sm font-semibold text-[var(--brand)] hover:underline" data-testid="public-booking-back">
+                <button type="button" onClick={() => setStep("pick")} className="mb-4 inline-flex items-center gap-1.5 rounded-lg px-1 py-1 text-sm font-semibold text-[var(--booking-accent)] hover:underline" data-testid="public-booking-back">
                   <ArrowLeft className="h-4 w-4" aria-hidden="true" />Choose another time
                 </button>
                 <h2 ref={heading} tabIndex={-1} className="mb-5 font-display text-xl font-semibold text-foreground outline-none">Your details</h2>
@@ -214,7 +214,7 @@ export default function PublicBooking() {
                   <label>Leave this field empty<input ref={honeypot} type="text" name="_hp" tabIndex={-1} autoComplete="off" /></label>
                 </div>
                 <button type="submit" disabled={busy} data-testid="public-booking-submit"
-                  className="mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-6 text-base font-bold text-white shadow-sm hover:opacity-90 disabled:opacity-60 sm:w-auto">
+                  className="mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-[var(--booking-accent)] px-6 text-base font-bold text-white shadow-sm hover:opacity-90 disabled:opacity-60 sm:w-auto">
                   {busy && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{busy ? "Booking…" : "Confirm booking"}
                 </button>
               </form>

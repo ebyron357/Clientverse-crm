@@ -25,6 +25,10 @@ export default function AppShell() {
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState(readOpenGroups);
   const activeModule = useMemo(() => getModuleByRoute(location.pathname), [location.pathname]);
+  // A tab of a shared page (Unified Inbox is /operations?tab=conversations) belongs to its
+  // own group, so the full route decides which group opens; the page decides the heading.
+  const navModule = useMemo(() => getModuleByRoute(`${location.pathname}${location.search}`) || activeModule,
+    [location.pathname, location.search, activeModule]);
   const heading = location.pathname.startsWith("/workspaces/")
     ? ["Client 360", "Account health, outcomes, commitments, and relationship context"]
     : [activeModule?.label || "ClientVerse", activeModule?.description || "Relationship operating system"];
@@ -65,7 +69,7 @@ export default function AppShell() {
           const items = CLIENTVERSE_MODULES.filter((item) => item.group === group && (!item.adminOnly || user?.role === "admin"));
           if (!items.length) return null;
           const pinned = PINNED_GROUPS.includes(group);
-          const containsActive = items.some((item) => item.id === activeModule?.id);
+          const containsActive = items.some((item) => item.id === navModule?.id);
           const open = collapsed || pinned || containsActive || openGroups.has(group);
           const listId = `nav-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
           return <section key={group} aria-label={group}>

@@ -106,7 +106,7 @@ export default function ManageBooking() {
             </div>
             <SummaryCard booking={booking} zone={zone} testid="manage-booking-summary" />
             {booking.status === "cancelled" ? (
-              booking.links?.rebook_url && <a href={booking.links.rebook_url} className="inline-flex h-11 items-center justify-center rounded-lg bg-[var(--brand)] px-5 text-sm font-semibold text-white hover:opacity-90" data-testid="manage-booking-rebook">Book a new time</a>
+              booking.links?.rebook_url && <a href={booking.links.rebook_url} className="inline-flex h-11 items-center justify-center rounded-lg bg-[var(--booking-accent)] px-5 text-sm font-semibold text-white hover:opacity-90" data-testid="manage-booking-rebook">Book a new time</a>
             ) : (
               <>
                 <div>
@@ -116,7 +116,7 @@ export default function ManageBooking() {
                 {booking.can_change && (
                   <div className="flex flex-col gap-2 border-t border-slate-100 pt-5 sm:flex-row">
                     <button type="button" onClick={() => { setMode("reschedule"); setNotice(""); setDone(""); }} data-testid="manage-booking-reschedule"
-                      className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-5 text-sm font-semibold text-white hover:opacity-90">
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--booking-accent)] px-5 text-sm font-semibold text-white hover:opacity-90">
                       <CalendarClock className="h-4 w-4" aria-hidden="true" />Reschedule
                     </button>
                     <button type="button" onClick={() => { setMode("cancel"); setNotice(""); setDone(""); }} data-testid="manage-booking-cancel"
@@ -150,7 +150,7 @@ export default function ManageBooking() {
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <button type="button" onClick={move} disabled={busy} data-testid="manage-confirm-move"
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--booking-accent)] px-5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
                 {busy && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}Yes, move it
               </button>
               <button type="button" onClick={() => setMode("reschedule")} className="inline-flex h-11 items-center justify-center rounded-lg border border-slate-300 px-5 text-sm font-semibold text-foreground hover:bg-slate-50">Choose a different time</button>
@@ -165,7 +165,7 @@ export default function ManageBooking() {
             <div>
               <label htmlFor="cancel-reason" className="mb-1.5 block text-sm font-semibold text-foreground">Reason <span className="font-normal text-slate-500">(optional)</span></label>
               <textarea id="cancel-reason" rows={3} value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} data-testid="manage-cancel-reason"
-                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-base outline-none focus:ring-2 focus:ring-[var(--brand)] sm:text-sm" />
+                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-base outline-none focus:ring-2 focus:ring-[var(--booking-accent)] sm:text-sm" />
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <button type="submit" disabled={busy} data-testid="manage-confirm-cancel"

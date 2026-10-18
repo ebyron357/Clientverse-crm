@@ -80,8 +80,8 @@ function MonthGrid({ month, selected, counts, floorKey, maxKey, onSelect, onMont
                 const isSelected = key === selected;
                 const isToday = key === todayKey;
                 const label = `${formatDay(key)}${isToday ? " (today)" : ""}, ${count ? `${count} time${count === 1 ? "" : "s"} free` : "no times free"}`;
-                const tone = isSelected ? "bg-[var(--brand)] font-bold text-white shadow-sm"
-                  : count ? "bg-[var(--brand-soft)] font-bold text-foreground hover:bg-[var(--brand-hover)]"
+                const tone = isSelected ? "bg-[var(--booking-accent)] font-bold text-white shadow-sm"
+                  : count ? "bg-[var(--booking-accent-soft)] font-bold text-foreground hover:bg-[var(--booking-accent-hover)]"
                     : "cursor-default text-slate-400";
                 return (
                   <td key={key} className="p-0.5 text-center">
@@ -91,7 +91,7 @@ function MonthGrid({ month, selected, counts, floorKey, maxKey, onSelect, onMont
                       onClick={() => count && onSelect(key)} data-testid={`${testid}-day-${key}`}
                       className={`relative mx-auto flex h-11 w-11 items-center justify-center rounded-full text-sm transition-colors motion-reduce:transition-none sm:h-12 sm:w-12 ${tone} ${isToday && !isSelected ? "ring-1 ring-inset ring-slate-300" : ""}`}>
                       {Number(key.slice(8))}
-                      {count > 0 && !isSelected && <span className="absolute bottom-1.5 h-1 w-1 rounded-full bg-[var(--brand)]" aria-hidden="true" />}
+                      {count > 0 && !isSelected && <span className="absolute bottom-1.5 h-1 w-1 rounded-full bg-[var(--booking-accent)]" aria-hidden="true" />}
                     </button>
                   </td>
                 );
@@ -121,7 +121,7 @@ export function ZoneSelect({ value, onChange, testid = "zone-select", id = "book
 /** The brand colour as the CSS variables the picker's classes read. */
 export function brandStyle(color = "#0a6177") {
   const hex = /^#[0-9a-fA-F]{6}$/.test(color || "") ? color : "#0a6177";
-  return { "--brand": hex, "--brand-soft": `${hex}14`, "--brand-hover": `${hex}29` };
+  return { "--booking-accent": hex, "--booking-accent-soft": `${hex}14`, "--booking-accent-hover": `${hex}29` };
 }
 
 export default function SlotPicker({ loadDays, zone, onZoneChange, minKey, maxKey, onPick, selectedStart,
@@ -227,9 +227,9 @@ export default function SlotPicker({ loadDays, zone, onZoneChange, minKey, maxKe
                 <li key={start}>
                   <button type="button" onClick={() => onPick(start)} aria-pressed={active} data-testid={`${testid}-time`}
                     data-start={start}
-                    className={`h-12 w-full rounded-lg border-2 border-[var(--brand)] text-sm font-bold transition-colors motion-reduce:transition-none ${active
-                      ? "bg-[var(--brand)] text-white"
-                      : "text-[var(--brand)] hover:bg-[var(--brand)] hover:text-white focus-visible:bg-[var(--brand)] focus-visible:text-white"}`}>
+                    className={`h-12 w-full rounded-lg border-2 border-[var(--booking-accent)] text-sm font-bold transition-colors motion-reduce:transition-none ${active
+                      ? "bg-[var(--booking-accent)] text-white"
+                      : "text-[var(--booking-accent)] hover:bg-[var(--booking-accent)] hover:text-white focus-visible:bg-[var(--booking-accent)] focus-visible:text-white"}`}>
                     {formatTime(start, zone, hour12)}
                   </button>
                 </li>
