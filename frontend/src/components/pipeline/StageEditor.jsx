@@ -9,12 +9,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
-import { OUTCOME, stageKeyFor, stageOutcome } from "@/lib/pipeline";
+import { OUTCOME, stageAccent, stageKeyFor, stageOutcome } from "@/lib/pipeline";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDown, ArrowUp, Globe, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Globe, Plus, Trash2 } from "lucide-react";
 
 const OUTCOME_LABEL = { [OUTCOME.OPEN]: "Still open", [OUTCOME.WON]: "Won", [OUTCOME.LOST]: "Lost" };
 
@@ -112,63 +112,81 @@ export default function StageEditor({ open, onOpenChange, stages: boardStages, o
     } finally { setSaving(false); }
   };
 
+  // Dots match the board's: open stages take their colour from their place among open stages.
+  const openKeys = rows.filter((row) => stageOutcome(row) === OUTCOME.OPEN).map((row) => row.key);
+  const accentOf = (row) => stageAccent(row, openKeys.indexOf(row.key));
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl" data-testid="stage-editor">
-        <DialogHeader>
-          <DialogTitle className="font-display text-2xl">Customize stages</DialogTitle>
-          <DialogDescription>Rename, reorder, add or remove the steps your deals move through. Renaming a stage keeps its deals and website forms pointing at it.</DialogDescription>
+      <DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" data-testid="stage-editor">
+        <DialogHeader className="space-y-1 border-b border-border px-5 py-4 pr-12 text-left">
+          <DialogTitle className="text-base font-semibold tracking-tight">Customize stages</DialogTitle>
+          <DialogDescription className="text-[13px] leading-5">Rename, reorder, add or remove the steps your deals move through. Renaming a stage keeps its deals and website forms pointing at it.</DialogDescription>
         </DialogHeader>
-        <div className="hidden items-center gap-2 px-3 text-xs font-medium text-slate-500 sm:flex" aria-hidden="true">
-          <span className="flex-1 pl-7">Stage</span><span className="w-[8.5rem]">Reaching it means</span><span className="w-[5.5rem]">Chance</span><span className="w-9" />
+
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          <div className="overflow-hidden rounded-xl border border-border bg-card">
+            <div className="hidden h-8 items-center gap-2 border-b border-border bg-muted/40 px-3 text-xs font-medium text-muted-foreground sm:flex" aria-hidden="true">
+              <span className="w-[2.125rem] shrink-0" /><span className="flex-1">Stage</span><span className="w-[8.5rem] shrink-0">Reaching it means</span><span className="w-[5.5rem] shrink-0">Chance</span><span className="w-8 shrink-0" />
+            </div>
+            <ol className="divide-y divide-border/70" aria-busy={checking}>
+              {rows.map((row, index) => {
+                const usage = row.isNew ? null : inUse?.[row.key];
+                const forms = usage?.website_forms || [];
+                const hasDeals = Boolean(usage?.deals);
+                const outcome = stageOutcome(row);
+                // What the server would refuse, said before anyone tries it.
+                const lockOutcome = hasDeals || (forms.length > 0 && originalOutcome[row.key] === OUTCOME.OPEN);
+                const removeBlocked = hasDeals ? `Move its ${dealsText(usage)} to another stage first` : forms.length ? `Website form “${forms[0].name}” starts new leads here` : "";
+                return (
+                  <li key={row.key} className="px-3 py-2" data-testid={`stage-row-${row.key}`}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <div className="flex flex-col">
+                          <button type="button" onClick={() => move(index, -1)} disabled={checking || index === 0} className="flex h-4 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} up`} data-testid={`stage-up-${row.key}`}><ChevronUp className="size-3.5" aria-hidden="true" /></button>
+                          <button type="button" onClick={() => move(index, 1)} disabled={checking || index === rows.length - 1} className="flex h-4 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} down`} data-testid={`stage-down-${row.key}`}><ChevronDown className="size-3.5" aria-hidden="true" /></button>
+                        </div>
+                        <span className={`size-2 shrink-0 rounded-full ${accentOf(row)}`} aria-hidden="true" />
+                      </div>
+                      <Input value={row.label} onChange={(event) => update(index, { label: event.target.value })} aria-label="Stage name" className="h-8 min-w-[9rem] flex-1 text-[13px] md:text-[13px]" maxLength={80} disabled={checking} data-testid={`stage-label-${row.key}`} />
+                      <div className="flex w-full items-center gap-2 pl-[2.625rem] sm:w-auto sm:pl-0">
+                        <Select value={outcome} onValueChange={(value) => update(index, { ...flagsFor(value), probability: value === OUTCOME.WON ? 100 : value === OUTCOME.LOST ? 0 : row.probability })} disabled={checking || lockOutcome}>
+                          <SelectTrigger className="h-8 w-[8.5rem] shrink-0 bg-card text-[13px] shadow-xs" aria-label={`What reaching ${row.label || "this stage"} means`} data-testid={`stage-outcome-${row.key}`}><SelectValue /></SelectTrigger>
+                          <SelectContent>{Object.values(OUTCOME).map((value) => <SelectItem key={value} value={value} className="text-[13px]">{OUTCOME_LABEL[value]}</SelectItem>)}</SelectContent>
+                        </Select>
+                        <div className="flex w-[5.5rem] shrink-0 items-center gap-1">
+                          <Input type="number" min="0" max="100" value={row.probability} onChange={(event) => update(index, { probability: event.target.value })} aria-label={`Chance a deal in ${row.label || "this stage"} closes, in percent`} className="tabular h-8 w-[4.5rem] px-2.5 text-[13px] md:text-[13px]" disabled={checking || outcome !== OUTCOME.OPEN} data-testid={`stage-probability-${row.key}`} />
+                          <span className="text-xs text-muted-foreground">%</span>
+                        </div>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => remove(index)} disabled={checking || Boolean(removeBlocked)} title={removeBlocked || "Remove this stage"} aria-label={`Remove ${row.label || "this stage"}`} className="size-8 shrink-0 px-0 text-muted-foreground hover:text-red-700" data-testid={`stage-remove-${row.key}`}><Trash2 aria-hidden="true" /></Button>
+                      </div>
+                    </div>
+                    {(hasDeals || forms.length > 0 || row.isNew) && (
+                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-[2.625rem] text-xs text-muted-foreground">
+                        {row.isNew && <span className="font-medium text-brand">New stage</span>}
+                        {hasDeals && <span>{dealsText(usage)} here — move them out to remove this stage or change what it means.</span>}
+                        {forms.map((form) => <span key={form.id} className="inline-flex items-center gap-1"><Globe className="size-3" aria-hidden="true" />Website form “{form.name}” starts new leads here</span>)}
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="flex gap-2 border-t border-border bg-muted/30 px-3 py-2">
+              <div className="relative min-w-0 flex-1">
+                <Plus className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                <Input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addStage(); } }} placeholder="New stage, e.g. Showing booked" aria-label="New stage name" maxLength={80} disabled={checking} className="h-8 pl-8 text-[13px] md:text-[13px]" data-testid="stage-new-label" />
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={addStage} disabled={checking} data-testid="stage-add">Add stage</Button>
+            </div>
+          </div>
+          <p className="text-xs leading-5 text-muted-foreground">“Chance” is how likely a deal at that stage is to close. It only feeds the weighted estimate; it never changes a deal's value.</p>
+          {problem && <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-700" role="alert" data-testid="stage-editor-problem"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{problem}</div>}
         </div>
-        <ol className="space-y-2" aria-busy={checking}>
-          {rows.map((row, index) => {
-            const usage = row.isNew ? null : inUse?.[row.key];
-            const forms = usage?.website_forms || [];
-            const hasDeals = Boolean(usage?.deals);
-            const outcome = stageOutcome(row);
-            // What the server would refuse, said before anyone tries it.
-            const lockOutcome = hasDeals || (forms.length > 0 && originalOutcome[row.key] === OUTCOME.OPEN);
-            const removeBlocked = hasDeals ? `Move its ${dealsText(usage)} to another stage first` : forms.length ? `Website form “${forms[0].name}” starts new leads here` : "";
-            return (
-              <li key={row.key} className="rounded-lg border border-slate-200 bg-white p-3" data-testid={`stage-row-${row.key}`}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex flex-col">
-                    <button type="button" onClick={() => move(index, -1)} disabled={checking || index === 0} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} up`} data-testid={`stage-up-${row.key}`}><ArrowUp className="h-3.5 w-3.5" /></button>
-                    <button type="button" onClick={() => move(index, 1)} disabled={checking || index === rows.length - 1} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30" aria-label={`Move ${row.label || "this stage"} down`} data-testid={`stage-down-${row.key}`}><ArrowDown className="h-3.5 w-3.5" /></button>
-                  </div>
-                  <Input value={row.label} onChange={(event) => update(index, { label: event.target.value })} aria-label="Stage name" className="h-9 min-w-[10rem] flex-1" maxLength={80} disabled={checking} data-testid={`stage-label-${row.key}`} />
-                  <Select value={outcome} onValueChange={(value) => update(index, { ...flagsFor(value), probability: value === OUTCOME.WON ? 100 : value === OUTCOME.LOST ? 0 : row.probability })} disabled={checking || lockOutcome}>
-                    <SelectTrigger className="h-9 w-[8.5rem]" aria-label={`What reaching ${row.label || "this stage"} means`} data-testid={`stage-outcome-${row.key}`}><SelectValue /></SelectTrigger>
-                    <SelectContent>{Object.values(OUTCOME).map((value) => <SelectItem key={value} value={value}>{OUTCOME_LABEL[value]}</SelectItem>)}</SelectContent>
-                  </Select>
-                  <div className="flex items-center gap-1">
-                    <Input type="number" min="0" max="100" value={row.probability} onChange={(event) => update(index, { probability: event.target.value })} aria-label={`Chance a deal in ${row.label || "this stage"} closes, in percent`} className="h-9 w-[4.5rem]" disabled={checking || outcome !== OUTCOME.OPEN} data-testid={`stage-probability-${row.key}`} />
-                    <span className="text-xs text-slate-500">%</span>
-                  </div>
-                  <Button type="button" variant="ghost" size="sm" onClick={() => remove(index)} disabled={checking || Boolean(removeBlocked)} title={removeBlocked || "Remove this stage"} aria-label={`Remove ${row.label || "this stage"}`} className="h-9 px-2 text-slate-500 hover:text-red-700" data-testid={`stage-remove-${row.key}`}><Trash2 className="h-4 w-4" /></Button>
-                </div>
-                {(hasDeals || forms.length > 0 || row.isNew) && (
-                  <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 pl-7 text-xs text-slate-500">
-                    {row.isNew && <span className="font-semibold text-brand">New stage</span>}
-                    {hasDeals && <span>{dealsText(usage)} here — move them out to remove this stage or change what it means.</span>}
-                    {forms.map((form) => <span key={form.id} className="inline-flex items-center gap-1"><Globe className="h-3 w-3" />Website form “{form.name}” starts new leads here</span>)}
-                  </p>
-                )}
-              </li>
-            );
-          })}
-        </ol>
-        <div className="flex gap-2">
-          <Input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addStage(); } }} placeholder="New stage, e.g. Showing booked" aria-label="New stage name" maxLength={80} disabled={checking} data-testid="stage-new-label" />
-          <Button type="button" variant="outline" onClick={addStage} disabled={checking} data-testid="stage-add"><Plus className="mr-1.5 h-4 w-4" />Add stage</Button>
-        </div>
-        <p className="text-xs leading-5 text-slate-500">“Chance” is how likely a deal at that stage is to close. It only feeds the weighted estimate; it never changes a deal's value.</p>
-        {problem && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert" data-testid="stage-editor-problem">{problem}</div>}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button disabled={saving || checking} onClick={save} className="cv-action-primary" data-testid="stage-editor-save">{saving ? "Saving…" : "Save stages"}</Button>
+
+        <DialogFooter className="gap-2 border-t border-border bg-muted/30 px-5 py-3 sm:space-x-0">
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button size="sm" disabled={saving || checking} onClick={save} data-testid="stage-editor-save">{saving ? "Saving…" : "Save stages"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
