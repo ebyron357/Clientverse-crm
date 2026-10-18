@@ -80,6 +80,7 @@ SCHEDULE: dict[str, str] = {
     "commitment-risk": "*/15 * * * *",    # flag commitments at risk / breached
     "work-queue": "*/5 * * * *",          # durable work-queue worker tick
     "recovery-runner": "*/5 * * * *",     # queue approved recovery cases for execution
+    "booking-reminders": "*/5 * * * *",   # booking reminders, then approved booking emails
     "integration-sync": "0,30 * * * *",   # sync connected providers, re-evaluate alerts
     "next-best-actions": "0,30 * * * *",  # recompute recommendations
     "inbound-email": "10,40 * * * *",     # pull replies back into the CRM

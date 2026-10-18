@@ -35,6 +35,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 import approval_queue as approval_service
 import attribution as attribution_service
+import booking
 import conversations as conversation_service
 import crm_core
 import cron_ledger
@@ -160,6 +161,7 @@ async def lifespan(_: FastAPI):
         ("detectors", lambda: detectors.ensure_indexes(db)),
         ("recovery_intake", lambda: recovery_intake.ensure_indexes(db)),
         ("website_forms", lambda: lead_pipeline.ensure_indexes()),
+        ("booking", lambda: booking_service.ensure_indexes()),
         ("work_queue", lambda: WorkQueue(db).ensure_indexes()),
         ("next_best_action", lambda: nba_service.ensure_indexes(db)),
         ("second_chance", lambda: second_chance_service.ensure_indexes(db)),
@@ -231,7 +233,11 @@ async def production_security_headers(request: Request, call_next):
     # The hosted website-form page is the one document meant to be framed by an
     # agent's website. It carries its own CSP (`frame-ancestors *`) and holds no
     # session-backed content, so it is exempt from the same-origin framing rule.
-    if not website_forms.HOSTED_PAGE_PATH.match(request.url.path):
+    # The public booking page (`/book/<key>`) is the other: same policy, any framer.
+    if booking.FRAMEABLE_PAGE_PATH.match(request.url.path):
+        response.headers.setdefault("Content-Security-Policy",
+                                    booking.frameable_csp(CONTENT_SECURITY_POLICY))
+    elif not website_forms.HOSTED_PAGE_PATH.match(request.url.path):
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
@@ -2670,6 +2676,21 @@ async def cron_lead_sla(request: Request):
     return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
 
 
+@api.post("/cron/booking-reminders")
+async def cron_booking_reminders(request: Request):
+    """Send due booking reminders (each exactly once) and the booking emails admins approved.
+
+    The in-process scheduler runs the same sweep every five minutes; a reminder is claimed
+    with a conditional update, so running both never reminds twice.
+    """
+    run_id, entry_id = await _begin_cron(request, "booking-reminders")
+    if entry_id is None:
+        return {"accepted": True, "duplicate": True, "run_id": run_id}
+    spawn_background(_run_cron_job("booking-reminders", run_id,
+                                   _cron_job("booking-reminders", run_id), entry_id))
+    return {"accepted": True, "run_id": run_id, "evidence_id": entry_id}
+
+
 @api.post("/cron/second-chance")
 async def cron_second_chance(request: Request):
     """Second Chance detection sweep across every tenant."""
@@ -4600,6 +4621,16 @@ lead_pipeline = website_forms.register_website_form_routes(
     public_base_url=FRONTEND_URL, encrypt=enc_secret, decrypt=dec_secret)
 recovery_intake.register_intake_routes(api, db, new_id, now_iso, record_event, get_current_user,
                                        require_role, lead_pipeline=lead_pipeline)
+# Online booking (M-05): booking pages, agents' hours, free times, and a public door that
+# books a real time and runs the person through the lead pipeline above. Manage links are
+# signed with a key derived from JWT_SECRET; Google Calendar busy times are subtracted
+# when that calendar is connected.
+booking_service = booking.register_booking_routes(
+    api, db, pipeline=lead_pipeline, new_id=new_id, now_iso=now_iso, record_event=record_event,
+    get_current_user=get_current_user, require_role=require_role,
+    manage_secret=hashlib.sha256(f"booking-manage|{JWT_SECRET}".encode()).digest(),
+    public_base_url=FRONTEND_URL, send_email=send_email, email_configured=email_configured,
+    google_access_token=_google_access_token)
 
 
 async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
@@ -4769,6 +4800,7 @@ CRON_JOBS: dict[str, scheduler.JobFn] = {
     "detect-recovery": lambda run_id, actor: detectors.run_detection_all_tenants(
         db, work_queue, actor=actor, audit=record_event),
     "lead-sla": lambda run_id, actor: lead_pipeline.sweep(),
+    "booking-reminders": lambda run_id, actor: booking_service.send_due_reminders(),
     "second-chance": lambda run_id, actor: run_second_chance_sweep(actor=actor),
     "next-best-actions": lambda run_id, actor: nba_service.generate_all_tenants(db, actor=actor),
     "recovery-strategies": lambda run_id, actor: recovery_service.compose_all_tenants(

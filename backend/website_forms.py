@@ -95,7 +95,8 @@ ATTEMPTS = "form_submission_attempts"
 SYSTEM_ACTOR = "system:website-forms"
 
 # Paths a browser on any website may call. Nothing under them reads tenant data.
-PUBLIC_PATH_PREFIXES = ("/api/public/forms/", "/api/intake/public/")
+# `/api/public/booking/` is the booking module's public door (booking.PUBLIC_PATH_PREFIX).
+PUBLIC_PATH_PREFIXES = ("/api/public/forms/", "/api/intake/public/", "/api/public/booking/")
 HOSTED_PAGE_PATH = re.compile(r"^/api/public/forms/[A-Za-z0-9_\-]+/page$")
 
 LEAD_STATUSES = ("new", "responded", "closed", "spam")
