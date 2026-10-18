@@ -96,6 +96,8 @@ DECIDED_OFFER_STATUSES = ("approved", "accepted", "rejected", "declined", "won",
 CANCELLED_APPOINTMENT_STATUSES = ("cancelled", "canceled")
 COMPLETED_APPOINTMENT_STATUSES = ("completed", "done", "attended", "fulfilled")
 PENDING_APPOINTMENT_STATUSES = ("scheduled", "confirmed", "booked")
+# An outcome a person recorded: the client did not turn up.
+NO_SHOW_APPOINTMENT_STATUSES = ("no_show", "no-show", "noshow", "missed")
 
 # External events worth recovering. An event kind nobody declared is ignored rather than
 # guessed at: an unknown event is not an opportunity, it is an unknown.
@@ -595,16 +597,21 @@ def is_rebooked(appointment: dict, latest: dict[str, datetime]) -> bool:
 
 async def detect_no_shows(db: Any, tenant_id: str, *,
                           grace_hours: int = NO_SHOW_GRACE_HOURS) -> list[dict]:
-    """A booking whose time passed while it was still merely scheduled.
+    """A booking whose time passed while it was still merely scheduled, or one a person
+    recorded as a no-show.
 
     Grace exists because "nobody marked it complete yet" and "nobody turned up" look the
-    same for the first hour or two, and only one of them is a recovery opportunity.
+    same for the first hour or two, and only one of them is a recovery opportunity. A
+    recorded no-show needs no grace -- somebody said what happened -- only a start time
+    that has passed. It used to be invisible here: an agent who marked the no-show before
+    the first sweep took it out of the pending statuses this lane read, so the clearest
+    no-show of all was the one never recovered.
     """
     now = _now()
     cutoff = now - timedelta(hours=max(0, int(grace_hours)))
     appointments = await db.appointments.find(
         {"tenant_id": tenant_id,
-         "status": {"$in": list(PENDING_APPOINTMENT_STATUSES)}},
+         "status": {"$in": list(PENDING_APPOINTMENT_STATUSES) + list(NO_SHOW_APPOINTMENT_STATUSES)}},
         {"_id": 0}).sort("start_at", -1).to_list(DETECTION_LIMIT)
     responded = await _responded_records(db, tenant_id, "appointment",
                                          [a["id"] for a in appointments])
@@ -613,9 +620,16 @@ async def detect_no_shows(db: Any, tenant_id: str, *,
     for appointment in appointments:
         if appointment["id"] in responded:
             continue
-        end = _parse(appointment.get("end_at")) or _parse(appointment.get("start_at"))
-        if not end or end > cutoff:
+        start = _parse(appointment.get("start_at"))
+        end = _parse(appointment.get("end_at")) or start
+        recorded = _status(appointment.get("status")) in NO_SHOW_APPOINTMENT_STATUSES
+        if recorded:
+            if not start or not end or start > now:
+                continue
+        elif not end or end > cutoff:
             continue
+        # A no-show recorded during the appointment occurred when it was recorded.
+        end = min(end, now)
         elapsed = _hours(now - end)
         detections.append({
             "tenant_id": tenant_id,
@@ -624,7 +638,9 @@ async def detect_no_shows(db: Any, tenant_id: str, *,
             "record_collection": "appointments",
             "record_id": appointment["id"],
             "title": appointment.get("title") or "Appointment with no outcome",
-            "reason": (f"The appointment ended {elapsed} hour(s) ago and is still "
+            "reason": ("The appointment was recorded as a no-show and nobody has followed "
+                       "up yet." if recorded else
+                       f"The appointment ended {elapsed} hour(s) ago and is still "
                        f"'{_status(appointment.get('status')) or 'scheduled'}' with no "
                        f"recorded outcome (threshold {grace_hours} hour(s))."),
             "occurred_at": end.isoformat(),
