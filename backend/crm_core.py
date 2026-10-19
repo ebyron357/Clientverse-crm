@@ -468,6 +468,24 @@ CONTACT_REFERENCES = (
 LIFECYCLE_STAGES = ("lead", "qualified", "customer", "former_customer", "partner", "other")
 
 
+async def promote_to_customers(db, tenant_id: str, contact_ids: Iterable[str], actor: str) -> int:
+    """Everyone on a won deal is a customer, unless someone already said otherwise
+    (a partner stays a partner). Called wherever a person can end up on a won deal: the
+    deal is moved to won, created already won, or has people added once won."""
+    ids = [cid for cid in dict.fromkeys(contact_ids) if cid]
+    if not ids:
+        return 0
+    result = await db[CONTACTS].update_many(
+        {"tenant_id": tenant_id, "id": {"$in": ids}, "lifecycle": {"$in": [None, "lead", "qualified"]}},
+        {"$set": {"lifecycle": "customer", "updated_at": _iso()},
+         "$push": {"history": _history_entry("lifecycle_set", actor, {"lifecycle": "customer", "how": "deal won"})}})
+    return result.modified_count
+
+
+async def is_won_stage(db, tenant_id: str, stage: Optional[str]) -> bool:
+    return classify_stage(stage, await stage_classes(db, tenant_id)) == STAGE_WON
+
+
 def check_lifecycle(value: Optional[str]) -> Optional[str]:
     if value is not None and value not in LIFECYCLE_STAGES:
         raise ValueError(f"lifecycle must be one of {', '.join(LIFECYCLE_STAGES)}")
@@ -1169,8 +1187,11 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 raise HTTPException(status_code=422,
                                     detail=f"Unknown contact_id(s): {', '.join(unknown[:5])}")
             changes["contact_ids"] = contact_ids
-        return await patch_with_custom(DEALS, "deals", deal_id, user, changes,
+        deal = await patch_with_custom(DEALS, "deals", deal_id, user, changes,
                                        "opportunity.updated", "opportunity")
+        if changes.get("contact_ids") and await is_won_stage(db, tenant_of(user), deal.get("stage")):
+            await promote_to_customers(db, tenant_of(user), changes["contact_ids"], user["email"])
+        return deal
 
     @router.post("/opportunities/{deal_id}/archive")
     async def archive_deal(deal_id: str, user=Depends(get_current_user)):

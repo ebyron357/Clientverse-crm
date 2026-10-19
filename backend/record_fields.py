@@ -223,10 +223,14 @@ def _unknown(field: str) -> HTTPException:
 
 async def check_view_fields(db, tenant_id: str, object_name: str, filters: list[dict],
                             columns: Optional[list[str]]) -> None:
+    """Refuse a view that could never be shown: an unknown field, or a comparison its
+    field cannot make ("Name more than a"). Compiling the filters is the check, so a view
+    that saves is a view that loads."""
     kinds = await field_kinds(db, tenant_id, object_name)
     for name in [item["field"] for item in filters] + list(columns or []):
         if name not in kinds:
             raise _unknown(name)
+    await compile_filters(db, tenant_id, object_name, filters)
 
 
 def _number(value: Any, field: str) -> float:

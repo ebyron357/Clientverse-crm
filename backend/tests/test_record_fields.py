@@ -270,6 +270,12 @@ def test_a_view_refuses_operators_and_fields_it_cannot_use(client):
     made = view(client, owner).json()
     assert client.patch(f"/api/views/{made['id']}", headers=owner["headers"],
                         json={"filters": [{"field": "tenant_id", "op": "is", "value": "x"}]}).status_code == 422
+    # A comparison the field cannot make would save a view that never loads.
+    field(client, owner, label="Budget", type="number")
+    assert view(client, owner, filters=[{"field": "name", "op": "gt", "value": "a"}]).status_code == 422
+    assert view(client, owner, filters=[{"field": "custom_fields.cf_budget", "op": "gt", "value": "lots"}]).status_code == 422
+    assert client.patch(f"/api/views/{made['id']}", headers=owner["headers"],
+                        json={"filters": [{"field": "name", "op": "before", "value": "2026-01-01"}]}).status_code == 422
 
 
 # ------------------------------------------------------------------ filtering

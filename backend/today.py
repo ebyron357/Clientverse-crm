@@ -185,7 +185,9 @@ async def build_today(db: Any, user: dict, *, tz: Optional[str] = None,
         {"tenant_id": tenant, "status": {"$in": list(OPEN_TASK)}, **mine,
          "due_date": {"$ne": None, "$lt": _iso(day_end)}},
         {"_id": 0}).sort("due_date", 1).to_list(500)
-    overdue = [t for t in task_rows if (_parse(t.get("due_date")) or now) < day_start]
+    # Overdue means past its due time, as the Tasks page and the menu badge count it: a
+    # 09:00 call-back is overdue at noon, not merely "due today".
+    overdue = [t for t in task_rows if (_parse(t.get("due_date")) or now) < now]
     due_today = [t for t in task_rows if t not in overdue]
 
     overdue_ids = {t["id"] for t in overdue}

@@ -178,7 +178,7 @@ function MenuLink({ entry, to, collapsed, active, count = 0 }) {
   return <Link to={to} aria-current={active ? "page" : undefined} data-testid={entry.testid} title={collapsed ? [entry.label, summary].filter(Boolean).join(" · ") : undefined}
     className={`group relative flex h-9 items-center rounded-[9px] text-[13.5px] font-semibold transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2.5"} ${active ? "bg-sidebar-accent text-sidebar-active-foreground" : "text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-active-foreground"}`}>
     <Icon className={`size-[18px] shrink-0 ${active ? "text-sidebar-active-foreground" : "text-sidebar-muted group-hover:text-sidebar-foreground"}`} strokeWidth={1.85} aria-hidden="true" />
-    {!collapsed && <span className="min-w-0 flex-1 truncate">{entry.label}</span>}
+    {collapsed ? <span className="sr-only">{entry.label}</span> : <span className="min-w-0 flex-1 truncate">{entry.label}</span>}
     {count > 0 && <>
       <span className="sr-only">{`, ${summary}`}</span>
       <span aria-hidden="true" data-testid={`nav-${entry.id}-count`} className={`tabular flex items-center justify-center rounded-full font-bold leading-none ${tone} ${collapsed ? "absolute right-0.5 top-0.5 h-4 min-w-4 px-1 text-[10px] ring-2 ring-sidebar" : "h-5 min-w-5 px-1.5 text-[11px]"}`}>{countText(count)}</span>

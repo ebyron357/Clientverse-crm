@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 
 // Where a person stands with the business. The server holds the same list
@@ -34,17 +34,23 @@ export const RECORD_OBJECTS = [
 
 /** The live field definitions for one record type, and a way to reload them. */
 export function useFieldDefs(object, { includeArchived = false } = {}) {
-  const [defs, setDefs] = useState([]);
-  const [loaded, setLoaded] = useState(false);
+  const [state, setState] = useState({ key: null, defs: [] });
+  // Every request takes a ticket; only the latest one may write. Switching from Contacts to
+  // Companies must never show contact fields because the contacts reply came back last.
+  const ticket = useRef(0);
+  const key = `${object}:${includeArchived}`;
   const reload = useCallback(async () => {
+    const mine = ++ticket.current;
+    let defs = [];
     try {
       const { data } = await api.get("/custom-fields", { params: { object, include_archived: includeArchived } });
-      setDefs(data.items || []);
-    } catch { setDefs([]); }
-    finally { setLoaded(true); }
-  }, [object, includeArchived]);
+      defs = data.items || [];
+    } catch { defs = []; }
+    if (mine === ticket.current) setState({ key, defs });
+  }, [object, includeArchived, key]);
   useEffect(() => { reload(); }, [reload]);
-  return { defs, loaded, reload };
+  const current = state.key === key;
+  return { defs: current ? state.defs : [], loaded: current, reload };
 }
 
 /** A stored value as a person reads it. Empty values read as null so callers can say "Not set". */

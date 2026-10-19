@@ -217,6 +217,19 @@ def test_today_ends_where_the_persons_day_ends(client):
     assert client.get("/api/today", params={"tz": "Mars/Olympus"}, headers=owner["headers"]).status_code == 422
 
 
+def test_a_task_due_earlier_today_is_overdue_not_due_today(client):
+    owner = register(client)
+    noon = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+    task(client, owner, title="9 am call-back", assignee=owner["email"], due_date=datetime(2026, 10, 19, 9, 0, tzinfo=UTC).isoformat())
+    task(client, owner, title="5 pm call-back", assignee=owner["email"], due_date=datetime(2026, 10, 19, 17, 0, tzinfo=UTC).isoformat())
+    user = {"tenant_id": owner["tenant_id"], "email": owner["email"], "role": "admin", "name": "Taylor"}
+    day = call(client, today.build_today, server.db, user, tz="UTC", now=noon)
+    kinds = {item["title"]: item["kind"] for item in day["plan"]}
+    assert kinds == {"9 am call-back": "overdue_task", "5 pm call-back": "due_today"}
+    assert day["stats"]["overdue_tasks"] == 1 and day["stats"]["due_today"] == 1
+    assert [t["overdue"] for t in day["tasks"]] == [True, False]
+
+
 def test_an_appointment_soon_says_prepare_and_shows_on_the_lead(client):
     owner = register(client)
     form = contact_form(client, owner)
