@@ -1435,7 +1435,8 @@ These are verified behaviours of the deployed code. None loses data.
    Nothing can be deleted.
 2. **No screen writes your own email to a contact, records consent, or shows unmatched inbound
    mail** ([§6.1](#61-read-this-first--current-status)).
-3. **Company and contact lists show at most 200 records** each (the Pipeline loads up to 1,000 deals).
+3. **The company list shows at most 200 records**; the contact list shows up to 1,000 per view
+   and the Pipeline loads up to 1,000 deals.
 4. **No message on some failures:** workspace status menus and outcome updates. Refresh to confirm
    the change saved.
 5. **A session that expires mid-use does not redirect** to the sign-in page. Pages show
