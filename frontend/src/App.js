@@ -24,6 +24,7 @@ import AcceptInvite from "@/pages/AcceptInvite";
 import Settings from "@/pages/Settings";
 import CustomFieldsSettings from "@/pages/CustomFieldsSettings";
 import ClientOps from "@/pages/ClientOps";
+import Automations from "@/pages/Automations";
 import FieldOps from "@/pages/FieldOps";
 import ClientPortal from "@/pages/ClientPortal";
 import ModuleStatus from "@/pages/ModuleStatus";
@@ -95,6 +96,8 @@ function AppRouter() {
         <Route path="/operations" element={<Operations />} />
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/client-ops" element={<ClientOps />} />
+        <Route path="/automations" element={<Automations />} />
+        <Route path="/automation/workflows" element={<Navigate to="/automations" replace />} />
         <Route path="/proof" element={<RecoveryProof />} />
         <Route path="/leads" element={<Leads />} />
         <Route path="/tasks" element={<Tasks />} />

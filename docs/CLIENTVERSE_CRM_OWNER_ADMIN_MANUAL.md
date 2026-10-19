@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.7 |
+| **Version** | 1.8 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -404,7 +404,7 @@ never appears here.
 | **Tasks** | `/tasks` | Your overdue tasks, plus overdue tasks nobody owns (grey) | |
 | **Approvals** | `/operations?tab=approvals` (Operations → **Approvals**) | Requests waiting for a decision (grey) | Deciding: admin |
 | **Clients** | `/workspaces` (**Client 360**) | | |
-| **Automations** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, portal and commercial records) | | Some buttons: admin |
+| **Automations** | `/automations` — when something happens, do these steps ([§7.22](#722-automations)) | | Creating, changing, turning on or off: admin |
 | **Reports** | `/proof` (**Recovery Proof**) | | |
 | **Settings** (pinned at the bottom) | `/settings` (**General**) | | |
 
@@ -415,6 +415,7 @@ never appears here.
 | Workspace | **General** | `/settings` — profile, security, notifications, integration status, organization | |
 | Workspace | **Fields** | `/settings/fields` — your own fields on contacts, companies and deals ([§7.4](#74-contacts-and-companies) item 8) | Adding and changing fields: admin |
 | Workspace | **Team and roles** | `/team` (**Team & Access**) | **Yes** (hidden from members) |
+| Workspace | **Client portal and playbooks** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, the client portal and commercial records — [§7.15](#715-client-operations-and-the-client-portal)) | Some buttons: admin |
 | Workspace | **Lead routing** | `/website-forms` — each form's **"Assign the lead"** section sets who gets its leads | Changing it: admin |
 | Capture | **Forms** | `/website-forms` (**Website Forms**) | Creating and changing forms: admin |
 | Capture | **Booking pages** | `/scheduling/calendar?tab=pages` (Calendar → **"Booking pages"**) | Creating and changing pages: admin |
@@ -425,7 +426,7 @@ never appears here.
 | Developer | **Registries** | `/registries` (MCP servers, plugins, webhooks) | **Yes** |
 | Developer | **Operations** | `/operations` (work queue, recovery strategies, security gate) | **Yes**; some buttons: admin |
 | Coming soon | **Email**, **SMS** | `/communications/email`, `/communications/sms` | **Not active** — "Configuration required" |
-| Coming soon | **Calling**, **Workflows**, **Revenue Operations**, **Support**, **Reporting**, **Relationship Intelligence**, **Migration**, **Knowledge** | `/communications/calling`, `/automation/workflows`, `/revenue`, `/support`, `/intelligence/reporting`, `/intelligence/relationships`, `/platform/migration`, `/platform/knowledge` | **Not active** — "Backend contract pending" |
+| Coming soon | **Calling**, **Revenue Operations**, **Support**, **Reporting**, **Relationship Intelligence**, **Migration**, **Knowledge** | `/communications/calling`, `/revenue`, `/support`, `/intelligence/reporting`, `/intelligence/relationships`, `/platform/migration`, `/platform/knowledge` | **Not active** — "Backend contract pending" |
 
 The Settings menu sits beside General, Fields, Team and roles, Forms, Integrations and Registries, Audit
 log, MCP console and every Coming soon page. **Booking pages** and **Operations** open pages that
@@ -465,6 +466,7 @@ Full procedures are in [Chapter 7](#7-crm-daily-use).
 | **Action Center** | Alerts needing follow-through; notification settings | **"Acknowledge"**, **"Resolve"**, preferences | Resolve an alert you have not dealt with | **"Alert resolved"**, **"…preferences were saved"** |
 | **Operations** | Recommendations, work queue, recovery, approvals, conversations | **"Approve"** / **"Reject"**, **"Acknowledge"**, **"Resolve"** | Approve something you have not read — there is no confirmation | **"Approved"**, **"Resolved"** |
 | **Recovery Proof** | What was recovered, with evidence | Read figures, open a case | Add "potential" and "confirmed" together | Read-only, apart from **"Close case"** |
+| **Automations** | Follow-ups that run themselves, with a receipt per run | **"New automation"** → a recipe; edit steps; **"Turn on"**; **"Test with a contact"** | Turn one on without testing it on a contact first | **"Automation saved"**, **"Automation on"** |
 | **Client Operations** | Portal links, documents, estimates, appointments | Create records per workspace | Lose a new portal link — it is shown only once | A message per action |
 | **Registries** | Integrations and webhooks | **"Connect"**, **"Re-authorize"**, **"Sync"**, **"Disconnect"** | Disconnect Google during an active send | **"Google connected"**, **"Synced Gmail: …"** |
 | **Team & Access** | Users, roles, invitations, password resets | **"Invite"**, role menu, **"⋯"** → **"Reset password"** / **"Disable access"** | Post an invite link or a temporary password anywhere public | **"Invitation emailed"** / **"Invitation created"**, **"Member disabled"** |
@@ -1337,8 +1339,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 - **Purpose:** client-facing coordination per workspace — secure portal links, documents,
   estimates and invoices (local records only), appointments, referrals, review requests, safe
   internal automations and playbooks.
-- **Where:** main menu → **"Automations"** (the page is headed **"Client Operations"**). Pick a
-  workspace in **"Choose a workspace"**.
+- **Where:** **Settings** → **Workspace** → **"Client portal and playbooks"** (the page is headed
+  **"Client Operations"**; the **Automations** page links to it too). Pick a workspace in
+  **"Choose a workspace"**.
   - Tabs: **"Overview"**, **"Client portal"**, **"Commercial"**.
   - **"More workflows"** adds **"Appointments"**, **"Growth"**, **"Safe automation"** and
     **"Capacity & playbooks"**.
@@ -1435,7 +1438,8 @@ These are verified behaviours of the deployed code. None loses data.
    Nothing can be deleted.
 2. **No screen writes your own email to a contact, records consent, or shows unmatched inbound
    mail** ([§6.1](#61-read-this-first--current-status)).
-3. **Company and contact lists show at most 200 records** each (the Pipeline loads up to 1,000 deals).
+3. **The company list shows at most 200 records**; the contact list shows up to 1,000 per view
+   and the Pipeline loads up to 1,000 deals.
 4. **No message on some failures:** workspace status menus and outcome updates. Refresh to confirm
    the change saved.
 5. **A session that expires mid-use does not redirect** to the sign-in page. Pages show
@@ -1445,6 +1449,65 @@ These are verified behaviours of the deployed code. None loses data.
    - the webhook on/off switch
    - **"Create estimate"**
    - **"Prepare for approval"**
+
+### 7.22 Automations
+
+- **Purpose:** follow-ups that run themselves. *When* something happens, *do* these steps, and
+  *stop* as soon as the person answers. Every run keeps a receipt.
+- **Where:** main menu → **"Automations"** (`/automations`). Members can read automations and
+  their receipts; only an admin creates, changes, turns on or off, tests or stops one.
+- **What starts an automation** (**"What starts it"**): a website lead arrives (optionally from one
+  form); a lead waits past the reply goal; someone books a time, doesn't show, or cancels
+  (optionally on one booking page); a deal is won, lost, or moves to a stage (optionally one
+  stage); a contact is added; a client commitment is at risk. **"Only for people who match"**
+  narrows it with the same filters as the contact list, including your own fields.
+- **What it can do** (the **"+"** between steps): **"Create a task"** (for the record's owner,
+  nobody yet, or a named person; due now or after a delay; with a priority), **"Set a field"**
+  (lifecycle, relationship, influence or one of your own contact fields), **"Add a tag"**,
+  **"Assign an owner"** (round robin or a named person, by default only when nobody owns them),
+  **"Notify the team"** (an in-app notice to the owner, the admins or everyone), and **"Wait"**
+  (minutes, hours or days, up to 90 days). Task titles and notices can use
+  `{{contact.first_name}}`, `{{contact.name}}`, `{{deal.name}}` and `{{company.name}}`.
+- **Stop early when:** someone replies to them (a call, text, email or meeting is logged, or their
+  website request is marked answered), they book a time, the deal is won or lost, the deal moves
+  stage, or they become a customer. The rules are checked before every step, including when a
+  wait ends. A run also stops if the contact is archived or the automation is turned off.
+- **Common actions:**
+  1. **"New automation"** → **"Start from a recipe"** → **"Use this"**. Recipes: *New lead: call
+     within 5 minutes*; *Deal won: start onboarding*; *No-show: get them rebooked*; *Quiet lead:
+     follow up after 2 days*; *Lost deal: check back in 90 days*; *Client commitment at risk:
+     alert the admins*. Each becomes a **Draft**.
+  2. Change the name, the trigger, the steps (**"Edit"** on a step; the arrows reorder it;
+     **"Remove"**) and the stop rules → **"Save changes"**.
+  3. **"Test with a contact"** → search → pick someone. It lists what each step would do for them.
+     Nothing is changed. It uses the saved steps.
+  4. **"Turn on"**. From then on every matching event starts a run.
+  5. **"Runs"** lists every run: **Waiting**, **Completed**, **Stopped** (with the reason) or
+     **Failed** (with the error). Open one for its receipt: each step, what it did, when, and
+     **"Open the task"** / **"Open the contact"** / **"Open the deal"**. **"Stop this run"** ends a
+     waiting run.
+  6. **"Turn off"** stops new runs and ends the waiting ones, each with the reason on its receipt.
+     The bin button deletes an automation from the list. Its receipts are kept.
+- **Guardrails, always on:**
+  - Nothing an automation does leaves ClientVerse. Emails and texts to people are not an
+    automation step.
+  - The same event never starts the same automation twice. While a person has a run in progress,
+    a new event for them does not start a second one. **"Run once per person, ever"** makes it
+    once for good.
+  - Something an automation did never starts another automation, so two automations cannot loop.
+  - Changing an automation affects new runs only. A run in progress keeps the steps it started
+    with, and its receipt says which version that was.
+- **Common mistakes:**
+  - Expecting a draft to run. Only an automation that is **On** runs.
+  - Testing after editing without saving. **"Test with a contact"** uses the saved steps.
+  - Two automations on the same trigger both run. That is intended. Merge them if you want one
+    list of steps.
+- **Saved when:** **"Created “…”"**, **"Automation saved"**, **"Automation on"** /
+  **"Automation off"** (with how many waiting runs stopped), **"Run stopped"**. On failure:
+  **"Nothing was saved"** or **"Nothing was changed"**, with the reason (for example *"Step 2: choose
+  someone on the team"*).
+- **Under the hood:** wait steps are picked up by the API itself every 30 seconds, so nothing
+  external has to be scheduled (`AUTOMATION_WATCHER`, on by default).
 
 ---
 
@@ -2502,6 +2565,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.8 | 2026-10-19 | **Automations** (§7.22, new): triggers, steps, stop rules, recipes, test runs and run receipts. The main-menu **"Automations"** entry opens it (§4.3, §4.4). Client Operations moves to **Settings → Workspace → "Client portal and playbooks"** (§4.3, §7.15). **Workflows** leaves "Coming soon". §7.21 item 3 corrected for the 1,000-person contact list. |
 | 1.7 | 2026-10-19 | **Today** replaces the Command Center page at `/dashboard` (§4.2, §7.1, §4.3, §4.4, §1.4 step 4, §3.2, checklist row 3, the quick answers): four figures, **"Your plan"** in a fixed order with the reason for each item, new leads with **"Call"**, appointments, tasks with a tick to complete, pipeline, clients; won deals and outcome progress are on the Pipeline board and Client 360. |
 | 1.6 | 2026-10-19 | The new app shell: an 11-item main menu (Today, Leads, Inbox, Contacts, Pipeline, Calendar, Tasks, Approvals, Clients, Automations, Reports) with counts, **"Settings"** pinned at the bottom, and a Settings menu (Workspace, Capture, Connections, Compliance, Developer, Coming soon) replacing the grouped sidebar; search moved to the top bar. Updated §1.2–1.4, §3.4, §4.1–4.3 (new map), §5.3, the "Where" lines of §7, §7.19, §8.2, §14 row 20, §15.2, Appendix A. Applies from the deployment that carries this change; until then production shows the grouped sidebar of v1.3. **Settings → Workspace → "Fields"** opens the field manager of v1.5. |
 | 1.5 | 2026-10-19 | Contacts: built-in and saved views, filters, columns (§7.4 item 4); lifecycle stage and how the CRM sets it (item 6); your own fields on contacts, companies and deals — **Settings → Fields** (item 8, §7.5, §4.3); **"Set from history"** in the **"Clean up"** card (item 10); the contact list now shows up to 1,000 people. |

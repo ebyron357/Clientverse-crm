@@ -35,6 +35,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 import approval_queue as approval_service
 import attribution as attribution_service
+import automations
 import booking
 import conversations as conversation_service
 import crm_core
@@ -172,6 +173,7 @@ async def lifespan(_: FastAPI):
         ("recovery_strategy", lambda: recovery_service.ensure_indexes(db)),
         ("conversations", lambda: conversation_service.ensure_indexes(db)),
         ("recovery_case", lambda: recovery_case_service.ensure_indexes(db)),
+        ("automations", lambda: automation_engine.ensure_indexes()),
     ]
     for name, build in index_builders:
         try:
@@ -196,11 +198,14 @@ async def lifespan(_: FastAPI):
     # reached production, so the API runs the `/api/cron/*` jobs itself, once per window
     # across replicas (see scheduler.py). IN_PROCESS_SCHEDULER=0 turns it off.
     job_scheduler.start()
+    # Automation runs parked on a wait step resume from here (AUTOMATION_WATCHER=0 turns it off).
+    automation_engine.start_watcher()
     try:
         yield
     finally:
         await job_scheduler.stop()
         await lead_pipeline.stop_watcher()
+        await automation_engine.stop_watcher()
         mclient.close()
 
 
@@ -321,6 +326,12 @@ async def record_event(event_type: str, resource_type: str, resource_id: str,
         spawn_background(dispatch_webhooks_for_event(clean))
     except Exception:
         pass
+    try:
+        # Starts any automation listening for this event, in the background. Events an
+        # automation caused are ignored there, so automations cannot trigger each other.
+        automation_engine.on_event(clean)
+    except Exception:
+        logger.exception("Could not hand event %s to the automations", clean["id"])
     if workspace_id and event_type in HEALTH_AFFECTING:
         try:
             await record_health_snapshot(tenant_id, workspace_id)
@@ -4809,6 +4820,8 @@ async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: 
 
 record_fields.register_record_field_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
 today_service.register_today_routes(api, db, get_current_user)
+automation_engine = automations.AutomationEngine(db, new_id=new_id, now_iso=now_iso, record_event=record_event)
+automations.register_automation_routes(api, automation_engine, get_current_user, require_role)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
                                   on_activity_logged=_after_activity_logged,
                                   on_task_status_changed=_lead_task_status_changed)

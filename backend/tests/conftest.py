@@ -20,6 +20,9 @@ import os
 # the scheduler builds its own (`tests/test_scheduler.py`) or sets the variable itself.
 # `setdefault`, so an explicit value in the environment still wins.
 os.environ.setdefault("IN_PROCESS_SCHEDULER", "0")
+# Likewise the automation watcher, which resumes runs parked on a wait step; tests resume
+# them by calling `resume_due` with the time they want.
+os.environ.setdefault("AUTOMATION_WATCHER", "0")
 
 _MONGO_URL = os.environ.get("MONGO_URL", "")
 

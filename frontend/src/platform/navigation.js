@@ -28,9 +28,7 @@ const MENU = [
   { module: "tasks", label: "Tasks", icon: SquareCheckBig, paths: ["/tasks"], count: "tasks", countLabel: "overdue" },
   { module: "approvals", label: "Approvals", icon: ShieldCheck, tab: "approvals", count: "approvals", countLabel: "waiting for a decision" },
   { module: "client-360", label: "Clients", icon: BriefcaseBusiness, paths: ["/workspaces"] },
-  // Client Operations is where the safe automation rules and the playbooks live, so it is
-  // the Automations entry until automations have a page of their own.
-  { module: "client-operations", label: "Automations", icon: Workflow, paths: ["/client-ops"] },
+  { module: "workflows", label: "Automations", icon: Workflow, paths: ["/automations"] },
   { module: "recovery-proof", label: "Reports", icon: ChartNoAxesColumn, paths: ["/proof"] },
 ];
 
@@ -63,6 +61,9 @@ const SETTINGS_GROUPS = [
       // TODO: a lead routing page of its own. Until then each form's "Assign the lead"
       // section is where routing is set, so this opens Forms.
       { id: "lead-routing", label: "Lead routing", to: "/website-forms" },
+      // Safe rules, playbooks, the client portal and commercial records. Its own page,
+      // linked from here now that Automations has the main-menu entry.
+      { id: "client-operations", label: "Client portal and playbooks", to: "/client-ops", testid: "nav-client-operations-link" },
     ],
   },
   {
