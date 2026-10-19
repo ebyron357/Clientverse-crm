@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.11 |
+| **Version** | 1.12 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -320,7 +320,8 @@ See [Chapter 13](#13-security-and-owner-safety).
    **"New password again"** (at least 8 characters). **"Show passwords"** reveals what you typed.
 3. Click **"Change password"**.
 4. **Check:** the message **"Password changed"**. You stay signed in here; every other phone or
-   computer signed in to your account is signed out.
+   computer signed in to your account is signed out. If you were working in a client account
+   ([§7.25](#725-agency-and-client-accounts)), you stay in it.
 
 - **Owner account:** see the warning in [§3.3](#33-which-account-the-owner-uses) — use Railway.
 - An account that signs in only with Google has no ClientVerse password to change.
@@ -2729,6 +2730,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |
 | 1.11 | 2026-10-19 | **Agency and client accounts** (§7.25, new): client accounts under an agency, the account switcher and the "working in" banner, opening a client account as an agency admin (checked on every request), creating accounts from a snapshot, and pushing a snapshot to many accounts with a preview per account. **Settings → Agency → "Client accounts"** (§4.3); roles (§8.1). Booking pages loaded into a workspace are hosted by someone on its team, or arrive paused (§7.24, §7.25). |
 | 1.10 | 2026-10-19 | **Snapshots** (§7.24, new): save this workspace's setup (pipeline stages, fields, booking pages, forms, automations, shared views — never records, people, links or secrets), share it with a code shown once, download it as a file, and load one into a workspace through a preview that only adds what is missing. **Settings → Workspace → "Snapshots"**, admin only (§4.3, §8.1). §7.23: a template's stages also stay when a stage in use would change between open, won and lost. |
 | 1.9 | 2026-10-19 | **Industry templates** (§7.23, new): six starting setups (agency, real estate, home services, health and wellness, coaching, B2B sales) that add a pipeline, booking pages, a form, fields and draft automations, only where missing. **Settings → Workspace → "Industry template"** (§4.3); the first step of **"Set up your workspace"** on Today is now **"Choose your industry template"** (§4.2); applying one is admin-only (§8.1). |

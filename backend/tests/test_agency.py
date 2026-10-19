@@ -157,6 +157,28 @@ def test_an_agency_admin_works_inside_a_client_account_and_comes_back(client):
     assert "Agency Own Client" in {c["name"] for c in ok(client.get("/api/contacts", headers=auth(back["token"])))}
 
 
+def test_signing_in_and_changing_password_return_the_workspace_a_reload_would_show(client):
+    agency, _ = agency_with_snapshot(client)
+    tid = ok(client.post("/api/agency/accounts", headers=agency["headers"], json={"name": "Cedar Law"}))["account"]["tenant_id"]
+    # The screens show the account switcher from the signed-in user, so sign-in must carry
+    # the same workspace /auth/me does, not wait for a page reload.
+    signed_in = ok(client.post("/api/auth/login", json={"email": agency["email"], "password": "Str0ng-Passw0rd!"}))
+    client.cookies.clear()
+    assert signed_in["user"]["workspace"]["kind"] == "agency"
+    assert signed_in["user"]["workspace"] == ok(client.get("/api/auth/me", headers=auth(signed_in["token"])))["workspace"]
+    # Changing the password inside a client account keeps this browser in that account.
+    inside = enter(client, agency, tid)
+    changed = ok(client.post("/api/auth/change-password", headers=auth(inside["token"]),
+                             json={"current_password": "Str0ng-Passw0rd!", "new_password": "N3w-Str0ng-Passw0rd!"}))
+    client.cookies.clear()
+    assert changed["user"]["acting"]["tenant_id"] == tid and changed["user"]["workspace"]["kind"] == "client"
+    me = ok(client.get("/api/auth/me", headers=auth(changed["token"])))
+    assert me["tenant_id"] == tid and me["acting"]["name"] == "Cedar Law"
+    # The change belongs to the person, so it is recorded in their own workspace.
+    assert find_all(client, "domain_events", {"tenant_id": agency["tenant_id"], "event_type": "auth.password_changed"})
+    assert not find_all(client, "domain_events", {"tenant_id": tid, "event_type": "auth.password_changed"})
+
+
 def test_access_to_a_client_account_ends_as_soon_as_the_agency_admin_loses_it(client):
     agency, _ = agency_with_snapshot(client)
     colleague = person(client, agency["tenant_id"], "admin")

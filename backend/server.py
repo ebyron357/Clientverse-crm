@@ -540,6 +540,12 @@ async def _reset_login_failures(email: str):
         upsert=True,
     )
 
+async def session_user(user: dict) -> dict:
+    """The signed-in person as every auth response returns them: the shape of /auth/me.
+    The screens read `workspace` (and `acting`) for the account switcher and the banner,
+    so a sign-in must not hand back less than a page reload would."""
+    return {**user, "workspace": await agency_service.workspace_info(db, user)}
+
 @api.post("/auth/register")
 async def register(inp: RegisterInput, response: Response):
     email = inp.email.lower()
@@ -562,7 +568,7 @@ async def register(inp: RegisterInput, response: Response):
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
-    return {"user": u, "token": token}
+    return {"user": await session_user(u), "token": token}
 
 @api.post("/auth/login")
 async def login(inp: LoginInput, response: Response):
@@ -581,7 +587,7 @@ async def login(inp: LoginInput, response: Response):
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
-    return {"user": u, "token": token}
+    return {"user": await session_user(u), "token": token}
 
 @api.post("/auth/google/session")
 async def google_session(request: Request, response: Response):
@@ -623,11 +629,11 @@ async def google_session(request: Request, response: Response):
             "disabled_at": None, "created_at": now_iso(),
         })
     user = await resolve_membership(user)
-    return {"user": user, "token": session_token}
+    return {"user": await session_user(user), "token": session_token}
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return {**user, "workspace": await agency_service.workspace_info(db, user)}
+    return await session_user(user)
 
 @api.post("/auth/logout")
 async def logout(request: Request, response: Response):
@@ -1027,7 +1033,7 @@ async def accept_invitation_new_account(inp: InviteSignupInput, response: Respon
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
-    return {"user": u, "token": token, "tenant_id": tenant_id, "role": role}
+    return {"user": await session_user(u), "token": token, "tenant_id": tenant_id, "role": role}
 
 class PasswordChangeInput(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
@@ -1064,14 +1070,18 @@ async def change_password(inp: PasswordChangeInput, request: Request, response: 
     old_token = _extract_token(request)
     if old_token:
         await _revoke_token(old_token)
-    # Google sign-in sessions end too; this browser carries on with the new token below.
+    # Google sign-in sessions end too; this browser carries on with the new token below,
+    # still in the client account it was working in, if any.
     await db.user_sessions.delete_many({"user_id": user["user_id"]})
-    token = create_access_token(user["user_id"], email)
+    acting = (user.get("acting") or {}).get("tenant_id")
+    token = create_access_token(user["user_id"], email, acting_tenant=acting)
     set_auth_cookie(response, token)
-    await record_event("auth.password_changed", "user", user["user_id"], user["tenant_id"], email,
-                       payload={"temporary_cleared": bool(user.get("must_change_password"))})
-    u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
-    return {"user": await resolve_membership(u), "token": token}
+    await record_event("auth.password_changed", "user", user["user_id"], user.get("home_tenant_id") or user["tenant_id"],
+                       email, payload={"temporary_cleared": bool(user.get("must_change_password"))})
+    u = await resolve_membership(await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0}))
+    if acting:
+        u = await agency_service.act_as(db, u, acting)
+    return {"user": await session_user(u), "token": token}
 
 def _temporary_password() -> str:
     # Easy to read aloud or type from a text message, and 70+ bits of randomness.
