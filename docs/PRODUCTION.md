@@ -1,5 +1,7 @@
 # ClientVerse production setup
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. Its owner sign-in, admin-password and verification-state notes are superseded by the manual. The 2026-08-25 "BLOCKED" state below is historical: production has run on Railway since 2026-09-01.
+
 This document separates configuration by audience and risk. Never commit real secret values.
 
 ## Current Verification State — 2026-08-25

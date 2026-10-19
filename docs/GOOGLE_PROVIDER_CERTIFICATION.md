@@ -1,5 +1,7 @@
 # ClientVerse CRM — Gmail and Google Calendar Provider Certification
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. The "Required Owner Setup" section below is superseded by manual §5. Its scope list is stale: the code now also requests `gmail.send` and `openid` (manual §5.2). This remains the 2026-08-16 certification record.
+
 **Certification date:** 2026-08-16
 **Repository:** [ebyron357/Clientverse-crm](https://github.com/ebyron357/Clientverse-crm)
 **Branch:** `manus/premium-crm-completion`

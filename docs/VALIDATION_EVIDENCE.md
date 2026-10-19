@@ -1,5 +1,7 @@
 # ClientVerse CRM — Integrated Validation Evidence
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. Its Render-era owner-action notes are superseded by the manual. This remains a historical evidence record.
+
 This is the canonical validation record for the ClientVerse CRM release candidate. It consolidates lifecycle, security, accessibility, performance, browser, provider-readiness, and deployment-path evidence. It intentionally excludes passwords, session tokens, OAuth tokens, client secrets, encryption keys, database credentials, portal tokens, authorization codes, connection strings, and internal record identifiers.
 
 ## 2026-08-28 Post-Merge Closeout Addendum

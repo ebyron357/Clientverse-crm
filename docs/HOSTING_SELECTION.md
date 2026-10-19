@@ -1,5 +1,7 @@
 # ClientVerse Hosting Selection
 
+> **Superseded.** The Render recommendation below was not adopted: production runs on Railway ([RAILWAY_RUNBOOK.md](RAILWAY_RUNBOOK.md)). For owner/admin instructions see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) (2026-09-30), the official owner/admin source of truth. Kept as the historical hosting decision record.
+
 ## Recommendation
 
 Deploy the existing ClientVerse single-container FastAPI and React application as a **Render Docker Web Service**, with **MongoDB Atlas** as the production database. This is the most compatible managed path for the current architecture because the repository already provides a Dockerfile, serves the built React application and `/api` from one origin, and contains authenticated scheduler endpoints that can be invoked by a platform cron service.

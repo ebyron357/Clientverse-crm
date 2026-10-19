@@ -1,5 +1,7 @@
 # ClientVerse Activation Report
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. In this document, "Administrator Access" and "Owner Actions Required" are superseded by the manual.
+
 **Date:** 2026-09-21
 **Branch:** `claude/trusting-brahmagupta-lj26xf` (7 commits, 58 files, +9,144 / −201)
 **Companion document:** [`docs/OWNER_HANDOFF.md`](OWNER_HANDOFF.md)

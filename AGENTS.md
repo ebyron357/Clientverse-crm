@@ -6,6 +6,13 @@
   Railway deployment `d4d2e07f-b201-44f9-90fe-a06c59dabad5`, live 2026-10-19T00:16Z. Boot
   log clean (`Registered outbound channel provider: gmail`, scheduler 13 jobs,
   `Application startup complete`, `/api/health` 200). Read the live id from Railway.
+- **Custom domain live (2026-10-19 01:47Z).** `crm.clientverse.io` is verified on Railway
+  (certificate valid). Railway variables: `FRONTEND_URL` and `GOOGLE_REDIRECT_URI`
+  (`/api/integrations/google/callback`) point to it; `CORS_ORIGINS` lists it and the Railway
+  address, which still works. Changing `GOOGLE_REDIRECT_URI` mid-OAuth breaks that attempt (the
+  start and the token exchange must use the same address). A Cloudflare Worker
+  `clientverse-crm` (created 01:13Z in the owner's account) fails "Workers Builds" on every
+  push; it is not part of the deploy path.
 - **GitHub Actions runs again.** CI (frontend build, backend lint/types, backend API tests)
   ran and passed on PR #41 on 2026-10-18; the 2026-09-28 "Actions has run nothing" note
   below is stale. CI is the gate again.
@@ -18,6 +25,26 @@
   the pre-redesign page and is not ported.
 - Cursor Bugbot is out of usage quota (it skips); Copilot code review and the Cursor
   Security Agent still run on every PR.
+
+## Owner/Admin Manual (PR #34)
+
+- **Owner/admin procedures live in one place:**
+  `docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md` (Issue #33). It is registered as the owner
+  source of truth in the governing document, v1.16 §0.5. Change the manual in the same commit
+  as any change to a screen label, route, sign-in rule, Google scope, cron job or owner
+  procedure. Do not write new owner instructions anywhere else.
+- **Outbound email has two blockers besides the Google grant:**
+  - The tenant's Gmail `integrations` catalogue record is `REQUIRES_CONFIGURATION`, so
+    `authorized_channels` refuses email. Only a database change clears it; that is a
+    certification decision.
+  - No screen writes an email to a contact or records consent. The only screen-released
+    emails are Calendar booking emails and an approved Website Forms auto-reply.
+
+  See governing document M-01 and §8 #27–#28.
+- **History (2026-09-30):** the Scheduled jobs workflow first reached production (runs
+  #3551–#3555, after #3544–#3550 failed on a `401` secret mismatch), and Google's token
+  endpoint refused the stored grant (`400`). Since PR #42 a Google connection records the
+  scopes Google granted, so the owner reconnects Google once (manual §5.6–§5.8).
 
 ## Session state (2026-09-28)
 

@@ -1,5 +1,7 @@
 # ClientVerse CRM — Railway Production Runbook
 
+> **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. The owner-facing scheduler checks in §6 (manual §11) and the admin-password text in §7 are superseded by the manual. Deployment mechanics, and the scheduler mechanics in §6, remain current for engineering.
+
 Single-service deployment: one Railway service builds the root `Dockerfile` (React build
 stage + FastAPI runtime) and serves the SPA and API from one HTTPS origin. No Railway
 database plugin is created or required — production data lives in the existing MongoDB
@@ -184,10 +186,12 @@ sending the header) — no ClientVerse code changes are needed for this.
   live secret does.
 - **`ADMIN_PASSWORD` rotation is not durable if done only in the app.** `seed()` re-syncs
   the admin account's password hash from the `ADMIN_PASSWORD` environment variable on
-  every boot (see `backend/server.py`). If you only change the password through the
-  product UI/API, the next redeploy or restart silently reverts it back to whatever
-  `ADMIN_PASSWORD` is still set to in Railway. **Always update the Railway variable in the
-  same action** as any admin password rotation (which will trigger a redeploy).
+  every boot (see `backend/server.py`). Settings → Change password works for the owner
+  account only until the next restart or deploy, so the Railway variable is the only durable
+  way to rotate the owner password: change `ADMIN_PASSWORD` in Railway and let it redeploy
+  (Owner/Admin Manual §9.2). Other accounts change their own password in Settings, and an
+  admin can reset a member's (Team & Access). Never change
+  `ADMIN_EMAIL` — a new value seeds a new, empty tenant.
 - **Google OAuth setup is owner-only.** Creating/verifying the OAuth consent screen and
   Web OAuth client in Google Cloud Console, registering the callback URL above, and
   setting `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` in Railway all require the owner's
