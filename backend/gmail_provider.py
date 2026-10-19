@@ -66,6 +66,12 @@ MESSAGE_ID_DOMAIN = "clientverse.app"
 # message was not accepted and never will be in its current form".
 PROVEN_REJECTION_CODES = {400, 401, 403, 404, 413, 422}
 
+# The message an admin's "turn on sending" sends from the connected mailbox to itself.
+TEST_SUBJECT = "ClientVerse: test message before email sending is turned on"
+TEST_BODY = ("This message was sent by ClientVerse from this mailbox to itself, to prove that "
+             "Gmail accepts mail sent through the CRM. An admin asked for it when turning on "
+             "email sending. No client received it, and nothing needs doing.")
+
 
 class GmailNotAuthorized(conversation_service.DeliveryRejected):
     """The tenant has no usable Gmail send authorisation.
@@ -262,3 +268,40 @@ class GmailChannelProvider:
             provider_message_id=provider_message_id,
             detail={"deduplicated": False, "rfc822_message_id": rfc_message_id,
                     "thread_id": body.get("threadId"), "mailbox": mailbox})
+
+    # ----------------------------------------------------------------- test send
+
+    async def send_test(self, *, tenant_id: str) -> dict:
+        """Send one message from the connected mailbox to itself, and report Gmail's answer.
+
+        This is the proof behind turning outbound email on. It takes the same
+        authorisation and the same send call a client message would, but the only inbox
+        it can reach is the tenant's own. A refusal raises `DeliveryRejected`, and so does
+        any answer Gmail did not clearly give: a test that cannot be confirmed is not a
+        pass.
+        """
+        token, mailbox = await self._authorized_token(tenant_id)
+        if not mailbox or "@" not in mailbox:
+            raise GmailNotAuthorized(
+                "The Gmail connection does not record its own address, so there is no "
+                "safe inbox for a test message. Reconnect Google.")
+        raw = build_mime(
+            message={"subject": TEST_SUBJECT, "body": TEST_BODY}, conversation={},
+            sender=mailbox, recipient=mailbox,
+            message_id=message_id_for(tenant_id, f"sending-test:{datetime.now(timezone.utc).isoformat()}"))
+        try:
+            async with self._http_client() as client:
+                response = await client.post(
+                    f"{GMAIL_API}/messages/send", json={"raw": raw},
+                    headers={"Authorization": f"Bearer {token}"})
+        except Exception as exc:
+            raise conversation_service.DeliveryRejected(
+                f"Gmail could not be reached for the test message ({type(exc).__name__}).")
+        try:
+            accepted = (response.json() or {}).get("id") if response.status_code == 200 else None
+        except ValueError:
+            accepted = None
+        if not accepted:
+            raise conversation_service.DeliveryRejected(
+                f"Gmail did not accept the test message (HTTP {response.status_code}).")
+        return {"provider_message_id": accepted, "mailbox": mailbox}
