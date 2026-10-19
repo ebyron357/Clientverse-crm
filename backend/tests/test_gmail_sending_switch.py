@@ -56,12 +56,15 @@ class FakeGmail:
     channel = cv.CHANNEL_EMAIL
     name = "gmail"
 
-    def __init__(self, error=None):
+    def __init__(self, error=None, during=None):
         self.error = error
+        self.during = during  # runs while the test email is "in flight"
         self.calls = []
 
     async def send_test(self, *, tenant_id):
         self.calls.append(tenant_id)
+        if self.during:
+            await self.during()
         if self.error:
             raise self.error
         return {"provider_message_id": "gm_test_1", "mailbox": MAILBOX}
@@ -198,6 +201,38 @@ def test_a_tenant_without_a_catalogue_record_gets_one_when_sending_is_proven(db)
     assert record["name"] == "Gmail" and record["status"] == "CERTIFIED"
 
 
+def test_a_test_overtaken_by_turning_sending_off_does_not_turn_it_on(db):
+    seed(db)
+
+    async def admin_turns_it_off():
+        await server.disable_gmail_sending(user=OWNER)
+
+    cv.REGISTRY.register(FakeGmail(during=admin_turns_it_off))
+    with pytest.raises(HTTPException) as excinfo:
+        run(server.enable_gmail_sending(user=OWNER))
+
+    assert excinfo.value.status_code == 409 and "changed" in excinfo.value.detail
+    assert run(db.integrations.find_one({"id": "intg_gmail"}))["status"] == "REQUIRES_CONFIGURATION"
+    assert email_channel(db)["authorized"] is False
+
+
+def test_a_test_overtaken_by_a_reconnect_to_another_mailbox_does_not_count(db):
+    seed(db)
+
+    async def google_reconnects_as_someone_else():
+        await db.integration_connections.update_one(
+            {"tenant_id": TENANT, "provider": "gmail"},
+            {"$set": {"account_identity": "someone.else@acme.test"}})
+
+    cv.REGISTRY.register(FakeGmail(during=google_reconnects_as_someone_else))
+    with pytest.raises(HTTPException) as excinfo:
+        run(server.enable_gmail_sending(user=OWNER))
+
+    assert excinfo.value.status_code == 409
+    assert email_channel(db)["authorized"] is False
+    assert events(db, "integration.sending_enabled") == []
+
+
 # ---------------------------------------------------------------- turning it off
 
 def test_an_admin_can_turn_sending_off_and_the_change_is_recorded(db):
@@ -211,6 +246,18 @@ def test_an_admin_can_turn_sending_off_and_the_change_is_recorded(db):
     assert record["status"] == "REQUIRES_CONFIGURATION" and record["certification"] is None
     [event] = events(db, "integration.sending_disabled")
     assert event["payload"]["reason"] == "Turned off by an admin"
+
+
+def test_turning_off_clears_every_certified_gmail_record_not_just_the_first(db):
+    seed(db, catalogue_status="CERTIFIED", certified_mailbox=MAILBOX)
+    run(db.integrations.insert_one({"id": "intg_gmail_dup", "tenant_id": TENANT, "name": "gmail",
+                                    "status": "CERTIFIED", "certification": {"mailbox": MAILBOX}}))
+
+    state = run(server.disable_gmail_sending(user=OWNER))
+
+    assert state["enabled"] is False and email_channel(db)["authorized"] is False
+    statuses = {r["status"] for r in run(db.integrations.find({"tenant_id": TENANT}).to_list(5))}
+    assert statuses == {"REQUIRES_CONFIGURATION"}
 
 
 def test_turning_off_sending_that_is_already_off_records_nothing(db):
@@ -231,6 +278,33 @@ def test_disconnecting_calendar_leaves_the_shared_grant_and_gmail_sending_alone(
     assert client.calls == []  # nothing revoked at Google
     assert run(db.google_credentials.find_one({"tenant_id": TENANT})) is not None
     assert email_channel(db)["authorized"] is True
+
+
+@pytest.mark.parametrize("gmail_state", ["connecting", "degraded"])
+def test_disconnecting_calendar_keeps_the_grant_while_gmail_is_syncing_or_degraded(db, monkeypatch, gmail_state):
+    seed(db, gmail=gmail_state)
+    client = RecordingClient()
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
+
+    run(server.disconnect_provider("google_calendar", user=OWNER))
+
+    assert client.calls == []
+    assert run(db.google_credentials.find_one({"tenant_id": TENANT})) is not None
+
+
+def test_disconnecting_both_rows_at_once_still_revokes_the_grant(db, monkeypatch):
+    seed(db)
+    client = RecordingClient()
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: client)
+
+    async def both():
+        await asyncio.gather(server.disconnect_provider("gmail", user=OWNER),
+                             server.disconnect_provider("google_calendar", user=OWNER))
+
+    run(both())
+
+    assert any(url == "https://oauth2.googleapis.com/revoke" for _, url, _ in client.calls)
+    assert run(db.google_credentials.find_one({"tenant_id": TENANT})) is None
 
 
 def test_disconnecting_gmail_turns_sending_off_but_keeps_calendar_working(db, monkeypatch):

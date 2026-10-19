@@ -102,6 +102,15 @@ class CaptureCollection:
         self.deleted.append(deepcopy(query))
         return SimpleNamespace(deleted_count=1)
 
+    async def update_many(self, query, update, **kwargs):
+        self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
+        return SimpleNamespace(matched_count=0, modified_count=0)
+
+    def find(self, *args, **kwargs):
+        async def to_list(*_args, **_kwargs):
+            return []
+        return SimpleNamespace(to_list=to_list)
+
 
 def run(coro):
     return asyncio.run(coro)
