@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.9 |
+| **Version** | 1.10 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -416,6 +416,7 @@ never appears here.
 |---|---|---|---|
 | Workspace | **General** | `/settings` — profile, security, notifications, integration status, organization | |
 | Workspace | **Industry template** | `/settings/templates` — a starting setup for your kind of business ([§7.23](#723-industry-templates)) | Applying one: admin |
+| Workspace | **Snapshots** | `/settings/snapshots` — save this workspace's setup and load it into another ([§7.24](#724-snapshots)) | **Yes** (hidden from members) |
 | Workspace | **Fields** | `/settings/fields` — your own fields on contacts, companies and deals ([§7.4](#74-contacts-and-companies) item 8) | Adding and changing fields: admin |
 | Workspace | **Team and roles** | `/team` (**Team & Access**) | **Yes** (hidden from members) |
 | Workspace | **Client portal and playbooks** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, the client portal and commercial records — [§7.15](#715-client-operations-and-the-client-portal)) | Some buttons: admin |
@@ -431,7 +432,7 @@ never appears here.
 | Coming soon | **Email**, **SMS** | `/communications/email`, `/communications/sms` | **Not active** — "Configuration required" |
 | Coming soon | **Calling**, **Revenue Operations**, **Support**, **Reporting**, **Relationship Intelligence**, **Migration**, **Knowledge** | `/communications/calling`, `/revenue`, `/support`, `/intelligence/reporting`, `/intelligence/relationships`, `/platform/migration`, `/platform/knowledge` | **Not active** — "Backend contract pending" |
 
-The Settings menu sits beside General, Industry template, Fields, Team and roles, Forms, Integrations and Registries, Audit
+The Settings menu sits beside General, Industry template, Snapshots, Fields, Team and roles, Forms, Integrations and Registries, Audit
 log, MCP console and every Coming soon page. **Booking pages** and **Operations** open pages that
 are also reached from the main menu (Calendar; Inbox and Approvals), so those keep their own
 layout and the Settings menu is one click back. A member's address for **Operations** still
@@ -1549,8 +1550,9 @@ These are verified behaviours of the deployed code. None loses data.
   - It never renames, changes or removes anything you have. Booking pages, forms, fields and
     automations are matched by name (capitals ignored); one with the same name is left as it is.
   - It replaces the pipeline stages only while you have never customized them and no deal, form
-    or booking page uses a stage that would go. Otherwise the stages stay, and the preview says
-    why. Change them yourself with **"Customize stages"** on the Pipeline board.
+    or booking page uses a stage that would go or change between open, won and lost. Otherwise
+    the stages stay, and the preview says why. Change them yourself with **"Customize stages"** on
+    the Pipeline board.
   - Automations arrive as **Drafts**; nothing runs until you **"Turn on"** each one.
   - The form's auto-reply is off. Turning it on needs its own approval ([§7.6](#76-website-forms)).
 - **Common mistakes:**
@@ -1559,6 +1561,62 @@ These are verified behaviours of the deployed code. None loses data.
   - Expecting automations to run straight away. They are drafts.
 - **Saved when:** **"{Template} applied"** with how many things were added, or **"You already had
   everything it brings."** On failure: **"The template was not applied"**, with the reason.
+
+### 7.24 Snapshots
+
+- **Purpose:** build a setup once and reuse it. A snapshot saves this workspace's setup so it
+  can be loaded into another workspace: a new client, a new location, or a business you set up
+  for someone. Loading follows the same rules as an industry template ([§7.23](#723-industry-templates)):
+  it only adds what is missing.
+- **Where:** **Settings** → **Workspace** → **"Snapshots"** (`/settings/snapshots`). Admins only;
+  members do not see the menu item, and the server refuses them.
+- **What a snapshot holds:** pipeline stages, fields, booking pages, website forms, automations
+  and shared list views. It never holds contacts, companies, deals, leads, messages,
+  appointments, team members, connected accounts, public links or passwords. On the way in:
+  - booking pages leave their host behind (the person who loads them hosts them) and get a new
+    link;
+  - forms leave their website addresses, thank-you redirect, lead assignment and CAPTCHA keys
+    behind, and their auto-reply arrives switched off;
+  - automations leave behind anyone they named: a task for a named person becomes a task for the
+    record's owner, and assigning a named person becomes round robin. They arrive as **Drafts**;
+  - private list views stay private and are not saved.
+
+  A snapshot **does** carry the wording you wrote, such as confirmation messages, auto-reply
+  text, task titles and a meeting location. Check those before you share it.
+- **Common actions:**
+  1. **"New snapshot"** → a name, an optional description, and **"What it holds"** (each part
+     with how many there are now) → **"Save snapshot"**. It is a copy: changing the workspace
+     later does not change the snapshot.
+  2. **"⋯"** → **"Share…"** → **"Turn on sharing"**. The share code (it starts `cvs_`) is shown
+     **once**: **"Copy"** it and send it. **"Make a new code"** replaces it (the old code stops
+     working); **"Stop sharing"** turns it off. The list shows **"Shared · loaded N×"**.
+  3. **"⋯"** → **"Download file"** saves a `.clientverse-snapshot.json` file to keep or send.
+  4. To load one into this workspace: **"Load a snapshot"** → **"Share code"** (paste it) or
+     **"File"** (choose the file) → **"Preview"**. The preview lists **"Will add"**, **"Can't be
+     loaded"** (with the reason) and **"Already there, left as it is"**. **"Add N things"** loads it
+     and shows **"Next"** links. **"Load here"** on a row loads one of your own snapshots, which
+     brings back anything of it you have since deleted.
+  5. **"⋯"** → **"Delete"** removes the snapshot and its share code. Nothing in any workspace
+     changes.
+- **How references are kept:** an automation that started from a form or booking page starts from
+  that item's copy. A filter or column on one of your own fields uses the field with the same name
+  in the workspace it lands in, even if that field was made under a different internal key. If
+  the form an automation started from was not loaded, the preview says **"Its form did not come
+  with it, so it starts for any form"**.
+- **Common mistakes:**
+  - Expecting contacts or deals to move. Snapshots are setup only; use import and export
+    ([§7.20](#720-import-and-export)) for records.
+  - Losing the share code. It is shown once; make a new code (the old one stops working).
+  - Expecting loaded automations to run. They are drafts until you **"Turn on"** each one.
+  - Expecting a loaded pipeline to replace stages you already customized. It does not; the
+    preview says so.
+- **Saved when:** **"“{name}” saved"** with what it holds; **"Code copied"**; **"Sharing stopped"**;
+  **"“{name}” loaded"** with how many things were added; **"“{name}” deleted"**. On failure:
+  **"The snapshot was not saved"**, **"The snapshot was not loaded"**, **"No shared snapshot has
+  this code. Check it, or ask for a new one."**, **"This file is not a ClientVerse snapshot"**, with
+  the reason.
+- **Limits:** 50 snapshots per workspace; a snapshot up to 1 MB holding up to 100 fields, 50
+  booking pages, 50 forms, 50 automations and 50 shared views.
 
 ---
 
@@ -1581,6 +1639,7 @@ on every request, and hiding a button is never the protection.
 | **"Approve"** / **"Reject"** approvals (workspace, Operations, booking emails, auto-reply wording) | ✓ | ✗ |
 | Website forms, booking pages and pipeline stages — create and change | ✓ | ✗ |
 | Apply an industry template (**Settings → Industry template**; anyone can preview one) | ✓ | ✗ |
+| Snapshots — save, share, download, load and delete (**Settings → Snapshots**) | ✓ | ✗ |
 | Record conversation consent (API only) | ✓ | ✗ |
 | MCP kill switch, undo, workspace undo window | ✓ | ✗ |
 | Webhook create / enable / reveal secret / rotate secret | ✓ | ✗ |
@@ -2617,6 +2676,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.10 | 2026-10-19 | **Snapshots** (§7.24, new): save this workspace's setup (pipeline stages, fields, booking pages, forms, automations, shared views — never records, people, links or secrets), share it with a code shown once, download it as a file, and load one into a workspace through a preview that only adds what is missing. **Settings → Workspace → "Snapshots"**, admin only (§4.3, §8.1). §7.23: a template's stages also stay when a stage in use would change between open, won and lost. |
 | 1.9 | 2026-10-19 | **Industry templates** (§7.23, new): six starting setups (agency, real estate, home services, health and wellness, coaching, B2B sales) that add a pipeline, booking pages, a form, fields and draft automations, only where missing. **Settings → Workspace → "Industry template"** (§4.3); the first step of **"Set up your workspace"** on Today is now **"Choose your industry template"** (§4.2); applying one is admin-only (§8.1). |
 | 1.8 | 2026-10-19 | **Automations** (§7.22, new): triggers, steps, stop rules, recipes, test runs and run receipts. The main-menu **"Automations"** entry opens it (§4.3, §4.4). Client Operations moves to **Settings → Workspace → "Client portal and playbooks"** (§4.3, §7.15). **Workflows** leaves "Coming soon". §7.21 item 3 corrected for the 1,000-person contact list. |
 | 1.7 | 2026-10-19 | **Today** replaces the Command Center page at `/dashboard` (§4.2, §7.1, §4.3, §4.4, §1.4 step 4, §3.2, checklist row 3, the quick answers): four figures, **"Your plan"** in a fixed order with the reason for each item, new leads with **"Call"**, appointments, tasks with a tick to complete, pipeline, clients; won deals and outcome progress are on the Pipeline board and Client 360. |

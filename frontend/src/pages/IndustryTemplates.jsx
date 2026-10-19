@@ -3,16 +3,16 @@
    It only ever adds what is missing, so the preview says exactly what it will add and what it
    will leave alone, and an admin applies it from there. */
 
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { api, formatErr } from "@/lib/api";
 import { PageHeader } from "@/components/page/Page";
+import { STICKY_FOOTER, SetupPlan, countAdds, things } from "@/components/SetupPlan";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BarChart3, Briefcase, Check, ChevronRight, Home, LayoutTemplate, Plus, Sparkles, Users, Wrench } from "lucide-react";
+import { BarChart3, Briefcase, ChevronRight, Home, LayoutTemplate, Sparkles, Users, Wrench } from "lucide-react";
 
 const ICONS = { briefcase: Briefcase, home: Home, wrench: Wrench, sparkles: Sparkles, users: Users, chart: BarChart3 };
 const TONES = {
@@ -23,15 +23,7 @@ const TONES = {
   coaching: "bg-violet-50 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
   b2b_sales: "bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300",
 };
-const KIND = { pipeline: "Pipeline", field: "Field", booking_page: "Booking page", form: "Website form", automation: "Automation" };
 const SINGULAR = { contacts: "contact", companies: "company", deals: "deal" };
-// Where to go next for each kind of thing a template added.
-const NEXT = [
-  { kind: "automation", label: "Review the draft automations and turn on the ones you want", to: "/automations" },
-  { kind: "form", label: "Put the form on your website", to: "/website-forms" },
-  { kind: "booking_page", label: "Share your booking pages", to: "/scheduling/calendar?tab=pages" },
-  { kind: "field", label: "See the new fields", to: "/settings/fields" },
-];
 
 export default function IndustryTemplates() {
   const { user } = useAuth();
@@ -101,6 +93,8 @@ function PreviewDialog({ template, isAdmin, onClose, onApplied }) {
   const [error, setError] = useState(null);
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState(null);
+  const scroller = useRef(null);
+  useEffect(() => { if (result) scroller.current?.scrollTo({ top: 0 }); }, [result]);
 
   useEffect(() => {
     let live = true;
@@ -114,8 +108,8 @@ function PreviewDialog({ template, isAdmin, onClose, onApplied }) {
     setApplying(true);
     try {
       const { data } = await api.post(`/industry-templates/${template.key}/apply`);
-      const added = data.items.filter((item) => item.action === "add").length;
-      toast.success(`${template.label} applied`, { description: added ? `${added} ${added === 1 ? "thing" : "things"} added. Nothing you had was changed.` : "You already had everything it brings." });
+      const added = countAdds(data.items);
+      toast.success(`${template.label} applied`, { description: added ? `${things(added)} added. Nothing you had was changed.` : "You already had everything it brings." });
       setResult(data);
       await onApplied();
     } catch (requestError) {
@@ -124,47 +118,24 @@ function PreviewDialog({ template, isAdmin, onClose, onApplied }) {
   };
 
   const shown = result || plan;
-  const adds = shown?.items.filter((item) => item.action === "add") || [];
-  const keeps = shown?.items.filter((item) => item.action === "keep") || [];
-  const next = result ? NEXT.filter((step) => adds.some((item) => item.kind === step.kind)) : [];
+  const adds = countAdds(shown?.items);
 
   return <Dialog open onOpenChange={(value) => !value && onClose()}>
-    <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl" data-testid="template-preview-dialog">
+    <DialogContent ref={scroller} className="max-h-[85vh] overflow-y-auto sm:max-w-xl" data-testid="template-preview-dialog">
       <DialogHeader>
         <DialogTitle>{result ? `${template.label} is set up` : `Apply ${template.label}?`}</DialogTitle>
         <DialogDescription>{result ? "Here is what was added. Automations start as drafts and run only after you turn them on." : "This is exactly what the template will do. It adds only what is missing and changes nothing you already have."}</DialogDescription>
       </DialogHeader>
       {error ? <p className="text-[13px] text-destructive" role="alert">The preview could not be loaded: {error}</p>
         : !shown ? <div className="space-y-2">{[0, 1, 2, 3].map((index) => <Skeleton key={index} className="h-5 w-3/4" />)}</div>
-        : <div className="space-y-4">
-            {next.length > 0 && <div className="rounded-lg border border-border bg-muted/30 p-3" data-testid="template-next-steps">
-              <h3 className="text-xs font-medium text-muted-foreground">Next</h3>
-              <ul className="mt-1.5 space-y-1">{next.map((step) => <li key={step.kind}><Link to={step.to} onClick={onClose} className="inline-flex items-center gap-1 text-[13px] font-medium text-brand-strong hover:underline">{step.label}<ChevronRight className="size-3.5" aria-hidden="true" /></Link></li>)}</ul>
-            </div>}
-            <PlanList title={result ? `Added (${adds.length})` : `Will add (${adds.length})`} items={adds} icon={Plus} tone="text-brand-strong" empty="Nothing: you already have everything this template brings." testid="template-plan-add" />
-            {keeps.length > 0 && <PlanList title={`Already there, left as it is (${keeps.length})`} items={keeps} icon={Check} tone="text-muted-foreground" testid="template-plan-keep" />}
-          </div>}
-      <DialogFooter className="gap-2 sm:gap-2">
+        : <SetupPlan items={shown.items} applied={Boolean(result)} empty="Nothing: you already have everything this template brings." testid="template" onNavigate={onClose} />}
+      <DialogFooter className={STICKY_FOOTER}>
         {result ? <Button size="sm" onClick={onClose}>Done</Button> : <>
           <Button size="sm" variant="outline" onClick={onClose} disabled={applying}>Cancel</Button>
-          {isAdmin ? <Button size="sm" className="cv-action-primary" onClick={apply} disabled={!plan || applying} data-testid="template-apply">{applying ? "Applying…" : adds.length ? `Add ${adds.length} ${adds.length === 1 ? "thing" : "things"}` : "Mark as in use"}</Button>
+          {isAdmin ? <Button size="sm" className="cv-action-primary" onClick={apply} disabled={!plan || applying} data-testid="template-apply">{applying ? "Applying…" : adds ? `Add ${things(adds)}` : "Mark as in use"}</Button>
             : <span className="self-center text-xs text-muted-foreground">Only an admin can apply a template.</span>}
         </>}
       </DialogFooter>
     </DialogContent>
   </Dialog>;
-}
-
-function PlanList({ title, items, icon: Icon, tone, empty, testid }) {
-  return <section data-testid={testid}>
-    <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
-    {!items.length ? <p className="mt-1.5 text-[13px] text-muted-foreground">{empty}</p>
-      : <ul className="mt-1.5 divide-y divide-border/70 rounded-lg border border-border">{items.map((item) => <li key={`${item.kind}-${item.name}`} className="flex items-start gap-2.5 px-3 py-2 text-[13px]">
-          <Icon className={`mt-0.5 size-3.5 shrink-0 ${tone}`} aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            <div><span className="text-muted-foreground">{KIND[item.kind] || item.kind}:</span> <span className="font-medium text-foreground">{item.name}</span></div>
-            {item.detail && <p className="mt-0.5 text-xs text-muted-foreground">{item.detail}</p>}
-          </div>
-        </li>)}</ul>}
-  </section>;
 }

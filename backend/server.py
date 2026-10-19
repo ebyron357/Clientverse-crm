@@ -55,6 +55,8 @@ import recovery_strategy as recovery_service
 import scheduler
 import second_chance as second_chance_service
 import security_gate as security_gate_service
+import setup_loader
+import snapshots
 import today as today_service
 import website_forms
 from client_value import register_client_value_routes
@@ -175,6 +177,7 @@ async def lifespan(_: FastAPI):
         ("conversations", lambda: conversation_service.ensure_indexes(db)),
         ("recovery_case", lambda: recovery_case_service.ensure_indexes(db)),
         ("automations", lambda: automation_engine.ensure_indexes()),
+        ("snapshots", lambda: snapshots.ensure_indexes(db)),
     ]
     for name, build in index_builders:
         try:
@@ -4827,9 +4830,12 @@ record_fields.register_record_field_routes(api, db, new_id, now_iso, record_even
 today_service.register_today_routes(api, db, get_current_user)
 automation_engine = automations.AutomationEngine(db, new_id=new_id, now_iso=now_iso, record_event=record_event)
 automations.register_automation_routes(api, automation_engine, get_current_user, require_role)
-template_service = industry_templates.TemplateService(db, new_id=new_id, now_iso=now_iso,
-                                                      record_event=record_event, engine=automation_engine)
+setup_loader_service = setup_loader.SetupLoader(db, new_id=new_id, now_iso=now_iso, record_event=record_event,
+                                                engine=automation_engine)
+template_service = industry_templates.TemplateService(setup_loader_service)
 industry_templates.register_template_routes(api, template_service, get_current_user, require_role)
+snapshots.register_snapshot_routes(api, db, setup_loader_service, new_id=new_id, now_iso=now_iso,
+                                   record_event=record_event, require_role=require_role)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
                                   on_activity_logged=_after_activity_logged,
                                   on_task_status_changed=_lead_task_status_changed)
