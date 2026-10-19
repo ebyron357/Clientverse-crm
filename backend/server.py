@@ -53,6 +53,7 @@ import recovery_strategy as recovery_service
 import scheduler
 import second_chance as second_chance_service
 import security_gate as security_gate_service
+import today as today_service
 import website_forms
 from client_value import register_client_value_routes
 from operations_routes import register_operations_routes
@@ -4807,6 +4808,7 @@ async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: 
 
 
 record_fields.register_record_field_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
+today_service.register_today_routes(api, db, get_current_user)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
                                   on_activity_logged=_after_activity_logged,
                                   on_task_status_changed=_lead_task_status_changed)

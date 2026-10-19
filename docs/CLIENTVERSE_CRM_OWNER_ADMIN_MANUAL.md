@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.6 |
+| **Version** | 1.7 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -94,7 +94,7 @@ The shortest path from nothing to a working, checked CRM. About ten minutes.
 2. Under the heading **"Sign in to ClientVerse"**, type your owner email in **"Work email"** and
    your password in **"Password"**. The eye button beside the password shows or hides what you typed.
 3. Click **"Sign in"**.
-4. **Check:** the page changes to **Today** (`/dashboard`, headed **"Command Center"**). At the
+4. **Check:** the page changes to **Today** (`/dashboard`, headed **"Good morning, {your name}"**). At the
    bottom of the dark menu on the left you see your name and **"Workspace admin"**.
 
 **Warning:** Do not click **"Continue with Google"** (the first button on the page) or
@@ -233,7 +233,7 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
    **"Sign in"** at the bottom to switch back.
 3. **"Work email"** — your owner email. **"Password"** — your password.
 4. Click **"Sign in"**. The button shows **"Please wait…"** while it works.
-5. **Check:** you arrive on **Command Center** (`/dashboard`).
+5. **Check:** you arrive on **Today** (`/dashboard`).
 6. If a red box shows **"Invalid email or password"**, see [§9.1](#91-wrong-password) and
    [§9.3](#93-account-locked-out). The CRM gives the **same message** for a wrong password, an
    unknown address and a locked account, on purpose.
@@ -343,28 +343,47 @@ See [Chapter 13](#13-security-and-owner-safety).
 | **Settings menu** | Left of every Settings page | Workspace, Capture, Connections, Compliance, Developer (admins only) and **Coming soon** — the modules that are **not active yet** (placeholder pages). |
 | **Side panel** | Right edge, over the page | Opening a contact, company, deal, lead or task slides its record in from the right: tabs on one side, a **"Details"** panel on the other. Close it with ✕ or Esc. |
 
-### 4.2 What you see after sign-in: Command Center
+### 4.2 What you see after sign-in: Today
 
-**Command Center** (`/dashboard`, **"Today"** in the main menu) is the home page. Its header reads **"Command Center"** —
-*"Revenue, delivery risk and the client relationships that need your team next."* — with the
-buttons **"Refresh"** and **"Review pipeline"**. From top to bottom:
+**Today** (`/dashboard`, **"Today"** in the main menu) is the home page. Its header greets you
+(**"Good morning, {name}"**, afternoon or evening by your computer's clock), with the date, how many
+things are on your plan, and **"Refresh"**. From top to bottom:
 
-1. **A strip of four figures.** Click any one to open its list.
-   - **"Open pipeline"**
-   - **"Won revenue"**
-   - **"Active clients"**
-   - **"Delivery risk"**
+1. **Four figures.** Click any one to open its list.
+   - **"Leads not acted on"** — website and booking leads nobody has replied to, and how long the
+     oldest has waited.
+   - **"Booked this week"** — appointments this week (Monday to Sunday), by kind.
+   - **"Open pipeline"** — the value of open deals, the number of deals, and the value weighted by
+     each stage's probability. Amounts in different currencies are shown side by side, never added.
+   - **"Waiting on you"** — approval requests waiting for a decision plus client commitments marked
+     at risk or breached.
 2. **"Set up your workspace"** — a 4-step setup checklist. Dismissing it hides it in this browser
    only. It reappears in another browser, or after clearing site data.
-3. **"Next actions"** — up to five ranked follow-ups, each a link.
-4. **"Next best actions"** — ranked recommendations across all clients, with **"Accept"**,
+3. **"Your plan"** — what to do next, numbered in order, each with the reason it is there
+   (on a phone it comes first). The order is fixed and checkable:
+   1. new leads, oldest first (three by name; the rest as **"Reply to N more new leads"**) —
+      *"Waiting 2 h 10 min; the goal is a reply within 5 min"*;
+   2. an appointment starting within 2 hours — *"Starts in 45 min"*;
+   3. overdue tasks — *"Overdue by 2 days"*;
+   4. approval requests waiting for a decision (admins only);
+   5. client commitments at risk or breached;
+   6. tasks due today;
+   7. deals with no activity for 14 days and no task planned — **"Set a next step for …"**.
+   Tasks are yours plus the ones nobody owns, as on **Tasks**. **"Show all N"** lists the rest.
+4. **"New leads waiting"** — each lead with its company, topic, a booked appointment if there is one,
+   their message, how long they have waited (red once past the reply goal), and **"Call"**, text
+   and email buttons. **"All leads"** opens **Leads**.
+5. **"Pipeline"** — deals and value per stage. **"Clients"** — client health and commitments at
+   risk.
+6. **"Next best actions"** — ranked recommendations across all clients, with **"Accept"**,
    **"Done"**, **"Snooze"** and **"Not relevant"**.
-5. **"Client health"** — the health score of every client workspace.
-6. On the right (below, on a narrow screen): **"Pipeline by stage"**, **"Outcome momentum"**,
+7. On the right (below, on a narrow screen): **"Appointments"** (**"Today"** / **"Week"**),
+   **"Tasks"** (tick one to mark it done; **"Call N new leads now"** → **"Start"** opens Leads),
    **"Operational alerts"** (with **"Scan now"**) and **"Connection health"** (admins only).
 
-A new, empty CRM shows friendly empty states — for example **"Your pipeline starts here"**. That
-is correct, not an error.
+Won deals and their value are in the **"Closed won"** column of the **Pipeline** board; outcome
+progress is on each client's **Client 360** page. A new, empty CRM shows friendly empty states — for example **"Your pipeline
+starts here"** and **"You're clear"**. That is correct, not an error.
 
 ### 4.3 Main menu and Settings map — every item and whether it is active
 
@@ -376,7 +395,7 @@ never appears here.
 
 | Menu item | Opens (page heading) | Count badge | Admin only |
 |---|---|---|---|
-| **Today** | `/dashboard` (**Command Center**) | | |
+| **Today** | `/dashboard` (**Today**: your plan, new leads, appointments, tasks) | | |
 | **Leads** | `/leads` | New leads nobody has contacted (red) | |
 | **Inbox** | `/operations?tab=conversations` (Operations → **Conversations**; read, hand off and close only — [§7.13](#713-operations)) | Open conversations (red) | |
 | **Contacts** | `/contacts` — the page with the **"Companies"** and **"Contacts"** tabs (`/companies` opens the other tab) | | |
@@ -435,7 +454,7 @@ Full procedures are in [Chapter 7](#7-crm-daily-use).
 
 | Module | What it is for | Key actions | Do **not** | Saved when you see |
 |---|---|---|---|---|
-| **Command Center** | Today's priorities | Open figures, act on next actions | Treat an empty dashboard as broken | Lists refresh; messages for decisions |
+| **Today** | The day's work in order, with reasons | Work **"Your plan"** from the top; **"Call"** a lead; tick a task done | Treat an empty plan as broken — it means nothing is waiting | **"Task done"**; lists refresh |
 | **Leads** | Website and booking leads, with the speed-to-lead clock | **"Mark contacted"**, **"Close"**, **"Spam"**, **"Export CSV"** | Mark a lead contacted before you have reached them | **"Marked as contacted"** |
 | **Tasks** | Every call-back and follow-up | **"New task"**, **"Mark done"**, **"Reopen"** | Leave **"Overdue"** unread | **"Task added"**, **"Changes saved"** |
 | **Contacts / Companies** | People and accounts | **"New contact"**, **"New company"**; open a contact to edit, log activity or archive | Expect to edit or archive a *company* — the screens cannot | **"Contact created"**, **"Contact saved"** |
@@ -903,23 +922,30 @@ proves the guarantee you can see.
 
 Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistakes**, and **Saved when**.
 
-### 7.1 Command Center
+### 7.1 Today
 
-- **Purpose:** your daily starting point — pipeline value, won revenue, active clients, delivery
-  risk, recommended next steps, alerts and client health.
+- **Purpose:** your daily starting point — what to do next and why, new leads, appointments,
+  tasks, pipeline, clients, recommendations and alerts ([§4.2](#42-what-you-see-after-sign-in-today)).
 - **Where:** main menu → **"Today"**; or click the ClientVerse logo.
 - **Common actions:**
-  1. Click a figure in the top strip to open its list.
-  2. Work the **"Next actions"** list from the top.
-  3. In **"Next best actions"**, choose **"Accept"**, **"Done"**, **"Snooze"** (a day) or
+  1. Work **"Your plan"** from the top. Each item opens the lead, task, deal, client or approval it
+     is about; its grey line says why it is on the plan.
+  2. In **"New leads waiting"**, click **"Call"** (or the text or email button) to reach the person
+     from your phone or computer. Then log the call on their record, or mark the lead in **Leads**:
+     calling from here records nothing by itself.
+  3. In **"Tasks"**, tick a task to mark it done.
+  4. In **"Next best actions"**, choose **"Accept"**, **"Done"**, **"Snooze"** (a day) or
      **"Not relevant"**.
-  4. Under **"Operational alerts"**, click **"Scan now"** for a fresh alert check. Use the ✓ and ✕
+  5. Under **"Operational alerts"**, click **"Scan now"** for a fresh alert check. Use the ✓ and ✕
      icons to acknowledge or resolve.
 - **Common mistakes:**
   - Treating empty sections as a fault.
-  - Expecting **"Connection health"** to show for members — it is admin-only.
-- **Saved when:** **"Alert scan complete (N new)"**; recommendation buttons change the list, and
-  only failures show a message (the server's reason, or **"Could not record that decision"**).
+  - Expecting **"Connection health"**, or approval items on the plan, to show for members — they are
+    admin-only.
+  - Expecting **"Call"** to mark the lead contacted. It only dials.
+- **Saved when:** **"Task done"**, **"Alert scan complete (N new)"**; recommendation buttons change
+  the list, and only failures show a message (the server's reason, **"The task was not updated"** or
+  **"Could not record that decision"**).
 
 ### 7.2 Leads
 
@@ -2175,7 +2201,7 @@ the owner account.
 |---|---|---|---|---|---|
 | 1 | Production URL loads | Open the production URL | Sign-in page, **"Sign in to ClientVerse"** | Deployment SUCCESS; health 200 in the Railway log | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 2 | Service healthy | `/api/health` | `status ok`, `database up`, `git_sha` = Railway commit | Health 200 at boot (01:16 UTC) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
-| 3 | Login works | §3.2 | **Command Center** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
+| 3 | Login works | §3.2 | **Today** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 4 | Logout works | Sign-out icon, then open `/dashboard` | Returns to the sign-in page | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 5 | Admin role verified | Settings → **"Profile"** → **"Access level"**; **"Team & Access"** visible | **"Workspace admin"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 6 | Member role verified | Invite a test member (§8.2); they create their account from the link in a private window | **"Team member"**; no **"Team & Access"**; the Registries rows show **"Admin manages"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
@@ -2281,7 +2307,7 @@ A first-time owner must be able to answer each question from this manual alone.
 | What URL do I open? | https://clientverse-crm-production-production.up.railway.app/login | [§1.1](#11-quick-reference-card), [§2.1](#21-addresses) |
 | How do I log in? | Email + password → **"Sign in"**. Not Google. | [§3.2](#32-sign-in-with-email-and-password) |
 | What account type am I using? | The **admin** account whose email is Railway `ADMIN_EMAIL`, in your organization (first named "ClientVerse HQ") | [§3.3](#33-which-account-the-owner-uses) |
-| What do I see after login? | Command Center — four figures, next actions, next best actions, client health | [§4.2](#42-what-you-see-after-sign-in-command-center) |
+| What do I see after login? | Today — four figures, your plan with reasons, new leads, appointments, tasks, pipeline, clients | [§4.2](#42-what-you-see-after-sign-in-today) |
 | Where are Settings? | Main menu → **"Settings"** (pinned at the bottom) | [§1.3](#13-find-settings-and-integrations) |
 | Where are Integrations? | **Settings** → **Connections** → **"Integrations"** (or Settings → **"General"** → **"View integrations"**) | [§5.3](#53-where-the-google-controls-are) |
 | How do I connect Google? | Registries → Gmail → **"Connect"** → consent (tick all) → **"Google connected"** | [§5.5](#55-connect-google-first-time) |
@@ -2476,6 +2502,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.7 | 2026-10-19 | **Today** replaces the Command Center page at `/dashboard` (§4.2, §7.1, §4.3, §4.4, §1.4 step 4, §3.2, checklist row 3, the quick answers): four figures, **"Your plan"** in a fixed order with the reason for each item, new leads with **"Call"**, appointments, tasks with a tick to complete, pipeline, clients; won deals and outcome progress are on the Pipeline board and Client 360. |
 | 1.6 | 2026-10-19 | The new app shell: an 11-item main menu (Today, Leads, Inbox, Contacts, Pipeline, Calendar, Tasks, Approvals, Clients, Automations, Reports) with counts, **"Settings"** pinned at the bottom, and a Settings menu (Workspace, Capture, Connections, Compliance, Developer, Coming soon) replacing the grouped sidebar; search moved to the top bar. Updated §1.2–1.4, §3.4, §4.1–4.3 (new map), §5.3, the "Where" lines of §7, §7.19, §8.2, §14 row 20, §15.2, Appendix A. Applies from the deployment that carries this change; until then production shows the grouped sidebar of v1.3. **Settings → Workspace → "Fields"** opens the field manager of v1.5. |
 | 1.5 | 2026-10-19 | Contacts: built-in and saved views, filters, columns (§7.4 item 4); lifecycle stage and how the CRM sets it (item 6); your own fields on contacts, companies and deals — **Settings → Fields** (item 8, §7.5, §4.3); **"Set from history"** in the **"Clean up"** card (item 10); the contact list now shows up to 1,000 people. |
 | 1.4 | 2026-10-19 | One record per real thing: existing clients (§7.2), companies filled in from forms and email domains, the **"Clean up"** card and merging (§7.4), one open deal per person (§7.5), the **"Company"** question (§7.6), the **"Meeting"** booking preset (§7.7). |
