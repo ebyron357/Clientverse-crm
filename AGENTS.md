@@ -6,6 +6,13 @@
   Railway deployment `d4d2e07f-b201-44f9-90fe-a06c59dabad5`, live 2026-10-19T00:16Z. Boot
   log clean (`Registered outbound channel provider: gmail`, scheduler 13 jobs,
   `Application startup complete`, `/api/health` 200). Read the live id from Railway.
+- **Custom domain live (2026-10-19 01:47Z).** `crm.clientverse.io` is verified on Railway
+  (certificate valid). Railway variables: `FRONTEND_URL` and `GOOGLE_REDIRECT_URI`
+  (`/api/integrations/google/callback`) point to it; `CORS_ORIGINS` lists it and the Railway
+  address, which still works. Changing `GOOGLE_REDIRECT_URI` mid-OAuth breaks that attempt (the
+  start and the token exchange must use the same address). A Cloudflare Worker
+  `clientverse-crm` (created 01:13Z in the owner's account) fails "Workers Builds" on every
+  push; it is not part of the deploy path.
 - **GitHub Actions runs again.** CI (frontend build, backend lint/types, backend API tests)
   ran and passed on PR #41 on 2026-10-18; the 2026-09-28 "Actions has run nothing" note
   below is stale. CI is the gate again.

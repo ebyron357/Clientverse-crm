@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
 | **Production environment** | Railway project `welcoming-vibrancy` → environment `production` → service `clientverse-crm-production` |
-| **Production URL** | https://clientverse-crm-production-production.up.railway.app |
-| **Sign-in page** | https://clientverse-crm-production-production.up.railway.app/login |
+| **Production URL** | https://crm.clientverse.io (the Railway address https://clientverse-crm-production-production.up.railway.app reaches the same CRM) |
+| **Sign-in page** | https://crm.clientverse.io/login |
 | **Purpose** | Everything the owner needs to reach, sign in to, operate, administer, verify and get help with ClientVerse CRM — without a developer beside them and without reading source code. |
 | **Intended audience** | Primary: the CRM owner / business administrator. Secondary: a future client admin or operator. |
 | **Authority** | The official owner/admin handoff source of truth, registered in [the canonical governing document](CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md) (§0.2, §0.5). Product scope and capability status remain governed by that document. |
@@ -146,18 +146,19 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
 
 | Environment | Address | Use it? |
 |---|---|---|
-| **Production** | https://clientverse-crm-production-production.up.railway.app | **Yes — this is the only live CRM.** |
-| Custom domain `crm.clientverse.io` | Added in Railway, **not working yet**. Verified (live, 2026-10-19): Railway reports it unverified — its two DNS records (a CNAME for `crm` and a TXT ownership record) are not set, and its certificate is waiting for ownership verification. | **No**, not until engineering confirms it works. Finishing it is the open owner decision O-12 in the governing document: set the DNS records Railway shows for the domain, and have engineering set `PUBLIC_BACKEND_URL` and `GOOGLE_REDIRECT_URI` and register the new Google callback ([§10.2](#102-google--gmail-and-google-calendar)). |
+| **Production** | **https://crm.clientverse.io** | **Yes — use this address.** |
+| Production, Railway address | https://clientverse-crm-production-production.up.railway.app | Same CRM, same data. It keeps working, so older links and the Stripe webhook still reach production. Signing in on one address does not sign you in on the other. |
+| Custom domain status | Verified (live, 2026-10-19): Railway reports `crm.clientverse.io` verified, certificate valid, CNAME `crm` → `br0g4oob.up.railway.app` propagated. Railway sets `FRONTEND_URL` and `GOOGLE_REDIRECT_URI` to this address, and `CORS_ORIGINS` lists both addresses ([§10.2](#102-google--gmail-and-google-calendar)). | — |
 | Staging | None. No staging environment is configured or documented. The only deployment path is Railway `production`. | — |
 | Old preview and hosting addresses (Render, Manus, OpenHands, Emergent previews) | Historical only. | **No.** They are not production. Never run a second copy against the production database. |
 
 ### 2.2 Confirm you are on the correct deployment
 
-1. The address bar shows exactly `clientverse-crm-production-production.up.railway.app`, with a
+1. The address bar shows exactly `crm.clientverse.io` (or the Railway address in §2.1), with a
    padlock (HTTPS).
 2. The browser tab reads **"ClientVerse — Client Operations Platform"**. The sign-in page shows the
    ClientVerse logo and **"Sign in to ClientVerse"**.
-3. Open https://clientverse-crm-production-production.up.railway.app/api/health. A healthy answer
+3. Open https://crm.clientverse.io/api/health. A healthy answer
    looks like this:
 
    ```json
@@ -168,8 +169,8 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
    `clientverse-crm-production` → **Deployments** → the top **ACTIVE / SUCCESS** entry. They should
    match. Every change merged to `main` redeploys automatically, so the deployment id changes with
    each merge. Always read it from Railway, not from a document.
-   - Verified (live, 2026-10-19): the active deployment built commit `838f00d…`, reached SUCCESS at
-     01:16 UTC, and logged `Registered outbound channel provider: gmail` →
+   - Verified (live, 2026-10-19): the active deployment `e7790295-…` runs commit `838f00d…`; it
+     was redeployed at 01:47 UTC to apply the custom-domain variables. Each start-up logged `Registered outbound channel provider: gmail` →
      `In-process scheduler started for 13 job(s): …` → `Application startup complete` →
      `GET /api/health 200`.
 
@@ -227,7 +228,7 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
 
 ### 3.2 Sign in with email and password
 
-1. Go to https://clientverse-crm-production-production.up.railway.app/login.
+1. Go to https://crm.clientverse.io/login.
 2. The heading reads **"Sign in to ClientVerse"**. If it reads **"Create your workspace"**, click
    **"Sign in"** at the bottom to switch back.
 3. **"Work email"** — your owner email. **"Password"** — your password.
@@ -1506,7 +1507,20 @@ signs in with the temporary password and chooses their own.
    Changing the password does not lift a lockout.
 
 Why not **Settings** → **"Change password"** for the owner: the next deploy puts the Railway value
-back ([§3.3](#33-which-account-the-owner-uses)).
+back ([§3.3](#33-which-account-the-owner-uses)) — unless Railway is set to the same new password, as
+below.
+
+**If the owner password may be known to someone else** (leaked, shared, typed on a shared
+computer), the Railway change above is not enough on its own. It replaces the password but signs
+nobody out: a browser already signed in stays signed in for up to 7 days. Do this instead:
+
+1. Sign in, then **Settings** → **"Change password"** to a new password
+   ([§3.9](#39-change-your-own-password)). Every other phone and computer is signed out.
+2. **Straight away**, set Railway `ADMIN_PASSWORD` to that **same** new password and deploy (steps
+   1–4 above). Until you do, the next deploy puts the old password back.
+3. If you cannot sign in, reset the password in Railway first (steps 1–5 above), sign in with it,
+   then do steps 1 and 2 with a second new password. Settings refuses a new password that matches
+   the current one.
 
 ### 9.3 Account locked out
 
@@ -1624,11 +1638,18 @@ claiming work is complete. It is **not** a CRM feature, and it never touches CRM
 - **Connect / verify / disconnect / troubleshoot:** [Chapter 5](#5-google--gmail-setup).
 - **Required owner action:** Google Cloud consent screen and test users; reconnect once since
   2026-10-19, and re-authorize when needed.
-- **Secret names:** `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`. Optional: `GOOGLE_REDIRECT_URI`,
+- **Secret names:** `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`. Optional:
   `PUBLIC_BACKEND_URL`.
-  - Both were unset when last recorded, so the redirect address comes from the Railway domain.
-  - Set both **before** switching to the custom domain ([§2.1](#21-addresses)). Otherwise Google
-    connect breaks silently.
+- **Addresses** (Railway, set 2026-10-19):
+  - `GOOGLE_REDIRECT_URI` = `https://crm.clientverse.io/api/integrations/google/callback`. It must
+    also be listed under **Authorized redirect URIs** in Google Cloud, with
+    `https://crm.clientverse.io` under **Authorized JavaScript origins**.
+  - `FRONTEND_URL` = `https://crm.clientverse.io`. Google returns you here after connecting, and
+    invitation, booking and email links use it. Start **"Connect"** from this address, so you are
+    already signed in when Google sends you back.
+  - The address Google is sent to when you click **"Connect"** must be the one the CRM uses to
+    finish the connection. Change `GOOGLE_REDIRECT_URI` only between connection attempts, and
+    register the new address in Google Cloud **first**. Otherwise **"Connect"** ends with an error.
 - **Stored permission:** encrypted at rest with `INTEGRATION_ENC_KEY`. It is never shown in any
   screen or API.
 - **Known limitations:**
@@ -1766,7 +1787,9 @@ the same call is recognized and ignored.
 2. **Healthy:**
    - `"scheduled_jobs_running": true`
    - under `"in_process"`: `"last_run_at"` within the last ~5 minutes, and `"by_status"` mostly
-     `succeeded`
+     `succeeded` — **or**, if the GitHub workflow runs too, a recent
+     `"last_authenticated_call_at"`. When the workflow has already run a job in a window, the
+     built-in scheduler skips that window and records nothing new under `"in_process"`.
 3. **If you keep the GitHub workflow:** `"receiving_scheduled_traffic": true` and
    `"last_authenticated_call_at"` within the last ~15 minutes. These count only calls from outside
    the CRM, so with the workflow off they are `false` / old — that is expected.
@@ -1798,7 +1821,7 @@ Railway → service → **Deployments** → the active deployment → **View log
 | You see | Meaning | Action |
 |---|---|---|
 | `"scheduled_jobs_running": false` | Nothing ran any job in the last 2 hours | Check the Railway boot log for the start-up line (§11.4 B). If it is missing, or says the scheduler is disabled, escalate. |
-| `"in_process"` → `"last_run_at"` older than ~10 minutes while `/api/health` is ok | The built-in scheduler has stopped | Restart the latest SUCCESS deployment once ([§2.3](#23-if-the-site-does-not-load)); escalate if it persists |
+| `"in_process"` → `"last_run_at"` older than ~10 minutes while `/api/health` is ok | Either the GitHub workflow ran every job first, or the built-in scheduler has stopped | First check `"last_authenticated_call_at"`: if it is recent, or the Railway log shows `In-process job '<job>': an external request already ran window …`, automation is healthy — nothing to do. Otherwise restart the latest SUCCESS deployment once ([§2.3](#23-if-the-site-does-not-load)); escalate if it persists. |
 | `"last_failed_job"` recent | One job raised an error | Note the job and `last_failed_error`; escalate if it repeats |
 | `"receiving_scheduled_traffic": false` | No outside scheduler is calling | Expected if you rely on the built-in scheduler. If GitHub shows green runs at the same time, escalate. |
 | **403** on `/api/cron/health` in your browser | You are signed in as a member, not an admin | Sign in as an admin |
@@ -1974,7 +1997,9 @@ compromised and **rotate it** (§13.4), even if you deleted the message.
 
 **Open rotations (governing document O-04, O-05):**
 
-- Rotate `ADMIN_PASSWORD` if it has ever left the Railway dashboard.
+- Rotate `ADMIN_PASSWORD` if it has ever left the Railway dashboard. If someone else may know it,
+  follow §9.2 *"If the owner password may be known to someone else"*: a Railway-only change does
+  not sign out a browser that is already signed in.
 - Rotate the legacy Stripe webhook secret recoverable from old git history when Stripe is set up.
 - Delete the unused misspelled Railway variable `Mongo_url`.
 - Rotate the Jev QC webhook path, and enable its header authentication.
@@ -2004,7 +2029,7 @@ compromised and **rotate it** (§13.4), even if you deleted the message.
 
 | Safe to send | Redact first | Never send |
 |---|---|---|
-| Error messages, page headings, status labels, the Registries rows, GitHub run summaries, Railway deployment lists and log lines | Client names, email addresses and phone numbers (when sharing outside the company); the connected Google address if the mailbox is personal | Railway **Variables** with values visible; the webhook **"Verify"** dialog; the **"Invitation ready"** dialog; the **"Temporary password ready"** dialog; browser developer tools showing cookies, headers or storage; Google Cloud credential pages |
+| Error messages, page headings, status labels, the Registries rows, GitHub run summaries, Railway deployment lists and log lines | Client names, email addresses and phone numbers (when sharing outside the company); the connected Google address if the mailbox is personal; **access codes in addresses** — any `?token=` part, and the code after `/portal/` or `/booking/manage/` | Railway **Variables** with values visible; the webhook **"Verify"** dialog; the **"Invitation ready"** dialog; the **"Temporary password ready"** dialog; browser developer tools showing cookies, headers or storage; Google Cloud credential pages |
 
 ---
 
@@ -2035,7 +2060,7 @@ the owner account.
 | 14 | Outbound email works | §6.4 | **"Sent"**; in Gmail Sent; received | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 15 | Duplicate-send protection | §6.5 | Refused; one copy only | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 16 | Inbound reply works | §6.6 | Inbound **"Received"** on the same thread | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
-| 17 | Automation healthy | §11.4 A | `scheduled_jobs_running: true`; recent `in_process.last_run_at` | Boot log shows the built-in scheduler; workflow calls answered 200 | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
+| 17 | Automation healthy | §11.4 A | `scheduled_jobs_running: true`; recent `in_process.last_run_at`, or a recent `last_authenticated_call_at` when the workflow runs too | Boot log shows the built-in scheduler; workflow calls answered 200 | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 18 | Railway deployment healthy | Railway → Deployments | Newest **SUCCESS**, no crash loop | `838f00d` SUCCESS 01:16 UTC | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 19 | Integrations show correct status | Settings → **"Integrations"** vs Registries | Same statuses in both; Stripe **"Not connected"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 20 | No visible critical errors | Visit every active sidebar item | No **"This view needs a refresh"**, no "…unavailable" | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
@@ -2060,7 +2085,9 @@ the owner account.
 ### 15.2 Evidence to collect before you escalate
 
 - [ ] **Time** of the problem, with your timezone (for example `2026-10-19 01:16 UTC`)
-- [ ] **Page or module** — the sidebar item and tab, and the address bar with any `?token=` part removed
+- [ ] **Page or module** — the sidebar item and tab, and the address bar with every access code
+      removed: any `?token=` part, and the code after `/portal/` or `/booking/manage/` (write
+      `/portal/<removed>`). Those codes open a client's portal or booking to whoever has them.
 - [ ] **Action attempted** — the exact button you clicked, and what you typed (never passwords)
 - [ ] **Exact error text**, copied word for word, or a screenshot of it
 - [ ] **Screenshot** of the whole screen, following §13.7
@@ -2135,7 +2162,7 @@ A first-time owner must be able to answer each question from this manual alone.
 | How do I verify the reply came back? | Operations → Conversations → the same thread shows inbound **"Received"** within ~35 minutes | [§6.6](#66-procedure-c--capture-the-reply) |
 | How do I manage users? | Team & Access → **"Invite"**, role menu, **"⋯"** → **"Reset password"** / **"Disable access"** | [§8](#8-users-roles-and-administration) |
 | How do I recover access? | Owner: change `ADMIN_PASSWORD` in Railway; members: an admin resets it; locked: wait 15 minutes | [§9](#9-account-recovery) |
-| How do I know scheduled automations are healthy? | `/api/cron/health` shows `scheduled_jobs_running: true` and a recent `in_process.last_run_at` | [§11.4](#114-verify-that-automation-is-healthy) |
+| How do I know scheduled automations are healthy? | `/api/cron/health` shows `scheduled_jobs_running: true` and a recent `in_process.last_run_at` — or, when the GitHub workflow runs too, a recent `last_authenticated_call_at` | [§11.4](#114-verify-that-automation-is-healthy) |
 | What does 401 mean? | Not signed in, or the session expired (workflow: secret mismatch) | [§12](#12-troubleshooting-matrix), [§11.5](#115-what-the-results-mean) |
 | What does 500 mean? | A server error — retry once, then escalate with evidence | [§12](#12-troubleshooting-matrix) |
 | What do I do when Railway is down? | Check `/api/health` and Railway Deployments; restart the last SUCCESS once; escalate | [§2.3](#23-if-the-site-does-not-load) |
@@ -2147,12 +2174,12 @@ A first-time owner must be able to answer each question from this manual alone.
 
 | Fact | Evidence |
 |---|---|
-| Production serves `main@838f00d` (PR #42) | Railway deployment `406f320e-96c1-42a4-a243-77e518a3e17e`: SUCCESS 2026-10-19 01:16 UTC. The previous deployment, `d4d2e07f-…` (`1a39fa4`, PR #41), is REMOVED. |
+| Production serves `main@838f00d` (PR #42) | Railway deployment `e7790295-5af4-4977-8d58-ff600b1a2633`, redeployed 2026-10-19 01:47 UTC to apply the custom-domain variables. The first deployment of this commit, `406f320e-…` (SUCCESS 01:16 UTC), is REMOVED. |
 | Service boots with the Gmail adapter and the built-in scheduler | Deploy log: `Registered outbound channel provider: gmail` → `In-process scheduler started for 13 job(s): commitment-risk, work-queue, recovery-runner, booking-reminders, integration-sync, next-best-actions, inbound-email, reconcile-unknown, daily-digest, second-chance, detect-recovery, recovery-strategies, approval-expiry` → `Application startup complete` → `GET /api/health 200` |
 | The GitHub workflow also reaches production | Railway logs of `d4d2e07f` and `406f320e`: `200 OK` for all fourteen workflow paths and `GET /api/cron/runs`, 00:19–01:17 UTC |
 | No Google connection is being synced | No Google API request in the `d4d2e07f` log through 01:09 UTC, although `integration-sync` ran; that job syncs only active or degraded connections (`run_integration_sync_sweep` in `backend/server.py`). Last known: the refresh refused on 2026-09-30. |
 | A connection records the scopes Google granted | Code since PR #42: `google_callback` in `backend/server.py` stores `creds["scopes"]`; `backend/gmail_provider.py` refuses to send without `gmail.send` |
-| The custom domain is not live | Railway domain status for `crm.clientverse.io`: unverified; CNAME and TXT records not set; certificate validating ownership |
+| The custom domain is live | Railway domain status for `crm.clientverse.io`: verified, certificate valid, CNAME propagated. Railway variables `FRONTEND_URL` and `GOOGLE_REDIRECT_URI` point to it; `CORS_ORIGINS` lists it and the Railway address. Railway's HTTP log shows pages served on `crm.clientverse.io` from 01:36 UTC, and Google returning to its callback at 01:42 UTC. |
 | Outbound email is held by a certification gate | Code: `backend/recovery_strategy.py` (`authorized_channels`, `CONFIGURED_INTEGRATION_STATUSES`); the Gmail catalogue record is seeded `REQUIRES_CONFIGURATION` in `backend/server.py`, and nothing updates it |
 | No screen writes an email to a contact or records consent | Code: `frontend/src/pages/Operations.jsx` calls only conversation handoff and close. The only screen-released emails are booking emails (`frontend/src/pages/Calendar.jsx`) and an approved auto-reply (`frontend/src/pages/WebsiteForms.jsx`). |
 | Invitations are emailed only when email delivery is configured | Code: `_email_invitation` in `backend/server.py`; `email_configured()` reads `EMERGENT_EMAIL_KEY` |
@@ -2257,7 +2284,10 @@ governing document (M-01), with the ids — never the token.
 | `WEBHOOK_CRON_SECRET` | Railway **and** GitHub Actions | Set in both and matching (workflow calls answered 200 on 2026-10-19) | Authentication for outside scheduler calls |
 | `CLIENTVERSE_PRODUCTION_URL` | GitHub Actions | Set (workflow reaches production) | Workflow target |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Railway | Set | Google connection |
-| `GOOGLE_REDIRECT_URI`, `PUBLIC_BACKEND_URL` | Railway | Not set when recorded (derived from the Railway domain) | Set before switching to the custom domain |
+| `FRONTEND_URL` | Railway | `https://crm.clientverse.io` (2026-10-19) | Links in invitations, bookings and emails; where Google returns you |
+| `CORS_ORIGINS` | Railway | Both production addresses (2026-10-19) | Browser addresses allowed to call the API while signed in |
+| `GOOGLE_REDIRECT_URI` | Railway | `https://crm.clientverse.io/api/integrations/google/callback` (2026-10-19) | Must match an authorized redirect URI in Google Cloud |
+| `PUBLIC_BACKEND_URL` | Railway | Not set | Not needed while the API and screens share one address |
 | `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET` | Railway | Not set | Stripe (O-02) |
 | `EMERGENT_EMAIL_KEY`, `EMAIL_FROM_NAME` | Railway | Not set when recorded | Email notifications and invitation emails |
 | `EMERGENT_LLM_KEY` | Railway | Not set | AI generation (O-11) |
@@ -2318,6 +2348,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.2 | 2026-10-19 | `crm.clientverse.io` is live: addresses (§2.1–2.2, §3.2), Google addresses (§10.2), Appendices B and D. Review fixes ([ebyron357/Clientverse-crm#43](https://github.com/ebyron357/Clientverse-crm/pull/43)): signing everyone out when the owner password may be known (§9.2, §13.4); scheduler health when the GitHub workflow runs first (§11.4, §11.5, checklist row 17, Appendix A); access codes in `/portal/` and `/booking/manage/` addresses (§13.7, §15.2). |
 | 1.1 | 2026-10-19 | Refreshed for `main@838f00d` (PRs #35–#42). Scheduler: built into the CRM (13 jobs), with the GitHub workflow as an optional second driver; health is read from `scheduled_jobs_running` and `in_process`. Sign-in: the redesigned page, password change in Settings, admin reset of a temporary password, invitation sign-up and invitation emails. Screens: collapsible sidebar groups, breadcrumbs, theme button, side panels; new Leads, Tasks, Website Forms and Calendar sections; contacts and deals can now be edited and archived; deals move by drag or **"⋯"** → **"Move to stage"**. Email: booking emails and form auto-replies are the screen-released emails; a connection records the scopes Google granted (PR #42), so reconnect once; a refused lookup never counts as "not sent". Custom domain `crm.clientverse.io` recorded as added but not live. Verified against the code and Railway deployment records and logs of 2026-10-19. |
 | 1.0 | 2026-09-30 | First complete owner/admin manual ([ebyron357/Clientverse-crm#33](https://github.com/ebyron357/Clientverse-crm/issues/33)). Verified against `main@8f23f63` code, Railway deployment records and logs, and GitHub Actions run records of 2026-09-30. |
 
