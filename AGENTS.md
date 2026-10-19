@@ -1,5 +1,24 @@
 # ClientVerse CRM — Agent Memory
 
+## Session state (2026-10-19)
+
+- **Running application code is `main@1a39fa4`** (PR #41, interior redesign + dark mode),
+  Railway deployment `d4d2e07f-b201-44f9-90fe-a06c59dabad5`, live 2026-10-19T00:16Z. Boot
+  log clean (`Registered outbound channel provider: gmail`, scheduler 13 jobs,
+  `Application startup complete`, `/api/health` 200). Read the live id from Railway.
+- **GitHub Actions runs again.** CI (frontend build, backend lint/types, backend API tests)
+  ran and passed on PR #41 on 2026-10-18; the 2026-09-28 "Actions has run nothing" note
+  below is stale. CI is the gate again.
+- **UI conventions:** every signed-in page uses the primitives in
+  `frontend/src/components/page/Page.jsx` and semantic colour tokens only (dark mode
+  depends on it). Public `/book/`, `/booking/`, `/portal/` routes are forced light.
+- **PR #36** (Codex, draft, conflicting): its two delivery-safety fixes and their tests
+  are ported onto current `main` by `claude/quirky-franklin-emex2n`; its PyMongo bump is
+  already on `main` (4.18.2 / Motor 3.7.1); its Recovery Proof scroll navigation targets
+  the pre-redesign page and is not ported.
+- Cursor Bugbot is out of usage quota (it skips); Copilot code review and the Cursor
+  Security Agent still run on every PR.
+
 ## Session state (2026-09-28)
 
 - **Running application code is `main@c9f5a6e`** (the recovery-engine merge). Railway

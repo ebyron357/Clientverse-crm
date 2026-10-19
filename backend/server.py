@@ -3123,14 +3123,10 @@ async def run_reconcile_unknown_sweep(actor: str = "cron") -> dict:
         key = conversation_service.dispatch_key(message)
         try:
             found_id = await locate(tenant_id=message["tenant_id"], idempotency_key=key)
-        except conversation_service.DeliveryRejected as exc:
-            # The provider answered definitively that it cannot hold this message.
-            await conversation_service.reconcile_unknown(
-                db, tenant_id=message["tenant_id"], message_id=message["id"], actor=actor,
-                found=False, detail={"lookup": str(exc)[:300]})
-            totals["resolved_failed"] += 1
-            continue
         except Exception:
+            # A refused lookup (a revoked grant included) says nothing about whether an
+            # earlier dispatch reached the provider. Only a completed lookup that finds
+            # nothing proves absence; anything else keeps the duplicate-send guard.
             logger.warning("Could not reconcile message %s; leaving it unresolved",
                            message["id"])
             totals["unresolved"] += 1
@@ -3444,7 +3440,9 @@ async def google_callback(state: str = Query(None), code: str = Query(None), err
     await db.google_credentials.update_one({"tenant_id": tenant_id},
         {"$set": {"enc": enc_secret(creds), "account_email": email, "credential_version": version, "updated_at": now_iso()}}, upsert=True)
     for p in ("gmail", "google_calendar"):
-        await set_conn(tenant_id, p, status="active", account_identity=email, scopes=GOOGLE_SCOPES,
+        # Consent can be partial. Publish what Google granted, never what was requested:
+        # the Gmail delivery guard reads this record as send authority.
+        await set_conn(tenant_id, p, status="active", account_identity=email, scopes=creds["scopes"],
                        connected_by=actor, connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version)
         await record_event("integration.connected", "integration", p, tenant_id, actor, payload={"provider": p, "account": email})
     return RedirectResponse(url=f"{dest}&oauth=connected")
@@ -3647,16 +3645,13 @@ async def reconcile_message(message_id: str, user=Depends(require_role("admin"))
     key = conversation_service.dispatch_key(message)
     try:
         found_id = await locate(tenant_id=user["tenant_id"], idempotency_key=key)
-    except conversation_service.DeliveryRejected as exc:
-        found_id = None
-        lookup_detail = str(exc)[:300]
     except Exception as exc:
-        # An inconclusive lookup leaves the message where it is. Recording "not found"
-        # here would license a resend of something that may already have arrived.
+        # An inconclusive lookup leaves the message where it is, and so does a refused
+        # one (a revoked grant included). Recording "not found" here would license a
+        # resend of something that may already have arrived.
         raise HTTPException(status_code=502,
                             detail=f"The provider could not be asked: {str(exc)[:200]}")
-    else:
-        lookup_detail = "provider lookup completed"
+    lookup_detail = "provider lookup completed"
     reconciled = await conversation_service.reconcile_unknown(
         db, tenant_id=user["tenant_id"], message_id=message_id, actor=user["email"],
         found=bool(found_id), provider_message_id=found_id,
