@@ -1107,3 +1107,73 @@ def test_server_acceptance_is_durable_even_if_follow_through_fails(client, monke
     assert response.json()["outcome"] == "accepted" and response.json()["contact_id"] is None
     stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": response.json()["id"]})
     assert stored["automation"][-1]["result"] == "failed"
+
+
+PRICE_RANGE_CASES = [
+    ("$500k+", (500000, None), {"price_min": 500000}),
+    ("over 500k", (500000, None), {"price_min": 500000}),
+    ("up to $500k", (None, 500000), {"price_max": 500000}),
+    ("under 300k", (None, 300000), {"price_max": 300000}),
+    ("$400k\u2013$500k", (400000, 500000), {"price_min": 400000, "price_max": 500000}),
+    ("400\u2013500k", (400000, 500000), {"price_min": 400000, "price_max": 500000}),
+    ("400,000 to 500,000", (400000, 500000), {"price_min": 400000, "price_max": 500000}),
+    ("$500k", (500000, 500000), {"price_max": 500000}),
+    ("500000", (500000, 500000), {"price_max": 500000}),
+]
+
+
+@pytest.mark.parametrize(("value", "bounds", "expected"), PRICE_RANGE_CASES)
+def test_price_range_parser_and_normalizer_preserve_one_sided_bounds(value, bounds, expected):
+    assert wf.parse_price_range(value) == bounds
+    normalised = wf.normalise_submission(server_body(payload={"priceRange": value}), {"fields": []})
+    prices = {key: val for key, val in normalised["fields"].items() if key in ("price_min", "price_max")}
+    assert prices == expected
+    assert normalised["extra"]["price_range"] == value
+
+
+@pytest.mark.parametrize(("value", "bounds", "expected"), PRICE_RANGE_CASES)
+def test_one_sided_buyer_budgets_reach_the_lead_and_contact(client, value, bounds, expected):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5, "fixed_value": 7000}})
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    body = server_body(leadType="buyer", source="buyer-guide", payload={"priceRange": value})
+    response = client.post("/api/intake/leads", json=body, headers={"Authorization": f"Bearer {key}"})
+    assert response.status_code == 200, response.text
+    receipt = response.json()
+    assert receipt["accepted"] is True and receipt["outcome"] == "accepted"
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": receipt["id"]})
+    contact = find_one(client, "contacts", {"id": receipt["contact_id"]})
+    for data in (stored["fields"], contact["custom_fields"]):
+        assert {key: val for key, val in data.items() if key in ("price_min", "price_max")} == expected
+    assert stored["extra"]["price_range"] == value
+    # The existing valuation policy stays unchanged: it can use price_min when
+    # price_max is absent, without relabeling that minimum as a maximum.
+    assert stored["estimated_value"] == (bounds[1] if bounds[1] is not None else bounds[0]) * 0.025
+
+
+@pytest.mark.parametrize("value", ["under 500k+", "$400k-bogus", "-500k", "400k-500k-600k"])
+def test_malformed_price_ranges_do_not_invent_a_budget(value):
+    assert wf.parse_price_range(value) == (None, None)
+
+
+@pytest.mark.parametrize("timestamp_key", ["consentAt", "consent_at"])
+def test_consent_timestamp_is_stored_but_does_not_defeat_repeat_suppression(client, timestamp_key):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    payload = {"consent": True, "consentText": "Please contact me about this inquiry.",
+               timestamp_key: "2030-01-01T12:00:00.000Z"}
+    body = server_body(payload=payload)
+    first = server_post(client, form, body, key).json()
+    again = server_post(client, form, {**body, "idempotencyKey": "fresh-id",
+                                      "payload": {**payload, timestamp_key: "2030-01-01T12:01:00.000Z"}}, key).json()
+    assert again["outcome"] == "duplicate" and again["id"] == first["id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": first["id"]})
+    assert stored["extra"][timestamp_key] == payload[timestamp_key]
+    assert len(find_all(client, detectors.WEB_ENQUIRIES, {"tenant_id": owner["tenant_id"]})) == 1
+
+    for number, change in enumerate(({"consent": False}, {"consentText": "Email me only."})):
+        different = server_post(client, form, {**body, "idempotencyKey": f"changed-consent-{number}",
+                                               "payload": {**payload, **change}}, key).json()
+        assert different["outcome"] == "accepted" and different["id"] != first["id"]

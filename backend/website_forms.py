@@ -353,16 +353,40 @@ _RANGE_SPLIT = re.compile(r"\s*(?:-|\u2013|\u2014|to)\s*", re.IGNORECASE)
 
 
 def parse_price_range(value: Any) -> tuple[Optional[float], Optional[float]]:
-    """`$400k-$500k` (any dash), `400,000 to 500,000`, `under 300k`, `500k+` -> (low, high)."""
+    """Return bounds without turning a minimum such as `500k+` into a ceiling.
+
+    A bare budget keeps the historic (amount, amount) result; normalization records
+    it as price_max only. A suffix shared by a range (`400-500k`) applies to both ends.
+    """
     text = str(value or "").strip().lower()
     if not text:
         return None, None
-    text = text.replace("under", "").replace("up to", "").replace("+", "").replace("over", "")
-    parts = [p for p in _RANGE_SPLIT.split(text) if p.strip()]
-    amounts: list[float] = [a for a in (parse_amount(p) for p in parts[:2]) if a]
-    if not amounts:
+    upper = re.match(r"^(?:under|up\s+to)\s*", text)
+    lower = re.match(r"^over\s*", text)
+    plus = text.endswith("+")
+    if upper and (lower or plus):
         return None, None
-    return min(amounts), max(amounts)
+    if upper or lower or plus:
+        prefix = upper or lower
+        amount_text = text[prefix.end():] if prefix else text
+        amount = parse_amount(amount_text[:-1] if plus else amount_text)
+        return (None, amount) if upper else (amount, None)
+
+    parts = [p.strip() for p in _RANGE_SPLIT.split(text)]
+    if len(parts) == 1:
+        amount = parse_amount(parts[0])
+        return amount, amount
+    if len(parts) != 2:
+        return None, None
+    low, high = parse_amount(parts[0]), parse_amount(parts[1])
+    if low is None or high is None:
+        return None, None
+    # Infer only a shorthand end, never multiply an already full dollar amount.
+    if not parts[0].endswith(("k", "m")) and low < 1000:
+        low *= 1000 if parts[1].endswith("k") else 1_000_000 if parts[1].endswith("m") else 1
+    if not parts[1].endswith(("k", "m")) and high < 1000:
+        high *= 1000 if parts[0].endswith("k") else 1_000_000 if parts[0].endswith("m") else 1
+    return min(low, high), max(low, high)
 
 
 def normalise_lead_type(value: Any) -> Optional[str]:
@@ -547,8 +571,8 @@ def normalise_submission(raw: dict, form: dict) -> dict:
             low, high = parse_price_range(value)
             if high is not None:
                 fields.setdefault("price_max", high)
-                if low is not None and low != high:
-                    fields.setdefault("price_min", low)
+            if low is not None and low != high:
+                fields.setdefault("price_min", low)
             if len(extra) < MAX_EXTRA_KEYS:
                 extra["price_range"] = _clip(value, MAX_EXTRA_VALUE) or ""
             continue
@@ -1228,8 +1252,11 @@ class LeadPipeline:
         # Collapse repeated answers, not a new request whose time, intent, budget or
         # custom answer changed. Transport controls and attribution are deliberately
         # excluded, so a double-click with a fresh submission id still files once.
+        # Consent timestamps remain stored evidence, but are not changed answers.
+        fingerprint_extra = {key: value for key, value in normalised["extra"].items()
+                             if key.lower() not in ("consentat", "consent_at")}
         fingerprint = _sha(json.dumps({"form_id": form["id"], "fields": fields,
-                                       "extra": normalised["extra"]},
+                                       "extra": fingerprint_extra},
                                       sort_keys=True, separators=(",", ":")))
         if fields.get("email") or fields.get("phone"):
             recent = await self.db[detectors.WEB_ENQUIRIES].find_one(
