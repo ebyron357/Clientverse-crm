@@ -315,13 +315,22 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
             raise HTTPException(status_code=404, detail="Estimate not found")
         if estimate.get("status") not in ("approved", "sent"):
             raise HTTPException(status_code=400, detail="Only sent or approved estimates can be converted")
+        # The estimate is marked invoiced (`invoice_id`, `invoiced_at`) so nothing reads an
+        # accepted, invoiced offer as one still awaiting a decision -- the recovery
+        # detector chased exactly that. Its `status` is deliberately left alone: the client
+        # portal shows estimates by status, and hiding one the moment a draft invoice exists
+        # would leave the client seeing neither.
         existing = await db.invoices.find_one({"tenant_id": user["tenant_id"], "estimate_id": estimate_id}, {"_id": 0})
         if existing:
+            await db.estimates.update_one({"id": estimate_id, "tenant_id": user["tenant_id"], "invoice_id": None},
+                                          {"$set": {"invoice_id": existing["id"], "invoiced_at": existing.get("created_at") or now_iso()}})
             return {"invoice": clean(existing), "duplicate": True}
         invoice = {"id": new_id("inv"), "tenant_id": user["tenant_id"], "workspace_id": estimate["workspace_id"], "estimate_id": estimate_id,
                    "title": estimate["title"], "currency": estimate["currency"], "lines": estimate["lines"], "total": estimate["total"],
                    "status": "draft", "payment_status": "requires_stripe_configuration", "created_at": now_iso()}
         await db.invoices.insert_one(invoice)
+        await db.estimates.update_one({"id": estimate_id, "tenant_id": user["tenant_id"]},
+                                      {"$set": {"invoice_id": invoice["id"], "invoiced_at": invoice["created_at"], "updated_at": now_iso()}})
         await record_event("invoice.created", "invoice", invoice["id"], user["tenant_id"], user["email"], workspace_id=invoice["workspace_id"], payload={"estimate_id": estimate_id, "total": invoice["total"]})
         return {"invoice": clean(invoice), "duplicate": False, "provider_note": "Invoice created locally. Payment collection is unavailable until Stripe lifecycle certification passes."}
 

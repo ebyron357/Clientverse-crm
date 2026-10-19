@@ -7,12 +7,28 @@ module.exports = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['"Inter Variable"', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        display: ['"Inter Variable"', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif']
+      },
+      boxShadow: {
+        xs: '0 1px 2px 0 rgb(16 24 40 / 0.04)',
+        sm: '0 1px 3px 0 rgb(16 24 40 / 0.06), 0 1px 2px -1px rgb(16 24 40 / 0.05)',
+        panel: '0 0 0 1px rgb(16 24 40 / 0.04), 0 1px 3px rgb(16 24 40 / 0.05)'
+      },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)'
       },
       colors: {
+        canvas: 'hsl(var(--canvas))',
+        brand: {
+          DEFAULT: 'hsl(var(--brand))',
+          foreground: 'hsl(var(--brand-foreground))',
+          soft: 'hsl(var(--brand-soft))',
+          strong: 'hsl(var(--brand-strong))'
+        },
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         card: {

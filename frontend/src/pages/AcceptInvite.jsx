@@ -1,81 +1,188 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, formatErr } from "@/lib/api";
+import { api, formatErr, setStoredToken } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { CLIENTVERSE_MODULES, isModuleActionable } from "@/platform/modules";
+import AuthLayout from "@/components/AuthLayout";
 import { Button } from "@/components/ui/button";
-import { Orbit, ShieldAlert, CheckCircle2, Clock, Ban, Loader2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { AlertCircle, ArrowRight, Ban, CheckCircle2, Clock, Link2Off, Loader2, LockKeyhole, UserPlus } from "lucide-react";
+
+const MIN_PASSWORD = 8;
+
+// Where a new teammate lands: the Leads page when it is on the menu for their role,
+// otherwise the Command Center.
+function appHome(role) {
+  const leads = CLIENTVERSE_MODULES.find((module) => module.route === "/leads");
+  return leads && isModuleActionable(leads) && (!leads.adminOnly || role === "admin") ? "/leads" : "/dashboard";
+}
+
+const roleLabel = (role) => (role === "admin" ? "an admin" : "a team member");
+const expiryLabel = (iso) => {
+  const date = iso ? new Date(iso) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) : null;
+};
 
 function Shell({ children }) {
+  return <AuthLayout><div data-testid="accept-invite-card">{children}</div></AuthLayout>;
+}
+
+function StatusPanel({ icon: Icon, tone = "slate", title, children, action, testid }) {
+  const tones = { slate: "bg-muted text-muted-foreground", red: "bg-red-50 text-red-500", emerald: "bg-emerald-50 text-emerald-600" };
   return (
-    <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white rounded-2xl p-8 shadow-xl" data-testid="accept-invite-card">
-        <div className="flex items-center gap-2 mb-6">
-          <div className="w-8 h-8 rounded-lg bg-[#0A0A0A] flex items-center justify-center"><Orbit className="w-4 h-4 text-white" /></div>
-          <span className="font-display font-extrabold text-lg">ClientVerse</span>
-        </div>
-        {children}
-      </div>
+    <div data-testid={testid}>
+      <div className={`mb-4 flex h-10 w-10 items-center justify-center rounded-lg ${tones[tone]}`}><Icon className="h-5 w-5" /></div>
+      <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+      <div className="mt-2 text-sm leading-6 text-muted-foreground">{children}</div>
+      {action && <div className="mt-6">{action}</div>}
     </div>
   );
 }
 
+function ErrorNote({ children, testid }) {
+  return <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-sm leading-5 text-red-700" role="alert" data-testid={testid}><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /><span>{children}</span></div>;
+}
+
 export default function AcceptInvite() {
-  const { user, loading, checkAuth } = useAuth();
+  const { user, setUser, loading, checkAuth, logout } = useAuth();
   const navigate = useNavigate();
   const token = new URLSearchParams(window.location.search).get("token") || "";
   const [inv, setInv] = useState(null);
+  const [loadError, setLoadError] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
+  const [existingAccount, setExistingAccount] = useState(false);
+  const [form, setForm] = useState({ name: "", password: "", confirm: "" });
 
   const lookup = useCallback(async () => {
-    if (!token) { setError("This invitation link is invalid."); return; }
+    if (!token) { setLoadError("missing"); return; }
     try { const { data } = await api.get("/team/invitations/lookup", { params: { token } }); setInv(data); }
-    catch (e) { setError(e.response?.status === 404 ? "This invitation could not be found." : formatErr(e.response?.data?.detail)); }
+    catch (e) { setLoadError(e.response?.status === 404 ? "missing" : formatErr(e.response?.data?.detail)); }
   }, [token]);
   useEffect(() => { lookup(); }, [lookup]);
 
-  const accept = async () => {
+  const loginHref = inv
+    ? `/login?redirect=${encodeURIComponent(`/invite?token=${token}`)}&email=${encodeURIComponent(inv.email)}`
+    : "/login";
+  const inviter = inv?.invited_by_name || inv?.invited_by;
+
+  // The invitation can change underneath an open page (revoked, resent, used elsewhere).
+  // Re-read it so the page shows what is true now rather than a stale form.
+  const refuse = async (e) => {
+    setError(formatErr(e.response?.data?.detail));
+    if (e.response?.status === 400 || e.response?.status === 404) await lookup();
+  };
+
+  const createAccount = async (event) => {
+    event.preventDefault(); setError("");
+    if (!form.name.trim()) { setError("Please enter your name."); return; }
+    if (form.password.length < MIN_PASSWORD) { setError(`Your password needs at least ${MIN_PASSWORD} characters.`); return; }
+    if (form.password !== form.confirm) { setError("The two passwords don't match. Please type them again."); return; }
     setBusy(true);
     try {
-      await api.post("/team/invitations/accept", { token });
+      const { data } = await api.post("/team/invitations/accept-new", { token, name: form.name.trim(), password: form.password });
+      if (data?.token) setStoredToken(data.token);
+      setUser(data.user);
+      navigate(appHome(data.role), { replace: true });
+    } catch (e) {
+      if (e.response?.status === 409) { setExistingAccount(true); setError(""); }
+      else await refuse(e);
+    } finally { setBusy(false); }
+  };
+
+  const accept = async () => {
+    setBusy(true); setError("");
+    try {
+      const { data } = await api.post("/team/invitations/accept", { token });
       await checkAuth();
-      setDone(true);
-    } catch (e) { setError(formatErr(e.response?.data?.detail)); }
+      navigate(appHome(data.role), { replace: true });
+    } catch (e) { await refuse(e); }
     finally { setBusy(false); }
   };
 
-  const loginHref = `/login?redirect=${encodeURIComponent(`/invite?token=${token}`)}`;
+  const switchAccount = async () => { setError(""); await logout(); };
 
-  if (error && !inv) return <Shell><div data-testid="invite-error"><ShieldAlert className="w-8 h-8 text-red-500 mb-3" /><h1 className="font-display text-xl font-bold">Invitation unavailable</h1><p className="text-sm text-gray-500 mt-2">{error}</p><Button className="mt-6 bg-[#0A0A0A]" onClick={() => navigate("/dashboard")}>Go to app</Button></div></Shell>;
-  if (!inv || loading) return <Shell><div className="flex items-center gap-2 text-sm text-gray-500" data-testid="invite-loading"><Loader2 className="w-4 h-4 animate-spin" />Loading invitation…</div></Shell>;
+  if (loadError) {
+    return <Shell><StatusPanel icon={Link2Off} tone="red" title="This invitation link doesn't work" testid="invite-error" action={<Button variant="outline" className="h-10 w-full" onClick={() => navigate(user ? "/dashboard" : "/login")}>{user ? "Go to ClientVerse" : "Go to sign in"}</Button>}>
+      {loadError === "missing"
+        ? "It may be incomplete, already used, or replaced by a newer invitation. If you've already joined, just sign in. Otherwise, ask the person who invited you to send a new one."
+        : loadError}
+    </StatusPanel></Shell>;
+  }
+  if (!inv || loading) return <Shell><div className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="invite-loading"><Loader2 className="h-4 w-4 animate-spin" />Opening your invitation…</div></Shell>;
 
-  if (done) return <Shell><div data-testid="invite-accepted-success"><CheckCircle2 className="w-8 h-8 text-emerald-500 mb-3" /><h1 className="font-display text-xl font-bold">You're in!</h1><p className="text-sm text-gray-500 mt-2">You joined <span className="font-medium">{inv.tenant_name}</span> as a {inv.role}.</p><Button className="mt-6 bg-[#0A0A0A]" onClick={() => navigate("/dashboard")} data-testid="invite-continue">Continue to workspace</Button></div></Shell>;
-
-  if (inv.status === "expired") return <Shell><div data-testid="invite-expired"><Clock className="w-8 h-8 text-gray-400 mb-3" /><h1 className="font-display text-xl font-bold">Invitation expired</h1><p className="text-sm text-gray-500 mt-2">This invitation to join <span className="font-medium">{inv.tenant_name}</span> has expired. Ask an admin to resend it.</p></div></Shell>;
-  if (inv.status === "revoked") return <Shell><div data-testid="invite-revoked"><Ban className="w-8 h-8 text-red-500 mb-3" /><h1 className="font-display text-xl font-bold">Invitation revoked</h1><p className="text-sm text-gray-500 mt-2">This invitation is no longer valid.</p></div></Shell>;
-  if (inv.status === "accepted") return <Shell><div data-testid="invite-already"><CheckCircle2 className="w-8 h-8 text-emerald-500 mb-3" /><h1 className="font-display text-xl font-bold">Already accepted</h1><p className="text-sm text-gray-500 mt-2">This invitation has already been used.</p><Button className="mt-6 bg-[#0A0A0A]" onClick={() => navigate("/dashboard")}>Go to app</Button></div></Shell>;
+  if (inv.status === "expired") {
+    return <Shell><StatusPanel icon={Clock} title="This invitation has expired" testid="invite-expired">
+      Invitations to join <span className="font-medium text-foreground">{inv.tenant_name}</span> last 7 days. Ask {inviter ? <span className="font-medium text-foreground">{inviter}</span> : "the person who invited you"} to send you a new one.
+    </StatusPanel></Shell>;
+  }
+  if (inv.status === "revoked") {
+    return <Shell><StatusPanel icon={Ban} tone="red" title="This invitation was cancelled" testid="invite-revoked">
+      It can no longer be used. If you still need access to <span className="font-medium text-foreground">{inv.tenant_name}</span>, ask {inviter ? <span className="font-medium text-foreground">{inviter}</span> : "the person who invited you"} to invite you again.
+    </StatusPanel></Shell>;
+  }
+  if (inv.status === "accepted") {
+    const mine = user && user.email?.toLowerCase() === inv.email.toLowerCase();
+    return <Shell><StatusPanel icon={CheckCircle2} tone="emerald" title={mine ? "You've already joined" : "This invitation has already been used"} testid="invite-already"
+      action={mine
+        ? <Button className="h-10 w-full cv-action-primary" onClick={() => navigate(appHome(user.role))}>Go to ClientVerse<ArrowRight className="ml-2 h-4 w-4" /></Button>
+        : <Button variant="outline" className="h-10 w-full" onClick={() => navigate(`/login?email=${encodeURIComponent(inv.email)}`)}>Sign in</Button>}>
+      {mine ? <>You're a member of <span className="font-medium text-foreground">{inv.tenant_name}</span>.</> : <>The account for <span className="font-medium text-foreground">{inv.email}</span> has been set up. Sign in to continue.</>}
+    </StatusPanel></Shell>;
+  }
 
   // pending
+  const signedInAsInvitee = user && user.email?.toLowerCase() === inv.email.toLowerCase();
   return (
     <Shell>
       <div data-testid="invite-pending">
-        <h1 className="font-display text-2xl font-bold">Join {inv.tenant_name}</h1>
-        <p className="text-sm text-gray-500 mt-2">You've been invited to join as a <span className="font-medium capitalize">{inv.role}</span>. This invitation was sent to <span className="font-medium">{inv.email}</span>.</p>
-        {error && <div className="text-sm text-red-600 mt-4" data-testid="invite-action-error">{error}</div>}
+        <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-brand-soft text-brand"><UserPlus className="h-5 w-5" /></div>
+        <div className="cv-eyebrow">You're invited</div>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">Join {inv.tenant_name}</h1>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground" data-testid="invite-summary">
+          {inviter ? <><span className="font-medium text-foreground">{inviter}</span> invited you</> : "You've been invited"} to join as {roleLabel(inv.role)}.
+        </p>
+
         {!user ? (
-          <div className="mt-6">
-            <p className="text-sm text-gray-500 mb-3">Sign in or create an account with <span className="font-medium">{inv.email}</span> to accept.</p>
-            <Button className="w-full bg-[#0A0A0A]" onClick={() => navigate(loginHref)} data-testid="invite-signin">Sign in to accept</Button>
-          </div>
-        ) : user.email?.toLowerCase() !== inv.email.toLowerCase() ? (
-          <div className="mt-6" data-testid="invite-wrong-account">
-            <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">You're signed in as <span className="font-medium">{user.email}</span>, but this invite is for <span className="font-medium">{inv.email}</span>. Sign in with the invited email to accept.</div>
-            <Button variant="outline" className="w-full mt-4" onClick={() => navigate(loginHref)}>Switch account</Button>
+          existingAccount ? (
+            <div className="mt-6 space-y-4" data-testid="invite-existing-account">
+              <div className="rounded-lg border border-brand/20 bg-brand-soft px-4 py-3 text-sm leading-6 text-brand-strong">You already have a ClientVerse account with <span className="font-semibold">{inv.email}</span>. Sign in and you'll come straight back here to join {inv.tenant_name}.</div>
+              <Button className="h-10 w-full cv-action-primary" onClick={() => navigate(loginHref)} data-testid="invite-existing-signin">Sign in to accept<ArrowRight className="ml-2 h-4 w-4" /></Button>
+              <button type="button" className="w-full text-center text-sm font-medium text-muted-foreground hover:text-foreground/80" onClick={() => setExistingAccount(false)}>Back</button>
+            </div>
+          ) : (
+            <>
+              <h2 className="mt-7 text-base font-semibold text-foreground">Create your account</h2>
+              <form onSubmit={createAccount} className="mt-4 space-y-4" data-testid="invite-signup-form" noValidate>
+                <div className="grid gap-1.5"><Label htmlFor="invite-name">Your name</Label><Input id="invite-name" data-testid="invite-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoComplete="name" placeholder="First and last name" required /></div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="invite-email">Email</Label>
+                  <div className="relative"><Input id="invite-email" data-testid="invite-email-input" value={inv.email} readOnly aria-readonly="true" autoComplete="username" className="bg-muted/50 pr-9 text-muted-foreground" /><LockKeyhole className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /></div>
+                  <p className="text-xs text-muted-foreground">This is the address your invitation was sent to.</p>
+                </div>
+                <div className="grid gap-1.5"><Label htmlFor="invite-password">Create a password</Label><Input id="invite-password" type="password" data-testid="invite-password-input" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete="new-password" required /><p className="text-xs text-muted-foreground">At least {MIN_PASSWORD} characters.</p></div>
+                <div className="grid gap-1.5"><Label htmlFor="invite-password-confirm">Confirm password</Label><Input id="invite-password-confirm" type="password" data-testid="invite-password-confirm-input" value={form.confirm} onChange={(e) => setForm({ ...form, confirm: e.target.value })} autoComplete="new-password" required /></div>
+                {error && <ErrorNote testid="invite-action-error">{error}</ErrorNote>}
+                <Button type="submit" disabled={busy} className="h-10 w-full cv-action-primary" data-testid="invite-create-account">{busy ? "Creating your account…" : `Create account and join`}{!busy && <ArrowRight className="ml-2 h-4 w-4" />}</Button>
+              </form>
+              <p className="mt-6 text-center text-sm text-muted-foreground">Already have a ClientVerse account? <button type="button" onClick={() => navigate(loginHref)} className="font-medium text-foreground underline-offset-4 hover:underline" data-testid="invite-signin">Sign in</button></p>
+            </>
+          )
+        ) : !signedInAsInvitee ? (
+          <div className="mt-6 space-y-4" data-testid="invite-wrong-account">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">You're signed in as <span className="font-semibold">{user.email}</span>, but this invitation is for <span className="font-semibold">{inv.email}</span>. Sign out to create that account or sign in with it.</div>
+            <Button variant="outline" className="h-10 w-full" onClick={switchAccount} data-testid="invite-switch-account">Sign out and continue</Button>
           </div>
         ) : (
-          <Button className="w-full bg-[#0A0A0A] mt-6" onClick={accept} disabled={busy} data-testid="invite-accept-button">{busy ? "Joining…" : `Accept & join ${inv.tenant_name}`}</Button>
+          <div className="mt-6 space-y-4">
+            <p className="text-sm leading-6 text-muted-foreground">You're signed in as <span className="font-medium text-foreground">{user.email}</span>.</p>
+            {error && <ErrorNote testid="invite-action-error">{error}</ErrorNote>}
+            <Button className="h-10 w-full cv-action-primary" onClick={accept} disabled={busy} data-testid="invite-accept-button">{busy ? "Joining…" : `Accept and join ${inv.tenant_name}`}</Button>
+          </div>
         )}
+
+        {expiryLabel(inv.expires_at) && <p className="mt-6 border-t border-border pt-4 text-xs leading-5 text-muted-foreground">This invitation can be used once and expires on {expiryLabel(inv.expires_at)}.</p>}
       </div>
     </Shell>
   );

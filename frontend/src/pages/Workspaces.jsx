@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, formatErr, HEALTH_BAND } from "@/lib/api";
+import { api, formatErr } from "@/lib/api";
 import { toast } from "sonner";
-import { Badge } from "@/components/AppShell";
+import { Avatar, PageHeader, StatusDot, Toolbar, ViewTabs } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowRight, BriefcaseBusiness, CircleAlert, HeartPulse, Plus, RefreshCw, Search, Sparkles } from "lucide-react";
+import { BriefcaseBusiness, ChevronRight, CircleAlert, Plus, RefreshCw, Search } from "lucide-react";
 
 const LIFECYCLE = ["onboard", "serve", "retain", "expand"];
-const STAGE_META = { onboard: { label: "Onboard", cls: "bg-violet-50 text-violet-700 border-violet-200" }, serve: { label: "Serve", cls: "bg-cyan-50 text-[#0a6177] border-cyan-200" }, retain: { label: "Retain", cls: "bg-amber-50 text-amber-700 border-amber-200" }, expand: { label: "Expand", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" } };
+const STAGE_META = { onboard: { label: "Onboard", tone: "violet" }, serve: { label: "Serve", tone: "brand" }, retain: { label: "Retain", tone: "warning" }, expand: { label: "Expand", tone: "success" } };
+const HEALTH_TONE = { healthy: "success", at_risk: "warning", critical: "danger" };
+const bandLabel = (band) => String(band || "").replace("_", " ").replace(/^\w/, (char) => char.toUpperCase());
+const shortDate = (value) => value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : null;
 
 export default function Workspaces() {
   const navigate = useNavigate(); const [rows, setRows] = useState([]); const [companies, setCompanies] = useState([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [open, setOpen] = useState(false); const [saving, setSaving] = useState(false); const [query, setQuery] = useState(""); const [stage, setStage] = useState("all"); const [form, setForm] = useState({ name: "", company_id: "", stage: "onboard" });
@@ -21,58 +24,79 @@ export default function Workspaces() {
   const filtered = useMemo(() => rows.filter((workspace) => `${workspace.name} ${companies.find((company) => company.id === workspace.company_id)?.name || ""}`.toLowerCase().includes(query.toLowerCase()) && (stage === "all" || workspace.stage === stage)), [rows, companies, query, stage]);
   const counts = useMemo(() => Object.fromEntries(LIFECYCLE.map((key) => [key, rows.filter((workspace) => workspace.stage === key).length])), [rows]);
   const create = async () => { if (!form.name.trim()) { toast.error("Workspace name is required."); return; } setSaving(true); try { const { data } = await api.post("/workspaces", { ...form, name: form.name.trim(), company_id: form.company_id || null }); toast.success("Client workspace created", { description: "Start with the health, commitments, and outcomes that matter to this account." }); setOpen(false); setForm({ name: "", company_id: "", stage: "onboard" }); navigate(`/workspaces/${data.id}`); } catch (requestError) { toast.error("Could not create client workspace", { description: formatErr(requestError.response?.data?.detail) }); } finally { setSaving(false); } };
-  if (error) return <div className="cv-page"><div className="cv-empty"><CircleAlert className="h-9 w-9 text-red-500" /><h1 className="mt-4 font-display text-xl font-bold">Client workspaces unavailable</h1><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{error}</p><Button onClick={load} className="mt-5 cv-action-primary"><RefreshCw className="mr-2 h-4 w-4" />Retry</Button></div></div>;
-  return <div className="cv-page"><div className="cv-page-header"><div><div className="cv-eyebrow">Client success</div><h1 className="cv-page-title">Client Workspaces</h1><p className="cv-page-description">The Client 360 operating view for onboarding, delivery, retention, and account expansion.</p></div><WorkspaceDialog open={open} onOpenChange={setOpen} form={form} setForm={setForm} companies={companies} saving={saving} onSubmit={create} /></div><section className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">{LIFECYCLE.map((key) => <button key={key} onClick={() => setStage(stage === key ? "all" : key)} className={`cv-card p-4 text-left transition-all ${stage === key ? "ring-2 ring-[#4ac4e0]" : "hover:border-slate-300"}`}><div className="flex items-center justify-between"><span className="text-[11px] font-bold uppercase tracking-[0.1em] text-slate-500">{STAGE_META[key].label}</span><span className={`h-2 w-2 rounded-full ${key === "onboard" ? "bg-violet-500" : key === "serve" ? "bg-[#1a9fbf]" : key === "retain" ? "bg-amber-500" : "bg-emerald-500"}`} /></div><div className="mt-2 font-display text-2xl font-extrabold text-[#0a1628]">{counts[key]}</div><div className="mt-1 text-xs text-slate-500">active workspace{counts[key] === 1 ? "" : "s"}</div></button>)}</section><section className="cv-card overflow-hidden"><div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="cv-card-title">Portfolio</h2><p className="cv-card-description">Open any workspace for a full, evidence-backed account operating view.</p></div><div className="flex gap-2"><div className="flex min-w-0 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 sm:w-[300px]"><Search className="h-4 w-4 shrink-0 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" placeholder="Search clients…" aria-label="Search client workspaces" /></div><Select value={stage} onValueChange={setStage}><SelectTrigger aria-label="Filter workspaces by lifecycle stage" className="h-10 w-[130px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All stages</SelectItem>{LIFECYCLE.map((key) => <SelectItem key={key} value={key}>{STAGE_META[key].label}</SelectItem>)}</SelectContent></Select></div></div>{loading ? <WorkspaceSkeleton /> : filtered.length ? <div className="grid grid-cols-1 divide-y divide-slate-100 lg:grid-cols-2 lg:divide-x lg:divide-y-0">{filtered.map((workspace) => <WorkspaceCard key={workspace.id} workspace={workspace} company={companies.find((record) => record.id === workspace.company_id)} onClick={() => navigate(`/workspaces/${workspace.id}`)} />)}</div> : <div className="cv-empty m-5"><Sparkles className="h-9 w-9 text-[#4ac4e0]" /><h2 className="mt-4 font-display text-xl font-bold text-[#0a1628]">No workspaces match your view</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">Adjust your filters or create a Client 360 workspace to organize health, delivery, approvals, and outcome progress for an account.</p><Button onClick={() => setOpen(true)} className="mt-5 cv-action-primary"><Plus className="mr-1.5 h-4 w-4" />New workspace</Button></div>}</section></div>;
+
+  if (error) return <div className="cv-page"><div className="flex flex-col items-center justify-center rounded-xl border border-border bg-card px-6 py-12 text-center" role="alert"><span className="flex size-10 items-center justify-center rounded-full bg-red-50 text-red-600"><CircleAlert className="size-5" aria-hidden="true" /></span><h1 className="mt-3 text-sm font-medium text-foreground">Client workspaces unavailable</h1><p className="mt-1 max-w-md text-[13px] leading-5 text-muted-foreground">{error}</p><Button size="sm" variant="outline" onClick={load} className="mt-4"><RefreshCw className="size-3.5" />Retry</Button></div></div>;
+
+  const tabs = [{ value: "all", label: "All", count: rows.length }, ...LIFECYCLE.map((key) => ({ value: key, label: STAGE_META[key].label, count: counts[key] }))];
+  return <div className="cv-page">
+    <PageHeader icon={BriefcaseBusiness} title="Client workspaces" count={loading ? undefined : rows.length} description="Health, commitments and lifecycle for every client account."
+      actions={<WorkspaceDialog open={open} onOpenChange={setOpen} form={form} setForm={setForm} companies={companies} saving={saving} onSubmit={create} />} />
+    <ViewTabs label="Lifecycle stage" items={tabs} value={stage} onChange={setStage} />
+    <Toolbar>
+      <div className="relative w-full sm:w-64">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+        <Input value={query} onChange={(event) => setQuery(event.target.value)} className="h-8 pl-8 md:text-[13px]" placeholder="Search clients…" aria-label="Search client workspaces" />
+      </div>
+      {!loading && (query || stage !== "all") && <span className="tabular text-xs text-muted-foreground">{filtered.length} of {rows.length}</span>}
+    </Toolbar>
+    <div className="overflow-hidden rounded-xl border border-border bg-card">
+      {loading ? <WorkspaceSkeleton /> : filtered.length ? <table className="w-full text-[13px]">
+        <thead><tr className="h-9 border-b border-border bg-muted/40 text-left text-xs font-medium text-muted-foreground">
+          <th scope="col" className="w-full px-4 font-medium sm:w-[36%] lg:w-[28%]">Client</th>
+          <th scope="col" className="hidden px-4 font-medium sm:table-cell">Stage</th>
+          <th scope="col" className="px-4 font-medium">Health</th>
+          <th scope="col" className="hidden px-4 font-medium lg:table-cell">Risk factors</th>
+          <th scope="col" className="hidden px-4 font-medium md:table-cell">Next commitment</th>
+          <th scope="col" className="hidden px-4 text-right font-medium md:table-cell">Created</th>
+          <th scope="col" className="w-8 px-2"><span className="sr-only">Open</span></th>
+        </tr></thead>
+        <tbody>{filtered.map((workspace) => <WorkspaceRow key={workspace.id} workspace={workspace} company={companies.find((record) => record.id === workspace.company_id)} onClick={() => navigate(`/workspaces/${workspace.id}`)} />)}</tbody>
+      </table> : <div className="flex flex-col items-center justify-center px-6 py-12 text-center">
+        <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground"><BriefcaseBusiness className="size-5" aria-hidden="true" /></span>
+        <h2 className="mt-3 text-sm font-medium text-foreground">No workspaces match your view</h2>
+        <p className="mt-1 max-w-sm text-[13px] text-muted-foreground">Adjust the search or stage, or create a workspace for an account.</p>
+        <Button size="sm" onClick={() => setOpen(true)} className="mt-4"><Plus className="size-3.5" />New workspace</Button>
+      </div>}
+    </div>
+  </div>;
 }
-function commitmentDueLabel(commitment) {
+
+function commitmentDue(commitment) {
   if (!commitment) return null;
   const title = commitment.title || commitment.name || "Commitment";
   const due = commitment.due_date || commitment.due || null;
-  if (!due) return title;
+  if (!due) return { title, label: null, overdue: false };
   const ms = new Date(due).getTime() - Date.now();
   const days = Math.round(ms / 86400000);
-  if (ms < 0) return `${title} · overdue ${Math.abs(days)}d`;
-  if (days === 0) return `${title} · due today`;
-  if (days <= 7) return `${title} · due in ${days}d`;
-  return `${title} · due ${new Date(due).toLocaleDateString()}`;
+  if (ms < 0) return { title, label: `overdue ${Math.abs(days)}d`, overdue: true };
+  if (days === 0) return { title, label: "due today", overdue: false };
+  if (days <= 7) return { title, label: `due in ${days}d`, overdue: false };
+  return { title, label: `due ${new Date(due).toLocaleDateString()}`, overdue: false };
 }
 
-function WorkspaceCard({ workspace, company, onClick }) {
+function WorkspaceRow({ workspace, company, onClick }) {
   const health = workspace.health;
   const stageMeta = STAGE_META[workspace.stage] || STAGE_META.onboard;
-  const dueLabel = commitmentDueLabel(workspace.top_commitment);
-  return (
-    <button onClick={onClick} className="cv-data-row group flex min-h-[152px] w-full items-start gap-4 p-5 text-left" data-testid={`workspace-card-${workspace.id}`}>
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan-50 text-[#1a9fbf]"><BriefcaseBusiness className="h-5 w-5" /></span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-start justify-between gap-3">
-          <span className="min-w-0">
-            <span className="block truncate text-base font-bold text-[#132038] group-hover:text-[#1a9fbf]">{workspace.name}</span>
-            <span className="mt-1 block truncate text-xs text-slate-500">{company?.name || "No company linked"}</span>
-          </span>
-          {health && (
-            <span className="flex flex-col items-end gap-1">
-              <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${HEALTH_BAND[health.band]}`}>{health.score}</span>
-              <Badge className={`capitalize text-[10px] ${HEALTH_BAND[health.band]}`}>{health.band.replace("_", " ")}</Badge>
-            </span>
-          )}
+  const due = commitmentDue(workspace.top_commitment);
+  const risks = (health?.factors || []).filter((factor) => factor.impact < 0);
+  return <tr onClick={onClick} className="group cursor-pointer border-b border-border/70 transition-colors last:border-0 hover:bg-muted/50">
+    <td className="max-w-0 px-4 py-2.5">
+      <button type="button" onClick={(event) => { event.stopPropagation(); onClick(); }} className="flex w-full min-w-0 items-center gap-2.5 rounded-md text-left" data-testid={`workspace-card-${workspace.id}`}>
+        <Avatar name={workspace.name} size="sm" />
+        <span className="min-w-0">
+          <span className="block truncate font-medium text-foreground">{workspace.name}</span>
+          <span className="block truncate text-xs text-muted-foreground">{company?.name || "No company linked"}<span className="sm:hidden"> · {stageMeta.label}</span></span>
         </span>
-        <span className="mt-4 flex items-center justify-between gap-3">
-          <Badge className={stageMeta.cls}>{stageMeta.label}</Badge>
-          <span className="flex items-center gap-1 text-xs font-semibold text-[#1a9fbf]">Open Client 360 <ArrowRight className="h-3.5 w-3.5" /></span>
-        </span>
-        {health && (
-          <span className="mt-3 flex items-center gap-2">
-            <HeartPulse className="h-3.5 w-3.5 text-slate-400" />
-            <span className="text-xs text-slate-500">Health band <strong className="capitalize text-slate-700">{health.band.replace("_", " ")}</strong></span>
-          </span>
-        )}
-        {dueLabel && (
-          <span className="mt-2 block truncate text-xs text-amber-700" data-testid={`workspace-top-commitment-${workspace.id}`}>Top commitment: {dueLabel}</span>
-        )}
-      </span>
-    </button>
-  );
+      </button>
+    </td>
+    <td className="hidden whitespace-nowrap px-4 py-2.5 sm:table-cell"><StatusDot tone={stageMeta.tone}>{stageMeta.label}</StatusDot></td>
+    <td className="whitespace-nowrap px-4 py-2.5">{health ? <span className="inline-flex items-center gap-2"><StatusDot tone={HEALTH_TONE[health.band]}>{bandLabel(health.band)}</StatusDot><span className="tabular text-xs font-medium text-muted-foreground">{health.score}</span></span> : <span className="text-muted-foreground">—</span>}</td>
+    <td className="hidden max-w-[220px] px-4 py-2.5 lg:table-cell">{risks.length ? <span className="block truncate text-foreground/80" title={risks.map((factor) => factor.detail || factor.factor).join(" · ")}>{risks[0].factor}{risks.length > 1 && <span className="text-muted-foreground"> +{risks.length - 1}</span>}</span> : <span className="text-muted-foreground">{health ? "None" : "—"}</span>}</td>
+    <td className="hidden max-w-[240px] px-4 py-2.5 md:table-cell">{due ? <span className="block truncate" data-testid={`workspace-top-commitment-${workspace.id}`}><span className="text-foreground/80">{due.title}</span>{due.label && <span className={due.overdue ? "text-red-600" : "text-muted-foreground"}> · {due.label}</span>}</span> : <span className="text-muted-foreground">—</span>}</td>
+    <td className="tabular hidden whitespace-nowrap px-4 py-2.5 text-right text-xs text-muted-foreground md:table-cell">{shortDate(workspace.created_at) || "—"}</td>
+    <td className="w-8 px-2 py-2.5 text-muted-foreground/60"><ChevronRight className="size-4 transition-colors group-hover:text-foreground" aria-hidden="true" /></td>
+  </tr>;
 }
-function WorkspaceDialog({ open, onOpenChange, form, setForm, companies, saving, onSubmit }) { const setField = (key, value) => setForm((current) => ({ ...current, [key]: value })); return <Dialog open={open} onOpenChange={onOpenChange}><DialogTrigger asChild><Button className="cv-action-primary"><Plus className="mr-1.5 h-4 w-4" />New workspace</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle className="font-display text-2xl">New Client 360 workspace</DialogTitle><DialogDescription>Start a focused operating view for a client relationship and its delivery commitments.</DialogDescription></DialogHeader><div className="grid gap-4 py-2"><div className="grid gap-1.5"><Label>Workspace name <span className="text-red-500">*</span></Label><Input value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder="e.g. Northstar — Client 360" /></div><div className="grid gap-1.5"><Label>Company</Label><Select value={form.company_id} onValueChange={(value) => setField("company_id", value)}><SelectTrigger aria-label="Company for the new workspace"><SelectValue placeholder="Select a company" /></SelectTrigger><SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label>Lifecycle stage</Label><Select value={form.stage} onValueChange={(value) => setField("stage", value)}><SelectTrigger aria-label="Lifecycle stage for the new workspace"><SelectValue /></SelectTrigger><SelectContent>{LIFECYCLE.map((key) => <SelectItem key={key} value={key}>{STAGE_META[key].label}</SelectItem>)}</SelectContent></Select></div></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={saving} onClick={onSubmit} className="cv-action-primary">{saving ? "Creating…" : "Create workspace"}</Button></DialogFooter></DialogContent></Dialog>; }
-function WorkspaceSkeleton() { return <div className="grid grid-cols-1 divide-y divide-slate-100 lg:grid-cols-2 lg:divide-x lg:divide-y-0">{Array.from({ length: 4 }).map((_, index) => <div key={index} className="flex gap-4 p-5"><Skeleton className="h-10 w-10 rounded-xl" /><div className="flex-1"><Skeleton className="h-5 w-48" /><Skeleton className="mt-2 h-3 w-32" /><Skeleton className="mt-5 h-6 w-20 rounded-full" /></div></div>)}</div>; }
+
+function WorkspaceDialog({ open, onOpenChange, form, setForm, companies, saving, onSubmit }) { const setField = (key, value) => setForm((current) => ({ ...current, [key]: value })); return <Dialog open={open} onOpenChange={onOpenChange}><DialogTrigger asChild><Button size="sm"><Plus className="size-3.5" />New workspace</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>New client workspace</DialogTitle><DialogDescription>A Client 360 view for one relationship and its delivery commitments.</DialogDescription></DialogHeader><div className="grid gap-4 py-2"><div className="grid gap-1.5"><Label htmlFor="workspace-name">Workspace name <span className="text-red-600">*</span></Label><Input id="workspace-name" value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder="e.g. Northstar — Client 360" /></div><div className="grid gap-1.5"><Label>Company</Label><Select value={form.company_id} onValueChange={(value) => setField("company_id", value)}><SelectTrigger aria-label="Company for the new workspace"><SelectValue placeholder="Select a company" /></SelectTrigger><SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent></Select></div><div className="grid gap-1.5"><Label>Lifecycle stage</Label><Select value={form.stage} onValueChange={(value) => setField("stage", value)}><SelectTrigger aria-label="Lifecycle stage for the new workspace"><SelectValue /></SelectTrigger><SelectContent>{LIFECYCLE.map((key) => <SelectItem key={key} value={key}>{STAGE_META[key].label}</SelectItem>)}</SelectContent></Select></div></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={saving} onClick={onSubmit}>{saving ? "Creating…" : "Create workspace"}</Button></DialogFooter></DialogContent></Dialog>; }
+function WorkspaceSkeleton() { return <div className="divide-y divide-border/70"><div className="h-9 bg-muted/40" />{Array.from({ length: 4 }).map((_, index) => <div key={index} className="flex items-center gap-3 px-4 py-3"><Skeleton className="size-6 rounded-full" /><div className="flex-1"><Skeleton className="h-3.5 w-40" /><Skeleton className="mt-1.5 h-3 w-24" /></div><Skeleton className="h-3.5 w-20" /><Skeleton className="hidden h-3.5 w-24 sm:block" /></div>)}</div>; }

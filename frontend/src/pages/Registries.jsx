@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Badge } from "@/components/AppShell";
-import { CAP_STATUS } from "@/lib/api";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import WebhookManager from "@/components/WebhookManager";
 import IntegrationsPanel from "@/components/IntegrationsPanel";
-import { Plug, Server, Puzzle, Webhook, ShieldCheck } from "lucide-react";
+import { PageHeader, Section, StatusDot, ViewTabs } from "@/components/page/Page";
+import { Boxes, Plug, Server, Puzzle, Webhook } from "lucide-react";
 
 const TABS = [
   { key: "integrations", label: "Integrations", icon: Plug },
@@ -15,25 +13,50 @@ const TABS = [
   { key: "webhooks", label: "Webhooks", icon: Webhook },
 ];
 
+// Capability status → a dot tone and a readable word (the API speaks in SCREAMING_CASE).
+const STATUS_TONE = {
+  AVAILABLE: "success",
+  BETA: "warning",
+  ALPHA: "violet",
+  PLANNED: "info",
+  REQUIRES_CONFIGURATION: "warning",
+  RESEARCHING: "neutral",
+  DEPRECATED: "danger",
+};
+const statusWord = (status = "PLANNED") => status.charAt(0) + status.slice(1).toLowerCase().replaceAll("_", " ");
+
 function Row({ item }) {
+  const tags = item.tools || item.scopes || item.permissions || item.events || [];
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm" data-testid={`registry-item-${item.id}`}>
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="font-display font-bold text-base">{item.name}</div>
-          <div className="text-xs text-gray-400 mt-0.5">
+    <div className="flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-start sm:gap-6" data-testid={`registry-item-${item.id}`}>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="text-[13px] font-medium text-foreground">{item.name}</span>
+          <span className="text-xs text-muted-foreground">
             {item.provider || item.publisher || item.version || item.url}
             {item.level ? ` · Level ${item.level}` : ""}
-          </div>
+          </span>
         </div>
-        <Badge className={CAP_STATUS[item.status] || CAP_STATUS.PLANNED}>{item.status}</Badge>
+        <p className="mt-0.5 text-[12.5px] leading-5 text-muted-foreground">{item.description}</p>
+        {tags.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {tags.slice(0, 6).map((t, i) => (
+              <code key={i} className="rounded bg-muted px-1.5 py-px font-mono text-[11px] text-muted-foreground">{t}</code>
+            ))}
+          </div>
+        )}
       </div>
-      <p className="text-sm text-gray-600 mt-2">{item.description}</p>
-      <div className="flex flex-wrap gap-1.5 mt-3">
-        {(item.tools || item.scopes || item.permissions || item.events || []).slice(0, 6).map((t, i) => (
-          <span key={i} className="text-[11px] font-mono px-2 py-0.5 rounded bg-gray-50 border border-gray-200 text-gray-600">{t}</span>
-        ))}
+      <div className="shrink-0 sm:w-44 sm:pt-0.5 sm:text-right">
+        <StatusDot tone={STATUS_TONE[item.status] || "neutral"}>{statusWord(item.status)}</StatusDot>
       </div>
+    </div>
+  );
+}
+
+function RowList({ items }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-card">
+      <div className="divide-y divide-border/70">{items.map((it) => <Row key={it.id} item={it} />)}</div>
     </div>
   );
 }
@@ -41,6 +64,7 @@ function Row({ item }) {
 export default function Registries() {
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("integrations");
 
   useEffect(() => {
     (async () => {
@@ -53,41 +77,35 @@ export default function Registries() {
     })();
   }, []);
 
-  return (
-    <div>
-      <div className="mb-6">
-        <h1 className="font-display text-3xl font-bold">Registries</h1>
-        <p className="text-sm text-gray-500 mt-1 flex items-center gap-1.5">
-          <ShieldCheck className="w-4 h-4 text-emerald-600" />
-          Governed contracts with capability statuses. External execution wired later.
-        </p>
-      </div>
+  const items = TABS.map((t) => ({
+    value: t.key,
+    label: t.label,
+    icon: t.icon,
+    count: !loading && t.key !== "integrations" && t.key !== "webhooks" ? (data[t.key] || []).length : undefined,
+    testid: `tab-${t.key}`,
+  }));
 
-      <Tabs defaultValue="integrations">
-        <TabsList>
-          {TABS.map((t) => <TabsTrigger key={t.key} value={t.key} data-testid={`tab-${t.key}`}><t.icon className="w-4 h-4 mr-1" />{t.label}</TabsTrigger>)}
-        </TabsList>
-        {TABS.map((t) => (
-          <TabsContent key={t.key} value={t.key} className="mt-6">
-            {t.key === "webhooks" ? <WebhookManager /> : t.key === "integrations" ? (
-              <div className="space-y-6">
-                <IntegrationsPanel />
-                {!loading && (data[t.key] || []).length > 0 && (
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.06em] font-semibold text-gray-400 mb-3">Governed capability contracts</div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{(data[t.key] || []).map((it) => <Row key={it.id} item={it} />)}</div>
-                  </div>
-                )}
-              </div>
-            ) : loading ? <Skeleton className="h-40 rounded-xl" /> : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {(data[t.key] || []).map((it) => <Row key={it.id} item={it} />)}
-                {(data[t.key] || []).length === 0 && <div className="text-sm text-gray-400 py-8">No entries.</div>}
-              </div>
+  return (
+    <div className="cv-page">
+      <PageHeader icon={Boxes} title="Registries" description="Governed contracts with capability statuses. External execution is wired later." />
+
+      <ViewTabs items={items} value={tab} onChange={setTab} label="Registry" />
+      <div className="mt-5">
+        {tab === "webhooks" ? <WebhookManager /> : tab === "integrations" ? (
+          <div className="space-y-8">
+            <IntegrationsPanel />
+            {!loading && (data[tab] || []).length > 0 && (
+              <Section title="Governed capability contracts">
+                <RowList items={data[tab] || []} />
+              </Section>
             )}
-          </TabsContent>
-        ))}
-      </Tabs>
+          </div>
+        ) : loading ? <Skeleton className="h-40 rounded-xl" /> : (data[tab] || []).length === 0 ? (
+          <div className="rounded-xl border border-border bg-card px-6 py-10 text-center text-[13px] text-muted-foreground">No entries.</div>
+        ) : (
+          <RowList items={data[tab] || []} />
+        )}
+      </div>
     </div>
   );
 }

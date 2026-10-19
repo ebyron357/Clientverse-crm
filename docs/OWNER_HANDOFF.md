@@ -28,6 +28,17 @@
 > will not start the scheduler, and CI cannot gate a merge. Check GitHub → Settings →
 > Billing and plans → *Actions*, and the repository's Settings → Actions → General.
 
+> **2026-10-17 update — the scheduler is no longer an owner action.** The API now runs
+> every scheduled job itself (`backend/scheduler.py`): each `/api/cron/*` job on the
+> workflow's cadence, once per window across replicas, recorded in the cron ledger as
+> `origin: in_process`. Once that code is deployed, the automation §4 describes as never
+> having run starts with the application — no GitHub secret and no working GitHub
+> Actions needed. §8.1 becomes optional (an external scheduler is redundant), and §10's
+> "is the automation running?" check reads `scheduled_jobs_running` instead.
+> `IN_PROCESS_SCHEDULER=0` on the Railway service turns the built-in scheduler off.
+> Details: `docs/RAILWAY_RUNBOOK.md` §6. Until it is deployed, everything below about
+> the scheduler still holds.
+
 This document is what the owner needs to take the system over. It states what is
 running, what is not, what only the owner can do, and how to verify each claim rather
 than take it on trust.
@@ -263,6 +274,11 @@ Each step says how to tell it worked.
 
 ### 8.1 Set the two GitHub secrets — *unblocks all automation*
 
+*2026-10-17: optional once the built-in scheduler is deployed (see the update at the
+top). Do this only if you want the external scheduler as well, or instead — in which
+case set `IN_PROCESS_SCHEDULER=0`. If you skip it, disable the Scheduled jobs workflow:
+unconfigured, it fails every tick by design.*
+
 Repository → Settings → Secrets and variables → Actions → New repository secret.
 
 | Name | Value |
@@ -388,7 +404,7 @@ Three questions, three endpoints, all admin-authenticated:
 | Question | Endpoint | Healthy answer |
 |---|---|---|
 | Is the service up? | `GET /api/health` | `status: ok`, `database: up`, and a `git_sha` matching what you deployed |
-| Is the automation actually running? | `GET /api/cron/health` | `receiving_scheduled_traffic: true` and a recent `last_authenticated_call_at`. **`false` means the scheduler is not reaching production, regardless of what GitHub Actions reports** |
+| Is the automation actually running? | `GET /api/cron/health` | `scheduled_jobs_running: true` and a recent `in_process.last_run_at` (built-in scheduler, 2026-10-17). If you also run the external scheduler: `receiving_scheduled_traffic: true` and a recent `last_authenticated_call_at`. **`receiving_scheduled_traffic: false` means the external scheduler is not reaching production, regardless of what GitHub Actions reports** — it never counts the built-in scheduler's runs |
 | Is the recovery engine producing anything? | `GET /api/proof/portfolio` | Cases detected, messages *actually sent* (not drafted), and attributed recovered value reported separately from open potential |
 
 If `receiving_scheduled_traffic` is `false` and the scheduler workflow is green, the

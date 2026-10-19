@@ -43,7 +43,12 @@
   (`VERIFIED_COMPLETE`, `n8n_execution_id` 146). The gate section at the end of this
   file is mandatory.
 - Password change/recovery (Issue #10, 2026-09-27 update, local commit `b8b8b4c`) is
-  **not on GitHub and not in `main`**. Do not rebuild it; the owner must push it.
+  **not on GitHub and not in `main`**. On 2026-10-17 the owner directed that agents be able
+  to change a temporary password, so `claude/inspiring-edison-myhdzx` adds the minimum:
+  `POST /api/auth/change-password` (Settings → Change password) and an admin
+  `POST /api/team/members/{id}/reset-password` that issues a temporary password which
+  opens nothing until replaced. Self-service "forgot password" by email is still not built;
+  reconcile with `b8b8b4c` if the owner pushes it.
 
 ## Session state (2026-09-21, branch `claude/trusting-brahmagupta-lj26xf`)
 

@@ -81,7 +81,7 @@ def test_an_unanswered_inbound_call_with_no_callback_is_detected(env):
     assert len(found) == 1
     assert found[0]["external_identity"] == {"kind": rc.IDENTITY_PHONE,
                                              "value": "+441632960001"}
-    assert "unanswered" in found[0]["reason"]
+    assert "was missed" in found[0]["reason"] and "called back" in found[0]["reason"]
     assert found[0]["record_collection"] == detectors.CALL_LOGS
 
 
@@ -169,14 +169,24 @@ def test_a_draft_estimate_nobody_sent_is_not_chased(env):
         "there is nothing to chase on a document that was never sent")
 
 
-def test_an_unanswered_quote_is_a_separate_source_from_an_estimate(env):
-    db, _ = env
+def test_the_quote_lane_is_disabled_and_says_so(env):
+    """Nothing in the application writes a priced quote with a decision status.
+
+    The lane used to read a `documents` collection nothing writes, so in production it
+    could never fire while every sweep reported it as having looked and found nothing.
+    It is now disabled, and the sweep says so with the reason -- the source stays in the
+    vocabulary so a real quote record can be wired to it later.
+    """
+    db, queue = env
     insert(db, "documents", {"title": "Fit-out quote", "kind": "quote", "status": "sent",
                              "total": 18000.0, "created_at": ago(days=20)})
-    found = run(detectors.detect_unanswered_quotes(db, TENANT))
-    assert len(found) == 1
-    assert found[0]["type"] == detectors.TYPE_UNANSWERED_QUOTE
-    assert detectors.SOURCE_FOR_TYPE[found[0]["type"]] == rc.SOURCE_UNANSWERED_QUOTE
+    assert run(detectors.detect_unanswered_quotes(db, TENANT)) == []
+    summary = run(detectors.run_detection(db, queue, TENANT))
+    lane = summary["by_lane"]["unanswered_quotes"]
+    assert lane["disabled"] is True and "client_documents" in lane["reason"]
+    assert "unanswered_quotes" in summary["disabled_lanes"]
+    assert detectors.SOURCE_FOR_TYPE[detectors.TYPE_UNANSWERED_QUOTE] == \
+        rc.SOURCE_UNANSWERED_QUOTE
 
 
 def test_an_ordinary_document_is_not_treated_as_a_quote(env):
@@ -282,6 +292,24 @@ def test_an_appointment_that_only_just_ended_is_inside_the_grace_period(env):
     assert run(detectors.detect_no_shows(db, TENANT)) == []
 
 
+def test_a_no_show_recorded_by_a_person_is_detected_without_waiting(env):
+    """Marking the no-show used to take it out of the statuses this lane read, so the one
+    no-show somebody actually recorded was the one never recovered."""
+    db, _ = env
+    insert(db, "appointments", {"title": "Showing", "status": "no_show", "contact_id": "ct_1",
+                                "start_at": ago(hours=1), "end_at": ago(hours=0)})
+    found = run(detectors.detect_no_shows(db, TENANT))
+    assert len(found) == 1
+    assert "recorded as a no-show" in found[0]["reason"]
+
+
+def test_a_no_show_cannot_be_recorded_for_the_future(env):
+    db, _ = env
+    insert(db, "appointments", {"title": "Next week", "status": "no_show",
+                                "start_at": ahead(days=7), "end_at": ahead(days=7)})
+    assert run(detectors.detect_no_shows(db, TENANT)) == []
+
+
 def test_a_future_appointment_is_never_a_no_show(env):
     db, _ = env
     insert(db, "appointments", {"title": "Next week", "status": "scheduled",
@@ -352,15 +380,17 @@ def _seed_one_of_everything(db, *, tenant_id=TENANT):
 
 
 def test_every_lane_finds_its_source_in_one_sweep(env):
+    """Every enabled lane fires; the disabled quote lane reports itself as disabled."""
     db, queue = env
     _seed_one_of_everything(db)
     summary = run(detectors.run_detection(db, queue, TENANT))
 
-    assert summary["detected"] == 8, summary["by_lane"]
+    assert summary["detected"] == 7, summary["by_lane"]
     assert all(isinstance(count, int) and count >= 1
-               for count in summary["by_lane"].values()), summary["by_lane"]
-    assert summary["work_items_created"] == 8
-    assert summary["recovery_cases_linked"] == 8
+               for name, count in summary["by_lane"].items()
+               if name not in detectors.DISABLED_LANES), summary["by_lane"]
+    assert summary["work_items_created"] == 7
+    assert summary["recovery_cases_linked"] == 7
 
 
 def test_detection_creates_internal_work_and_never_an_outbound_message(env):
@@ -375,7 +405,7 @@ def test_detection_creates_internal_work_and_never_an_outbound_message(env):
 
     items = run(queue.list_items(tenant_id=TENANT, status="open",
                                  queue=detectors.QUEUE_NAME, limit=50))
-    assert len(items) == 8
+    assert len(items) == 7
     assert all(item["payload"]["recovery_case_id"] for item in items)
     assert all(item["evidence"].get("reason") for item in items), (
         "every work item must carry the reason it exists")
@@ -387,10 +417,10 @@ def test_re_running_the_sweep_finds_the_same_cases_not_new_ones(env):
     first = run(detectors.run_detection(db, queue, TENANT))
     second = run(detectors.run_detection(db, queue, TENANT))
 
-    assert first["work_items_created"] == 8
+    assert first["work_items_created"] == 7
     assert second["work_items_created"] == 0
-    assert second["work_items_deduplicated"] == 8
-    assert run(db[rc.COLLECTION].count_documents({"tenant_id": TENANT})) == 8
+    assert second["work_items_deduplicated"] == 7
+    assert run(db[rc.COLLECTION].count_documents({"tenant_id": TENANT})) == 7
 
 
 def test_no_lane_can_see_another_tenants_records(env):
@@ -408,7 +438,8 @@ def test_a_case_from_every_new_source_carries_its_citation_and_reason(env):
     cases = run(db[rc.COLLECTION].find({"tenant_id": TENANT}, {"_id": 0}).to_list(50))
 
     assert {case["source"] for case in cases} == {
-        rc.SOURCE_MISSED_CALL, rc.SOURCE_WEB_ENQUIRY, rc.SOURCE_UNANSWERED_QUOTE,
+        # No unanswered-quote case: that lane is disabled (see DISABLED_LANES).
+        rc.SOURCE_MISSED_CALL, rc.SOURCE_WEB_ENQUIRY,
         rc.SOURCE_UNANSWERED_ESTIMATE, rc.SOURCE_NO_RESPONSE,
         rc.SOURCE_APPOINTMENT_CANCELLED, rc.SOURCE_APPOINTMENT_NO_SHOW,
         rc.SOURCE_EXTERNAL_CRM_EVENT}
@@ -443,4 +474,4 @@ def test_one_broken_lane_does_not_stop_the_others(env, monkeypatch):
                               else (name, fn) for name, fn in detectors.LANES))
     summary = run(detectors.run_detection(db, queue, TENANT))
     assert summary["by_lane"]["missed_calls"]["error"]
-    assert summary["detected"] == 7
+    assert summary["detected"] == 6

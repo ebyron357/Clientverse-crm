@@ -19,6 +19,8 @@ import approval_queue
 import conversations
 import next_best_action as nba
 import recovery_case
+import recovery_lifecycle
+import recovery_reconcile
 import recovery_runner
 import recovery_strategy
 import second_chance
@@ -28,6 +30,13 @@ from work_queue import InvalidTransition, WorkQueue, WorkQueueError
 
 class WorkItemResolution(BaseModel):
     resolution: str = Field(default="resolved", max_length=200)
+
+
+class CaseCloseInput(BaseModel):
+    """An operator closing a recovery case. The reason is one of a fixed set, because it
+    is what tells "the client was answered" apart from "we gave up" in every report."""
+    reason: str
+    note: Optional[str] = Field(default=None, max_length=500)
 
 
 class RecommendationPatch(BaseModel):
@@ -511,6 +520,14 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
         await record_event("communication_message.sent", "communication_message", message_id,
                            user["tenant_id"], user["email"],
                            payload={"status": message["status"]})
+        # A message that reached the client is what makes its recovery case engaged.
+        conversation = await conversations.get_conversation(
+            db, user["tenant_id"], str(message.get("conversation_id") or ""))
+        if conversation and conversation.get("recovery_case_id") and \
+                message.get("status") in (conversations.SENT, conversations.DELIVERED):
+            await recovery_lifecycle.sync_engagement(
+                db, tenant_id=user["tenant_id"], case_id=conversation["recovery_case_id"],
+                actor=user["email"], audit=record_event)
         return message
 
     # --------------------------------------------------------- recovery cases
@@ -529,6 +546,24 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
     async def recovery_cases_summary(user=Depends(get_current_user)):
         """Counts and value. Potential and confirmed are reported as separate figures."""
         return await recovery_case.summary(db, user["tenant_id"])
+
+    @router.get("/recovery-cases/close-reasons")
+    async def recovery_case_close_reasons(user=Depends(get_current_user)):
+        """The reasons an operator may give, and the ones only the system records."""
+        return {"operator": list(recovery_case.OPERATOR_CLOSE_REASONS),
+                "system": list(recovery_case.SYSTEM_CLOSE_REASONS)}
+
+    @router.post("/recovery-cases/reconcile")
+    async def reconcile_recovery_cases(user=Depends(require_role("admin"))):
+        """Re-read every open case's source now, instead of waiting for the next sweep."""
+        summary_ = await recovery_reconcile.reconcile_tenant(
+            db, user["tenant_id"], actor=user["email"], audit=record_event)
+        await record_event("recovery_case.reconciled", "recovery_case", user["tenant_id"],
+                           user["tenant_id"], user["email"],
+                           payload={"examined": summary_["examined"],
+                                    "closed": summary_["closed"],
+                                    "outcomes": len(summary_["outcomes"])})
+        return summary_
 
     @router.get("/recovery-cases/{case_id}")
     async def get_recovery_case(case_id: str, user=Depends(get_current_user)):
@@ -559,6 +594,38 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
                            payload={"work_item_id": item["id"]})
         return {"queued": True, "work_item_id": item["id"],
                 "deduplicated": item.get("deduplicated", False)}
+
+    @router.post("/recovery-cases/{case_id}/close")
+    async def close_recovery_case(case_id: str, inp: CaseCloseInput,
+                                  user=Depends(require_role("admin"))):
+        """Close a case with a reason: not recoverable, a duplicate, resolved elsewhere.
+
+        Closing takes the case out of open potential and withdraws what is still pending
+        on it -- an undecided strategy approval, drafted messages -- so nothing can be
+        approved and sent for a recovery that is no longer being pursued. A case in another
+        tenant is a 404, never a 403: its existence is not confirmed.
+        """
+        if inp.reason not in recovery_case.OPERATOR_CLOSE_REASONS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"reason must be one of {', '.join(recovery_case.OPERATOR_CLOSE_REASONS)}")
+        current = await recovery_case.get_case(db, user["tenant_id"], case_id)
+        if current and current.get("state") == recovery_case.RECOVERED:
+            # Its confirmed value stays counted whatever the case says, so closing it as
+            # "not recoverable" or "spam" would leave the report contradicting itself.
+            raise HTTPException(
+                status_code=409,
+                detail="This case's recovery is confirmed by a record; it cannot be closed "
+                       f"as '{inp.reason}'.")
+        try:
+            closed = await recovery_lifecycle.close_case(
+                db, tenant_id=user["tenant_id"], case_id=case_id, reason=inp.reason,
+                actor=user["email"], note=inp.note, audit=record_event)
+        except recovery_case.RecoveryCaseNotFound:
+            raise HTTPException(status_code=404, detail="Recovery case not found")
+        except recovery_case.InvalidCaseTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return closed
 
     # ----------------------------------------------------- recovery strategies
 

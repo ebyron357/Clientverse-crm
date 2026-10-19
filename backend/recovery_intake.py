@@ -36,10 +36,11 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
 import detectors
+import website_forms
 
 INTAKE_TOKENS = "intake_tokens"
 
@@ -80,7 +81,10 @@ class WebEnquiryInput(BaseModel):
     phone: Optional[str] = Field(default=None, max_length=40)
     message: Optional[str] = Field(default=None, max_length=MAX_MESSAGE)
     source_page: Optional[str] = Field(default=None, max_length=1000)
-    estimated_value: Optional[float] = Field(default=None, ge=0)
+    # Bounded and finite: a value of 1e300 or Infinity used to be accepted, reached the
+    # recovery totals, and made the enquiry listing fail to serialise.
+    estimated_value: Optional[float] = Field(default=None, ge=0, le=10_000_000_000,
+                                             allow_inf_nan=False)
     external_id: Optional[str] = Field(default=None, max_length=200)
 
 
@@ -100,11 +104,18 @@ class ExternalEventInput(BaseModel):
 
 class IntakeTokenInput(BaseModel):
     label: str = Field(min_length=1, max_length=120)
+    # Websites allowed to post with this token from a browser. Empty means any.
+    allowed_origins: list[str] = Field(default_factory=list, max_length=20)
 
 
 def register_intake_routes(router, db, new_id, now_iso, record_event,
-                           get_current_user, require_role):
-    """Attach the intake surface, using the application's own helpers."""
+                           get_current_user, require_role, lead_pipeline=None):
+    """Attach the intake surface, using the application's own helpers.
+
+    `lead_pipeline` is the website-forms pipeline. When given, the website door runs
+    every enquiry through it -- contact, owner, call-back task, alerts -- instead of
+    only filing it, because an enquiry nobody is told about is a lost lead.
+    """
 
     async def _insert_idempotent(collection: str, doc: dict, key: dict) -> dict:
         """Insert, or return what is already there for the caller's own id.
@@ -184,13 +195,18 @@ def register_intake_routes(router, db, new_id, now_iso, record_event,
                                    channel="authenticated")
 
     @router.post("/intake/public/{token}/web-enquiries")
-    async def record_public_web_enquiry(token: str, inp: WebEnquiryInput):
+    async def record_public_web_enquiry(token: str, request: Request):
         """The website door.
 
         The token identifies the tenant and authorises exactly this one write. It reads
         nothing, returns nothing that was not just supplied, and cannot open a recovery
         case -- the detector sweep does that later, inside the tenant, on the same terms
         as every other source.
+
+        It accepts what websites actually send -- JSON, `text/plain` JSON, URL-encoded
+        and multipart form posts -- from any origin (or the token's own allowlist), and
+        keeps every field a form sends. Before this, a browser on the agent's site was
+        refused by CORS and a plain HTML form by the JSON-only body.
         """
         record = await db[INTAKE_TOKENS].find_one(
             {"token_hash": _hash(token), "status": "active"}, {"_id": 0})
@@ -198,18 +214,17 @@ def register_intake_routes(router, db, new_id, now_iso, record_event,
             # The same answer for a revoked token, a wrong token and a token that never
             # existed: anything else confirms which.
             raise HTTPException(status_code=404, detail="Not found")
-        if not (inp.email or inp.phone or inp.message):
-            raise HTTPException(status_code=422,
-                                detail="An enquiry needs at least an email, a phone number or a message")
-        result = await _file_enquiry(record["tenant_id"], inp,
-                                     actor=f"intake_token:{record['id']}",
-                                     channel="public_form")
-        await db[INTAKE_TOKENS].update_one(
-            {"id": record["id"]},
-            {"$set": {"last_used_at": _now_iso()}, "$inc": {"use_count": 1}})
+        if lead_pipeline is None:  # pragma: no cover - the application always wires it
+            raise HTTPException(status_code=503, detail="Intake is not available")
+        response = await lead_pipeline.handle_public_submission(
+            request, lead_pipeline.legacy_form(record))
+        if response.status_code < 400:
+            await db[INTAKE_TOKENS].update_one(
+                {"id": record["id"]},
+                {"$set": {"last_used_at": _now_iso()}, "$inc": {"use_count": 1}})
         # Deliberately thin: the caller learns it was accepted and nothing about the
         # tenant behind the token.
-        return {"accepted": True, "id": result["id"]}
+        return response
 
     @router.get("/intake/web-enquiries")
     async def list_web_enquiries(status: Optional[str] = None, limit: int = 100,
@@ -234,7 +249,15 @@ def register_intake_routes(router, db, new_id, now_iso, record_event,
     async def create_intake_token(inp: IntakeTokenInput,
                                   user=Depends(require_role("admin"))):
         token = secrets.token_urlsafe(32)
+        origins = []
+        for origin in inp.allowed_origins:
+            normalised = website_forms.normalise_origin(origin)
+            if not normalised:
+                raise HTTPException(status_code=422,
+                                    detail=f"'{origin}' is not a website address like https://example.com")
+            origins.append(normalised)
         doc = {"id": new_id("itk"), "tenant_id": user["tenant_id"], "label": inp.label,
+               "allowed_origins": sorted(set(origins)),
                "token_hash": _hash(token), "status": "active", "use_count": 0,
                "last_used_at": None, "created_by": user["email"],
                "created_at": now_iso(), "revoked_at": None}

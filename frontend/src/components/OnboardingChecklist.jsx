@@ -1,14 +1,17 @@
 /* ClientVerse Systems Command Center: compact, calm activation guidance on neutral work surfaces. */
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Check, ChevronDown, ChevronUp, Circle, Sparkles, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Check, ChevronDown, ChevronRight, X } from "lucide-react";
 
 const STORAGE_KEY = "clientverse:onboarding-dismissed";
 
+function readDismissed() {
+  try { return localStorage.getItem(STORAGE_KEY) === "true"; } catch { return false; }
+}
+
 export default function OnboardingChecklist({ dashboard, integrations = [] }) {
   const navigate = useNavigate();
-  const [dismissed, setDismissed] = useState(() => localStorage.getItem(STORAGE_KEY) === "true");
+  const [dismissed, setDismissed] = useState(readDismissed);
   const [expanded, setExpanded] = useState(true);
   const items = useMemo(() => {
     const providerList = Array.isArray(integrations) ? integrations : (integrations?.providers || []);
@@ -20,7 +23,42 @@ export default function OnboardingChecklist({ dashboard, integrations = [] }) {
     ];
   }, [dashboard, integrations]);
   const completed = items.filter((item) => item.complete).length;
-  const dismiss = () => { localStorage.setItem(STORAGE_KEY, "true"); setDismissed(true); };
+  const dismiss = () => { try { localStorage.setItem(STORAGE_KEY, "true"); } catch { /* private mode: dismiss for this visit only */ } setDismissed(true); };
   if (dismissed || completed === items.length) return null;
-  return <section className="cv-card mt-5 overflow-hidden"><div className="flex items-start justify-between gap-4 border-b border-slate-100 bg-gradient-to-r from-cyan-50/80 to-white px-5 py-4"><div className="flex gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#1a9fbf] text-white"><Sparkles className="h-4 w-4" /></span><div><h2 className="cv-card-title">Set up your client operations workspace</h2><p className="cv-card-description">{completed} of {items.length} activation steps complete. Finish the essentials, then dismiss this guide.</p></div></div><div className="flex items-center gap-1"><button className="rounded-lg p-2 text-slate-400 hover:bg-white hover:text-slate-700" onClick={() => setExpanded((value) => !value)} aria-label={expanded ? "Collapse onboarding checklist" : "Expand onboarding checklist"}>{expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</button><button className="rounded-lg p-2 text-slate-400 hover:bg-white hover:text-slate-700" onClick={dismiss} aria-label="Dismiss onboarding checklist"><X className="h-4 w-4" /></button></div></div>{expanded && <div className="grid divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0">{items.map((item) => <div key={item.label} className="flex gap-3 p-4"><span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${item.complete ? "bg-emerald-500 text-white" : "border border-slate-300 text-slate-300"}`}>{item.complete ? <Check className="h-3.5 w-3.5" /> : <Circle className="h-2.5 w-2.5" />}</span><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[#132038]">{item.label}</h3><p className="mt-1 text-xs leading-5 text-slate-500">{item.detail}</p>{!item.complete && <Button size="sm" variant="link" className="mt-1 h-auto px-0 text-[#1a9fbf]" onClick={() => navigate(item.to)}>Complete step</Button>}</div></div>)}</div>}</section>;
+  const percent = Math.round((completed / items.length) * 100);
+
+  return <section className="mt-5 overflow-hidden rounded-xl border border-border bg-card" aria-label="Workspace setup" data-testid="onboarding-checklist">
+    <div className="flex items-center gap-3 px-4 py-2.5">
+      <div className="flex min-w-0 flex-1 items-baseline gap-2">
+        <h2 className="truncate text-sm font-semibold tracking-tight text-foreground">Set up your workspace</h2>
+        <span className="tabular shrink-0 text-xs text-muted-foreground">{completed} of {items.length} complete</span>
+      </div>
+      <div className="hidden h-1 w-32 shrink-0 overflow-hidden rounded-full bg-muted sm:block" role="progressbar" aria-label="Setup progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+        <div className="h-full rounded-full bg-brand" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="flex shrink-0 items-center">
+        <button type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}
+          aria-label={expanded ? "Collapse onboarding checklist" : "Expand onboarding checklist"}
+          className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+          <ChevronDown className={`size-4 ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
+        </button>
+        <button type="button" className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={dismiss} aria-label="Dismiss onboarding checklist"><X className="size-4" aria-hidden="true" /></button>
+      </div>
+    </div>
+    {expanded && <ul className="grid grid-cols-1 border-t border-border/70 sm:grid-cols-2">
+      {items.map((item, index) => <li key={item.label} className={`flex items-center gap-3 px-4 py-2.5 ${index > 0 ? "border-t border-border/70" : ""} ${index === 1 ? "sm:border-t-0" : ""} sm:odd:border-r`}>
+        <span className={`flex size-[18px] shrink-0 items-center justify-center rounded-full ${item.complete ? "border border-emerald-200 bg-emerald-50 text-emerald-700" : "border border-dashed border-input"}`}>
+          {item.complete ? <Check className="size-3" strokeWidth={3} aria-hidden="true" /> : null}
+          <span className="sr-only">{item.complete ? "Complete:" : "To do:"}</span>
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className={`truncate text-[13px] font-medium ${item.complete ? "text-muted-foreground line-through decoration-border" : "text-foreground"}`}>{item.label}</h3>
+          <p className="truncate text-xs text-muted-foreground" title={item.detail}>{item.detail}</p>
+        </div>
+        {!item.complete && <button type="button" onClick={() => navigate(item.to)} className="inline-flex shrink-0 items-center gap-0.5 rounded-md text-xs font-medium text-brand transition-colors hover:text-brand-strong">
+          Complete step<ChevronRight className="size-3.5" aria-hidden="true" />
+        </button>}
+      </li>)}
+    </ul>}
+  </section>;
 }

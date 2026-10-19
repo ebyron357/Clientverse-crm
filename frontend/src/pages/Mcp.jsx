@@ -1,22 +1,37 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, CAP_STATUS } from "@/lib/api";
+import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
-import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
-import { Terminal, ShieldAlert, Zap, Clock, CheckCircle2, XCircle, RotateCw, Undo2, Activity } from "lucide-react";
+import { SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
+import { PageHeader, Section, StatusDot } from "@/components/page/Page";
+import { Terminal, Zap, Clock, CheckCircle2, XCircle, RotateCw, Undo2, Info } from "lucide-react";
 
-const LEVEL_COLOR = {
-  1: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  2: "bg-blue-50 text-blue-700 border-blue-200",
-  3: "bg-orange-50 text-orange-700 border-orange-200",
-  4: "bg-red-50 text-red-700 border-red-200",
-};
+const LEVEL_TONE = { 1: "success", 2: "info", 3: "warning", 4: "danger" };
+const SERVER_TONE = { AVAILABLE: "success", BETA: "warning", ALPHA: "violet", PLANNED: "info", REQUIRES_CONFIGURATION: "warning", RESEARCHING: "neutral", DEPRECATED: "danger" };
+const humanize = (value = "") => { const text = String(value).replaceAll("_", " ").toLowerCase(); return text.charAt(0).toUpperCase() + text.slice(1); };
+const INVOCATION_TONE = { success: "success", pending_approval: "warning", rejected: "neutral" };
+const TH_BASE = "h-9 px-4 text-xs font-medium text-muted-foreground";
+const TH = `${TH_BASE} text-left`;
+
+function Empty({ title, children, testid }) {
+  return <div className="flex flex-col items-center px-6 py-10 text-center" data-testid={testid}>
+    <span className="flex size-10 items-center justify-center rounded-full bg-muted"><Terminal className="size-[18px] text-muted-foreground" aria-hidden="true" /></span>
+    <h3 className="mt-3 text-sm font-medium text-foreground">{title}</h3>
+    {children && <p className="mt-1 max-w-sm text-[13px] leading-5 text-muted-foreground">{children}</p>}
+  </div>;
+}
+
+function Metric({ value, label, className = "text-foreground" }) {
+  return <div>
+    <div className={`tabular text-[22px] font-semibold leading-7 tracking-tight ${className}`}>{value}</div>
+    <div className="text-xs text-muted-foreground">{label}</div>
+  </div>;
+}
 
 export default function Mcp() {
   const { user } = useAuth();
@@ -38,27 +53,38 @@ export default function Mcp() {
     setLoadError("");
     try {
       const [t, w] = await Promise.all([api.get("/mcp/tools"), api.get("/workspaces")]);
-      setData(t.data.tools); setServer(t.data.server); setWorkspaces(w.data);
+      setData(t.data.tools);
+      setServer(t.data.server);
+      setWorkspaces(w.data);
       await loadHistory();
     } catch (e) {
       setLoadError(e.response?.data?.detail || "Could not load MCP console.");
       setData(null);
     }
   }, [loadHistory]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const toggleKill = async (enabled) => {
     try {
       await api.patch("/mcp/server/kill", { enabled });
       setServer({ ...server, kill_switch: enabled });
       toast.success(enabled ? "Kill switch ON — tools disabled" : "Kill switch OFF — tools live");
-    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
   };
 
-  const pick = (tool) => { setSelected(tool); setArgs({}); setResult(null); };
+  const pick = (tool) => {
+    setSelected(tool);
+    setArgs({});
+    setResult(null);
+  };
 
   const invoke = async (tool, useArgs) => {
-    setBusy(true); setResult(null);
+    setBusy(true);
+    setResult(null);
     try {
       const { data } = await api.post("/mcp/invoke", { tool: tool.name, args: useArgs || args, idempotency_key: null });
       setResult(data);
@@ -67,13 +93,16 @@ export default function Mcp() {
     } catch (e) {
       toast.error(e.response?.data?.detail || "Invocation failed");
       loadHistory();
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   };
 
   const retry = async (inv) => {
     const tool = data.find((t) => t.name === inv.tool);
     if (!tool) return toast.error("Tool no longer available");
-    pick(tool); setArgs(inv.args || {});
+    pick(tool);
+    setArgs(inv.args || {});
     invoke(tool, inv.args || {});
   };
 
@@ -85,179 +114,261 @@ export default function Mcp() {
       const { data: res } = await api.post(`/mcp/invocations/${inv.id}/undo`, { reason });
       toast.success(res.restored || "Reversed");
       loadHistory();
-    } catch (e) { toast.error(e.response?.data?.detail || "Undo failed"); }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Undo failed");
+    }
   };
 
+  const header = <PageHeader icon={Terminal} title="MCP Console" description="Governed MCP server — Level 1 read tools execute live through the ClientVerse policy wrapper." />;
+
   if (loadError) {
-    return <div className="cv-page"><SurfaceError title="MCP console unavailable" description={typeof loadError === "string" ? loadError : "Could not load MCP console."} onRetry={load} testid="mcp-error" /></div>;
+    return (
+      <div className="cv-page">
+        {header}
+        <SurfaceError
+          title="MCP console unavailable"
+          description={typeof loadError === "string" ? loadError : "Could not load MCP console."}
+          onRetry={load}
+          testid="mcp-error"
+        />
+      </div>
+    );
   }
-  if (!data || !server) return <div className="cv-page space-y-4"><SurfaceLoading rows={3} testid="mcp-loading" /></div>;
+  if (!data || !server)
+    return (
+      <div className="cv-page space-y-4">
+        {header}
+        <SurfaceLoading rows={3} testid="mcp-loading" />
+      </div>
+    );
 
   const serverLive = !server.kill_switch && server.status === "available";
   const recentFailures = invocations.filter((inv) => inv.status && inv.status !== "success" && inv.status !== "pending_approval").length;
   const recentSuccess = invocations.filter((inv) => inv.status === "success").length;
 
   return (
-    <div>
-      <div className="mb-6">
-        <h1 className="font-display text-3xl font-bold flex items-center gap-2"><Terminal className="w-6 h-6" />MCP Console</h1>
-        <p className="text-sm text-gray-500 mt-1">Governed MCP server — Level 1 read tools execute live through the ClientVerse policy wrapper.</p>
-      </div>
+    <div className="cv-page">
+      {header}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" data-testid="mcp-status-cards">
-        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-server-card">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${server.kill_switch ? "bg-red-50" : "bg-emerald-50"}`}>
-                <ShieldAlert className={`w-5 h-5 ${server.kill_switch ? "text-red-600" : "text-emerald-600"}`} />
-              </div>
-              <div className="min-w-0">
-                <div className="font-display font-bold truncate">{server.name} <span className="text-xs text-gray-400 font-normal">v{server.version}</span></div>
-                <div className="text-xs text-gray-500 mt-0.5">Level 1 · {server.allowlist?.length || 0} tools allowlisted</div>
-              </div>
+      {/* Server, runtime and activity as one strip */}
+      <div className="grid overflow-hidden rounded-xl border border-border bg-card lg:grid-cols-3" data-testid="mcp-status-cards">
+        <div className="grid divide-y divide-border sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:col-span-2" data-testid="mcp-server-card">
+          <div className="min-w-0 px-4 py-3.5">
+            <div className="text-xs font-medium text-muted-foreground">Server</div>
+            <div className="mt-1 flex min-w-0 items-center gap-2">
+              <span className="truncate text-sm font-semibold text-foreground">{server.name}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">v{server.version}</span>
             </div>
-            <Badge className={CAP_STATUS[server.status] || CAP_STATUS.PLANNED} data-testid="mcp-server-status">{server.status}</Badge>
-          </div>
-          <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-3">
-            <div>
-              <div className="text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold">Runtime</div>
-              <div className="text-sm font-medium mt-0.5" data-testid="mcp-runtime-label">{server.kill_switch ? "Disabled by kill switch" : serverLive ? "Live (governed)" : "Not live"}</div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch checked={server.kill_switch} onCheckedChange={toggleKill} data-testid="mcp-kill-switch" />
-              <span className="text-xs text-gray-400">Kill switch</span>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span data-testid="mcp-server-status"><StatusDot tone={SERVER_TONE[String(server.status).toUpperCase()] || "neutral"}>{humanize(server.status)}</StatusDot></span>
+              <span className="text-xs text-muted-foreground">Level 1 · {server.allowlist?.length || 0} tools allowlisted</span>
             </div>
           </div>
-        </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-activity-card">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold"><Activity className="w-3.5 h-3.5" />Recent activity</div>
-          <div className="mt-3 flex items-end gap-4">
-            <div><div className="font-display text-2xl font-bold text-emerald-700">{recentSuccess}</div><div className="text-xs text-gray-500">Succeeded</div></div>
-            <div><div className="font-display text-2xl font-bold text-red-600">{recentFailures}</div><div className="text-xs text-gray-500">Failed / rejected</div></div>
-            <div><div className="font-display text-2xl font-bold text-[#0a1628]">{invocations.length}</div><div className="text-xs text-gray-500">In history</div></div>
+          <div className="flex items-start justify-between gap-4 px-4 py-3.5">
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-muted-foreground">Runtime</div>
+              <StatusDot tone={server.kill_switch ? "danger" : serverLive ? "success" : "neutral"} className="mt-1">
+                <span className="text-sm font-semibold text-foreground" data-testid="mcp-runtime-label">{server.kill_switch ? "Disabled by kill switch" : serverLive ? "Live (governed)" : "Not live"}</span>
+              </StatusDot>
+            </div>
+            <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+              <Switch id="mcp-kill-switch" checked={server.kill_switch} onCheckedChange={toggleKill} data-testid="mcp-kill-switch" />
+              <Label htmlFor="mcp-kill-switch" className="text-xs font-normal text-muted-foreground">Kill switch</Label>
+            </div>
           </div>
         </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm" data-testid="mcp-policy-card">
-          <div className="text-xs uppercase tracking-[0.06em] text-gray-400 font-semibold">Observability</div>
-          <p className="text-sm text-gray-600 mt-2 leading-5">Invocations are policy-wrapped. History below is operator evidence — not a claim that external agents are running outside this console.</p>
+        <div className="border-t border-border px-4 py-3.5 lg:border-l lg:border-t-0" data-testid="mcp-activity-card">
+          <div className="text-xs font-medium text-muted-foreground">Recent activity</div>
+          <div className="mt-1 flex items-end gap-6">
+            <Metric value={recentSuccess} label="Succeeded" className="text-emerald-700" />
+            <Metric value={recentFailures} label="Failed / rejected" className={recentFailures ? "text-red-700" : "text-foreground"} />
+            <Metric value={invocations.length} label="In history" />
+          </div>
         </div>
       </div>
+      <p className="mt-2.5 flex items-start gap-1.5 text-xs leading-5 text-muted-foreground" data-testid="mcp-policy-card">
+        <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+        Invocations are policy-wrapped. History below is operator evidence — not a claim that external agents are running outside this console.
+      </p>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_400px]">
         {/* Tool catalog */}
-        <div>
-          <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Tool Catalog</div>
-          <div className="space-y-3">
-            {data.length === 0 && <SurfaceEmpty icon={Terminal} title="No tools allowlisted" description="The MCP server returned an empty catalog. Check server configuration or kill-switch policy." testid="mcp-tools-empty" />}
-            {data.map((tool) => (
-              <button key={tool.name} type="button" className={`w-full bg-white border rounded-xl p-4 text-left shadow-sm transition-colors ${selected?.name === tool.name ? "border-black" : "border-gray-200 hover:border-gray-300"}`}
-                onClick={() => pick(tool)} data-testid={`mcp-tool-${tool.name}`}>
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-sm font-medium">{tool.name}</span>
-                  <Badge className={LEVEL_COLOR[tool.level]}>Level {tool.level}</Badge>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">{tool.description}</p>
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {tool.scopes.map((s) => <span key={s} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-50 border border-gray-200 text-gray-500">{s}</span>)}
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 border-dashed text-slate-500 flex items-center gap-1"><Clock className="w-2.5 h-2.5" />{tool.timeout_seconds}s</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 border-dashed text-slate-500 flex items-center gap-1"><Zap className="w-2.5 h-2.5" />{tool.rate_limit_per_min}/min</span>
-                </div>
-              </button>
-            ))}
+        <Section title={<span className="flex items-center gap-2">Tool catalog<span className="tabular rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">{data.length}</span></span>}>
+          <div className="overflow-hidden rounded-xl border border-border bg-card">
+            {data.length === 0 && (
+              <Empty title="No tools allowlisted" testid="mcp-tools-empty">The MCP server returned an empty catalog. Check server configuration or kill-switch policy.</Empty>
+            )}
+            <div className="divide-y divide-border/70">
+              {data.map((tool) => {
+                const active = selected?.name === tool.name;
+                return (
+                  <button
+                    key={tool.name}
+                    type="button"
+                    aria-pressed={active}
+                    className={`relative block w-full px-4 py-3 text-left transition-colors before:absolute before:inset-y-0 before:left-0 before:w-0.5 ${active ? "bg-muted/60 before:bg-foreground" : "before:bg-transparent hover:bg-muted/40"}`}
+                    onClick={() => pick(tool)}
+                    data-testid={`mcp-tool-${tool.name}`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <code className="truncate font-mono text-[13px] font-medium text-foreground">{tool.name}</code>
+                      <StatusDot tone={LEVEL_TONE[tool.level] || "neutral"} className="shrink-0 text-xs">Level {tool.level}</StatusDot>
+                    </div>
+                    <p className="mt-0.5 text-[12.5px] leading-5 text-muted-foreground">{tool.description}</p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                      <span className="flex flex-wrap gap-1">
+                        {tool.scopes.map((s) => <code key={s} className="rounded bg-muted px-1.5 py-px font-mono text-[10.5px]">{s}</code>)}
+                      </span>
+                      <span className="tabular inline-flex items-center gap-1"><Clock className="size-3" aria-hidden="true" />{tool.timeout_seconds}s</span>
+                      <span className="tabular inline-flex items-center gap-1"><Zap className="size-3" aria-hidden="true" />{tool.rate_limit_per_min}/min</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
+        </Section>
 
         {/* Run panel */}
-        <div>
-          <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Invoke</div>
-          <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm" data-testid="mcp-run-panel">
+        <Section title="Invoke" className="lg:sticky lg:top-20 lg:self-start">
+          <div className="rounded-xl border border-border bg-card" data-testid="mcp-run-panel">
             {!selected ? (
-              <div className="text-sm text-gray-400 py-8 text-center">Select a tool to invoke.</div>
+              <Empty title="Select a tool to invoke.">Its arguments and result appear here.</Empty>
             ) : (
               <>
-                <div className="font-mono text-sm font-medium mb-3">{selected.name}</div>
-                <div className="space-y-3">
-                  {Object.keys(selected.input_schema).length === 0 && <div className="text-xs text-gray-400">No arguments required.</div>}
+                <div className="flex items-center justify-between gap-3 border-b border-border/80 px-4 py-3">
+                  <code className="truncate font-mono text-[13px] font-semibold text-foreground">{selected.name}</code>
+                  <StatusDot tone={LEVEL_TONE[selected.level] || "neutral"} className="text-xs">Level {selected.level}</StatusDot>
+                </div>
+                <div className="space-y-3 p-4">
+                  {Object.keys(selected.input_schema).length === 0 && <div className="text-[13px] text-muted-foreground">No arguments required.</div>}
                   {Object.entries(selected.input_schema).map(([field, spec]) => (
-                    <div key={field}>
-                      <Label className="text-xs">{field}{spec.required ? " *" : ""}</Label>
+                    <div key={field} className="space-y-1">
+                      <Label htmlFor={`mcp-arg-${field}`} className="font-mono text-xs">
+                        {field}
+                        {spec.required ? " *" : ""}
+                      </Label>
                       {spec.type === "workspace" ? (
                         <Select value={args[field] || ""} onValueChange={(v) => setArgs({ ...args, [field]: v })}>
-                          <SelectTrigger className="mt-1" data-testid={`mcp-arg-${field}`}><SelectValue placeholder="Select workspace" /></SelectTrigger>
-                          <SelectContent>{workspaces.map((w) => <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>)}</SelectContent>
+                          <SelectTrigger id={`mcp-arg-${field}`} aria-label={field} className="h-9 text-[13px]" data-testid={`mcp-arg-${field}`}>
+                            <SelectValue placeholder="Select workspace" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {workspaces.map((w) => (
+                              <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                            ))}
+                          </SelectContent>
                         </Select>
                       ) : (
-                        <Input className="mt-1" placeholder={spec.placeholder || ""} value={args[field] || ""} onChange={(e) => setArgs({ ...args, [field]: e.target.value })} data-testid={`mcp-arg-${field}`} />
+                        <Input
+                          id={`mcp-arg-${field}`}
+                          className="h-9 text-[13px]"
+                          placeholder={spec.placeholder || ""}
+                          value={args[field] || ""}
+                          onChange={(e) => setArgs({ ...args, [field]: e.target.value })}
+                          data-testid={`mcp-arg-${field}`}
+                        />
                       )}
                     </div>
                   ))}
-                </div>
-                <Button onClick={() => invoke(selected)} disabled={busy || server.kill_switch} className="w-full mt-4 bg-[#0A0A0A] hover:bg-[#262626]" data-testid="mcp-invoke-button">
-                  {busy ? "Invoking…" : server.kill_switch ? "Disabled by kill switch" : "Invoke tool"}
-                </Button>
+                  <Button onClick={() => invoke(selected)} disabled={busy || server.kill_switch} className="w-full" data-testid="mcp-invoke-button">
+                    {busy ? "Invoking…" : server.kill_switch ? "Disabled by kill switch" : "Invoke tool"}
+                  </Button>
 
-                {result && (
-                  <div className="mt-4" data-testid="mcp-result">
-                    {result.status === "pending_approval" ? (
-                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                        <div className="text-xs uppercase tracking-wide text-amber-700 font-semibold mb-1">Approval required (Level 2)</div>
-                        <p className="text-sm text-amber-800">{result.message}</p>
-                        <p className="text-xs text-amber-600 mt-2 font-mono">approval: {result.approval_id}</p>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex flex-wrap gap-2 text-xs mb-2">
-                          <span className={`px-2 py-1 rounded border flex items-center gap-1 ${result.status === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"}`}>
-                            {result.status === "success" ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}{result.status}
-                          </span>
-                          <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">{result.latency_ms}ms</span>
-                          <span className="px-2 py-1 rounded bg-slate-50 text-slate-600 border border-slate-200 border-dashed">{result.id}</span>
+                  {result && (
+                    <div className="pt-1" data-testid="mcp-result">
+                      {result.status === "pending_approval" ? (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+                          <div className="text-xs font-medium text-amber-700">Approval required (Level 2)</div>
+                          <p className="mt-0.5">{result.message}</p>
+                          <p className="mt-1 font-mono text-xs text-amber-700">approval: {result.approval_id}</p>
                         </div>
-                        <div className="bg-slate-50 border border-slate-200 border-dashed rounded-lg p-3 max-h-72 overflow-auto">
-                          <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap">{JSON.stringify(result.result, null, 2)}</pre>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
+                      ) : (
+                        <>
+                          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                            <span className={`inline-flex items-center gap-1 font-medium ${result.status === "success" ? "text-emerald-700" : "text-red-700"}`}>
+                              {result.status === "success" ? <CheckCircle2 className="size-3.5" aria-hidden="true" /> : <XCircle className="size-3.5" aria-hidden="true" />}
+                              {result.status}
+                            </span>
+                            <span className="tabular">{result.latency_ms}ms</span>
+                            <code className="font-mono">{result.id}</code>
+                          </div>
+                          <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-muted/50 p-3 font-mono text-xs leading-5 text-foreground/80">
+                            {JSON.stringify(result.result, null, 2)}
+                          </pre>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
-        </div>
+        </Section>
       </div>
 
       {/* Execution history */}
-      <div className="mt-8">
-        <div className="text-xs uppercase tracking-[0.06em] text-gray-500 font-semibold mb-3">Execution History</div>
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <table className="w-full text-sm text-left">
-            <thead><tr className="border-b border-gray-200 text-xs uppercase tracking-[0.05em] text-gray-500">
-              <th className="px-5 py-3 font-semibold">Tool</th><th className="px-5 py-3 font-semibold">Status</th><th className="px-5 py-3 font-semibold">Latency</th><th className="px-5 py-3 font-semibold">When</th><th className="px-5 py-3 font-semibold"></th></tr></thead>
-            <tbody>
-              {invocations.map((inv) => (
-                <tr key={inv.id} className="border-b border-gray-100 hover:bg-gray-50" data-testid={`mcp-invocation-${inv.id}`}>
-                  <td className="px-5 py-3 font-mono text-xs">{inv.tool}</td>
-                  <td className="px-5 py-3">
-                    <Badge className={inv.status === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : inv.status === "pending_approval" ? "bg-amber-50 text-amber-700 border-amber-200" : inv.status === "rejected" ? "bg-gray-100 text-gray-600 border-gray-200" : "bg-red-50 text-red-700 border-red-200"}>{inv.status}</Badge>
-                    {inv.error && <span className="text-xs text-red-500 ml-2">{inv.error}</span>}
-                  </td>
-                  <td className="px-5 py-3 text-gray-500">{inv.latency_ms}ms</td>
-                  <td className="px-5 py-3 text-gray-400 text-xs">{new Date(inv.timestamp).toLocaleTimeString()}</td>
-                  <td className="px-5 py-3">
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline" className="h-7" onClick={() => retry(inv)} data-testid={`mcp-retry-${inv.id}`}><RotateCw className="w-3 h-3 mr-1" />Retry</Button>
-                      {user?.role === "admin" && inv.level === 2 && inv.status === "success" && (
-                        <Button size="sm" variant="outline" className="h-7 text-red-600 border-red-200 hover:bg-red-50" onClick={() => undo(inv)} data-testid={`mcp-undo-${inv.id}`}><Undo2 className="w-3 h-3 mr-1" />Undo</Button>
-                      )}
-                    </div>
-                  </td>
+      <Section title="Execution history" className="mt-8">
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <div className="relative overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="border-b border-border bg-muted/40">
+                  <th className={TH}>Tool</th>
+                  <th className={`${TH} hidden sm:table-cell`}>Status</th>
+                  <th className={`${TH_BASE} hidden text-right sm:table-cell`}>Latency</th>
+                  <th className={`${TH_BASE} hidden text-right sm:table-cell`}>When</th>
+                  <th className={TH}><span className="sr-only">Actions</span></th>
                 </tr>
-              ))}
-              {invocations.length === 0 && <tr><td colSpan={5} className="px-5 py-6"><SurfaceEmpty icon={Terminal} title="No MCP invocations yet" description="Successful and failed tool runs appear here after an invoke. Empty history means nothing has been executed in this tenant." testid="mcp-history-empty" /></td></tr>}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {invocations.map((inv) => (
+                  <tr key={inv.id} className="border-b border-border/70 transition-colors last:border-0 hover:bg-muted/50" data-testid={`mcp-invocation-${inv.id}`}>
+                    <td className="px-4 py-2.5">
+                      <code className="font-mono text-xs text-foreground">{inv.tool}</code>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 sm:hidden">
+                        <StatusDot tone={INVOCATION_TONE[inv.status] || "danger"} className="text-xs">{inv.status}</StatusDot>
+                        {inv.error && <span className="text-xs text-red-700">{inv.error}</span>}
+                      </div>
+                    </td>
+                    <td className="hidden px-4 py-2.5 sm:table-cell">
+                      <div className="flex flex-wrap items-center gap-x-2">
+                        <StatusDot tone={INVOCATION_TONE[inv.status] || "danger"}>{inv.status}</StatusDot>
+                        {inv.error && <span className="text-xs text-red-700">{inv.error}</span>}
+                      </div>
+                    </td>
+                    <td className="tabular hidden px-4 py-2.5 text-right text-muted-foreground sm:table-cell">{inv.latency_ms}ms</td>
+                    <td className="tabular hidden whitespace-nowrap px-4 py-2.5 text-right text-xs text-muted-foreground sm:table-cell">{new Date(inv.timestamp).toLocaleTimeString()}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex justify-end gap-1">
+                        <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground sm:px-3" onClick={() => retry(inv)} data-testid={`mcp-retry-${inv.id}`}>
+                          <RotateCw aria-hidden="true" />
+                          <span className="sr-only sm:not-sr-only">Retry</span>
+                        </Button>
+                        {user?.role === "admin" && inv.level === 2 && inv.status === "success" && (
+                          <Button size="sm" variant="outline" className="h-7 border-red-200 px-2 text-red-700 hover:bg-red-50 hover:text-red-700 sm:px-3" onClick={() => undo(inv)} data-testid={`mcp-undo-${inv.id}`}>
+                            <Undo2 aria-hidden="true" />
+                            <span className="sr-only sm:not-sr-only">Undo</span>
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {invocations.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="p-0">
+                      <Empty title="No MCP invocations yet" testid="mcp-history-empty">
+                        Successful and failed tool runs appear here after an invoke. Empty history means nothing has been executed in this tenant.
+                      </Empty>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      </Section>
     </div>
   );
 }

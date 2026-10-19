@@ -1,0 +1,282 @@
+"""Changing your own password, and an admin giving a teammate a temporary one.
+
+Before this, nobody could change a password: an owner who set someone up with a temporary
+password had no way to let them replace it. `POST /api/auth/change-password` needs the
+current password, ends every other session and keeps this one; `POST
+/api/team/members/{id}/reset-password` gives a teammate a temporary password that opens
+nothing until they choose their own.
+
+In-process against the real `app` through FastAPI's TestClient, with a fresh motor client
+per test for the reason given in test_security_headers.py.
+"""
+
+import os
+import sys
+import uuid
+from pathlib import Path
+
+from cryptography.fernet import Fernet
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND_DIR))
+os.environ["APP_ENV"] = "test"
+os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+os.environ.setdefault("DB_NAME", "clientverse_password_change_unit")
+os.environ.setdefault("JWT_SECRET", "password-change-unit-jwt-secret-long-enough-12")
+os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
+os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
+os.environ.setdefault("INTEGRATION_ENC_KEY", Fernet.generate_key().decode())
+os.environ.setdefault("ADMIN_EMAIL", "password-change-admin@example.com")
+os.environ.setdefault("ADMIN_PASSWORD", "Password-Change-Admin-1!")
+
+from fastapi.testclient import TestClient
+
+import server
+
+TEMPORARY = "Temporary-Passw0rd!"
+CHOSEN = "Jasmine-Chosen-Passw0rd!"
+
+
+def _reset_motor_client():
+    server.mclient = server.AsyncIOMotorClient(os.environ["MONGO_URL"])
+    server.db = server.mclient[os.environ["DB_NAME"]]
+
+
+def _h(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _account(client, password=TEMPORARY):
+    email = f"agent_{uuid.uuid4().hex[:10]}@example.com"
+    r = client.post("/api/auth/register", json={"email": email, "password": password, "name": "Jasmine Parker"})
+    assert r.status_code == 200, r.text
+    client.cookies.clear()  # authenticate explicitly per request; the cookie would win over the header
+    return email, r.json()["token"], r.json()["user"]
+
+
+def _login(client, email, password):
+    r = client.post("/api/auth/login", json={"email": email, "password": password})
+    client.cookies.clear()
+    return r
+
+
+def _change(client, token, current, new):
+    r = client.post("/api/auth/change-password", headers=_h(token),
+                    json={"current_password": current, "new_password": new})
+    client.cookies.clear()
+    return r
+
+
+def test_changing_a_temporary_password_keeps_this_session_and_ends_the_others():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        email, phone_token, _ = _account(client)
+        laptop_token = _login(client, email, TEMPORARY).json()["token"]
+
+        r = _change(client, laptop_token, TEMPORARY, CHOSEN)
+        assert r.status_code == 200, r.text
+        fresh = r.json()["token"]
+
+        assert client.get("/api/auth/me", headers=_h(fresh)).status_code == 200
+        for old in (phone_token, laptop_token):
+            gone = client.get("/api/auth/me", headers=_h(old))
+            assert gone.status_code == 401
+        assert _login(client, email, TEMPORARY).status_code == 401
+        assert _login(client, email, CHOSEN).status_code == 200
+
+
+def test_the_current_password_must_be_right_and_wrong_guesses_count_towards_the_lockout():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        email, token, _ = _account(client)
+        r = _change(client, token, "not-my-password", CHOSEN)
+        assert r.status_code == 400
+        assert r.json()["detail"] == "Your current password isn't right."
+        for _ in range(server.LOGIN_LOCKOUT_THRESHOLD):
+            _change(client, token, "still-wrong", CHOSEN)
+        locked = _change(client, token, TEMPORARY, CHOSEN)
+        assert locked.status_code == 429
+        assert _login(client, email, TEMPORARY).status_code == 401  # the same lock sign-in honours
+
+
+def test_a_new_password_is_checked_before_anything_changes():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        email, token, _ = _account(client)
+        assert _change(client, token, TEMPORARY, "short").status_code == 422
+        assert _change(client, token, TEMPORARY, "x" * 73).status_code == 422
+        same = _change(client, token, TEMPORARY, TEMPORARY)
+        assert same.status_code == 422
+        assert same.json()["detail"] == "Choose a password different from your current one."
+        assert _login(client, email, TEMPORARY).status_code == 200
+
+
+def test_an_admin_reset_gives_a_temporary_password_that_opens_nothing_until_replaced():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        admin_email, admin_token, _ = _account(client)
+        teammate = f"assistant_{uuid.uuid4().hex[:10]}@example.com"
+        invite = client.post("/api/team/invitations", headers=_h(admin_token),
+                             json={"email": teammate, "role": "member"}).json()
+        joined = client.post("/api/team/invitations/accept-new",
+                             json={"token": invite["invite_token"], "name": "Alex Assistant", "password": CHOSEN})
+        client.cookies.clear()
+        assert joined.status_code == 200, joined.text
+        teammate_id, teammate_old_token = joined.json()["user"]["user_id"], joined.json()["token"]
+
+        r = client.post(f"/api/team/members/{teammate_id}/reset-password", headers=_h(admin_token))
+        assert r.status_code == 200, r.text
+        temporary = r.json()["temporary_password"]
+        assert len(temporary) == 14 and temporary.count("-") == 2
+
+        assert client.get("/api/auth/me", headers=_h(teammate_old_token)).status_code == 401
+        signed_in = _login(client, teammate, temporary)
+        assert signed_in.status_code == 200
+        assert signed_in.json()["user"]["must_change_password"] is True
+        token = signed_in.json()["token"]
+        assert client.get("/api/auth/me", headers=_h(token)).status_code == 200
+        blocked = client.get("/api/leads", headers=_h(token))
+        assert blocked.status_code == 403
+        assert blocked.json()["detail"] == "Choose your own password to continue."
+
+        changed = _change(client, token, temporary, "Alex-Own-Passw0rd!")
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["user"]["must_change_password"] is False
+        assert client.get("/api/leads", headers=_h(changed.json()["token"])).status_code == 200
+
+
+def test_only_an_admin_resets_and_only_for_their_own_team():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        _, admin_token, admin = _account(client)
+        _, other_admin_token, other_admin = _account(client)
+        own = client.post(f"/api/team/members/{admin['user_id']}/reset-password", headers=_h(admin_token))
+        assert own.status_code == 400
+        assert own.json()["detail"] == "Change your own password under Settings."
+        across = client.post(f"/api/team/members/{other_admin['user_id']}/reset-password", headers=_h(admin_token))
+        assert across.status_code == 404
+
+
+def test_the_audit_trail_records_the_change_without_any_password():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        email, token, user = _account(client)
+        assert _change(client, token, TEMPORARY, CHOSEN).status_code == 200
+
+        async def events():
+            return await server.db.domain_events.find(
+                {"tenant_id": user["tenant_id"], "event_type": "auth.password_changed"}, {"_id": 0}).to_list(10)
+
+        recorded = client.portal.call(events)
+        assert len(recorded) == 1
+        assert TEMPORARY not in str(recorded) and CHOSEN not in str(recorded)
+
+
+def test_an_admin_names_the_business_and_invitations_use_that_name():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        _, admin_token, _ = _account(client)
+        assert client.get("/api/organization", headers=_h(admin_token)).json()["name"] == "Jasmine Parker's Org"
+        renamed = client.patch("/api/organization", headers=_h(admin_token), json={"name": "  Parker   Homes "})
+        assert renamed.status_code == 200 and renamed.json()["name"] == "Parker Homes"
+        for bad in ("", "   ", "x" * 81):
+            assert client.patch("/api/organization", headers=_h(admin_token), json={"name": bad}).status_code == 422
+
+        invite = client.post("/api/team/invitations", headers=_h(admin_token),
+                             json={"email": f"assistant_{uuid.uuid4().hex[:10]}@example.com", "role": "member"}).json()
+        shown = client.get("/api/team/invitations/lookup", params={"token": invite["invite_token"]}).json()
+        assert shown["tenant_name"] == "Parker Homes"
+
+        joined = client.post("/api/team/invitations/accept-new",
+                             json={"token": invite["invite_token"], "name": "Alex Assistant", "password": CHOSEN})
+        client.cookies.clear()
+        member_token = joined.json()["token"]
+        assert client.get("/api/organization", headers=_h(member_token)).json()["name"] == "Parker Homes"
+        assert client.patch("/api/organization", headers=_h(member_token), json={"name": "Mine"}).status_code == 403
+
+        _, other_token, _ = _account(client)
+        assert client.get("/api/organization", headers=_h(other_token)).json()["name"] == "Jasmine Parker's Org"
+
+
+def test_google_sign_in_sessions_obey_the_same_password_rules():
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        from datetime import datetime, timedelta, timezone
+
+        _, admin_token, _ = _account(client)
+        teammate = f"assistant_{uuid.uuid4().hex[:10]}@example.com"
+        invite = client.post("/api/team/invitations", headers=_h(admin_token),
+                             json={"email": teammate, "role": "member"}).json()
+        joined = client.post("/api/team/invitations/accept-new",
+                             json={"token": invite["invite_token"], "name": "Alex Assistant", "password": CHOSEN})
+        client.cookies.clear()
+        teammate_id = joined.json()["user"]["user_id"]
+
+        def google_session(created_at):
+            token = f"gsess_{uuid.uuid4().hex}"
+
+            async def insert():
+                await server.db.user_sessions.insert_one({
+                    "user_id": teammate_id, "session_token": token, "created_at": created_at,
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()})
+            client.portal.call(insert)
+            return token
+
+        before = google_session(datetime.now(timezone.utc).isoformat())
+        assert client.get("/api/leads", headers=_h(before)).status_code == 200
+
+        # An admin reset ends the Google session along with every other one...
+        temporary = client.post(f"/api/team/members/{teammate_id}/reset-password",
+                                headers=_h(admin_token)).json()["temporary_password"]
+        assert client.get("/api/auth/me", headers=_h(before)).status_code == 401
+        # ...a leftover row from before the reset is refused even if it was not removed...
+        leftover = google_session((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
+        assert client.get("/api/auth/me", headers=_h(leftover)).status_code == 401
+        # ...and a Google sign-in after the reset is held to the temporary-password lock.
+        after = google_session((datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat())
+        assert client.get("/api/auth/me", headers=_h(after)).status_code == 200
+        blocked = client.get("/api/leads", headers=_h(after))
+        assert blocked.status_code == 403 and blocked.json()["detail"] == "Choose your own password to continue."
+
+        # Changing the password ends Google sessions too.
+        signed_in = _login(client, teammate, temporary).json()["token"]
+        assert _change(client, signed_in, temporary, "Alex-Own-Passw0rd!").status_code == 200
+        assert client.get("/api/auth/me", headers=_h(after)).status_code == 401
+
+
+def test_another_site_cannot_use_the_session_cookie_to_make_changes():
+    # The session cookie is SameSite=None, so a form on any site a signed-in admin visits
+    # would carry it. A write signed in by the cookie alone must come from ClientVerse.
+    _reset_motor_client()
+    with TestClient(server.app) as client:
+        _, admin_token, _ = _account(client)
+        teammate = f"assistant_{uuid.uuid4().hex[:10]}@example.com"
+        invite = client.post("/api/team/invitations", headers=_h(admin_token),
+                             json={"email": teammate, "role": "member"}).json()
+        joined = client.post("/api/team/invitations/accept-new",
+                             json={"token": invite["invite_token"], "name": "Alex Assistant", "password": CHOSEN})
+        client.cookies.clear()
+        teammate_id, teammate_token = joined.json()["user"]["user_id"], joined.json()["token"]
+        reset = f"/api/team/members/{teammate_id}/reset-password"
+
+        client.cookies.set("access_token", admin_token)
+        refused = client.post(reset, headers={"Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"})
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == "This change has to be made from ClientVerse itself."
+        assert client.post(reset, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+        assert client.post(reset, headers={"Origin": "null"}).status_code == 403
+        # Reading is not a change, and the cross-site attempts changed nothing.
+        assert client.get("/api/auth/me", headers={"Origin": "https://attacker.example"}).status_code == 200
+        client.cookies.clear()
+        assert client.get("/api/auth/me", headers=_h(teammate_token)).status_code == 200
+
+        # ClientVerse's own pages may: the app's origin, this host, or the browser saying so.
+        client.cookies.set("access_token", admin_token)
+        assert client.post(reset, headers={"Origin": server.CORS_ORIGINS[0]}).status_code == 200
+        assert client.post(reset, headers={"Origin": "http://testserver"}).status_code == 200
+        assert client.post(reset, headers={"Sec-Fetch-Site": "same-origin", "Origin": "https://attacker.example"}).status_code == 200
+        client.cookies.clear()
+        # A request carrying the Authorization header cannot come from another site's form.
+        renamed = client.patch("/api/organization", headers={**_h(admin_token), "Origin": "https://attacker.example"},
+                               json={"name": "Allure Realty Group"})
+        assert renamed.status_code == 200, renamed.text

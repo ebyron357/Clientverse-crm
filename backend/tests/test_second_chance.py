@@ -75,7 +75,7 @@ def test_stalled_lead_detected_after_threshold(env):
     detection = detections[0]
     assert detection["record_id"] == "opp_stale"
     assert detection["idle_days"] >= 30
-    assert "No qualifying activity" in detection["reason"]
+    assert "Nothing has happened on this deal" in detection["reason"]
     assert detection["stage"] == "proposal"
 
 
@@ -155,6 +155,19 @@ def test_overdue_task_is_a_missed_followup(env):
     }))
     detections = run(second_chance.detect_missed_followups(db, queue, TENANT))
     assert [d["record_kind"] for d in detections] == ["task"]
+    assert detections[0]["reason"] == "Task was due 3 days ago and is still open."
+
+
+def test_website_lead_call_back_task_is_left_to_the_web_enquiry_lane(env):
+    # The lead itself is detected as an unanswered web enquiry, with its value. Its
+    # call-back task must not open a second case for the same person.
+    db, queue = env
+    run(db.tasks.insert_one({
+        "id": "task_lead", "tenant_id": TENANT, "title": "Call new lead now: Dana (Home value)",
+        "status": "todo", "assignee": "agent@example.com", "workspace_id": None,
+        "due_date": iso(-3), "source": {"kind": "website_form", "enquiry_id": "enq_1"},
+    }))
+    assert run(second_chance.detect_missed_followups(db, queue, TENANT)) == []
 
 
 # ---------------------------------------------------------- queue behaviour
@@ -273,3 +286,16 @@ def test_a_case_follows_its_record_to_a_new_work_item(env):
     # The case points at the live item, not the resolved one.
     case = run(db.recovery_cases.find_one({"id": case_id}))
     assert case["work_item_reference"] == second["id"]
+
+
+def test_a_task_whose_source_is_plain_text_is_still_read(env):
+    # Other features record a task's source as a bare string ("playbook", "nba"). The
+    # website-lead check must not assume a structured source.
+    db, queue = env
+    run(db.tasks.insert_one({
+        "id": "task_playbook", "tenant_id": TENANT, "title": "Send onboarding pack",
+        "status": "todo", "assignee": "csm@example.com", "workspace_id": "ws_3",
+        "due_date": iso(-3), "source": "playbook",
+    }))
+    detections = run(second_chance.detect_missed_followups(db, queue, TENANT))
+    assert [d["record_id"] for d in detections] == ["task_playbook"]

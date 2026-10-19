@@ -1,43 +1,423 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, formatErr, money } from "@/lib/api";
 import { toast } from "sonner";
-import { Badge } from "@/components/AppShell";
+import { useAuth } from "@/context/AuthContext";
+import { fullDateLabel } from "@/lib/contactHistory";
+import ContactRecord, { MiniStatus, RECORD_SHEET, RecordEmpty, RecordLayout, RecordList, useWideLayout } from "@/components/ContactRecord";
+import { Avatar, PageHeader, PropertyList, StatusDot, Toolbar, ViewTabs } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Building2, BriefcaseBusiness, CircleAlert, GitBranch, Globe2, Mail, Plus, RefreshCw, Search, Sparkles, UserRound, Users } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { ArrowUpDown, Building2, BriefcaseBusiness, CircleAlert, GitBranch, Phone, Plus, RefreshCw, Search, UserRound, Users } from "lucide-react";
 
-const SENTIMENT = { positive: "bg-emerald-50 text-emerald-700 border-emerald-200", neutral: "bg-slate-100 text-slate-600 border-slate-200", negative: "bg-red-50 text-red-700 border-red-200" };
-const TIER = { enterprise: "bg-violet-50 text-violet-700 border-violet-200", growth: "bg-cyan-50 text-[#0a6177] border-cyan-200", standard: "bg-slate-100 text-slate-600 border-slate-200" };
+const TIER = { enterprise: { label: "Enterprise", tone: "violet" }, growth: { label: "Growth", tone: "brand" }, standard: { label: "Standard", tone: "neutral" } };
+const RELATIONSHIP = { positive: { label: "Good", tone: "success" }, neutral: { label: "Neutral", tone: "neutral" }, negative: { label: "At risk", tone: "danger" } };
+const EMPTY_CONTACT = { name: "", phone: "", email: "", role: "", company_id: "", influence: "medium", sentiment: "neutral" };
+const ARCHIVED_FLAG = "shrink-0 rounded border border-amber-200 bg-amber-50 px-1.5 py-px text-[11px] font-medium leading-4 text-amber-700";
+const ALL = "all";
+const NO_COMPANY = "none";
+const CONTACT_SORTS = [["recent", "Recently added"], ["updated", "Last updated"], ["name", "Name A–Z"]];
+const COMPANY_SORTS = [["recent", "Recently added"], ["name", "Name A–Z"]];
+const SELECT_TRIGGER = "h-8 w-auto gap-1.5 text-[13px]";
+const TH = "h-9 whitespace-nowrap px-4 text-left text-xs font-medium text-muted-foreground";
+const TD = "whitespace-nowrap px-4 py-2.5";
+const isOpenDeal = (item) => item.stage !== "closed_won" && item.stage !== "closed_lost";
+
+/** "Oct 18" this year, "Oct 18, 2025" before it. */
+function shortDate(iso) {
+  const date = new Date(iso);
+  if (!iso || Number.isNaN(date.getTime())) return "—";
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+}
+
+/** A row opens its record when clicked anywhere, except on a link or button inside it (those do their own thing). */
+function rowOpener(open) {
+  return (event) => {
+    if (event.target.closest("a, button, input, label, [role='checkbox']")) return;
+    if (window.getSelection?.().toString()) return;
+    open();
+  };
+}
+
+const MARK_TONES = ["bg-sky-100 text-sky-700", "bg-violet-100 text-violet-700", "bg-emerald-100 text-emerald-700", "bg-amber-100 text-amber-700", "bg-rose-100 text-rose-700", "bg-indigo-100 text-indigo-700"];
+/** A company's square initial, the counterpart of a person's round avatar. */
+function CompanyMark({ name = "", size = "sm" }) {
+  const hash = [...name].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  const sizes = { xs: "size-4 rounded text-[9px]", sm: "size-6 rounded-md text-[11px]", md: "size-8 rounded-lg text-xs", lg: "size-11 rounded-xl text-base" };
+  return <span className={`inline-flex shrink-0 items-center justify-center font-semibold ${MARK_TONES[hash % MARK_TONES.length]} ${sizes[size] || sizes.sm}`} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || "?"}</span>;
+}
 
 export default function Directory({ initialTab = "companies" }) {
+  const { user } = useAuth();
   const [companies, setCompanies] = useState([]); const [contacts, setContacts] = useState([]); const [opportunities, setOpportunities] = useState([]); const [workspaces, setWorkspaces] = useState([]);
   const [activeTab, setActiveTab] = useState(initialTab); const [query, setQuery] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [companyDialog, setCompanyDialog] = useState(false); const [contactDialog, setContactDialog] = useState(false); const [selected, setSelected] = useState(null); const [saving, setSaving] = useState(false);
-  const [companyForm, setCompanyForm] = useState({ name: "", industry: "", website: "", tier: "standard" }); const [contactForm, setContactForm] = useState({ name: "", email: "", role: "", company_id: "", influence: "medium", sentiment: "neutral" });
-  const load = useCallback(async () => { setLoading(true); setError(""); try { const [companyResponse, contactResponse, opportunityResponse, workspaceResponse] = await Promise.all([api.get("/companies"), api.get("/contacts"), api.get("/opportunities"), api.get("/workspaces")]); setCompanies(companyResponse.data); setContacts(contactResponse.data); setOpportunities(opportunityResponse.data); setWorkspaces(workspaceResponse.data); } catch { setError("We could not load the directory. The relationship data has not changed — please try again."); } finally { setLoading(false); } }, []);
+  const [companyForm, setCompanyForm] = useState({ name: "", industry: "", website: "", tier: "standard" }); const [contactForm, setContactForm] = useState(EMPTY_CONTACT); const [showArchived, setShowArchived] = useState(false);
+  // List-only view controls: which company or tier to show and in what order. They never change what is stored.
+  const [companyFilter, setCompanyFilter] = useState(ALL); const [tierFilter, setTierFilter] = useState(ALL); const [sort, setSort] = useState("recent");
+  // The open contact lives in the address (/contacts?contact=<id>) so a link from a lead, a notification or another page opens it directly.
+  const [searchParams, setSearchParams] = useSearchParams(); const contactId = searchParams.get("contact");
+  const openContact = useCallback((id) => setSearchParams((params) => { params.set("contact", id); return params; }), [setSearchParams]); const closeContact = useCallback(() => setSearchParams((params) => { params.delete("contact"); return params; }), [setSearchParams]);
+  // The sidebar's Contacts and Companies links reuse this page, so follow the route's tab; a /companies?company=<id> link (from a deal) opens that company.
+  useEffect(() => { setActiveTab(initialTab); }, [initialTab]);
+  const companyId = searchParams.get("company");
+  useEffect(() => { if (!companyId) return; const company = companies.find((item) => item.id === companyId); if (company) { setActiveTab("companies"); setSelected({ type: "company", record: company }); } }, [companyId, companies]);
+  const closeCompany = useCallback(() => { setSelected(null); setSearchParams((params) => { params.delete("company"); return params; }); }, [setSearchParams]);
+  // A quiet reload refreshes the lists behind an open record without flashing the page back to its loading state.
+  const load = useCallback(async ({ quiet = false } = {}) => { if (!quiet) { setLoading(true); setError(""); } try { const [companyResponse, contactResponse, opportunityResponse, workspaceResponse] = await Promise.all([api.get("/companies"), api.get("/contacts", { params: showArchived ? { include_archived: true } : {} }), api.get("/opportunities"), api.get("/workspaces")]); setCompanies(companyResponse.data); setContacts(contactResponse.data); setOpportunities(opportunityResponse.data); setWorkspaces(workspaceResponse.data); } catch { if (!quiet) setError("We could not load the directory. The relationship data has not changed — please try again."); } finally { if (!quiet) setLoading(false); } }, [showArchived]);
   useEffect(() => { load(); }, [load]);
-  const companyName = useCallback((id) => companies.find((company) => company.id === id)?.name || "Unassigned", [companies]);
+  const companyName = useCallback((id) => companies.find((company) => company.id === id)?.name || "", [companies]);
   const filteredCompanies = useMemo(() => companies.filter((company) => `${company.name} ${company.industry || ""}`.toLowerCase().includes(query.toLowerCase())), [companies, query]);
-  const filteredContacts = useMemo(() => contacts.filter((contact) => `${contact.name} ${contact.email || ""} ${companyName(contact.company_id)}`.toLowerCase().includes(query.toLowerCase())), [contacts, query, companyName]);
+  const filteredContacts = useMemo(() => { const term = query.toLowerCase(); const digits = query.replace(/\D/g, ""); return contacts.filter((contact) => `${contact.name} ${contact.email || ""} ${contact.phone || ""} ${companyName(contact.company_id)}`.toLowerCase().includes(term) || (digits.length >= 3 && String(contact.phone || "").replace(/\D/g, "").includes(digits))); }, [contacts, query, companyName]);
   const createCompany = async () => { if (!companyForm.name.trim()) { toast.error("Company name is required."); return; } setSaving(true); try { await api.post("/companies", { ...companyForm, name: companyForm.name.trim() }); toast.success("Company created"); setCompanyDialog(false); setCompanyForm({ name: "", industry: "", website: "", tier: "standard" }); await load(); } catch (requestError) { toast.error("Could not create company", { description: formatErr(requestError.response?.data?.detail) }); } finally { setSaving(false); } };
-  const createContact = async () => { if (!contactForm.name.trim()) { toast.error("Contact name is required."); return; } setSaving(true); try { await api.post("/contacts", { ...contactForm, name: contactForm.name.trim(), company_id: contactForm.company_id || null }); toast.success("Contact created"); setContactDialog(false); setContactForm({ name: "", email: "", role: "", company_id: "", influence: "medium", sentiment: "neutral" }); await load(); } catch (requestError) { toast.error("Could not create contact", { description: formatErr(requestError.response?.data?.detail) }); } finally { setSaving(false); } };
-  if (error) return <div className="cv-page"><div className="cv-empty"><CircleAlert className="h-9 w-9 text-red-500" /><h1 className="mt-4 font-display text-xl font-bold">Directory unavailable</h1><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{error}</p><Button onClick={load} className="mt-5 cv-action-primary"><RefreshCw className="mr-2 h-4 w-4" />Retry</Button></div></div>;
-  return <div className="cv-page"><div className="cv-page-header"><div><div className="cv-eyebrow">Relationship intelligence</div><h1 className="cv-page-title">Directory</h1><p className="cv-page-description">Keep the people, companies, and commercial context behind every client relationship connected.</p></div><div className="flex items-center gap-2"><CreateContactDialog open={contactDialog} onOpenChange={setContactDialog} form={contactForm} setForm={setContactForm} companies={companies} saving={saving} onSubmit={createContact} /><CreateCompanyDialog open={companyDialog} onOpenChange={setCompanyDialog} form={companyForm} setForm={setCompanyForm} saving={saving} onSubmit={createCompany} /></div></div><section className="cv-card mb-5"><div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between"><Tabs value={activeTab} onValueChange={setActiveTab}><TabsList className="h-10"><TabsTrigger value="companies" className="gap-1.5"><Building2 className="h-3.5 w-3.5" />Companies <span className="ml-1 text-[10px] text-slate-400">{companies.length}</span></TabsTrigger><TabsTrigger value="contacts" className="gap-1.5"><UserRound className="h-3.5 w-3.5" />Contacts <span className="ml-1 text-[10px] text-slate-400">{contacts.length}</span></TabsTrigger></TabsList></Tabs><div className="flex min-w-0 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 sm:w-[320px]"><Search className="h-4 w-4 shrink-0 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" placeholder={`Search ${activeTab}…`} aria-label={`Search ${activeTab}`} /></div></div></section>{loading ? <DirectorySkeleton /> : activeTab === "companies" ? <CompaniesTable companies={filteredCompanies} contacts={contacts} opportunities={opportunities} workspaces={workspaces} onSelect={(company) => setSelected({ type: "company", record: company })} /> : <ContactsTable contacts={filteredContacts} companies={companies} opportunities={opportunities} workspaces={workspaces} onSelect={(contact) => setSelected({ type: "contact", record: contact })} />}{selected?.type === "company" && <CompanyRecord company={selected.record} contacts={contacts} opportunities={opportunities} workspaces={workspaces} open onOpenChange={(value) => !value && setSelected(null)} onOpenContact={(contact) => setSelected({ type: "contact", record: contact })} />}{selected?.type === "contact" && <ContactRecord contact={selected.record} companies={companies} opportunities={opportunities} workspaces={workspaces} open onOpenChange={(value) => !value && setSelected(null)} />}</div>;
+  // Blank optional fields are sent as nothing: an empty email is not an email address, and the server rightly refuses one.
+  const createContact = async () => { if (!contactForm.name.trim()) { toast.error("Contact name is required."); return; } if (contactForm.email.trim() && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contactForm.email.trim())) { toast.error("That email address doesn't look right."); return; } setSaving(true); try { const { data } = await api.post("/contacts", { ...contactForm, name: contactForm.name.trim(), email: contactForm.email.trim() || null, phone: contactForm.phone.trim() || null, role: contactForm.role.trim() || null, company_id: contactForm.company_id || null }); toast.success("Contact created"); setContactDialog(false); setContactForm(EMPTY_CONTACT); await load({ quiet: true }); openContact(data.id); } catch (requestError) { toast.error("Could not create contact", { description: formatErr(requestError.response?.data?.detail) }); } finally { setSaving(false); } };
+
+  // View controls applied on top of the search, in the order the person picked.
+  const visibleContacts = useMemo(() => {
+    const list = filteredContacts.filter((contact) => companyFilter === ALL || (companyFilter === NO_COMPANY ? !contact.company_id : contact.company_id === companyFilter));
+    if (sort === "name") return [...list].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    if (sort === "updated") return [...list].sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")));
+    return list;
+  }, [filteredContacts, companyFilter, sort]);
+  const visibleCompanies = useMemo(() => {
+    const list = filteredCompanies.filter((company) => tierFilter === ALL || (company.tier || "standard") === tierFilter);
+    return sort === "name" ? [...list].sort((a, b) => (a.name || "").localeCompare(b.name || "")) : list;
+  }, [filteredCompanies, tierFilter, sort]);
+  const ownerName = useCallback((owner) => (owner && owner === user?.email ? user?.name || owner : owner), [user]);
+
+  if (error) return <div className="cv-page"><div className="flex flex-col items-center justify-center py-24 text-center"><span className="flex size-10 items-center justify-center rounded-full bg-muted"><CircleAlert className="size-5 text-red-600" aria-hidden="true" /></span><h1 className="mt-3 text-sm font-medium text-foreground">Directory unavailable</h1><p className="mt-1 max-w-md text-[13px] leading-5 text-muted-foreground">{error}</p><Button size="sm" onClick={load} className="mt-4 cv-action-primary"><RefreshCw className="size-3.5" />Retry</Button></div></div>;
+
+  const isContacts = activeTab === "contacts";
+  const total = isContacts ? contacts.length : companies.length;
+  const shown = isContacts ? visibleContacts.length : visibleCompanies.length;
+  const filtered = Boolean(query.trim()) || (isContacts ? companyFilter !== ALL : tierFilter !== ALL);
+  const clearFilters = () => { setQuery(""); setCompanyFilter(ALL); setTierFilter(ALL); };
+  const sorts = isContacts ? CONTACT_SORTS : COMPANY_SORTS;
+  const contactButton = <CreateContactDialog key="contact" primary={isContacts} open={contactDialog} onOpenChange={setContactDialog} form={contactForm} setForm={setContactForm} companies={companies} saving={saving} onSubmit={createContact} />;
+  const companyButton = <CreateCompanyDialog key="company" primary={!isContacts} open={companyDialog} onOpenChange={setCompanyDialog} form={companyForm} setForm={setCompanyForm} saving={saving} onSubmit={createCompany} />;
+
+  return <div className="cv-page">
+    <PageHeader icon={isContacts ? UserRound : Building2} title={isContacts ? "Contacts" : "Companies"} count={loading ? undefined : total}
+      actions={isContacts ? [companyButton, contactButton] : [contactButton, companyButton]} />
+    <ViewTabs label="Directory" value={activeTab} onChange={setActiveTab}
+      items={[
+        { value: "companies", label: "Companies", icon: Building2, count: loading ? undefined : companies.length },
+        { value: "contacts", label: "Contacts", icon: UserRound, count: loading ? undefined : contacts.length },
+      ]} />
+    <Toolbar>
+      <div className="relative w-full sm:w-64">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+        <Input value={query} onChange={(event) => setQuery(event.target.value)} className="h-8 pl-8 text-[13px] md:text-[13px]" placeholder={isContacts ? "Search name, phone, email…" : `Search ${activeTab}…`} aria-label={`Search ${activeTab}`} />
+      </div>
+      {isContacts ? (
+        <Select value={companyFilter} onValueChange={setCompanyFilter}>
+          <SelectTrigger className={SELECT_TRIGGER} aria-label="Filter by company"><Building2 className="size-3.5 text-muted-foreground" aria-hidden="true" /><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All companies</SelectItem>
+            <SelectItem value={NO_COMPANY}>No company</SelectItem>
+            {companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      ) : (
+        <Select value={tierFilter} onValueChange={setTierFilter}>
+          <SelectTrigger className={SELECT_TRIGGER} aria-label="Filter by tier"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All tiers</SelectItem>
+            {Object.entries(TIER).map(([value, tier]) => <SelectItem key={value} value={value}>{tier.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      )}
+      <Select value={sorts.some(([key]) => key === sort) ? sort : "recent"} onValueChange={setSort}>
+        <SelectTrigger className={SELECT_TRIGGER} aria-label="Sort"><ArrowUpDown className="size-3.5 text-muted-foreground" aria-hidden="true" /><SelectValue /></SelectTrigger>
+        <SelectContent>{sorts.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
+      </Select>
+      <div className="ml-auto flex items-center gap-4">
+        {filtered && !loading && <span className="tabular text-xs text-muted-foreground">{shown} of {total}</span>}
+        {isContacts && <div className="flex items-center gap-2"><Switch id="contacts-show-archived" checked={showArchived} onCheckedChange={setShowArchived} data-testid="contacts-show-archived" /><Label htmlFor="contacts-show-archived" className="text-[13px] font-normal text-muted-foreground">Show archived</Label></div>}
+      </div>
+    </Toolbar>
+    {loading ? <DirectorySkeleton /> : isContacts
+      ? <ContactsTable contacts={visibleContacts} companies={companies} ownerName={ownerName} onSelect={(contact) => openContact(contact.id)} empty={<EmptyDirectory type="contact" filtered={filtered} onClear={clearFilters} onCreate={() => setContactDialog(true)} />} />
+      : <CompaniesTable companies={visibleCompanies} contacts={contacts} opportunities={opportunities} workspaces={workspaces} onSelect={(company) => setSelected({ type: "company", record: company })} empty={<EmptyDirectory type="company" filtered={filtered} onClear={clearFilters} onCreate={() => setCompanyDialog(true)} />} />}
+    {selected?.type === "company" && <CompanyRecord company={selected.record} contacts={contacts} opportunities={opportunities} workspaces={workspaces} open onOpenChange={(value) => !value && closeCompany()} onOpenContact={(contact) => { closeCompany(); openContact(contact.id); }} />}
+    {contactId && <ContactRecord contactId={contactId} open onOpenChange={(value) => !value && closeContact()} companies={companies} workspaces={workspaces} onChanged={() => load({ quiet: true })} />}
+  </div>;
 }
 
-function CompaniesTable({ companies, contacts, opportunities, workspaces, onSelect }) { return <section className="cv-card overflow-hidden"><div className="cv-card-header"><div><h2 className="cv-card-title">Companies</h2><p className="cv-card-description">Select a company to open its relationship record.</p></div><span className="text-xs font-semibold text-slate-500">{companies.length} shown</span></div>{companies.length ? <><div className="hidden overflow-x-auto md:block"><table className="w-full text-left text-sm"><thead><tr className="border-b border-slate-100 bg-slate-50/60 text-[11px] font-bold uppercase tracking-[0.1em] text-slate-500"><th className="px-5 py-3">Company</th><th className="px-5 py-3">Industry</th><th className="px-5 py-3">Tier</th><th className="px-5 py-3">Relationships</th><th className="px-5 py-3">Commercial context</th></tr></thead><tbody>{companies.map((company) => { const relatedContacts = contacts.filter((contact) => contact.company_id === company.id); const relatedOpps = opportunities.filter((opportunity) => opportunity.company_id === company.id); const workspace = workspaces.find((record) => record.company_id === company.id); return <tr key={company.id} className="cv-data-row border-b border-slate-100 last:border-b-0"><td className="px-5 py-4"><button onClick={() => onSelect(company)} className="text-left"><span className="block font-semibold text-[#132038] hover:text-[#1a9fbf]">{company.name}</span>{company.website && <span className="mt-0.5 flex items-center gap-1 text-xs text-slate-500"><Globe2 className="h-3 w-3" />{company.website.replace(/^https?:\/\//, "")}</span>}</button></td><td className="px-5 py-4 text-slate-600">{company.industry || "—"}</td><td className="px-5 py-4"><Badge className={TIER[company.tier] || TIER.standard}>{company.tier || "standard"}</Badge></td><td className="px-5 py-4 text-slate-600">{relatedContacts.length} contact{relatedContacts.length === 1 ? "" : "s"}</td><td className="px-5 py-4"><div className="text-xs text-slate-600">{relatedOpps.length} opportunity{relatedOpps.length === 1 ? "" : "ies"}</div><div className="mt-1 text-xs text-slate-400">{workspace ? "Client workspace active" : "No workspace yet"}</div></td></tr>; })}</tbody></table></div><div className="divide-y divide-slate-100 md:hidden">{companies.map((company) => { const relatedContacts = contacts.filter((contact) => contact.company_id === company.id); return <button key={company.id} onClick={() => onSelect(company)} className="cv-data-row flex w-full items-center gap-3 px-4 py-4 text-left"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-50 text-[#1a9fbf]"><Building2 className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#132038]">{company.name}</span><span className="mt-0.5 block truncate text-xs text-slate-500">{company.industry || "No industry"} · {relatedContacts.length} contacts</span></span><Badge className={TIER[company.tier] || TIER.standard}>{company.tier || "standard"}</Badge></button>; })}</div></> : <EmptyDirectory type="company" />}</section>; }
-function ContactsTable({ contacts, companies, onSelect }) { const coName = (id) => companies.find((company) => company.id === id)?.name || "Unassigned"; return <section className="cv-card overflow-hidden"><div className="cv-card-header"><div><h2 className="cv-card-title">Contacts</h2><p className="cv-card-description">Open a relationship record to see the commercial and client context.</p></div><span className="text-xs font-semibold text-slate-500">{contacts.length} shown</span></div>{contacts.length ? <><div className="hidden overflow-x-auto md:block"><table className="w-full text-left text-sm"><thead><tr className="border-b border-slate-100 bg-slate-50/60 text-[11px] font-bold uppercase tracking-[0.1em] text-slate-500"><th className="px-5 py-3">Contact</th><th className="px-5 py-3">Company</th><th className="px-5 py-3">Role</th><th className="px-5 py-3">Influence</th><th className="px-5 py-3">Relationship signal</th></tr></thead><tbody>{contacts.map((contact) => <tr key={contact.id} className="cv-data-row border-b border-slate-100 last:border-b-0"><td className="px-5 py-4"><button onClick={() => onSelect(contact)} className="text-left"><span className="block font-semibold text-[#132038] hover:text-[#1a9fbf]">{contact.name}</span><span className="mt-0.5 block text-xs text-slate-500">{contact.email || "No email captured"}</span></button></td><td className="px-5 py-4 text-slate-600">{coName(contact.company_id)}</td><td className="px-5 py-4 text-slate-600">{contact.role || "—"}</td><td className="px-5 py-4"><Badge className="border-slate-200 bg-slate-50 capitalize text-slate-600">{contact.influence || "medium"}</Badge></td><td className="px-5 py-4"><Badge className={`capitalize ${SENTIMENT[contact.sentiment] || SENTIMENT.neutral}`}>{contact.sentiment || "neutral"}</Badge></td></tr>)}</tbody></table></div><div className="divide-y divide-slate-100 md:hidden">{contacts.map((contact) => <button key={contact.id} onClick={() => onSelect(contact)} className="cv-data-row flex w-full items-center gap-3 px-4 py-4 text-left"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 text-slate-600"><UserRound className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-[#132038]">{contact.name}</span><span className="mt-0.5 block truncate text-xs text-slate-500">{coName(contact.company_id)} · {contact.role || "No role"}</span></span><Badge className={`capitalize ${SENTIMENT[contact.sentiment] || SENTIMENT.neutral}`}>{contact.sentiment || "neutral"}</Badge></button>)}</div></> : <EmptyDirectory type="contact" />}</section>; }
-function EmptyDirectory({ type }) { const Icon = type === "company" ? Building2 : UserRound; return <div className="cv-empty m-5"><Icon className="h-9 w-9 text-[#4ac4e0]" /><h3 className="mt-4 font-display text-xl font-bold text-[#0a1628]">No {type === "company" ? "companies" : "contacts"} found</h3><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{type === "company" ? "Create a company to connect revenue, client workspace, and relationship activity." : "Add a contact to give your team the person-level context behind each client relationship."}</p></div>; }
-function CreateCompanyDialog({ open, onOpenChange, form, setForm, saving, onSubmit }) { const setField = (key, value) => setForm((current) => ({ ...current, [key]: value })); return <Dialog open={open} onOpenChange={onOpenChange}><DialogTrigger asChild><Button variant="outline"><Building2 className="mr-1.5 h-4 w-4" />New company</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle className="font-display text-2xl">New company</DialogTitle><DialogDescription>Start the relationship record with the information your team needs most.</DialogDescription></DialogHeader><div className="grid gap-4 py-2"><div className="grid gap-1.5"><Label>Company name <span className="text-red-500">*</span></Label><Input value={form.name} onChange={(event) => setField("name", event.target.value)} /></div><div className="grid gap-1.5"><Label>Industry</Label><Input value={form.industry} onChange={(event) => setField("industry", event.target.value)} placeholder="e.g. Healthcare" /></div><div className="grid gap-1.5"><Label>Website</Label><Input value={form.website} onChange={(event) => setField("website", event.target.value)} placeholder="https://example.com" /></div><div className="grid gap-1.5"><Label>Client tier</Label><Select value={form.tier} onValueChange={(value) => setField("tier", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="growth">Growth</SelectItem><SelectItem value="enterprise">Enterprise</SelectItem></SelectContent></Select></div></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={saving} onClick={onSubmit} className="cv-action-primary">{saving ? "Creating…" : "Create company"}</Button></DialogFooter></DialogContent></Dialog>; }
-function CreateContactDialog({ open, onOpenChange, form, setForm, companies, saving, onSubmit }) { const setField = (key, value) => setForm((current) => ({ ...current, [key]: value })); return <Dialog open={open} onOpenChange={onOpenChange}><DialogTrigger asChild><Button className="cv-action-primary"><Plus className="mr-1.5 h-4 w-4" />New contact</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle className="font-display text-2xl">New contact</DialogTitle><DialogDescription>Capture the relationship details that will guide client work and revenue conversations.</DialogDescription></DialogHeader><div className="grid gap-4 py-2"><div className="grid gap-1.5"><Label>Name <span className="text-red-500">*</span></Label><Input value={form.name} onChange={(event) => setField("name", event.target.value)} /></div><div className="grid gap-1.5"><Label>Email</Label><Input type="email" value={form.email} onChange={(event) => setField("email", event.target.value)} /></div><div className="grid gap-1.5"><Label>Company</Label><Select value={form.company_id} onValueChange={(value) => setField("company_id", value)}><SelectTrigger><SelectValue placeholder="Select company" /></SelectTrigger><SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent></Select></div><div className="grid grid-cols-2 gap-3"><div className="grid gap-1.5"><Label>Role</Label><Input value={form.role} onChange={(event) => setField("role", event.target.value)} placeholder="e.g. VP Operations" /></div><div className="grid gap-1.5"><Label>Influence</Label><Select value={form.influence} onValueChange={(value) => setField("influence", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem></SelectContent></Select></div></div></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={saving} onClick={onSubmit} className="cv-action-primary">{saving ? "Creating…" : "Create contact"}</Button></DialogFooter></DialogContent></Dialog>; }
-function CompanyRecord({ company, contacts, opportunities, workspaces, open, onOpenChange, onOpenContact }) { const relatedContacts = contacts.filter((contact) => contact.company_id === company.id); const relatedOpps = opportunities.filter((opportunity) => opportunity.company_id === company.id); const workspace = workspaces.find((record) => record.company_id === company.id); return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"><RecordHeader icon={Building2} title={company.name} subtitle={[company.industry, company.website?.replace(/^https?:\/\//, "")].filter(Boolean).join(" · ") || "Company relationship record"} badge={<Badge className={TIER[company.tier] || TIER.standard}>{company.tier || "standard"}</Badge>} /><Tabs defaultValue="overview"><TabsList className="w-full justify-start overflow-x-auto"><TabsTrigger value="overview">Overview</TabsTrigger><TabsTrigger value="contacts">Contacts <span className="ml-1 text-[10px] text-slate-400">{relatedContacts.length}</span></TabsTrigger><TabsTrigger value="revenue">Revenue</TabsTrigger><TabsTrigger value="workspace">Client 360</TabsTrigger></TabsList><TabsContent value="overview" className="mt-5"><div className="grid gap-3 sm:grid-cols-3"><Summary icon={Users} label="Primary contacts" value={relatedContacts.length} /><Summary icon={GitBranch} label="Open opportunities" value={relatedOpps.filter((item) => item.stage !== "closed_won" && item.stage !== "closed_lost").length} /><Summary icon={BriefcaseBusiness} label="Client workspace" value={workspace ? "Active" : "Not created"} /></div><div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4"><h3 className="text-sm font-bold text-[#132038]">Relationship context</h3><p className="mt-1 text-sm leading-6 text-slate-500">{relatedContacts.length ? `${company.name} has ${relatedContacts.length} known relationship contact${relatedContacts.length === 1 ? "" : "s"}. Open the contact tab to see roles and relationship signals.` : `No relationship contacts have been captured for ${company.name} yet.`}</p></div></TabsContent><TabsContent value="contacts" className="mt-5"><RelatedList items={relatedContacts} empty="No contacts are linked to this company." render={(contact) => <button onClick={() => onOpenContact(contact)} className="cv-data-row flex w-full items-center gap-3 px-3 py-3 text-left"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600"><UserRound className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-[#132038]">{contact.name}</span><span className="block truncate text-xs text-slate-500">{contact.role || "No role"} · {contact.email || "No email"}</span></span><Badge className={`capitalize ${SENTIMENT[contact.sentiment] || SENTIMENT.neutral}`}>{contact.sentiment || "neutral"}</Badge></button>} /></TabsContent><TabsContent value="revenue" className="mt-5"><RelatedList items={relatedOpps} empty="No opportunities are linked to this company." render={(opportunity) => <div className="flex items-center justify-between px-3 py-3"><div><div className="text-sm font-semibold text-[#132038]">{opportunity.name}</div><div className="mt-0.5 text-xs capitalize text-slate-500">{opportunity.stage?.replace("_", " ") || "Lead"}</div></div><div className="font-display text-sm font-bold">{money(opportunity.value)}</div></div>} /></TabsContent><TabsContent value="workspace" className="mt-5">{workspace ? <div className="rounded-xl border border-cyan-100 bg-cyan-50/50 p-4"><div className="flex items-center gap-2 text-sm font-bold text-[#0a6177]"><BriefcaseBusiness className="h-4 w-4" />{workspace.name}</div><p className="mt-1 text-xs leading-5 text-slate-600">A Client 360 workspace is active for this company. Open it from Client Workspaces to see health, outcomes, commitments, approvals, and timeline evidence.</p></div> : <div className="cv-empty min-h-[180px]"><BriefcaseBusiness className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No Client 360 workspace yet</p><p className="mt-1 text-xs text-slate-500">A workspace is created automatically when an opportunity is won, or can be created from the global Create menu.</p></div>}</TabsContent></Tabs></DialogContent></Dialog>; }
-function ContactRecord({ contact, companies, opportunities, workspaces, open, onOpenChange }) { const company = companies.find((item) => item.id === contact.company_id); const relatedOpps = opportunities.filter((opportunity) => opportunity.company_id === contact.company_id); const workspace = workspaces.find((item) => item.company_id === contact.company_id); return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"><RecordHeader icon={UserRound} title={contact.name} subtitle={[contact.role, company?.name].filter(Boolean).join(" · ") || "Contact relationship record"} badge={<Badge className={`capitalize ${SENTIMENT[contact.sentiment] || SENTIMENT.neutral}`}>{contact.sentiment || "neutral"}</Badge>} /><Tabs defaultValue="overview"><TabsList className="w-full justify-start overflow-x-auto"><TabsTrigger value="overview">Overview</TabsTrigger><TabsTrigger value="revenue">Opportunities</TabsTrigger><TabsTrigger value="workspace">Client 360</TabsTrigger></TabsList><TabsContent value="overview" className="mt-5"><div className="grid gap-3 sm:grid-cols-3"><Summary icon={Mail} label="Email" value={contact.email || "Not captured"} /><Summary icon={Users} label="Influence" value={contact.influence || "medium"} /><Summary icon={Building2} label="Company" value={company?.name || "Unassigned"} /></div><div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4"><h3 className="text-sm font-bold text-[#132038]">Relationship signal</h3><p className="mt-1 text-sm leading-6 text-slate-500">This contact is currently marked <strong className="capitalize text-[#132038]">{contact.sentiment || "neutral"}</strong>. Use the linked client workspace timeline for normalized delivery, approval, integration, and health activity.</p></div></TabsContent><TabsContent value="revenue" className="mt-5"><RelatedList items={relatedOpps} empty="No opportunities are currently linked through this contact’s company." render={(opportunity) => <div className="flex items-center justify-between px-3 py-3"><div><div className="text-sm font-semibold text-[#132038]">{opportunity.name}</div><div className="mt-0.5 text-xs capitalize text-slate-500">{opportunity.stage?.replace("_", " ") || "Lead"}</div></div><div className="font-display text-sm font-bold">{money(opportunity.value)}</div></div>} /></TabsContent><TabsContent value="workspace" className="mt-5">{workspace ? <div className="rounded-xl border border-cyan-100 bg-cyan-50/50 p-4"><div className="flex items-center gap-2 text-sm font-bold text-[#0a6177]"><BriefcaseBusiness className="h-4 w-4" />{workspace.name}</div><p className="mt-1 text-xs leading-5 text-slate-600">The client workspace contains this account’s health, operational work, commitments, approvals, and evidence-backed AI context.</p></div> : <div className="cv-empty min-h-[180px]"><BriefcaseBusiness className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No client workspace is linked</p><p className="mt-1 text-xs text-slate-500">Close a linked opportunity as won or create a workspace from the global Create menu.</p></div>}</TabsContent></Tabs></DialogContent></Dialog>; }
-function RecordHeader({ icon: Icon, title, subtitle, badge }) { return <DialogHeader><div className="flex items-start justify-between gap-3 pr-7"><div className="flex min-w-0 items-center gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-cyan-50 text-[#1a9fbf]"><Icon className="h-5 w-5" /></span><div className="min-w-0"><DialogTitle className="truncate font-display text-2xl">{title}</DialogTitle><DialogDescription className="truncate">{subtitle}</DialogDescription></div></div>{badge}</div></DialogHeader>; }
-function Summary({ icon: Icon, label, value }) { return <div className="rounded-xl border border-slate-200 p-3"><div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.09em] text-slate-500"><Icon className="h-3.5 w-3.5" />{label}</div><div className="mt-2 truncate text-sm font-bold text-[#132038] capitalize">{value}</div></div>; }
-function RelatedList({ items, empty, render }) { return items.length ? <div className="overflow-hidden rounded-xl border border-slate-200 divide-y divide-slate-100">{items.map((item) => <div key={item.id}>{render(item)}</div>)}</div> : <div className="cv-empty min-h-[180px]"><Sparkles className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm text-slate-500">{empty}</p></div>; }
-function DirectorySkeleton() { return <section className="cv-card overflow-hidden"><div className="border-b border-slate-100 p-5"><Skeleton className="h-5 w-36" /><Skeleton className="mt-2 h-4 w-64" /></div>{Array.from({ length: 5 }).map((_, index) => <div key={index} className="flex items-center gap-4 border-b border-slate-100 px-5 py-4"><Skeleton className="h-9 w-9 rounded-xl" /><div className="flex-1"><Skeleton className="h-4 w-48" /><Skeleton className="mt-2 h-3 w-32" /></div><Skeleton className="h-6 w-16 rounded-full" /></div>)}</section>; }
+/* ---------- Lists ---------- */
+
+function ContactsTable({ contacts, companies, ownerName, onSelect, empty }) {
+  const coName = (id) => companies.find((company) => company.id === id)?.name || "";
+  if (!contacts.length) return <div className="rounded-xl border border-border bg-card">{empty}</div>;
+  return <div className="overflow-hidden rounded-xl border border-border bg-card">
+    <div className="hidden overflow-x-auto md:block">
+      <table className="w-full text-left text-[13px]">
+        <caption className="sr-only">Contacts</caption>
+        <thead><tr className="border-b border-border bg-muted/40">
+          <th scope="col" className={TH}>Name</th>
+          <th scope="col" className={`${TH} hidden xl:table-cell`}>Email</th>
+          <th scope="col" className={TH}>Phone</th>
+          <th scope="col" className={TH}>Company</th>
+          <th scope="col" className={`${TH} hidden xl:table-cell`}>Owner</th>
+          <th scope="col" className={`${TH} hidden lg:table-cell`}>Relationship</th>
+          <th scope="col" className={`${TH} text-right`}>Updated</th>
+        </tr></thead>
+        <tbody>{contacts.map((contact) => {
+          const roleLine = [contact.role, contact.title].filter(Boolean).join(" · ");
+          const relationship = RELATIONSHIP[contact.sentiment] || RELATIONSHIP.neutral;
+          const company = coName(contact.company_id);
+          const owner = ownerName(contact.owner);
+          const updated = contact.updated_at || contact.created_at;
+          return (
+            // Mouse users can click anywhere on the row; keyboard users reach the same action through the name button.
+            <tr key={contact.id} onClick={rowOpener(() => onSelect(contact))} className="cursor-pointer border-b border-border/70 transition-colors last:border-0 hover:bg-muted/50" data-testid={`contact-row-${contact.id}`}>
+              <td className="px-4 py-1.5">
+                <button type="button" onClick={() => onSelect(contact)} className="flex min-h-8 min-w-[200px] items-center gap-2.5 rounded-md text-left" data-testid={`contact-open-${contact.id}`}>
+                  <Avatar name={contact.name} size="sm" />
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5"><span className="truncate font-medium text-foreground">{contact.name}</span>{contact.archived_at && <span className={ARCHIVED_FLAG}>Archived</span>}</span>
+                    {roleLine ? <span className="block truncate text-xs text-muted-foreground">{roleLine}</span> : contact.email && <span className="block truncate text-xs text-muted-foreground xl:hidden">{contact.email}</span>}
+                  </span>
+                </button>
+              </td>
+              <td className={`${TD} hidden text-foreground/80 xl:table-cell`}><span className="block max-w-[240px] truncate">{contact.email || <span className="text-muted-foreground">—</span>}</span></td>
+              <td className={TD}>{contact.phone ? <a href={`tel:${contact.phone}`} className="tabular text-foreground/80 hover:text-brand-strong hover:underline">{contact.phone}</a> : <span className="text-muted-foreground">—</span>}</td>
+              <td className={TD}>{company ? <span className="flex max-w-[200px] items-center gap-2 text-foreground/80"><CompanyMark name={company} size="xs" /><span className="truncate">{company}</span></span> : <span className="text-muted-foreground">—</span>}</td>
+              <td className={`${TD} hidden xl:table-cell`}>{owner ? <span className="flex max-w-[180px] items-center gap-2 text-foreground/80"><Avatar name={owner} size="sm" /><span className="truncate">{owner}</span></span> : <span className="text-muted-foreground">—</span>}</td>
+              <td className={`${TD} hidden lg:table-cell`}><StatusDot tone={relationship.tone}>{relationship.label}</StatusDot></td>
+              <td className={`${TD} tabular text-right text-muted-foreground`} title={fullDateLabel(updated)}>{shortDate(updated)}</td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
+    </div>
+    <ul className="divide-y divide-border/70 md:hidden">{contacts.map((contact) => {
+      const relationship = RELATIONSHIP[contact.sentiment] || RELATIONSHIP.neutral;
+      return <li key={contact.id} className="flex items-center gap-2 pr-3 transition-colors hover:bg-muted/50">
+        <button type="button" onClick={() => onSelect(contact)} className="flex min-w-0 flex-1 items-center gap-3 py-3 pl-4 text-left" data-testid={`contact-card-${contact.id}`}>
+          <Avatar name={contact.name} size="md" />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5"><span className="truncate text-[13px] font-medium text-foreground">{contact.name}</span>{contact.archived_at && <span className={ARCHIVED_FLAG}>Archived</span>}</span>
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">{[contact.phone || contact.email || "No phone yet", contact.company_id ? coName(contact.company_id) || "—" : contact.role].filter(Boolean).join(" · ")}</span>
+          </span>
+        </button>
+        {contact.phone
+          ? <a href={`tel:${contact.phone}`} aria-label={`Call ${contact.name}`} className="flex size-9 shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 transition-colors" data-testid={`contact-card-call-${contact.id}`}><Phone className="size-4" aria-hidden="true" /></a>
+          : <MiniStatus tone={relationship.tone} className="shrink-0">{relationship.label}</MiniStatus>}
+      </li>;
+    })}</ul>
+  </div>;
+}
+
+function CompaniesTable({ companies, contacts, opportunities, workspaces, onSelect, empty }) {
+  if (!companies.length) return <div className="rounded-xl border border-border bg-card">{empty}</div>;
+  const related = (company) => ({
+    people: contacts.filter((contact) => contact.company_id === company.id).length,
+    deals: opportunities.filter((opportunity) => opportunity.company_id === company.id),
+    workspace: workspaces.find((record) => record.company_id === company.id),
+  });
+  return <div className="overflow-hidden rounded-xl border border-border bg-card">
+    <div className="hidden overflow-x-auto md:block">
+      <table className="w-full text-left text-[13px]">
+        <caption className="sr-only">Companies</caption>
+        <thead><tr className="border-b border-border bg-muted/40">
+          <th scope="col" className={TH}>Company</th>
+          <th scope="col" className={TH}>Industry</th>
+          <th scope="col" className={TH}>Tier</th>
+          <th scope="col" className={`${TH} hidden text-right lg:table-cell`}>Contacts</th>
+          <th scope="col" className={`${TH} hidden text-right lg:table-cell`}>Deals</th>
+          <th scope="col" className={`${TH} hidden xl:table-cell`}>Client workspace</th>
+          <th scope="col" className={`${TH} text-right`}>Added</th>
+        </tr></thead>
+        <tbody>{companies.map((company) => {
+          const { people, deals, workspace } = related(company);
+          const tier = TIER[company.tier] || TIER.standard;
+          return (
+            // Mouse users can click anywhere on the row; keyboard users reach the same action through the name button.
+            <tr key={company.id} onClick={rowOpener(() => onSelect(company))} className="cursor-pointer border-b border-border/70 transition-colors last:border-0 hover:bg-muted/50">
+              <td className="px-4 py-1.5">
+                <button type="button" onClick={() => onSelect(company)} className="flex min-h-8 min-w-[200px] items-center gap-2.5 rounded-md text-left">
+                  <CompanyMark name={company.name} size="sm" />
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium text-foreground">{company.name}</span>
+                    {company.website && <span className="block truncate text-xs text-muted-foreground">{company.website.replace(/^https?:\/\//, "")}</span>}
+                  </span>
+                </button>
+              </td>
+              <td className={`${TD} text-foreground/80`}>{company.industry || <span className="text-muted-foreground">—</span>}</td>
+              <td className={TD}><StatusDot tone={tier.tone}>{tier.label}</StatusDot></td>
+              <td className={`${TD} tabular hidden text-right text-foreground/80 lg:table-cell`}>{people}</td>
+              <td className={`${TD} tabular hidden text-right text-foreground/80 lg:table-cell`}>{deals.length}</td>
+              <td className={`${TD} hidden xl:table-cell`}>{workspace ? <StatusDot tone="success">Active</StatusDot> : <span className="text-muted-foreground">No workspace yet</span>}</td>
+              <td className={`${TD} tabular text-right text-muted-foreground`} title={fullDateLabel(company.created_at)}>{shortDate(company.created_at)}</td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
+    </div>
+    <ul className="divide-y divide-border/70 md:hidden">{companies.map((company) => {
+      const { people } = related(company);
+      const tier = TIER[company.tier] || TIER.standard;
+      return <li key={company.id}>
+        <button type="button" onClick={() => onSelect(company)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50">
+          <CompanyMark name={company.name} size="md" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-medium text-foreground">{company.name}</span>
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">{company.industry || "No industry"} · {people} contact{people === 1 ? "" : "s"}</span>
+          </span>
+          <MiniStatus tone={tier.tone} className="shrink-0">{tier.label}</MiniStatus>
+        </button>
+      </li>;
+    })}</ul>
+  </div>;
+}
+
+function EmptyDirectory({ type, filtered, onClear, onCreate }) {
+  const company = type === "company";
+  const Icon = filtered ? Search : company ? Building2 : UserRound;
+  return <div className="flex flex-col items-center justify-center px-6 py-12 text-center">
+    <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground"><Icon className="size-[18px]" aria-hidden="true" /></span>
+    <h3 className="mt-3 text-sm font-medium text-foreground">{filtered ? `No ${company ? "companies" : "contacts"} match` : `No ${company ? "companies" : "contacts"} found`}</h3>
+    <p className="mt-1 max-w-sm text-[13px] leading-5 text-muted-foreground">{filtered ? "Try another search, or clear the filters." : company ? "Create a company to connect revenue, client workspace, and relationship activity." : "Add a contact to give your team the person-level context behind each client relationship."}</p>
+    <div className="mt-4">{filtered
+      ? <Button size="sm" variant="outline" onClick={onClear}>Clear filters</Button>
+      : <Button size="sm" className="cv-action-primary" onClick={onCreate}><Plus className="size-3.5" />{company ? "New company" : "New contact"}</Button>}</div>
+  </div>;
+}
+
+function DirectorySkeleton() {
+  return <div className="overflow-hidden rounded-xl border border-border bg-card" aria-busy="true">
+    <div className="flex h-9 items-center gap-6 border-b border-border bg-muted/40 px-4"><Skeleton className="h-3 w-16" /><Skeleton className="hidden h-3 w-14 md:block" /><Skeleton className="hidden h-3 w-16 md:block" /><Skeleton className="ml-auto h-3 w-12" /></div>
+    {Array.from({ length: 6 }).map((_, index) => <div key={index} className="flex items-center gap-3 border-b border-border/70 px-4 py-3 last:border-0"><Skeleton className="size-6 rounded-full" /><div className="flex-1 space-y-1.5"><Skeleton className="h-3.5 w-40" /><Skeleton className="h-3 w-24" /></div><Skeleton className="hidden h-3.5 w-24 md:block" /><Skeleton className="hidden h-3.5 w-28 md:block" /><Skeleton className="h-3.5 w-12" /></div>)}
+  </div>;
+}
+
+/* ---------- Create dialogs ---------- */
+
+const FIELD_LABEL = "text-[13px] font-medium";
+const DIALOG = "gap-0 overflow-hidden p-0 sm:max-w-[480px]";
+const DIALOG_HEADER = "space-y-1 px-5 pb-4 pr-12 pt-5 text-left";
+const DIALOG_FOOTER = "gap-2 border-t border-border bg-muted/30 px-5 py-3 sm:space-x-0";
+
+function CreateCompanyDialog({ open, onOpenChange, form, setForm, saving, onSubmit, primary }) {
+  const setField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogTrigger asChild><Button size="sm" variant={primary ? "default" : "outline"} className={primary ? "cv-action-primary" : ""}>{primary ? <Plus className="size-3.5" /> : <Building2 className="size-3.5" />}New company</Button></DialogTrigger>
+    <DialogContent className={DIALOG}>
+      <DialogHeader className={DIALOG_HEADER}><DialogTitle className="text-base font-semibold">New company</DialogTitle><DialogDescription className="text-[13px]">Add a business you work with. Only the name is required.</DialogDescription></DialogHeader>
+      <div className="grid gap-3.5 px-5 pb-5">
+        <div className="grid gap-1.5"><Label htmlFor="new-company-name" className={FIELD_LABEL}>Company name <span className="text-red-600">*</span></Label><Input id="new-company-name" value={form.name} onChange={(event) => setField("name", event.target.value)} /></div>
+        <div className="grid gap-3.5 sm:grid-cols-2">
+          <div className="grid gap-1.5"><Label htmlFor="new-company-industry" className={FIELD_LABEL}>Industry</Label><Input id="new-company-industry" value={form.industry} onChange={(event) => setField("industry", event.target.value)} placeholder="e.g. Healthcare" /></div>
+          <div className="grid gap-1.5"><Label htmlFor="new-company-tier" className={FIELD_LABEL}>Client tier</Label><Select value={form.tier} onValueChange={(value) => setField("tier", value)}><SelectTrigger id="new-company-tier"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="growth">Growth</SelectItem><SelectItem value="enterprise">Enterprise</SelectItem></SelectContent></Select></div>
+        </div>
+        <div className="grid gap-1.5"><Label htmlFor="new-company-website" className={FIELD_LABEL}>Website</Label><Input id="new-company-website" value={form.website} onChange={(event) => setField("website", event.target.value)} placeholder="https://example.com" /></div>
+      </div>
+      <DialogFooter className={DIALOG_FOOTER}><Button size="sm" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button size="sm" disabled={saving} onClick={onSubmit} className="cv-action-primary">{saving ? "Creating…" : "Create company"}</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+function CreateContactDialog({ open, onOpenChange, form, setForm, companies, saving, onSubmit, primary }) {
+  const setField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogTrigger asChild><Button size="sm" variant={primary ? "default" : "outline"} className={primary ? "cv-action-primary" : ""}>{primary ? <Plus className="size-3.5" /> : <UserRound className="size-3.5" />}New contact</Button></DialogTrigger>
+    <DialogContent className={DIALOG}>
+      <DialogHeader className={DIALOG_HEADER}><DialogTitle className="text-base font-semibold">New contact</DialogTitle><DialogDescription className="text-[13px]">Add a person you work with. Only the name is required.</DialogDescription></DialogHeader>
+      <div className="grid gap-3.5 px-5 pb-5">
+        <div className="grid gap-1.5"><Label htmlFor="new-contact-name" className={FIELD_LABEL}>Name <span className="text-red-600">*</span></Label><Input id="new-contact-name" value={form.name} onChange={(event) => setField("name", event.target.value)} data-testid="new-contact-name" /></div>
+        <div className="grid gap-3.5 sm:grid-cols-2">
+          <div className="grid gap-1.5"><Label htmlFor="new-contact-phone" className={FIELD_LABEL}>Phone</Label><Input id="new-contact-phone" type="tel" inputMode="tel" autoComplete="tel" value={form.phone} onChange={(event) => setField("phone", event.target.value)} placeholder="(555) 010-0100" data-testid="new-contact-phone" /></div>
+          <div className="grid gap-1.5"><Label htmlFor="new-contact-email" className={FIELD_LABEL}>Email</Label><Input id="new-contact-email" type="email" inputMode="email" value={form.email} onChange={(event) => setField("email", event.target.value)} placeholder="name@example.com" data-testid="new-contact-email" /></div>
+        </div>
+        <div className="grid gap-1.5"><Label htmlFor="new-contact-company" className={FIELD_LABEL}>Company</Label><Select value={form.company_id} onValueChange={(value) => setField("company_id", value)}><SelectTrigger id="new-contact-company"><SelectValue placeholder="Select company" /></SelectTrigger><SelectContent>{companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}</SelectContent></Select></div>
+        <div className="grid grid-cols-2 gap-3.5">
+          <div className="grid gap-1.5"><Label htmlFor="new-contact-role" className={FIELD_LABEL}>Role</Label><Input id="new-contact-role" value={form.role} onChange={(event) => setField("role", event.target.value)} placeholder="e.g. VP Operations" /></div>
+          <div className="grid gap-1.5"><Label htmlFor="new-contact-influence" className={FIELD_LABEL}>Influence</Label><Select value={form.influence} onValueChange={(value) => setField("influence", value)}><SelectTrigger id="new-contact-influence"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem></SelectContent></Select></div>
+        </div>
+      </div>
+      <DialogFooter className={DIALOG_FOOTER}><Button size="sm" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button size="sm" disabled={saving} onClick={onSubmit} className="cv-action-primary" data-testid="new-contact-save">{saving ? "Creating…" : "Create contact"}</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+/* ---------- Company record ---------- */
+
+function CompanyRecord({ company, contacts, opportunities, workspaces, open, onOpenChange, onOpenContact }) {
+  const relatedContacts = contacts.filter((contact) => contact.company_id === company.id);
+  const relatedOpps = opportunities.filter((opportunity) => opportunity.company_id === company.id);
+  const workspace = workspaces.find((record) => record.company_id === company.id);
+  const openOpps = relatedOpps.filter(isOpenDeal);
+  const tier = TIER[company.tier] || TIER.standard;
+  const wide = useWideLayout();
+  const [tab, setTab] = useState("contacts");
+  useEffect(() => { setTab("contacts"); }, [company.id]);
+  const website = company.website?.replace(/^https?:\/\//, "");
+
+  const details = <section aria-labelledby="company-details-title">
+    <h3 id="company-details-title" className="sr-only">Details</h3>
+    <PropertyList items={[
+      { label: "Industry", value: company.industry || <span className="text-muted-foreground">Not set</span> },
+      { label: "Website", value: website || <span className="text-muted-foreground">Not set</span> },
+      { label: "Tier", value: <StatusDot tone={tier.tone}>{tier.label}</StatusDot> },
+      { label: "Primary contacts", value: <span className="tabular">{relatedContacts.length}</span> },
+      { label: "Open opportunities", value: <span className="tabular">{openOpps.length}</span> },
+      { label: "Client workspace", value: workspace ? <Link className="font-medium text-brand-strong hover:underline" to={`/workspaces/${workspace.id}`}>{workspace.name}</Link> : <span className="text-muted-foreground">Not created</span> },
+      { label: "Added", value: fullDateLabel(company.created_at) || "—" },
+    ]} />
+  </section>;
+
+  return <Sheet open={open} onOpenChange={onOpenChange}>
+    <SheetContent className={RECORD_SHEET} data-testid="company-record">
+      <RecordLayout
+        wide={wide}
+        avatar={<CompanyMark name={company.name} size="lg" />}
+        title={company.name}
+        meta={[company.industry, website].filter(Boolean).join(" · ") || "Company relationship record"}
+        flag={<MiniStatus tone={tier.tone} className="shrink-0">{tier.label}</MiniStatus>}
+        value={tab}
+        onValueChange={setTab}
+        details={details}
+        tabs={[
+          {
+            value: "contacts", label: "Contacts", count: relatedContacts.length,
+            content: relatedContacts.length ? <RecordList>{relatedContacts.map((contact) => {
+              const relationship = RELATIONSHIP[contact.sentiment] || RELATIONSHIP.neutral;
+              return <li key={contact.id}><button type="button" onClick={() => onOpenContact(contact)} className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/50">
+                <Avatar name={contact.name} size="sm" />
+                <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium text-foreground">{contact.name}</span><span className="block truncate text-xs text-muted-foreground">{contact.role || "No role"} · {contact.email || "No email"}</span></span>
+                <StatusDot tone={relationship.tone} className="shrink-0">{relationship.label}</StatusDot>
+              </button></li>;
+            })}</RecordList> : <RecordEmpty icon={Users} title="No contacts">No contacts are linked to this company.</RecordEmpty>,
+          },
+          {
+            value: "deals", label: "Deals", count: relatedOpps.length,
+            content: relatedOpps.length ? <RecordList>{relatedOpps.map((opportunity) => <li key={opportunity.id}><Link to={`/deals?deal=${opportunity.id}`} className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"><GitBranch className="size-3.5" aria-hidden="true" /></span>
+              <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium text-foreground">{opportunity.name}</span><span className="block text-xs capitalize text-muted-foreground">{opportunity.stage?.replace("_", " ") || "Lead"}</span></span>
+              <span className="tabular shrink-0 text-[13px] font-semibold text-foreground">{money(opportunity.value)}</span>
+            </Link></li>)}</RecordList> : <RecordEmpty icon={GitBranch} title="No deals">No opportunities are linked to this company.</RecordEmpty>,
+          },
+          {
+            value: "workspace", label: "Client 360",
+            content: workspace
+              ? <div className="rounded-xl border border-border bg-card p-4">
+                  <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground"><BriefcaseBusiness className="size-4 text-brand" aria-hidden="true" />{workspace.name}<MiniStatus tone="success" className="ml-1 font-normal">Active</MiniStatus></div>
+                  <p className="mt-1.5 text-[13px] leading-5 text-muted-foreground">A Client 360 workspace is active for this company, with health, outcomes, commitments, approvals and timeline evidence.</p>
+                  <Button asChild size="sm" variant="outline" className="mt-3"><Link to={`/workspaces/${workspace.id}`}>Open workspace</Link></Button>
+                </div>
+              : <RecordEmpty icon={BriefcaseBusiness} title="No Client 360 workspace yet">A workspace is created automatically when an opportunity is won, or can be created from the global Create menu.</RecordEmpty>,
+          },
+        ]}
+      />
+    </SheetContent>
+  </Sheet>;
+}

@@ -42,7 +42,7 @@ api.interceptors.request.use((config) => {
 });
 
 export const CAP_STATUS = {
-  RESEARCHING: "bg-gray-100 text-gray-600 border-gray-200",
+  RESEARCHING: "bg-muted text-muted-foreground border-border",
   REQUIRES_CONFIGURATION: "bg-amber-50 text-amber-800 border-amber-200",
   PLANNED: "bg-blue-50 text-blue-700 border-blue-200",
   ALPHA: "bg-purple-50 text-purple-700 border-purple-200",
@@ -59,12 +59,12 @@ export const HEALTH_BAND = {
 
 export const STATUS_COLOR = {
   open: "bg-blue-50 text-blue-700 border-blue-200",
-  todo: "bg-gray-100 text-gray-600 border-gray-200",
+  todo: "bg-muted text-muted-foreground border-border",
   in_progress: "bg-blue-50 text-blue-700 border-blue-200",
   in_review: "bg-amber-50 text-amber-700 border-amber-200",
   done: "bg-emerald-50 text-emerald-700 border-emerald-200",
   approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  draft: "bg-gray-100 text-gray-600 border-gray-200",
+  draft: "bg-muted text-muted-foreground border-border",
   at_risk: "bg-amber-50 text-amber-700 border-amber-200",
   breached: "bg-red-50 text-red-700 border-red-200",
   fulfilled: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -81,3 +81,32 @@ export function formatErr(detail) {
 }
 
 export const money = (n) => "$" + (n || 0).toLocaleString();
+
+/**
+ * Format an amount in its own currency, and never throw.
+ *
+ * `Intl.NumberFormat` raises a RangeError for a currency code it does not recognise, and a
+ * render that throws takes the whole page down. A record carrying "usd ", "$" or "" must
+ * cost one label, not the report: an unusable code falls back to the plain number with the
+ * code beside it, and a non-finite amount shows as a dash.
+ */
+export function formatMoney(amount, currency) {
+  const value = Number(amount);
+  if (amount == null || !Number.isFinite(value)) return "—";
+  const code = String(currency || "").trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(code)) {
+    try {
+      return new Intl.NumberFormat(undefined, { style: "currency", currency: code, maximumFractionDigits: 0 }).format(value);
+    } catch {
+      // An unrecognised code: fall through to the plain form below.
+    }
+  }
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}${code ? ` ${code}` : ""}`;
+}
+
+/** Amounts grouped by currency, one per currency, never added together. */
+export function formatMoneyByCurrency(byCurrency) {
+  const entries = Object.entries(byCurrency || {});
+  if (!entries.length) return formatMoney(0, "USD");
+  return entries.map(([code, amount]) => formatMoney(amount, code)).join(" · ");
+}

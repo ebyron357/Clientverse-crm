@@ -54,11 +54,16 @@ def db():
 
 def make_case(db, *, tenant_id=TENANT, potential=4000.0, currency="USD",
               detected_days_ago=30):
+    """A dormant-deal case on a deal of its own, so its outcomes have a deal to relate to."""
+    opportunity_id = f"opp_{uuid.uuid4().hex[:10]}"
+    run(db.opportunities.insert_one({"id": opportunity_id, "tenant_id": tenant_id,
+                                     "name": "Renewal", "stage": "proposal",
+                                     "value": potential, "currency": currency}))
     return run(rc.open_case(db, rc.normalize_event(
         tenant_id=tenant_id, source=rc.SOURCE_DORMANT_DEAL,
         source_event_id=f"ev_{uuid.uuid4().hex[:10]}", occurred_at=iso(detected_days_ago),
         reason="No contact for 45 days", potential_value=potential, currency=currency,
-        title="Renewal at risk"), actor="detector"))
+        opportunity_id=opportunity_id, title="Renewal at risk"), actor="detector"))
 
 
 def engage(db, case, *, tenant_id=TENANT):
@@ -88,11 +93,13 @@ def message(db, conversation, *, direction, status, days_ago=10, tenant_id=TENAN
     return doc
 
 
-def paid_invoice(db, *, total=4000.0, currency="USD", days_ago=1, tenant_id=TENANT):
+def paid_invoice(db, *, total=4000.0, currency="USD", days_ago=1, tenant_id=TENANT,
+                 case=None):
     invoice = {"id": f"inv_{uuid.uuid4().hex[:10]}", "tenant_id": tenant_id,
                "total": total, "currency": currency, "status": "paid",
                "payment_status": "paid", "paid_at": iso(days_ago),
-               "created_at": iso(days_ago + 5)}
+               "created_at": iso(days_ago + 5),
+               "opportunity_id": (case or {}).get("opportunity_id")}
     run(db.invoices.insert_one(dict(invoice)))
     return invoice
 
@@ -106,7 +113,7 @@ def test_case_proof_shows_the_whole_chain_from_detection_to_attribution(db):
     message(db, conversation, direction=cv.OUTBOUND, status=cv.DRAFT, days_ago=9)
     message(db, conversation, direction=cv.INBOUND, status=cv.RECEIVED, days_ago=5)
     engage(db, case)
-    invoice = paid_invoice(db, total=4000.0)
+    invoice = paid_invoice(db, case=case, total=4000.0)
     run(attribution.record_outcome(db, tenant_id=TENANT, case_id=case["id"],
                                    kind=attribution.OUTCOME_INVOICE_PAID,
                                    record_id=invoice["id"], actor="ops@acme.test"))
@@ -204,13 +211,13 @@ def test_portfolio_reports_unattributed_outcomes_alongside_claimed_revenue(db):
     run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=claimed["id"],
         kind=attribution.OUTCOME_INVOICE_PAID,
-        record_id=paid_invoice(db, total=1000.0)["id"], actor="ops@acme.test"))
+        record_id=paid_invoice(db, case=claimed, total=1000.0)["id"], actor="ops@acme.test"))
 
     unclaimed = make_case(db)
     run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=unclaimed["id"],
         kind=attribution.OUTCOME_INVOICE_PAID,
-        record_id=paid_invoice(db, total=25000.0)["id"], actor="ops@acme.test"))
+        record_id=paid_invoice(db, case=unclaimed, total=25000.0)["id"], actor="ops@acme.test"))
 
     report = run(recovery_proof.portfolio(db, TENANT))
     revenue = report["revenue"]
@@ -229,7 +236,7 @@ def test_open_potential_is_never_folded_into_recovered_revenue(db):
     run(attribution.record_outcome(
         db, tenant_id=TENANT, case_id=recovered["id"],
         kind=attribution.OUTCOME_INVOICE_PAID,
-        record_id=paid_invoice(db, total=1000.0)["id"], actor="ops@acme.test"))
+        record_id=paid_invoice(db, case=recovered, total=1000.0)["id"], actor="ops@acme.test"))
 
     revenue = run(recovery_proof.portfolio(db, TENANT))["revenue"]
     assert revenue["potential_value_open_by_currency"]["USD"] == 50000.0
