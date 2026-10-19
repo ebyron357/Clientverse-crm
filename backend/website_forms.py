@@ -509,17 +509,31 @@ def normalise_submission(raw: dict, form: dict) -> dict:
                "estimated_home_value", "pricemin": "price_min", "pricemax": "price_max"}
     control_aliases = {"idempotencykey": "_sid", "idempotency_key": "_sid"}
 
+    def canonical_key(raw_key: Any, value: Any) -> str:
+        lowered = str(raw_key).strip().lower()
+        key = aliases.get(lowered, control_aliases.get(lowered, lowered))
+        if key == "external_id":
+            return "_sid"
+        if key in ("pricerange", "price_range"):
+            return "price_range"
+        if key == "lead_type" and not normalise_lead_type(value):
+            # A request kind such as "consultation" is not a buying/selling answer.
+            # Keep allowing the nested goal to supply that separate intent.
+            return f"site_{lowered}"
+        return key
+
     # A server integration nests its own extras under `payload`. Lift them to the top
-    # level -- without letting them override a top-level field -- so they are typed,
-    # aliased and kept like any other field.
+    # level without letting aliases or case variants override a top-level field.
     flat: dict[str, Any] = {}
     nested = (raw or {}).get("payload")
     for raw_key, value in (raw or {}).items():
         if raw_key != "payload" or not isinstance(nested, dict):
             flat[raw_key] = value
     if isinstance(nested, dict):
+        top_level_keys = {canonical_key(key, value) for key, value in flat.items()}
         for raw_key, value in list(nested.items())[:MAX_EXTRA_KEYS]:
-            flat.setdefault(raw_key, value)
+            if canonical_key(raw_key, value) not in top_level_keys:
+                flat.setdefault(raw_key, value)
 
     for raw_key, value in flat.items():
         key = str(raw_key).strip()
@@ -1211,9 +1225,12 @@ class LeadPipeline:
             return {"id": self.new_id("enq"), "outcome": "spam_blocked"}
 
         external_id = _clip(control.get("external_id") or control.get("_sid"), 200)
-        fingerprint = _sha("|".join(str(fields.get(k) or "") for k in (
-            "email", "phone", "message", "listing_id", "property_address", "preferred_date")
-        ) + f"|{form['id']}")
+        # Collapse repeated answers, not a new request whose time, intent, budget or
+        # custom answer changed. Transport controls and attribution are deliberately
+        # excluded, so a double-click with a fresh submission id still files once.
+        fingerprint = _sha(json.dumps({"form_id": form["id"], "fields": fields,
+                                       "extra": normalised["extra"]},
+                                      sort_keys=True, separators=(",", ":")))
         if fields.get("email") or fields.get("phone"):
             recent = await self.db[detectors.WEB_ENQUIRIES].find_one(
                 {"tenant_id": tenant_id, "form_id": form["id"], "fingerprint": fingerprint,
