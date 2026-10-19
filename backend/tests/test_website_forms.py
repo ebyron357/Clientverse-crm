@@ -954,3 +954,226 @@ def test_one_intake_address_for_every_website_server(client):
     client.patch(f"/api/website-forms/{form['id']}", headers=owner["headers"], json={"status": "paused"})
     assert client.post("/api/intake/leads", json=server_body(idempotencyKey="p1"),
                        headers={"Authorization": f"Bearer {minted['key']}"}).status_code == 401
+
+
+@pytest.mark.parametrize(("top", "nested", "field", "expected"), [
+    ({"propertyAddress": "Top address"}, {"property_address": "Nested address"},
+     "property_address", "Top address"),
+    ({"email": "TOP@example.com"}, {"Email": "nested@example.com"}, "email", "top@example.com"),
+    ({"timeframe": "3-6 months"}, {"timeline": "Just browsing"}, "timeline", "3-6 months"),
+    ({"consultationDate": "2030-05-01"}, {"preferred_date": "2030-05-02"},
+     "preferred_date", "2030-05-01"),
+    ({"consultationTime": "09:30"}, {"preferred_time": "15:30"}, "preferred_time", "09:30"),
+    ({"leadType": "buyer"}, {"goal": "seller"}, "lead_type", "Buying"),
+])
+def test_top_level_server_fields_win_over_nested_aliases(top, nested, field, expected):
+    normalised = wf.normalise_submission(server_body(**top, payload=nested), {"fields": []})
+    assert normalised["fields"][field] == expected
+
+
+def test_server_request_kind_still_allows_a_nested_buyer_goal():
+    normalised = wf.normalise_submission(
+        server_body(leadType="consultation", payload={"goal": "buy"}), {"fields": []})
+    assert normalised["fields"]["lead_type"] == "Buying"
+    assert normalised["extra"]["site_leadtype"] == "consultation"
+
+
+def test_top_level_idempotency_key_cannot_be_replaced_by_nested_external_id():
+    normalised = wf.normalise_submission(
+        server_body(idempotencyKey="top-id", payload={"external_id": "nested-id"}), {"fields": []})
+    assert normalised["control"]["_sid"] == "top-id"
+    assert "external_id" not in normalised["control"]
+
+
+def test_allure_buyer_contract_reaches_the_actual_intake_and_contact(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "assignment": {"mode": "specific", "users": [owner["email"]]},
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5}})
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    body = server_body(
+        idempotencyKey="allure-integration-buyer-1", source="buyer-guide", leadType="buyer",
+        name="Allure Integration Buyer", email="ALLURE.BUYER@example.com", phone="704-555-0142",
+        propertyAddress="1200 Queens Rd, Charlotte, NC", message="Buyer consultation request",
+        timeframe="3\u20136 months", consultationDate="2030-05-01", consultationTime="09:30",
+        payload={"kind": "buyer_guide", "firstName": "Allure", "lastName": "Integration Buyer",
+                 "intent": "consult", "priceRange": "$400k\u2013$500k", "preapproval": "Yes",
+                 "propertyType": "Single family", "pageUrl": f"{SITE}/buyers"})
+    response = client.post("/api/intake/leads", json=body, headers={"Authorization": f"Bearer {key}"})
+    assert response.status_code == 200, response.text
+    receipt = response.json()
+    assert receipt["accepted"] is True and receipt["outcome"] == "accepted"
+    assert receipt["id"] and receipt["contact_id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": receipt["id"]})
+    assert stored["tenant_id"] == owner["tenant_id"] and stored["form_id"] == form["id"]
+    assert stored["name"] == "Allure Integration Buyer" and stored["email"] == "allure.buyer@example.com"
+    assert stored["phone"] == "704-555-0142" and stored["property_address"] == body["propertyAddress"]
+    assert stored["external_id"] == body["idempotencyKey"] and stored["received_via"] == "server"
+    assert stored["assigned_to"] == owner["email"] and stored["task_id"] and stored["opportunity_id"]
+    assert stored["fields"]["lead_type"] == "Buying"
+    assert stored["fields"]["timeline"] == "3\u20136 months"
+    assert stored["fields"]["preferred_date"] == "2030-05-01"
+    assert stored["fields"]["preferred_time"] == "09:30"
+    assert stored["fields"]["price_min"] == 400000 and stored["fields"]["price_max"] == 500000
+    assert stored["fields"]["pre_approved"] == "Yes"
+    assert stored["extra"]["source"] == "buyer-guide" and stored["extra"]["intent"] == "consult"
+    assert stored["extra"]["propertyType"] == "Single family"
+    assert stored["source_page"] == f"{SITE}/buyers" and stored["estimated_value"] == 12500
+    contact = find_one(client, "contacts", {"id": receipt["contact_id"]})
+    assert contact["name"] == body["name"] and contact["email"] == "allure.buyer@example.com"
+    assert contact["owner"] == owner["email"]
+    assert contact["custom_fields"]["property_address"] == body["propertyAddress"]
+    assert contact["custom_fields"]["price_max"] == 500000
+    again = client.post("/api/intake/leads", json=body, headers={"Authorization": f"Bearer {key}"}).json()
+    assert again == {"accepted": True, "id": receipt["id"], "outcome": "duplicate", "contact_id": None}
+    assert len(find_all(client, detectors.WEB_ENQUIRIES, {"tenant_id": owner["tenant_id"]})) == 1
+    assert len(find_all(client, "contacts", {"tenant_id": owner["tenant_id"]})) == 1
+    assert len(find_all(client, "tasks", {"tenant_id": owner["tenant_id"]})) == 1
+
+
+@pytest.mark.parametrize("changed", [
+    {"consultationTime": "15:30"},
+    {"timeframe": "Just browsing"},
+    {"leadType": "seller"},
+    {"source": "buyer-consultation"},
+    {"payload": {"priceRange": "$600k\u2013$700k", "preapproval": "Yes"}},
+    {"payload": {"priceRange": "$400k\u2013$500k", "preapproval": "No"}},
+    {"payload": {"priceRange": "$400k\u2013$500k", "preapproval": "Yes", "propertyType": "Condo"}},
+])
+def test_changed_answers_are_new_inquiries_not_false_duplicates(client, changed):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    body = server_body(leadType="buyer", source="buyer-guide", consultationTime="09:30",
+                       payload={"priceRange": "$400k\u2013$500k", "preapproval": "Yes"})
+    first = server_post(client, form, body, key).json()
+    second = server_post(client, form, {**body, **changed, "idempotencyKey": "different-submission"}, key).json()
+    assert first["outcome"] == second["outcome"] == "accepted"
+    assert first["id"] != second["id"]
+    assert len(find_all(client, detectors.WEB_ENQUIRIES, {"tenant_id": owner["tenant_id"]})) == 2
+    assert len(find_all(client, "contacts", {"tenant_id": owner["tenant_id"]})) == 1
+    assert len(find_all(client, "opportunities", {"tenant_id": owner["tenant_id"]})) == 1
+
+
+def test_same_answers_with_fresh_id_and_changed_attribution_still_collapse(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    body = server_body(payload={"priceRange": "$400k\u2013$500k", "preapproval": "Yes"})
+    first = server_post(client, form, body, key).json()
+    second = server_post(client, form, {**body, "idempotencyKey": "double-click",
+                                      "pageUrl": f"{SITE}/new-tracking-location",
+                                      "payload": {"preapproval": "Yes", "priceRange": "$400k\u2013$500k"}}, key).json()
+    assert second["outcome"] == "duplicate" and second["id"] == first["id"]
+
+
+def test_same_idempotency_key_is_stable_beyond_the_fingerprint_window(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    body = server_body()
+    first = server_post(client, form, body, key).json()
+    old = (datetime.now(timezone.utc) - timedelta(minutes=wf.DUPLICATE_WINDOW_MINUTES + 1)).isoformat()
+    call(client, server.db[detectors.WEB_ENQUIRIES].update_one,
+         {"id": first["id"]}, {"$set": {"received_at": old}})
+    again = server_post(client, form, {**body, "consultationTime": "Changed retry content"}, key).json()
+    assert again["outcome"] == "duplicate" and again["id"] == first["id"]
+    assert len(find_all(client, detectors.WEB_ENQUIRIES, {"tenant_id": owner["tenant_id"]})) == 1
+
+
+def test_server_receipt_distinguishes_spam_from_durable_acceptance(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    response = client.post("/api/intake/leads", json=server_body(_hp="bot"),
+                           headers={"Authorization": f"Bearer {key}"})
+    assert response.status_code == 200 and response.json()["accepted"] is True
+    assert response.json()["outcome"] == "spam_blocked"
+    assert find_one(client, detectors.WEB_ENQUIRIES, {"id": response.json()["id"]}) is None
+
+
+def test_server_acceptance_is_durable_even_if_follow_through_fails(client, monkeypatch):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("Synthetic local automation failure")
+
+    monkeypatch.setattr(server.lead_pipeline, "automate", broken)
+    response = client.post("/api/intake/leads", json=server_body(),
+                           headers={"Authorization": f"Bearer {key}"})
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "accepted" and response.json()["contact_id"] is None
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": response.json()["id"]})
+    assert stored["automation"][-1]["result"] == "failed"
+
+
+PRICE_RANGE_CASES = [
+    ("$500k+", (500000, None), {"price_min": 500000}),
+    ("over 500k", (500000, None), {"price_min": 500000}),
+    ("up to $500k", (None, 500000), {"price_max": 500000}),
+    ("under 300k", (None, 300000), {"price_max": 300000}),
+    ("$400k\u2013$500k", (400000, 500000), {"price_min": 400000, "price_max": 500000}),
+    ("400\u2013500k", (400000, 500000), {"price_min": 400000, "price_max": 500000}),
+    ("400,000 to 500,000", (400000, 500000), {"price_min": 400000, "price_max": 500000}),
+    ("$500k", (500000, 500000), {"price_max": 500000}),
+    ("500000", (500000, 500000), {"price_max": 500000}),
+]
+
+
+@pytest.mark.parametrize(("value", "bounds", "expected"), PRICE_RANGE_CASES)
+def test_price_range_parser_and_normalizer_preserve_one_sided_bounds(value, bounds, expected):
+    assert wf.parse_price_range(value) == bounds
+    normalised = wf.normalise_submission(server_body(payload={"priceRange": value}), {"fields": []})
+    prices = {key: val for key, val in normalised["fields"].items() if key in ("price_min", "price_max")}
+    assert prices == expected
+    assert normalised["extra"]["price_range"] == value
+
+
+@pytest.mark.parametrize(("value", "bounds", "expected"), PRICE_RANGE_CASES)
+def test_one_sided_buyer_budgets_reach_the_lead_and_contact(client, value, bounds, expected):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5, "fixed_value": 7000}})
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    body = server_body(leadType="buyer", source="buyer-guide", payload={"priceRange": value})
+    response = client.post("/api/intake/leads", json=body, headers={"Authorization": f"Bearer {key}"})
+    assert response.status_code == 200, response.text
+    receipt = response.json()
+    assert receipt["accepted"] is True and receipt["outcome"] == "accepted"
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": receipt["id"]})
+    contact = find_one(client, "contacts", {"id": receipt["contact_id"]})
+    for data in (stored["fields"], contact["custom_fields"]):
+        assert {key: val for key, val in data.items() if key in ("price_min", "price_max")} == expected
+    assert stored["extra"]["price_range"] == value
+    # The existing valuation policy stays unchanged: it can use price_min when
+    # price_max is absent, without relabeling that minimum as a maximum.
+    assert stored["estimated_value"] == (bounds[1] if bounds[1] is not None else bounds[0]) * 0.025
+
+
+@pytest.mark.parametrize("value", ["under 500k+", "$400k-bogus", "-500k", "400k-500k-600k"])
+def test_malformed_price_ranges_do_not_invent_a_budget(value):
+    assert wf.parse_price_range(value) == (None, None)
+
+
+@pytest.mark.parametrize("timestamp_key", ["consentAt", "consent_at"])
+def test_consent_timestamp_is_stored_but_does_not_defeat_repeat_suppression(client, timestamp_key):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    payload = {"consent": True, "consentText": "Please contact me about this inquiry.",
+               timestamp_key: "2030-01-01T12:00:00.000Z"}
+    body = server_body(payload=payload)
+    first = server_post(client, form, body, key).json()
+    again = server_post(client, form, {**body, "idempotencyKey": "fresh-id",
+                                      "payload": {**payload, timestamp_key: "2030-01-01T12:01:00.000Z"}}, key).json()
+    assert again["outcome"] == "duplicate" and again["id"] == first["id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": first["id"]})
+    assert stored["extra"][timestamp_key] == payload[timestamp_key]
+    assert len(find_all(client, detectors.WEB_ENQUIRIES, {"tenant_id": owner["tenant_id"]})) == 1
+
+    for number, change in enumerate(({"consent": False}, {"consentText": "Email me only."})):
+        different = server_post(client, form, {**body, "idempotencyKey": f"changed-consent-{number}",
+                                               "payload": {**payload, **change}}, key).json()
+        assert different["outcome"] == "accepted" and different["id"] != first["id"]
