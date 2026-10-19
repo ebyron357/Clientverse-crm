@@ -3,10 +3,10 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.12 |
+| **Version** | 1.13 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
-| **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
+| **Branch documented** | `main` — written against `main@394f095` (PR #46), which production runs |
 | **Production environment** | Railway project `welcoming-vibrancy` → environment `production` → service `clientverse-crm-production` |
 | **Production URL** | https://crm.clientverse.io (the Railway address https://clientverse-crm-production-production.up.railway.app reaches the same CRM) |
 | **Sign-in page** | https://crm.clientverse.io/login |
@@ -123,14 +123,12 @@ Do these five checks after every first sign-in, and whenever something seems wro
 | 4 | Automation is running | Open `/api/cron/health` while signed in as admin | `"scheduled_jobs_running": true` ([§11.4](#114-verify-that-automation-is-healthy)) |
 | 5 | No critical alerts | **Action Center** (the bell → **"View all in Action Center"**) | Nothing unexpected under **"Needs action"** |
 
-**Check 3 is expected to fail until you reconnect Google once.** Google refused to refresh the
-saved Google permission on 2026-09-30 (Verified (live, 2026-09-30): Railway log
-`POST https://oauth2.googleapis.com/token` → `400 Bad Request`), and on 2026-10-19 production's
-log showed no Google sync at all — consistent with no working Google connection. Since
-2026-10-19 the CRM also records exactly which permissions Google granted, so a connection made
-before that date must be renewed anyway. Reconnect: [§5.6](#56-re-authorize-google) or
-[§5.7](#57-disconnect-safely-and-when-it-is-required). What the Gmail row shows today is
-UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
+**Google was reconnected on 2026-10-19.** The owner reconnected Google at 02:02 UTC, and Google
+granted send permission ([§6.1](#61-read-this-first--current-status)). Verified (live,
+2026-10-19): at 17:40 UTC production's reply sweep read the connected inbox, and every Gmail
+request answered `200` (Railway log). What the Gmail row shows on screen is still
+UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED. If it reads **"Needs auth"**, reconnect:
+[§5.6](#56-re-authorize-google) or [§5.7](#57-disconnect-safely-and-when-it-is-required).
 
 ### 1.5 If something is broken
 
@@ -169,8 +167,8 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
    `clientverse-crm-production` → **Deployments** → the top **ACTIVE / SUCCESS** entry. They should
    match. Every change merged to `main` redeploys automatically, so the deployment id changes with
    each merge. Always read it from Railway, not from a document.
-   - Verified (live, 2026-10-19): the active deployment `e7790295-…` runs commit `838f00d…`; it
-     was redeployed at 01:47 UTC to apply the custom-domain variables. Each start-up logged `Registered outbound channel provider: gmail` →
+   - Verified (live, 2026-10-19): the active deployment `56756228-…` runs commit `394f095…`
+     (PR #46), SUCCESS at 17:36 UTC. Its start-up logged `Registered outbound channel provider: gmail` →
      `In-process scheduler started for 13 job(s): …` → `Application startup complete` →
      `GET /api/health 200`.
 
@@ -1992,7 +1990,7 @@ DEFERRED, DEPRECATED.
 
 | Integration | Exists in the product | Status |
 |---|---|---|
-| **Google — Gmail and Google Calendar connection** | Yes (**Registries**) | **DEGRADED** — Google refused the permission refresh on 2026-09-30, and no Google sync appears in production's log on 2026-10-19. Reconnect once ([§5.6](#56-re-authorize-google), [§5.7](#57-disconnect-safely-and-when-it-is-required)). The flows have never been live-certified. |
+| **Google — Gmail and Google Calendar connection** | Yes (**Registries**) | **AVAILABLE BUT NOT CERTIFIED** — reconnected with send permission on 2026-10-19 at 02:02 UTC; the reply sweep read the inbox at 17:40 UTC (Railway log, Gmail requests `200`). The flows have never been live-certified. If the row reads **"Needs auth"**: [§5.6](#56-re-authorize-google), [§5.7](#57-disconnect-safely-and-when-it-is-required). |
 | **Gmail — outbound email** | Yes (server, approvals, booking emails, form auto-reply) | **OFF UNTIL AN ADMIN TURNS IT ON** — **"Send test & turn on"** on the Gmail row ([§5.10](#510-turn-email-sending-on-or-off)); no screen to write your own email ([§6.1](#61-read-this-first--current-status)) |
 | **Gmail — reply capture** | Yes (scheduler) | **AVAILABLE BUT NOT CERTIFIED** — never tested live ([§6.6](#66-procedure-c--capture-the-reply)) |
 | **Google Calendar — meeting sync and booking busy times** | Yes | **AVAILABLE BUT NOT CERTIFIED** |
@@ -2223,8 +2221,8 @@ secrets: without them every run fails by design.
 
 ### 11.6 Current state (verified live 2026-10-19)
 
-- **The built-in scheduler runs.** Production runs `main@838f00d` (Railway deployment
-  `406f320e-…`, SUCCESS 01:16 UTC), and its boot log reads `In-process scheduler started for 13
+- **The built-in scheduler runs.** Production runs `main@394f095` (Railway deployment
+  `56756228-…`, SUCCESS 17:36 UTC), and its boot log reads `In-process scheduler started for 13
   job(s)` with the thirteen jobs of §11.2. It has run since PR #38 was deployed on 2026-10-18.
 - **The GitHub workflow also reaches production.** Railway's log shows `200 OK` for all fourteen
   workflow paths, with the ledger read-backs, between 00:19 and 01:17 UTC on 2026-10-19.
@@ -2428,7 +2426,7 @@ the owner account.
 | # | Check | How | Expected | Known on 2026-10-19 | Result |
 |---|---|---|---|---|---|
 | 1 | Production URL loads | Open the production URL | Sign-in page, **"Sign in to ClientVerse"** | Deployment SUCCESS; health 200 in the Railway log | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
-| 2 | Service healthy | `/api/health` | `status ok`, `database up`, `git_sha` = Railway commit | Health 200 at boot (01:16 UTC) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
+| 2 | Service healthy | `/api/health` | `status ok`, `database up`, `git_sha` = Railway commit | Health 200 at boot (17:36 UTC) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 3 | Login works | §3.2 | **Today** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 4 | Logout works | Sign-out icon, then open `/dashboard` | Returns to the sign-in page | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 5 | Admin role verified | Settings → **"Profile"** → **"Access level"**; **"Team & Access"** visible | **"Workspace admin"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
@@ -2438,13 +2436,13 @@ the owner account.
 | 9 | Create record works | Create company `ZZ Test Co` and contact `ZZ Test Person` | **"Company created"**, **"Contact created"**; both appear after a reload | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 10 | Edit record works | Open `ZZ Test Person` → **"Edit"** → add a phone → **"Save changes"**; move a test deal **Lead → Qualified**; reload | **"Contact saved"**, **"Moved to Qualified"**; both persist after the reload | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 11 | Archive / restore | **"Archive contact"** on `ZZ Test Person`; **"Show archived"**; **"Restore"** | **"Contact archived"**, **"Contact restored"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
-| 12 | Google connected | Registries → Gmail | **"Connected"**, no red line, connected on or after 2026-10-19 | No Google sync in the 2026-10-19 log; reconnect needed (§1.4) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
+| 12 | Google connected | Registries → Gmail | **"Connected"**, no red line, connected on or after 2026-10-19 | Reconnected 02:02 UTC; the reply sweep read the inbox at 17:40 UTC (§1.4) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 13 | gmail.send verified | §5.8 checks 1–3, §5.10 | Google lists send permission; **"Email sending on"**; Email not listed as unauthorised | Google granted `gmail.send` on 2026-10-19 02:02 UTC; sending not yet turned on | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 14 | Outbound email works | §6.4 | **"Sent"**; in Gmail Sent; received | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 15 | Duplicate-send protection | §6.5 | Refused; one copy only | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 16 | Inbound reply works | §6.6 | Inbound **"Received"** on the same thread | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 17 | Automation healthy | §11.4 A | `scheduled_jobs_running: true`; recent `in_process.last_run_at`, or a recent `last_authenticated_call_at` when the workflow runs too | Boot log shows the built-in scheduler; workflow calls answered 200 | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
-| 18 | Railway deployment healthy | Railway → Deployments | Newest **SUCCESS**, no crash loop | `838f00d` SUCCESS 01:16 UTC | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
+| 18 | Railway deployment healthy | Railway → Deployments | Newest **SUCCESS**, no crash loop | `394f095` SUCCESS 17:36 UTC | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 19 | Integrations show correct status | Settings → **"Integrations"** vs Registries | Same statuses in both; Stripe **"Not connected"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 20 | No visible critical errors | Visit every main menu item and every Settings item above **Coming soon** | No **"This view needs a refresh"**, no "…unavailable" | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 21 | Clean up | Archive `ZZ Test Person` and the test deal; disable the test member. The test company has no archive button — note its name for engineering. | Recorded | — | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
@@ -2557,10 +2555,10 @@ A first-time owner must be able to answer each question from this manual alone.
 
 | Fact | Evidence |
 |---|---|
-| Production serves `main@838f00d` (PR #42) | Railway deployment `e7790295-5af4-4977-8d58-ff600b1a2633`, redeployed 2026-10-19 01:47 UTC to apply the custom-domain variables. The first deployment of this commit, `406f320e-…` (SUCCESS 01:16 UTC), is REMOVED. |
+| Production serves `main@394f095` (PR #46) | Railway deployment `56756228-a849-42c0-b7ff-53226b6880dd`, SUCCESS 2026-10-19 17:36 UTC. Earlier the same day: `838f00d` (PR #42, `e7790295-…`, 01:47 UTC), `de1277e` (PR #44, `63aef1c2-…`, 02:53 UTC) and `4873f67` (PR #45, `21d4b7b5-…`, 09:28 UTC); each was REMOVED once the next was live. |
 | Service boots with the Gmail adapter and the built-in scheduler | Deploy log: `Registered outbound channel provider: gmail` → `In-process scheduler started for 13 job(s): commitment-risk, work-queue, recovery-runner, booking-reminders, integration-sync, next-best-actions, inbound-email, reconcile-unknown, daily-digest, second-chance, detect-recovery, recovery-strategies, approval-expiry` → `Application startup complete` → `GET /api/health 200` |
 | The GitHub workflow also reaches production | Railway logs of `d4d2e07f` and `406f320e`: `200 OK` for all fourteen workflow paths and `GET /api/cron/runs`, 00:19–01:17 UTC |
-| No Google connection is being synced | No Google API request in the `d4d2e07f` log through 01:09 UTC, although `integration-sync` ran; that job syncs only active or degraded connections (`run_integration_sync_sweep` in `backend/server.py`). Last known: the refresh refused on 2026-09-30. |
+| The Google connection works | The owner reconnected Google at 02:02 UTC with send permission (§6.1). At 17:40 UTC the reply sweep read the connected inbox: every Gmail API request answered `200` in the `56756228` log. Earlier, no Google request appeared in the `d4d2e07f` log through 01:09 UTC, and Google refused the refresh on 2026-09-30. |
 | A connection records the scopes Google granted | Code since PR #42: `google_callback` in `backend/server.py` stores `creds["scopes"]`; `backend/gmail_provider.py` refuses to send without `gmail.send` |
 | The custom domain is live | Railway domain status for `crm.clientverse.io`: verified, certificate valid, CNAME propagated. Railway variables `FRONTEND_URL` and `GOOGLE_REDIRECT_URI` point to it; `CORS_ORIGINS` lists it and the Railway address. Railway's HTTP log shows pages served on `crm.clientverse.io` from 01:36 UTC, and Google returning to its callback at 01:42 UTC. |
 | Outbound email is off until an admin turns it on | Code: `backend/recovery_strategy.py` (`authorized_channels`, `CONFIGURED_INTEGRATION_STATUSES`). The Gmail catalogue record is seeded `REQUIRES_CONFIGURATION`; only `POST /api/integrations/gmail/sending/enable` certifies it, after Gmail accepts a test email (`send_test` in `backend/gmail_provider.py`), and disconnecting Gmail or reconnecting without `gmail.send` or with another mailbox resets it |
@@ -2730,6 +2728,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.13 | 2026-10-19 | Production facts brought up to date: production runs `main@394f095` (PR #46) since 17:36 UTC (§2.2, §11.6, checklist rows 2 and 18, Appendix B); the Google connection works again — reconnected at 02:02 UTC, and the reply sweep read the inbox at 17:40 UTC (§1.4, §10.1, checklist row 12, Appendix B). No screen or procedure changed. |
 | 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |
 | 1.11 | 2026-10-19 | **Agency and client accounts** (§7.25, new): client accounts under an agency, the account switcher and the "working in" banner, opening a client account as an agency admin (checked on every request), creating accounts from a snapshot, and pushing a snapshot to many accounts with a preview per account. **Settings → Agency → "Client accounts"** (§4.3); roles (§8.1). Booking pages loaded into a workspace are hosted by someone on its team, or arrive paused (§7.24, §7.25). |
 | 1.10 | 2026-10-19 | **Snapshots** (§7.24, new): save this workspace's setup (pipeline stages, fields, booking pages, forms, automations, shared views — never records, people, links or secrets), share it with a code shown once, download it as a file, and load one into a workspace through a preview that only adds what is missing. **Settings → Workspace → "Snapshots"**, admin only (§4.3, §8.1). §7.23: a template's stages also stay when a stage in use would change between open, won and lost. |
