@@ -56,6 +56,7 @@ const SETTINGS_GROUPS = [
     label: "Workspace",
     items: [
       { id: "general", label: "General", to: "/settings" },
+      { id: "templates", label: "Industry template", to: "/settings/templates" },
       { id: "fields", label: "Fields", to: "/settings/fields" },
       { id: "team", label: "Team and roles", to: "/team", adminOnly: true, testid: "nav-team-link" },
       // TODO: a lead routing page of its own. Until then each form's "Assign the lead"
@@ -116,6 +117,7 @@ const REGISTRY_TABS = ["mcp-servers", "plugins", "webhooks"];
 function defaultSettingsItem(pathname, tab) {
   if (pathname === "/settings") return "general";
   if (pathname === "/settings/fields") return "fields";
+  if (pathname === "/settings/templates") return "templates";
   if (pathname === "/team") return "team";
   if (pathname === "/website-forms") return "forms";
   if (pathname === "/audit") return "audit";

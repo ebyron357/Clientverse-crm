@@ -23,6 +23,7 @@ import Notifications from "@/pages/Notifications";
 import AcceptInvite from "@/pages/AcceptInvite";
 import Settings from "@/pages/Settings";
 import CustomFieldsSettings from "@/pages/CustomFieldsSettings";
+import IndustryTemplates from "@/pages/IndustryTemplates";
 import ClientOps from "@/pages/ClientOps";
 import Automations from "@/pages/Automations";
 import FieldOps from "@/pages/FieldOps";
@@ -108,6 +109,7 @@ function AppRouter() {
         <Route element={<SettingsLayout />}>
           <Route path="/settings" element={<Settings />} />
           <Route path="/settings/fields" element={<CustomFieldsSettings />} />
+          <Route path="/settings/templates" element={<IndustryTemplates />} />
           <Route path="/team" element={<Team />} />
           <Route path="/website-forms" element={<WebsiteForms />} />
           <Route path="/registries" element={<Registries />} />

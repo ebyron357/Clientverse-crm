@@ -422,6 +422,32 @@ class AutomationEngine:
                 raise _bad(f"'{rule}' is not a stop rule")
         return list(dict.fromkeys(rules))
 
+    async def create(self, tenant: str, actor: str, body: dict) -> dict:
+        """A new automation, as a draft. Used by the editor, recipes and industry templates."""
+        db = self.db
+        if await db[AUTOMATIONS].count_documents({"tenant_id": tenant, "status": {"$ne": "archived"}}) >= MAX_AUTOMATIONS:
+            raise _bad(f"A workspace can have at most {MAX_AUTOMATIONS} automations")
+        inp = AutomationInput(**body)
+        conditions = record_fields.clean_filters(inp.conditions)
+        await record_fields.compile_filters(db, tenant, "contacts", conditions)
+        now = self.now_iso()
+        doc: dict[str, Any] = {"id": self.new_id("auto"), "tenant_id": tenant, "name": inp.name.strip(),
+               "description": (inp.description or "").strip() or None,
+               "trigger": self.clean_trigger(inp.trigger), "conditions": conditions,
+               "steps": await self.clean_steps(tenant, inp.steps),
+               "stop_rules": self.clean_stop_rules(inp.stop_rules),
+               "once_per_contact": inp.once_per_contact, "status": "draft", "version": 1,
+               "runs_total": 0, "last_run_at": None, "round_robin_cursor": 0,
+               "created_by": actor, "created_at": now, "updated_at": now}
+        await db[AUTOMATIONS].insert_one(dict(doc))
+        await self.record_event("automation.created", "automation", doc["id"], tenant, actor,
+                                payload={"name": doc["name"], "trigger": doc["trigger"]["event"]})
+        return doc
+
+    def recipe_body(self, key: str) -> dict:
+        recipe = RECIPES[key]
+        return {k: recipe[k] for k in ("name", "description", "trigger", "steps", "stop_rules")}
+
     # ------------------------------------------------------------ context
 
     async def context_for(self, tenant_id: str, subject: str, record_id: str,
@@ -896,7 +922,7 @@ def register_automation_routes(router: Any, engine: AutomationEngine, get_curren
         return doc
 
     async def load(automation_id: str, user: dict) -> dict:
-        doc = await db[AUTOMATIONS].find_one(
+        doc: Optional[dict] = await db[AUTOMATIONS].find_one(
             {"tenant_id": user["tenant_id"], "id": automation_id, "status": {"$ne": "archived"}}, {"_id": 0})
         if not doc:
             raise HTTPException(status_code=404, detail="Not found")
@@ -923,25 +949,7 @@ def register_automation_routes(router: Any, engine: AutomationEngine, get_curren
         return {"items": items}
 
     async def save_new(user: dict, body: dict) -> dict:
-        tenant = user["tenant_id"]
-        if await db[AUTOMATIONS].count_documents({"tenant_id": tenant, "status": {"$ne": "archived"}}) >= MAX_AUTOMATIONS:
-            raise _bad(f"A workspace can have at most {MAX_AUTOMATIONS} automations")
-        inp = AutomationInput(**body)
-        conditions = record_fields.clean_filters(inp.conditions)
-        await record_fields.compile_filters(db, tenant, "contacts", conditions)
-        now = engine.now_iso()
-        doc = {"id": engine.new_id("auto"), "tenant_id": tenant, "name": inp.name.strip(),
-               "description": (inp.description or "").strip() or None,
-               "trigger": engine.clean_trigger(inp.trigger), "conditions": conditions,
-               "steps": await engine.clean_steps(tenant, inp.steps),
-               "stop_rules": engine.clean_stop_rules(inp.stop_rules),
-               "once_per_contact": inp.once_per_contact, "status": "draft", "version": 1,
-               "runs_total": 0, "last_run_at": None, "round_robin_cursor": 0,
-               "created_by": user["email"], "created_at": now, "updated_at": now}
-        await db[AUTOMATIONS].insert_one(dict(doc))
-        await engine.record_event("automation.created", "automation", doc["id"], tenant, user["email"],
-                                  payload={"name": doc["name"], "trigger": doc["trigger"]["event"]})
-        return doc
+        return await engine.create(user["tenant_id"], user["email"], body)
 
     @router.post("/automations")
     async def create_automation(inp: AutomationInput, user: dict = Depends(require_role("admin"))) -> dict:
@@ -949,10 +957,9 @@ def register_automation_routes(router: Any, engine: AutomationEngine, get_curren
 
     @router.post("/automations/from-recipe")
     async def from_recipe(inp: RecipeInput, user: dict = Depends(require_role("admin"))) -> dict:
-        recipe = RECIPES.get(inp.recipe)
-        if not recipe:
+        if inp.recipe not in RECIPES:
             raise HTTPException(status_code=404, detail="Not found")
-        return await save_new(user, {key: recipe[key] for key in ("name", "description", "trigger", "steps", "stop_rules")})
+        return await save_new(user, engine.recipe_body(inp.recipe))
 
     @router.get("/automations/{automation_id}")
     async def get_automation(automation_id: str, user: dict = Depends(get_current_user)) -> dict:
@@ -988,7 +995,8 @@ def register_automation_routes(router: Any, engine: AutomationEngine, get_curren
             await engine.record_event("automation.updated", "automation", automation_id, tenant, user["email"],
                                       payload={"changed": sorted(k for k in changes if k not in ("version", "updated_at")),
                                                "version": changes["version"]})
-        return await get_automation(automation_id, user)
+        updated: dict = await get_automation(automation_id, user)
+        return updated
 
     @router.post("/automations/{automation_id}/status")
     async def set_status(automation_id: str, inp: StatusInput, user: dict = Depends(require_role("admin"))) -> dict:
@@ -1035,7 +1043,7 @@ def register_automation_routes(router: Any, engine: AutomationEngine, get_curren
 
     @router.get("/automation-runs/{run_id}")
     async def get_run(run_id: str, user: dict = Depends(get_current_user)) -> dict:
-        run = await db[RUNS].find_one({"tenant_id": user["tenant_id"], "id": run_id}, {"_id": 0})
+        run: Optional[dict] = await db[RUNS].find_one({"tenant_id": user["tenant_id"], "id": run_id}, {"_id": 0})
         if not run:
             raise HTTPException(status_code=404, detail="Not found")
         return run

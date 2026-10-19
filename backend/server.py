@@ -43,6 +43,7 @@ import cron_ledger
 import detectors
 import email_inbound
 import gmail_provider
+import industry_templates
 import next_best_action as nba_service
 import record_fields
 import recovery_case as recovery_case_service
@@ -1270,15 +1271,15 @@ async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
 
 # ----------------------------- Opportunities (Pipeline) -----------------------------
 
-STAGES = ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]
-
 class OppInput(BaseModel):
     name: str
     company_id: Optional[str] = None
     # A deal's value is money: never negative, and finite -- `ge=0` alone admits
     # Infinity, which then breaks every JSON response that lists the deal.
     value: float = Field(default=0, ge=0, le=crm_core.MAX_DEAL_VALUE, allow_inf_nan=False)
-    stage: str = "lead"
+    # No stage means the pipeline's first open stage, which is not "lead" in every
+    # industry template.
+    stage: Optional[str] = None
     owner: Optional[str] = None
     # ISO 4217, stored uppercase. A deal in "us dollars" or "$" cannot be totalled with
     # anything, and its recovery case would inherit the same unknown unit.
@@ -1331,7 +1332,10 @@ async def list_opps(
 @api.post("/opportunities")
 async def create_opp(inp: OppInput, user=Depends(get_current_user)):
     payload = inp.model_dump()
-    stages = await crm_core.stage_keys(db, user["tenant_id"])
+    pipeline = await crm_core.resolve_stages(db, user["tenant_id"])
+    stages = [s["key"] for s in pipeline]
+    if payload["stage"] is None:
+        payload["stage"] = next((s["key"] for s in pipeline if not s.get("is_closed")), stages[0])
     if payload["stage"] not in stages:
         raise HTTPException(status_code=422,
                             detail=f"stage must be one of {', '.join(stages)}")
@@ -1743,7 +1747,7 @@ async def dashboard(user=Depends(get_current_user)):
     single = currencies[0] if len(currencies) == 1 else None
     pipeline_value = pipeline_by_currency.get(single, 0.0) if single else (0 if not currencies else None)
     won_value = won_by_currency.get(single, 0.0) if single else (0 if not currencies else None)
-    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
+    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in await crm_core.stage_keys(db, t)}
     # health per workspace
     portfolio = []
     for ws in workspaces:
@@ -1788,6 +1792,7 @@ async def dashboard(user=Depends(get_current_user)):
         "open_opportunities": len([o for o in opps if crm_core.classify_stage(o.get("stage"), classes) == crm_core.STAGE_OPEN]),
         "active_workspaces": len(workspaces), "at_risk_commitments": at_risk,
         "funnel": funnel, "portfolio": portfolio, "goal_rollup": goal_rollup,
+        "industry_template": ((await db.tenants.find_one({"tenant_id": t}, {"_id": 0, "industry_template": 1})) or {}).get("industry_template"),
     }
 
 # ----------------------------- Evidence-backed AI -----------------------------
@@ -2075,8 +2080,10 @@ async def _tool_list_open_commitments(user, args):
 
 async def _tool_get_pipeline_summary(user, args):
     opps = await db.opportunities.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).to_list(2000)
-    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
-    return {"funnel": funnel, "open_value": sum(o.get("value", 0) for o in opps if o.get("stage") not in ("closed_won", "closed_lost"))}
+    classes = await crm_core.stage_classes(db, user["tenant_id"])
+    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in await crm_core.stage_keys(db, user["tenant_id"])}
+    return {"funnel": funnel, "open_value": sum(o.get("value", 0) for o in opps
+                                                if crm_core.classify_stage(o.get("stage"), classes) == crm_core.STAGE_OPEN)}
 
 async def _tool_list_tasks(user, args):
     q = {"tenant_id": user["tenant_id"]}
@@ -4820,6 +4827,9 @@ record_fields.register_record_field_routes(api, db, new_id, now_iso, record_even
 today_service.register_today_routes(api, db, get_current_user)
 automation_engine = automations.AutomationEngine(db, new_id=new_id, now_iso=now_iso, record_event=record_event)
 automations.register_automation_routes(api, automation_engine, get_current_user, require_role)
+template_service = industry_templates.TemplateService(db, new_id=new_id, now_iso=now_iso,
+                                                      record_event=record_event, engine=automation_engine)
+industry_templates.register_template_routes(api, template_service, get_current_user, require_role)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
                                   on_activity_logged=_after_activity_logged,
                                   on_task_status_changed=_lead_task_status_changed)

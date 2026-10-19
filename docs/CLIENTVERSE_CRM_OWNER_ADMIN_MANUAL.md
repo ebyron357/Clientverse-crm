@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.8 |
+| **Version** | 1.9 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -357,7 +357,9 @@ things are on your plan, and **"Refresh"**. From top to bottom:
      each stage's probability. Amounts in different currencies are shown side by side, never added.
    - **"Waiting on you"** — approval requests waiting for a decision plus client commitments marked
      at risk or breached.
-2. **"Set up your workspace"** — a 4-step setup checklist. Dismissing it hides it in this browser
+2. **"Set up your workspace"** — a 4-step setup checklist. Its first step, **"Choose your industry
+   template"**, opens **Settings → Industry template** ([§7.23](#723-industry-templates)) and is
+   ticked once a template has been applied. Dismissing the checklist hides it in this browser
    only. It reappears in another browser, or after clearing site data.
 3. **"Your plan"** — what to do next, numbered in order, each with the reason it is there
    (on a phone it comes first). The order is fixed and checkable:
@@ -413,6 +415,7 @@ never appears here.
 | Group | Item | Opens (page heading) | Admin only |
 |---|---|---|---|
 | Workspace | **General** | `/settings` — profile, security, notifications, integration status, organization | |
+| Workspace | **Industry template** | `/settings/templates` — a starting setup for your kind of business ([§7.23](#723-industry-templates)) | Applying one: admin |
 | Workspace | **Fields** | `/settings/fields` — your own fields on contacts, companies and deals ([§7.4](#74-contacts-and-companies) item 8) | Adding and changing fields: admin |
 | Workspace | **Team and roles** | `/team` (**Team & Access**) | **Yes** (hidden from members) |
 | Workspace | **Client portal and playbooks** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, the client portal and commercial records — [§7.15](#715-client-operations-and-the-client-portal)) | Some buttons: admin |
@@ -428,7 +431,7 @@ never appears here.
 | Coming soon | **Email**, **SMS** | `/communications/email`, `/communications/sms` | **Not active** — "Configuration required" |
 | Coming soon | **Calling**, **Revenue Operations**, **Support**, **Reporting**, **Relationship Intelligence**, **Migration**, **Knowledge** | `/communications/calling`, `/revenue`, `/support`, `/intelligence/reporting`, `/intelligence/relationships`, `/platform/migration`, `/platform/knowledge` | **Not active** — "Backend contract pending" |
 
-The Settings menu sits beside General, Fields, Team and roles, Forms, Integrations and Registries, Audit
+The Settings menu sits beside General, Industry template, Fields, Team and roles, Forms, Integrations and Registries, Audit
 log, MCP console and every Coming soon page. **Booking pages** and **Operations** open pages that
 are also reached from the main menu (Calendar; Inbox and Approvals), so those keep their own
 layout and the Settings menu is one click back. A member's address for **Operations** still
@@ -1509,6 +1512,54 @@ These are verified behaviours of the deployed code. None loses data.
 - **Under the hood:** wait steps are picked up by the API itself every 30 seconds, so nothing
   external has to be scheduled (`AUTOMATION_WATCHER`, on by default).
 
+### 7.23 Industry templates
+
+- **Purpose:** a starting setup for the kind of business using the CRM. A template adds pipeline
+  stages, booking pages, a website form, the fields that trade tracks and draft automations, all
+  of which you can change afterwards. Real estate is one template among six.
+- **Where:** **Settings** → **Workspace** → **"Industry template"** (`/settings/templates`), or
+  **Today** → **"Set up your workspace"** → **"Choose your industry template"**. Anyone can
+  preview a template; only an admin applies one.
+- **The templates** (each card lists exactly what it brings):
+
+  | Template | Pipeline (open stages → won) | Booking pages | Website form |
+  |---|---|---|---|
+  | **Agency & services** | Lead → Qualified → Proposal → Negotiation → Won | Discovery call, Strategy session, Client check-in | **"Contact us"** |
+  | **Real estate** | New lead → Appointment set → Showing → Offer → Pending → Closed | Home showing, Buyer consultation, Listing appointment | **"Showing request"** |
+  | **Home services** | New request → Estimate booked → Estimate sent → Job booked → Done | On-site estimate, Service call | **"Request a quote"** |
+  | **Health & wellness** | Inquiry → Consult booked → Plan offered → Member | Free consultation, Intro session | **"Book a free consultation"** |
+  | **Coaching & consulting** | Lead → Discovery call → Proposal → Enrolled | Discovery call, Coaching session | **"Apply for coaching"** |
+  | **B2B sales** | Lead → Qualified → Demo → Proposal → Negotiation → Won | Intro call, Demo | **"Talk to sales"** |
+
+  Every pipeline also ends in **"Lost"**. Each template adds two or three fields (for example
+  *Service address* and *Job type* for home services) and three draft automations from the
+  recipes in [§7.22](#722-automations).
+- **Common actions:**
+  1. **"Preview"** on a card. The dialog lists **"Will add"** and **"Already there, left as it
+     is"**, each with the reason. Nothing changes until you apply.
+  2. **"Add N things"** applies it. The dialog then shows what was added and **"Next"** links:
+     review the draft automations, put the form on your website, share your booking pages, see
+     the new fields. The card you applied shows **"In use"**.
+  3. To switch, preview and apply another template. It adds what that one brings and is missing;
+     everything already there stays. **"Check what is missing"** on the card in use adds back any
+     of its booking pages, forms or automations you have since archived or deleted. An archived
+     field is not copied: the preview says **"Archived; restore it in Settings → Fields"**, and
+     restoring it brings its values back.
+- **What applying never does:**
+  - It never renames, changes or removes anything you have. Booking pages, forms, fields and
+    automations are matched by name (capitals ignored); one with the same name is left as it is.
+  - It replaces the pipeline stages only while you have never customized them and no deal, form
+    or booking page uses a stage that would go. Otherwise the stages stay, and the preview says
+    why. Change them yourself with **"Customize stages"** on the Pipeline board.
+  - Automations arrive as **Drafts**; nothing runs until you **"Turn on"** each one.
+  - The form's auto-reply is off. Turning it on needs its own approval ([§7.6](#76-website-forms)).
+- **Common mistakes:**
+  - Expecting the template's stages on a pipeline that already has deals in the current stages.
+    The preview shows **"Pipeline stages"** under **"Already there"** in that case.
+  - Expecting automations to run straight away. They are drafts.
+- **Saved when:** **"{Template} applied"** with how many things were added, or **"You already had
+  everything it brings."** On failure: **"The template was not applied"**, with the reason.
+
 ---
 
 ## 8. Users, Roles, and Administration
@@ -1529,6 +1580,7 @@ on every request, and hiding a button is never the protection.
 | Connect / re-authorize / sync / disconnect integrations; see **"Connection health"** | ✓ | ✗ |
 | **"Approve"** / **"Reject"** approvals (workspace, Operations, booking emails, auto-reply wording) | ✓ | ✗ |
 | Website forms, booking pages and pipeline stages — create and change | ✓ | ✗ |
+| Apply an industry template (**Settings → Industry template**; anyone can preview one) | ✓ | ✗ |
 | Record conversation consent (API only) | ✓ | ✗ |
 | MCP kill switch, undo, workspace undo window | ✓ | ✗ |
 | Webhook create / enable / reveal secret / rotate secret | ✓ | ✗ |
@@ -2565,6 +2617,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.9 | 2026-10-19 | **Industry templates** (§7.23, new): six starting setups (agency, real estate, home services, health and wellness, coaching, B2B sales) that add a pipeline, booking pages, a form, fields and draft automations, only where missing. **Settings → Workspace → "Industry template"** (§4.3); the first step of **"Set up your workspace"** on Today is now **"Choose your industry template"** (§4.2); applying one is admin-only (§8.1). |
 | 1.8 | 2026-10-19 | **Automations** (§7.22, new): triggers, steps, stop rules, recipes, test runs and run receipts. The main-menu **"Automations"** entry opens it (§4.3, §4.4). Client Operations moves to **Settings → Workspace → "Client portal and playbooks"** (§4.3, §7.15). **Workflows** leaves "Coming soon". §7.21 item 3 corrected for the 1,000-person contact list. |
 | 1.7 | 2026-10-19 | **Today** replaces the Command Center page at `/dashboard` (§4.2, §7.1, §4.3, §4.4, §1.4 step 4, §3.2, checklist row 3, the quick answers): four figures, **"Your plan"** in a fixed order with the reason for each item, new leads with **"Call"**, appointments, tasks with a tick to complete, pipeline, clients; won deals and outcome progress are on the Pipeline board and Client 360. |
 | 1.6 | 2026-10-19 | The new app shell: an 11-item main menu (Today, Leads, Inbox, Contacts, Pipeline, Calendar, Tasks, Approvals, Clients, Automations, Reports) with counts, **"Settings"** pinned at the bottom, and a Settings menu (Workspace, Capture, Connections, Compliance, Developer, Coming soon) replacing the grouped sidebar; search moved to the top bar. Updated §1.2–1.4, §3.4, §4.1–4.3 (new map), §5.3, the "Where" lines of §7, §7.19, §8.2, §14 row 20, §15.2, Appendix A. Applies from the deployment that carries this change; until then production shows the grouped sidebar of v1.3. **Settings → Workspace → "Fields"** opens the field manager of v1.5. |
