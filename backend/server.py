@@ -33,8 +33,10 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
+import agency as agency_service
 import approval_queue as approval_service
 import attribution as attribution_service
+import automations
 import booking
 import conversations as conversation_service
 import crm_core
@@ -42,6 +44,7 @@ import cron_ledger
 import detectors
 import email_inbound
 import gmail_provider
+import industry_templates
 import next_best_action as nba_service
 import record_fields
 import recovery_case as recovery_case_service
@@ -53,6 +56,8 @@ import recovery_strategy as recovery_service
 import scheduler
 import second_chance as second_chance_service
 import security_gate as security_gate_service
+import setup_loader
+import snapshots
 import today as today_service
 import website_forms
 from client_value import register_client_value_routes
@@ -172,6 +177,9 @@ async def lifespan(_: FastAPI):
         ("recovery_strategy", lambda: recovery_service.ensure_indexes(db)),
         ("conversations", lambda: conversation_service.ensure_indexes(db)),
         ("recovery_case", lambda: recovery_case_service.ensure_indexes(db)),
+        ("automations", lambda: automation_engine.ensure_indexes()),
+        ("snapshots", lambda: snapshots.ensure_indexes(db)),
+        ("agency", lambda: db.tenants.create_index("parent_tenant_id", sparse=True)),
     ]
     for name, build in index_builders:
         try:
@@ -196,11 +204,14 @@ async def lifespan(_: FastAPI):
     # reached production, so the API runs the `/api/cron/*` jobs itself, once per window
     # across replicas (see scheduler.py). IN_PROCESS_SCHEDULER=0 turns it off.
     job_scheduler.start()
+    # Automation runs parked on a wait step resume from here (AUTOMATION_WATCHER=0 turns it off).
+    automation_engine.start_watcher()
     try:
         yield
     finally:
         await job_scheduler.stop()
         await lead_pipeline.stop_watcher()
+        await automation_engine.stop_watcher()
         mclient.close()
 
 
@@ -264,7 +275,7 @@ def verify_password(pw: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(user_id: str, email: str) -> str:
+def create_access_token(user_id: str, email: str, acting_tenant: Optional[str] = None) -> str:
     # jti keeps two tokens issued in the same second from being byte-identical (JWT
     # exp/iat only have second granularity) -- without it, revoking one login's token
     # would also revoke a different login's token that happened to match exactly.
@@ -274,6 +285,10 @@ def create_access_token(user_id: str, email: str) -> str:
     payload = {"sub": user_id, "email": email, "type": "access", "jti": secrets.token_hex(16),
                "iat": int(now.timestamp()), "iat_ms": int(now.timestamp() * 1000),
                "exp": now + timedelta(days=7)}
+    if acting_tenant:
+        # An agency admin working in one of its client accounts (agency.act_as checks it
+        # again on every request).
+        payload["act"] = acting_tenant
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 def set_auth_cookie(response: Response, token: str):
@@ -321,6 +336,12 @@ async def record_event(event_type: str, resource_type: str, resource_id: str,
         spawn_background(dispatch_webhooks_for_event(clean))
     except Exception:
         pass
+    try:
+        # Starts any automation listening for this event, in the background. Events an
+        # automation caused are ignored there, so automations cannot trigger each other.
+        automation_engine.on_event(clean)
+    except Exception:
+        logger.exception("Could not hand event %s to the automations", clean["id"])
     if workspace_id and event_type in HEALTH_AFFECTING:
         try:
             await record_health_snapshot(tenant_id, workspace_id)
@@ -439,7 +460,10 @@ async def get_current_user(request: Request) -> dict:
         if refusal:
             raise refusal
         user.pop("password_hash", None)
-        return await resolve_membership(user)
+        user = await resolve_membership(user)
+        if payload.get("act"):
+            user = await agency_service.act_as(db, user, payload["act"])
+        return user
     except jwt.InvalidTokenError:
         pass
     # Google session_token path
@@ -516,6 +540,12 @@ async def _reset_login_failures(email: str):
         upsert=True,
     )
 
+async def session_user(user: dict) -> dict:
+    """The signed-in person as every auth response returns them: the shape of /auth/me.
+    The screens read `workspace` (and `acting`) for the account switcher and the banner,
+    so a sign-in must not hand back less than a page reload would."""
+    return {**user, "workspace": await agency_service.workspace_info(db, user)}
+
 @api.post("/auth/register")
 async def register(inp: RegisterInput, response: Response):
     email = inp.email.lower()
@@ -538,7 +568,7 @@ async def register(inp: RegisterInput, response: Response):
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
-    return {"user": u, "token": token}
+    return {"user": await session_user(u), "token": token}
 
 @api.post("/auth/login")
 async def login(inp: LoginInput, response: Response):
@@ -557,7 +587,7 @@ async def login(inp: LoginInput, response: Response):
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
-    return {"user": u, "token": token}
+    return {"user": await session_user(u), "token": token}
 
 @api.post("/auth/google/session")
 async def google_session(request: Request, response: Response):
@@ -599,11 +629,11 @@ async def google_session(request: Request, response: Response):
             "disabled_at": None, "created_at": now_iso(),
         })
     user = await resolve_membership(user)
-    return {"user": user, "token": session_token}
+    return {"user": await session_user(user), "token": session_token}
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return user
+    return await session_user(user)
 
 @api.post("/auth/logout")
 async def logout(request: Request, response: Response):
@@ -1003,7 +1033,7 @@ async def accept_invitation_new_account(inp: InviteSignupInput, response: Respon
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
-    return {"user": u, "token": token, "tenant_id": tenant_id, "role": role}
+    return {"user": await session_user(u), "token": token, "tenant_id": tenant_id, "role": role}
 
 class PasswordChangeInput(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
@@ -1040,14 +1070,18 @@ async def change_password(inp: PasswordChangeInput, request: Request, response: 
     old_token = _extract_token(request)
     if old_token:
         await _revoke_token(old_token)
-    # Google sign-in sessions end too; this browser carries on with the new token below.
+    # Google sign-in sessions end too; this browser carries on with the new token below,
+    # still in the client account it was working in, if any.
     await db.user_sessions.delete_many({"user_id": user["user_id"]})
-    token = create_access_token(user["user_id"], email)
+    acting = (user.get("acting") or {}).get("tenant_id")
+    token = create_access_token(user["user_id"], email, acting_tenant=acting)
     set_auth_cookie(response, token)
-    await record_event("auth.password_changed", "user", user["user_id"], user["tenant_id"], email,
-                       payload={"temporary_cleared": bool(user.get("must_change_password"))})
-    u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
-    return {"user": await resolve_membership(u), "token": token}
+    await record_event("auth.password_changed", "user", user["user_id"], user.get("home_tenant_id") or user["tenant_id"],
+                       email, payload={"temporary_cleared": bool(user.get("must_change_password"))})
+    u = await resolve_membership(await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0}))
+    if acting:
+        u = await agency_service.act_as(db, u, acting)
+    return {"user": await session_user(u), "token": token}
 
 def _temporary_password() -> str:
     # Easy to read aloud or type from a text message, and 70+ bits of randomness.
@@ -1259,15 +1293,15 @@ async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
 
 # ----------------------------- Opportunities (Pipeline) -----------------------------
 
-STAGES = ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]
-
 class OppInput(BaseModel):
     name: str
     company_id: Optional[str] = None
     # A deal's value is money: never negative, and finite -- `ge=0` alone admits
     # Infinity, which then breaks every JSON response that lists the deal.
     value: float = Field(default=0, ge=0, le=crm_core.MAX_DEAL_VALUE, allow_inf_nan=False)
-    stage: str = "lead"
+    # No stage means the pipeline's first open stage, which is not "lead" in every
+    # industry template.
+    stage: Optional[str] = None
     owner: Optional[str] = None
     # ISO 4217, stored uppercase. A deal in "us dollars" or "$" cannot be totalled with
     # anything, and its recovery case would inherit the same unknown unit.
@@ -1320,7 +1354,10 @@ async def list_opps(
 @api.post("/opportunities")
 async def create_opp(inp: OppInput, user=Depends(get_current_user)):
     payload = inp.model_dump()
-    stages = await crm_core.stage_keys(db, user["tenant_id"])
+    pipeline = await crm_core.resolve_stages(db, user["tenant_id"])
+    stages = [s["key"] for s in pipeline]
+    if payload["stage"] is None:
+        payload["stage"] = next((s["key"] for s in pipeline if not s.get("is_closed")), stages[0])
     if payload["stage"] not in stages:
         raise HTTPException(status_code=422,
                             detail=f"stage must be one of {', '.join(stages)}")
@@ -1732,7 +1769,7 @@ async def dashboard(user=Depends(get_current_user)):
     single = currencies[0] if len(currencies) == 1 else None
     pipeline_value = pipeline_by_currency.get(single, 0.0) if single else (0 if not currencies else None)
     won_value = won_by_currency.get(single, 0.0) if single else (0 if not currencies else None)
-    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
+    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in await crm_core.stage_keys(db, t)}
     # health per workspace
     portfolio = []
     for ws in workspaces:
@@ -1777,6 +1814,7 @@ async def dashboard(user=Depends(get_current_user)):
         "open_opportunities": len([o for o in opps if crm_core.classify_stage(o.get("stage"), classes) == crm_core.STAGE_OPEN]),
         "active_workspaces": len(workspaces), "at_risk_commitments": at_risk,
         "funnel": funnel, "portfolio": portfolio, "goal_rollup": goal_rollup,
+        "industry_template": ((await db.tenants.find_one({"tenant_id": t}, {"_id": 0, "industry_template": 1})) or {}).get("industry_template"),
     }
 
 # ----------------------------- Evidence-backed AI -----------------------------
@@ -2064,8 +2102,10 @@ async def _tool_list_open_commitments(user, args):
 
 async def _tool_get_pipeline_summary(user, args):
     opps = await db.opportunities.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).to_list(2000)
-    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in STAGES}
-    return {"funnel": funnel, "open_value": sum(o.get("value", 0) for o in opps if o.get("stage") not in ("closed_won", "closed_lost"))}
+    classes = await crm_core.stage_classes(db, user["tenant_id"])
+    funnel = {s: len([o for o in opps if o.get("stage") == s]) for s in await crm_core.stage_keys(db, user["tenant_id"])}
+    return {"funnel": funnel, "open_value": sum(o.get("value", 0) for o in opps
+                                                if crm_core.classify_stage(o.get("stage"), classes) == crm_core.STAGE_OPEN)}
 
 async def _tool_list_tasks(user, args):
     q = {"tenant_id": user["tenant_id"]}
@@ -4807,6 +4847,19 @@ async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: 
 
 record_fields.register_record_field_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
 today_service.register_today_routes(api, db, get_current_user)
+automation_engine = automations.AutomationEngine(db, new_id=new_id, now_iso=now_iso, record_event=record_event)
+automations.register_automation_routes(api, automation_engine, get_current_user, require_role)
+setup_loader_service = setup_loader.SetupLoader(db, new_id=new_id, now_iso=now_iso, record_event=record_event,
+                                                engine=automation_engine)
+template_service = industry_templates.TemplateService(setup_loader_service)
+industry_templates.register_template_routes(api, template_service, get_current_user, require_role)
+snapshots.register_snapshot_routes(api, db, setup_loader_service, new_id=new_id, now_iso=now_iso,
+                                   record_event=record_event, require_role=require_role)
+agency_service.register_agency_routes(api, db, setup_loader_service, new_id=new_id, now_iso=now_iso,
+                                      record_event=record_event, get_current_user=get_current_user,
+                                      create_access_token=create_access_token, set_auth_cookie=set_auth_cookie,
+                                      extract_token=_extract_token, revoke_token=_revoke_token,
+                                      resolve_membership=resolve_membership)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
                                   on_activity_logged=_after_activity_logged,
                                   on_task_status_changed=_lead_task_status_changed)

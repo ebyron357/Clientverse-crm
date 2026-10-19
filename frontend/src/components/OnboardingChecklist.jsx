@@ -16,7 +16,7 @@ export default function OnboardingChecklist({ dashboard, integrations = [] }) {
   const items = useMemo(() => {
     const providerList = Array.isArray(integrations) ? integrations : (integrations?.providers || []);
     return [
-      { label: "Review your command center", detail: "Understand the current revenue, delivery risk, and client-health signals.", complete: true, to: "/dashboard" },
+      { label: "Choose your industry template", detail: "Start with the pipeline, booking pages, form and automations for your kind of business.", complete: Boolean(dashboard?.industry_template), to: "/settings/templates" },
       { label: "Create your first opportunity", detail: "Track a qualified revenue conversation in the pipeline.", complete: Boolean(dashboard?.open_opportunities), to: "/pipeline" },
       { label: "Open a Client 360 workspace", detail: "Bring health, commitments, approvals, and outcomes into one account view.", complete: Boolean(dashboard?.active_workspaces), to: "/workspaces" },
       { label: "Connect a provider", detail: "Bring approved Gmail, Calendar, or Stripe context into the client record.", complete: providerList.some((item) => item.status === "active"), to: "/registries" },
@@ -47,7 +47,7 @@ export default function OnboardingChecklist({ dashboard, integrations = [] }) {
     </div>
     {expanded && <ul className="grid grid-cols-1 border-t border-border/70 sm:grid-cols-2">
       {items.map((item, index) => <li key={item.label} className={`flex items-center gap-3 px-4 py-2.5 ${index > 0 ? "border-t border-border/70" : ""} ${index === 1 ? "sm:border-t-0" : ""} sm:odd:border-r`}>
-        <span className={`flex size-[18px] shrink-0 items-center justify-center rounded-full ${item.complete ? "border border-emerald-200 bg-emerald-50 text-emerald-700" : "border border-dashed border-input"}`}>
+        <span className={`flex size-[18px] shrink-0 items-center justify-center rounded-full ${item.complete ? "border border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300" : "border border-dashed border-input"}`}>
           {item.complete ? <Check className="size-3" strokeWidth={3} aria-hidden="true" /> : null}
           <span className="sr-only">{item.complete ? "Complete:" : "To do:"}</span>
         </span>

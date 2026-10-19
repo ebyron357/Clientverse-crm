@@ -7,6 +7,7 @@ import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
 import BrandMark from "@/components/BrandMark";
+import { AccountSwitcher, ActingBanner } from "@/components/AgencySwitcher";
 import { Avatar } from "@/components/page/Page";
 import { breadcrumbFor, MAIN_MENU, menuEntryFor, SETTINGS_ENTRY } from "@/platform/navigation";
 import { ChevronRight, LogOut, Menu, Monitor, Moon, PanelLeft, Plus, Search, Sun, X } from "lucide-react";
@@ -99,6 +100,7 @@ export default function AppShell() {
       {collapsed && <div className="flex justify-center pb-2">
         <button className="rounded-md p-2 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground" onClick={() => setCollapsed(false)} aria-label="Expand navigation" title="Expand navigation"><PanelLeft className="size-4" /></button>
       </div>}
+      <AccountSwitcher user={user} collapsed={collapsed} />
 
       <nav aria-label="Main" className="flex min-h-0 flex-1 flex-col">
         <ul className={`cv-scrollbar cv-sidebar-scroll flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pb-3 pt-1 ${collapsed ? "px-2" : "px-3"}`}>
@@ -114,7 +116,7 @@ export default function AppShell() {
           <span className="flex" title={collapsed ? user?.name : undefined}><Avatar name={user?.name || user?.email || "ClientVerse"} /></span>
           {!collapsed && <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-semibold text-sidebar-active-foreground">{user?.name}</div>
-            <div className="truncate text-xs text-sidebar-muted">{isAdmin ? "Workspace admin" : "Team member"}</div>
+            <div className="truncate text-xs text-sidebar-muted">{user?.acting ? "Agency admin" : isAdmin ? "Workspace admin" : "Team member"}</div>
           </div>}
           <div className={`flex shrink-0 items-center ${collapsed ? "flex-col gap-1" : "-mr-1"}`}>
             <ThemeButton />
@@ -146,7 +148,7 @@ export default function AppShell() {
           <NotificationBell />
         </div>
       </header>
-      <main className="flex-1 py-5 sm:py-6"><Outlet /></main>
+      <main className="flex-1 py-5 sm:py-6"><ActingBanner user={user} /><Outlet /></main>
     </div>
     <GlobalCommandDialog open={commandOpen} onOpenChange={setCommandOpen} onQuickCreate={triggerQuickCreate} />
     <QuickCreateDialog open={quickCreateOpen} onOpenChange={setQuickCreateOpen} onCreated={(type, data) => { if (type === "workspace" && data?.id) navigate(`/workspaces/${data.id}`); else if (type === "opportunity") navigate("/pipeline"); else if (type === "company" || type === "contact") navigate("/directory"); }} />

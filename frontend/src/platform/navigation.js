@@ -28,9 +28,7 @@ const MENU = [
   { module: "tasks", label: "Tasks", icon: SquareCheckBig, paths: ["/tasks"], count: "tasks", countLabel: "overdue" },
   { module: "approvals", label: "Approvals", icon: ShieldCheck, tab: "approvals", count: "approvals", countLabel: "waiting for a decision" },
   { module: "client-360", label: "Clients", icon: BriefcaseBusiness, paths: ["/workspaces"] },
-  // Client Operations is where the safe automation rules and the playbooks live, so it is
-  // the Automations entry until automations have a page of their own.
-  { module: "client-operations", label: "Automations", icon: Workflow, paths: ["/client-ops"] },
+  { module: "workflows", label: "Automations", icon: Workflow, paths: ["/automations"] },
   { module: "recovery-proof", label: "Reports", icon: ChartNoAxesColumn, paths: ["/proof"] },
 ];
 
@@ -58,12 +56,24 @@ const SETTINGS_GROUPS = [
     label: "Workspace",
     items: [
       { id: "general", label: "General", to: "/settings" },
+      { id: "templates", label: "Industry template", to: "/settings/templates" },
+      { id: "snapshots", label: "Snapshots", to: "/settings/snapshots", adminOnly: true },
       { id: "fields", label: "Fields", to: "/settings/fields" },
       { id: "team", label: "Team and roles", to: "/team", adminOnly: true, testid: "nav-team-link" },
       // TODO: a lead routing page of its own. Until then each form's "Assign the lead"
       // section is where routing is set, so this opens Forms.
       { id: "lead-routing", label: "Lead routing", to: "/website-forms" },
+      // Safe rules, playbooks, the client portal and commercial records. Its own page,
+      // linked from here now that Automations has the main-menu entry.
+      { id: "client-operations", label: "Client portal and playbooks", to: "/client-ops", testid: "nav-client-operations-link" },
     ],
+  },
+  {
+    // An agency's client accounts. A client account does not run client accounts of its own.
+    label: "Agency",
+    adminOnly: true,
+    notInClientAccount: true,
+    items: [{ id: "agency", label: "Client accounts", to: "/settings/agency" }],
   },
   {
     label: "Capture",
@@ -104,8 +114,10 @@ const ALL_SETTINGS_ITEMS = SETTINGS_GROUPS.flatMap((group) => group.items.map((i
 /** The Settings menu as this person sees it. */
 export function settingsMenuFor(user) {
   const isAdmin = user?.role === "admin";
+  const inClientAccount = user?.workspace?.kind === "client" && !user?.acting;
   return SETTINGS_GROUPS
     .filter((group) => isAdmin || !group.adminOnly)
+    .filter((group) => !(group.notInClientAccount && inClientAccount))
     .map((group) => ({ ...group, items: group.items.filter((item) => isAdmin || !item.adminOnly) }))
     .filter((group) => group.items.length);
 }
@@ -115,6 +127,9 @@ const REGISTRY_TABS = ["mcp-servers", "plugins", "webhooks"];
 function defaultSettingsItem(pathname, tab) {
   if (pathname === "/settings") return "general";
   if (pathname === "/settings/fields") return "fields";
+  if (pathname === "/settings/templates") return "templates";
+  if (pathname === "/settings/snapshots") return "snapshots";
+  if (pathname === "/settings/agency") return "agency";
   if (pathname === "/team") return "team";
   if (pathname === "/website-forms") return "forms";
   if (pathname === "/audit") return "audit";

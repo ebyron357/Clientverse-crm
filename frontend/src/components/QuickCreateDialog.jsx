@@ -18,7 +18,8 @@ const TYPES = [
 const INITIAL = {
   company: { name: "", industry: "", tier: "standard" },
   contact: { name: "", email: "", company_id: "" },
-  opportunity: { name: "", value: "", company_id: "", stage: "lead" },
+  // No stage: the server starts the deal in the pipeline's first open stage.
+  opportunity: { name: "", value: "", company_id: "" },
   workspace: { name: "", company_id: "", stage: "onboarding" },
 };
 

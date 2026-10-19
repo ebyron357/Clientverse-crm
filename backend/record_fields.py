@@ -308,6 +308,39 @@ def parse_where(raw: Optional[str]) -> list[dict]:
         raise HTTPException(status_code=422, detail="Each filter needs a field, an operator and a value")
 
 
+async def create_definition(db, tenant: str, object_name: str, label: str, kind: str, *,
+                            options: Optional[list[str]] = None, help_text: Optional[str] = None,
+                            actor: str, new_id, now_iso, record_event) -> dict:
+    """Add one field to a record type and return its definition. Used by the Fields page
+    and by industry templates, so both make fields the same way."""
+    count = await db[FIELD_DEFS].count_documents({"tenant_id": tenant, "object": object_name})
+    if count >= MAX_FIELDS_PER_OBJECT:
+        raise HTTPException(status_code=422, detail=f"A record type can have at most {MAX_FIELDS_PER_OBJECT} fields")
+    base = f"cf_{_slug(label)}"
+    cleaned = clean_options(kind, options)
+    now = now_iso()
+    suffix = 1
+    while True:
+        key = base if suffix == 1 else f"{base}_{suffix}"
+        doc = {"id": new_id("fld"), "tenant_id": tenant, "object": object_name, "key": key,
+               "label": label.strip(), "type": kind, "options": cleaned,
+               "help_text": (help_text or "").strip() or None, "position": count,
+               "archived_at": None, "created_by": actor, "created_at": now,
+               "updated_at": now}
+        try:
+            # The unique (tenant, object, key) index decides between two admins adding
+            # "Budget" at the same moment: the second gets cf_budget_2.
+            await db[FIELD_DEFS].insert_one(dict(doc))
+            break
+        except DuplicateKeyError:
+            suffix += 1
+            if suffix > 50:
+                raise HTTPException(status_code=409, detail="Choose a different label")
+    await record_event("custom_field.created", "custom_field", doc["id"], tenant, actor,
+                       payload={"object": object_name, "key": key, "type": kind})
+    return doc
+
+
 # -------------------------------------------------------------------------- routes
 
 def register_record_field_routes(router, db, new_id, now_iso, record_event, get_current_user, require_role):
@@ -322,33 +355,9 @@ def register_record_field_routes(router, db, new_id, now_iso, record_event, get_
 
     @router.post("/custom-fields")
     async def create_field(inp: FieldInput, user=Depends(require_role("admin"))):
-        tenant = user["tenant_id"]
-        count = await db[FIELD_DEFS].count_documents({"tenant_id": tenant, "object": inp.object})
-        if count >= MAX_FIELDS_PER_OBJECT:
-            raise HTTPException(status_code=422, detail=f"A record type can have at most {MAX_FIELDS_PER_OBJECT} fields")
-        base = f"cf_{_slug(inp.label)}"
-        options = clean_options(inp.type, inp.options)
-        now = now_iso()
-        suffix = 1
-        while True:
-            key = base if suffix == 1 else f"{base}_{suffix}"
-            doc = {"id": new_id("fld"), "tenant_id": tenant, "object": inp.object, "key": key,
-                   "label": inp.label.strip(), "type": inp.type, "options": options,
-                   "help_text": (inp.help_text or "").strip() or None, "position": count,
-                   "archived_at": None, "created_by": user["email"], "created_at": now,
-                   "updated_at": now}
-            try:
-                # The unique (tenant, object, key) index decides between two admins adding
-                # "Budget" at the same moment: the second gets cf_budget_2.
-                await db[FIELD_DEFS].insert_one(dict(doc))
-                break
-            except DuplicateKeyError:
-                suffix += 1
-                if suffix > 50:
-                    raise HTTPException(status_code=409, detail="Choose a different label")
-        await record_event("custom_field.created", "custom_field", doc["id"], tenant, user["email"],
-                           payload={"object": inp.object, "key": key, "type": inp.type})
-        return doc
+        return await create_definition(db, user["tenant_id"], inp.object, inp.label, inp.type,
+                                       options=inp.options, help_text=inp.help_text, actor=user["email"],
+                                       new_id=new_id, now_iso=now_iso, record_event=record_event)
 
     @router.patch("/custom-fields/{field_id}")
     async def update_field(field_id: str, inp: FieldPatch, user=Depends(require_role("admin"))):

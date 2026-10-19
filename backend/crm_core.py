@@ -1069,8 +1069,11 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         ).sort("created_at", -1).to_list(200)
         workspaces = await db.workspaces.find(
             {"tenant_id": tenant, "company_id": company_id}, {"_id": 0}).to_list(50)
-        open_deals = [deal for deal in deals if not deal.get("stage", "").startswith("closed")]
-        won = [deal for deal in deals if deal.get("stage") == "closed_won"]
+        # Open and won follow the tenant's own stages: an industry template's "Won" or
+        # "Closed" is a win, and its "Lost" is not open pipeline.
+        classes = await stage_classes(db, tenant)
+        open_deals = [deal for deal in deals if classify_stage(deal.get("stage"), classes) == STAGE_OPEN]
+        won = [deal for deal in deals if classify_stage(deal.get("stage"), classes) == STAGE_WON]
         return {
             "company": company, "contacts": contacts, "deals": deals,
             "workspaces": workspaces,

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.7 |
+| **Version** | 1.12 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -320,7 +320,8 @@ See [Chapter 13](#13-security-and-owner-safety).
    **"New password again"** (at least 8 characters). **"Show passwords"** reveals what you typed.
 3. Click **"Change password"**.
 4. **Check:** the message **"Password changed"**. You stay signed in here; every other phone or
-   computer signed in to your account is signed out.
+   computer signed in to your account is signed out. If you were working in a client account
+   ([§7.25](#725-agency-and-client-accounts)), you stay in it.
 
 - **Owner account:** see the warning in [§3.3](#33-which-account-the-owner-uses) — use Railway.
 - An account that signs in only with Google has no ClientVerse password to change.
@@ -357,7 +358,9 @@ things are on your plan, and **"Refresh"**. From top to bottom:
      each stage's probability. Amounts in different currencies are shown side by side, never added.
    - **"Waiting on you"** — approval requests waiting for a decision plus client commitments marked
      at risk or breached.
-2. **"Set up your workspace"** — a 4-step setup checklist. Dismissing it hides it in this browser
+2. **"Set up your workspace"** — a 4-step setup checklist. Its first step, **"Choose your industry
+   template"**, opens **Settings → Industry template** ([§7.23](#723-industry-templates)) and is
+   ticked once a template has been applied. Dismissing the checklist hides it in this browser
    only. It reappears in another browser, or after clearing site data.
 3. **"Your plan"** — what to do next, numbered in order, each with the reason it is there
    (on a phone it comes first). The order is fixed and checkable:
@@ -404,7 +407,7 @@ never appears here.
 | **Tasks** | `/tasks` | Your overdue tasks, plus overdue tasks nobody owns (grey) | |
 | **Approvals** | `/operations?tab=approvals` (Operations → **Approvals**) | Requests waiting for a decision (grey) | Deciding: admin |
 | **Clients** | `/workspaces` (**Client 360**) | | |
-| **Automations** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, portal and commercial records) | | Some buttons: admin |
+| **Automations** | `/automations` — when something happens, do these steps ([§7.22](#722-automations)) | | Creating, changing, turning on or off: admin |
 | **Reports** | `/proof` (**Recovery Proof**) | | |
 | **Settings** (pinned at the bottom) | `/settings` (**General**) | | |
 
@@ -413,8 +416,12 @@ never appears here.
 | Group | Item | Opens (page heading) | Admin only |
 |---|---|---|---|
 | Workspace | **General** | `/settings` — profile, security, notifications, integration status, organization | |
+| Workspace | **Industry template** | `/settings/templates` — a starting setup for your kind of business ([§7.23](#723-industry-templates)) | Applying one: admin |
+| Workspace | **Snapshots** | `/settings/snapshots` — save this workspace's setup and load it into another ([§7.24](#724-snapshots)) | **Yes** (hidden from members) |
+| Agency | **Client accounts** | `/settings/agency` — the client accounts your agency runs ([§7.25](#725-agency-and-client-accounts)); not shown inside a client account's own workspace | **Yes** (the group is hidden from members) |
 | Workspace | **Fields** | `/settings/fields` — your own fields on contacts, companies and deals ([§7.4](#74-contacts-and-companies) item 8) | Adding and changing fields: admin |
 | Workspace | **Team and roles** | `/team` (**Team & Access**) | **Yes** (hidden from members) |
+| Workspace | **Client portal and playbooks** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, the client portal and commercial records — [§7.15](#715-client-operations-and-the-client-portal)) | Some buttons: admin |
 | Workspace | **Lead routing** | `/website-forms` — each form's **"Assign the lead"** section sets who gets its leads | Changing it: admin |
 | Capture | **Forms** | `/website-forms` (**Website Forms**) | Creating and changing forms: admin |
 | Capture | **Booking pages** | `/scheduling/calendar?tab=pages` (Calendar → **"Booking pages"**) | Creating and changing pages: admin |
@@ -425,9 +432,9 @@ never appears here.
 | Developer | **Registries** | `/registries` (MCP servers, plugins, webhooks) | **Yes** |
 | Developer | **Operations** | `/operations` (work queue, recovery strategies, security gate) | **Yes**; some buttons: admin |
 | Coming soon | **Email**, **SMS** | `/communications/email`, `/communications/sms` | **Not active** — "Configuration required" |
-| Coming soon | **Calling**, **Workflows**, **Revenue Operations**, **Support**, **Reporting**, **Relationship Intelligence**, **Migration**, **Knowledge** | `/communications/calling`, `/automation/workflows`, `/revenue`, `/support`, `/intelligence/reporting`, `/intelligence/relationships`, `/platform/migration`, `/platform/knowledge` | **Not active** — "Backend contract pending" |
+| Coming soon | **Calling**, **Revenue Operations**, **Support**, **Reporting**, **Relationship Intelligence**, **Migration**, **Knowledge** | `/communications/calling`, `/revenue`, `/support`, `/intelligence/reporting`, `/intelligence/relationships`, `/platform/migration`, `/platform/knowledge` | **Not active** — "Backend contract pending" |
 
-The Settings menu sits beside General, Fields, Team and roles, Forms, Integrations and Registries, Audit
+The Settings menu sits beside General, Industry template, Snapshots, Fields, Team and roles, Forms, Integrations and Registries, Audit
 log, MCP console and every Coming soon page. **Booking pages** and **Operations** open pages that
 are also reached from the main menu (Calendar; Inbox and Approvals), so those keep their own
 layout and the Settings menu is one click back. A member's address for **Operations** still
@@ -465,6 +472,7 @@ Full procedures are in [Chapter 7](#7-crm-daily-use).
 | **Action Center** | Alerts needing follow-through; notification settings | **"Acknowledge"**, **"Resolve"**, preferences | Resolve an alert you have not dealt with | **"Alert resolved"**, **"…preferences were saved"** |
 | **Operations** | Recommendations, work queue, recovery, approvals, conversations | **"Approve"** / **"Reject"**, **"Acknowledge"**, **"Resolve"** | Approve something you have not read — there is no confirmation | **"Approved"**, **"Resolved"** |
 | **Recovery Proof** | What was recovered, with evidence | Read figures, open a case | Add "potential" and "confirmed" together | Read-only, apart from **"Close case"** |
+| **Automations** | Follow-ups that run themselves, with a receipt per run | **"New automation"** → a recipe; edit steps; **"Turn on"**; **"Test with a contact"** | Turn one on without testing it on a contact first | **"Automation saved"**, **"Automation on"** |
 | **Client Operations** | Portal links, documents, estimates, appointments | Create records per workspace | Lose a new portal link — it is shown only once | A message per action |
 | **Registries** | Integrations and webhooks | **"Connect"**, **"Re-authorize"**, **"Sync"**, **"Disconnect"** | Disconnect Google during an active send | **"Google connected"**, **"Synced Gmail: …"** |
 | **Team & Access** | Users, roles, invitations, password resets | **"Invite"**, role menu, **"⋯"** → **"Reset password"** / **"Disable access"** | Post an invite link or a temporary password anywhere public | **"Invitation emailed"** / **"Invitation created"**, **"Member disabled"** |
@@ -1337,8 +1345,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 - **Purpose:** client-facing coordination per workspace — secure portal links, documents,
   estimates and invoices (local records only), appointments, referrals, review requests, safe
   internal automations and playbooks.
-- **Where:** main menu → **"Automations"** (the page is headed **"Client Operations"**). Pick a
-  workspace in **"Choose a workspace"**.
+- **Where:** **Settings** → **Workspace** → **"Client portal and playbooks"** (the page is headed
+  **"Client Operations"**; the **Automations** page links to it too). Pick a workspace in
+  **"Choose a workspace"**.
   - Tabs: **"Overview"**, **"Client portal"**, **"Commercial"**.
   - **"More workflows"** adds **"Appointments"**, **"Growth"**, **"Safe automation"** and
     **"Capacity & playbooks"**.
@@ -1447,6 +1456,221 @@ These are verified behaviours of the deployed code. None loses data.
    - **"Create estimate"**
    - **"Prepare for approval"**
 
+### 7.22 Automations
+
+- **Purpose:** follow-ups that run themselves. *When* something happens, *do* these steps, and
+  *stop* as soon as the person answers. Every run keeps a receipt.
+- **Where:** main menu → **"Automations"** (`/automations`). Members can read automations and
+  their receipts; only an admin creates, changes, turns on or off, tests or stops one.
+- **What starts an automation** (**"What starts it"**): a website lead arrives (optionally from one
+  form); a lead waits past the reply goal; someone books a time, doesn't show, or cancels
+  (optionally on one booking page); a deal is won, lost, or moves to a stage (optionally one
+  stage); a contact is added; a client commitment is at risk. **"Only for people who match"**
+  narrows it with the same filters as the contact list, including your own fields.
+- **What it can do** (the **"+"** between steps): **"Create a task"** (for the record's owner,
+  nobody yet, or a named person; due now or after a delay; with a priority), **"Set a field"**
+  (lifecycle, relationship, influence or one of your own contact fields), **"Add a tag"**,
+  **"Assign an owner"** (round robin or a named person, by default only when nobody owns them),
+  **"Notify the team"** (an in-app notice to the owner, the admins or everyone), and **"Wait"**
+  (minutes, hours or days, up to 90 days). Task titles and notices can use
+  `{{contact.first_name}}`, `{{contact.name}}`, `{{deal.name}}` and `{{company.name}}`.
+- **Stop early when:** someone replies to them (a call, text, email or meeting is logged, or their
+  website request is marked answered), they book a time, the deal is won or lost, the deal moves
+  stage, or they become a customer. The rules are checked before every step, including when a
+  wait ends. A run also stops if the contact is archived or the automation is turned off.
+- **Common actions:**
+  1. **"New automation"** → **"Start from a recipe"** → **"Use this"**. Recipes: *New lead: call
+     within 5 minutes*; *Deal won: start onboarding*; *No-show: get them rebooked*; *Quiet lead:
+     follow up after 2 days*; *Lost deal: check back in 90 days*; *Client commitment at risk:
+     alert the admins*. Each becomes a **Draft**.
+  2. Change the name, the trigger, the steps (**"Edit"** on a step; the arrows reorder it;
+     **"Remove"**) and the stop rules → **"Save changes"**.
+  3. **"Test with a contact"** → search → pick someone. It lists what each step would do for them.
+     Nothing is changed. It uses the saved steps.
+  4. **"Turn on"**. From then on every matching event starts a run.
+  5. **"Runs"** lists every run: **Waiting**, **Completed**, **Stopped** (with the reason) or
+     **Failed** (with the error). Open one for its receipt: each step, what it did, when, and
+     **"Open the task"** / **"Open the contact"** / **"Open the deal"**. **"Stop this run"** ends a
+     waiting run.
+  6. **"Turn off"** stops new runs and ends the waiting ones, each with the reason on its receipt.
+     The bin button deletes an automation from the list. Its receipts are kept.
+- **Guardrails, always on:**
+  - Nothing an automation does leaves ClientVerse. Emails and texts to people are not an
+    automation step.
+  - The same event never starts the same automation twice. While a person has a run in progress,
+    a new event for them does not start a second one. **"Run once per person, ever"** makes it
+    once for good.
+  - Something an automation did never starts another automation, so two automations cannot loop.
+  - Changing an automation affects new runs only. A run in progress keeps the steps it started
+    with, and its receipt says which version that was.
+- **Common mistakes:**
+  - Expecting a draft to run. Only an automation that is **On** runs.
+  - Testing after editing without saving. **"Test with a contact"** uses the saved steps.
+  - Two automations on the same trigger both run. That is intended. Merge them if you want one
+    list of steps.
+- **Saved when:** **"Created “…”"**, **"Automation saved"**, **"Automation on"** /
+  **"Automation off"** (with how many waiting runs stopped), **"Run stopped"**. On failure:
+  **"Nothing was saved"** or **"Nothing was changed"**, with the reason (for example *"Step 2: choose
+  someone on the team"*).
+- **Under the hood:** wait steps are picked up by the API itself every 30 seconds, so nothing
+  external has to be scheduled (`AUTOMATION_WATCHER`, on by default).
+
+### 7.23 Industry templates
+
+- **Purpose:** a starting setup for the kind of business using the CRM. A template adds pipeline
+  stages, booking pages, a website form, the fields that trade tracks and draft automations, all
+  of which you can change afterwards. Real estate is one template among six.
+- **Where:** **Settings** → **Workspace** → **"Industry template"** (`/settings/templates`), or
+  **Today** → **"Set up your workspace"** → **"Choose your industry template"**. Anyone can
+  preview a template; only an admin applies one.
+- **The templates** (each card lists exactly what it brings):
+
+  | Template | Pipeline (open stages → won) | Booking pages | Website form |
+  |---|---|---|---|
+  | **Agency & services** | Lead → Qualified → Proposal → Negotiation → Won | Discovery call, Strategy session, Client check-in | **"Contact us"** |
+  | **Real estate** | New lead → Appointment set → Showing → Offer → Pending → Closed | Home showing, Buyer consultation, Listing appointment | **"Showing request"** |
+  | **Home services** | New request → Estimate booked → Estimate sent → Job booked → Done | On-site estimate, Service call | **"Request a quote"** |
+  | **Health & wellness** | Inquiry → Consult booked → Plan offered → Member | Free consultation, Intro session | **"Book a free consultation"** |
+  | **Coaching & consulting** | Lead → Discovery call → Proposal → Enrolled | Discovery call, Coaching session | **"Apply for coaching"** |
+  | **B2B sales** | Lead → Qualified → Demo → Proposal → Negotiation → Won | Intro call, Demo | **"Talk to sales"** |
+
+  Every pipeline also ends in **"Lost"**. Each template adds two or three fields (for example
+  *Service address* and *Job type* for home services) and three draft automations from the
+  recipes in [§7.22](#722-automations).
+- **Common actions:**
+  1. **"Preview"** on a card. The dialog lists **"Will add"** and **"Already there, left as it
+     is"**, each with the reason. Nothing changes until you apply.
+  2. **"Add N things"** applies it. The dialog then shows what was added and **"Next"** links:
+     review the draft automations, put the form on your website, share your booking pages, see
+     the new fields. The card you applied shows **"In use"**.
+  3. To switch, preview and apply another template. It adds what that one brings and is missing;
+     everything already there stays. **"Check what is missing"** on the card in use adds back any
+     of its booking pages, forms or automations you have since archived or deleted. An archived
+     field is not copied: the preview says **"Archived; restore it in Settings → Fields"**, and
+     restoring it brings its values back.
+- **What applying never does:**
+  - It never renames, changes or removes anything you have. Booking pages, forms, fields and
+    automations are matched by name (capitals ignored); one with the same name is left as it is.
+  - It replaces the pipeline stages only while you have never customized them and no deal, form
+    or booking page uses a stage that would go or change between open, won and lost. Otherwise
+    the stages stay, and the preview says why. Change them yourself with **"Customize stages"** on
+    the Pipeline board.
+  - Automations arrive as **Drafts**; nothing runs until you **"Turn on"** each one.
+  - The form's auto-reply is off. Turning it on needs its own approval ([§7.6](#76-website-forms)).
+- **Common mistakes:**
+  - Expecting the template's stages on a pipeline that already has deals in the current stages.
+    The preview shows **"Pipeline stages"** under **"Already there"** in that case.
+  - Expecting automations to run straight away. They are drafts.
+- **Saved when:** **"{Template} applied"** with how many things were added, or **"You already had
+  everything it brings."** On failure: **"The template was not applied"**, with the reason.
+
+### 7.24 Snapshots
+
+- **Purpose:** build a setup once and reuse it. A snapshot saves this workspace's setup so it
+  can be loaded into another workspace: a new client, a new location, or a business you set up
+  for someone. Loading follows the same rules as an industry template ([§7.23](#723-industry-templates)):
+  it only adds what is missing.
+- **Where:** **Settings** → **Workspace** → **"Snapshots"** (`/settings/snapshots`). Admins only;
+  members do not see the menu item, and the server refuses them.
+- **What a snapshot holds:** pipeline stages, fields, booking pages, website forms, automations
+  and shared list views. It never holds contacts, companies, deals, leads, messages,
+  appointments, team members, connected accounts, public links or passwords. On the way in:
+  - booking pages leave their host behind and get a new link. The person who loads them hosts
+    them; when that person is not on the workspace's team (an agency admin in a client account),
+    its first admin does, and a workspace with no team yet gets them paused ([§7.25](#725-agency-and-client-accounts));
+  - forms leave their website addresses, thank-you redirect, lead assignment and CAPTCHA keys
+    behind, and their auto-reply arrives switched off;
+  - automations leave behind anyone they named: a task for a named person becomes a task for the
+    record's owner, and assigning a named person becomes round robin. They arrive as **Drafts**;
+  - private list views stay private and are not saved.
+
+  A snapshot **does** carry the wording you wrote, such as confirmation messages, auto-reply
+  text, task titles and a meeting location. Check those before you share it.
+- **Common actions:**
+  1. **"New snapshot"** → a name, an optional description, and **"What it holds"** (each part
+     with how many there are now) → **"Save snapshot"**. It is a copy: changing the workspace
+     later does not change the snapshot.
+  2. **"⋯"** → **"Share…"** → **"Turn on sharing"**. The share code (it starts `cvs_`) is shown
+     **once**: **"Copy"** it and send it. **"Make a new code"** replaces it (the old code stops
+     working); **"Stop sharing"** turns it off. The list shows **"Shared · loaded N×"**.
+  3. **"⋯"** → **"Download file"** saves a `.clientverse-snapshot.json` file to keep or send.
+  4. To load one into this workspace: **"Load a snapshot"** → **"Share code"** (paste it) or
+     **"File"** (choose the file) → **"Preview"**. The preview lists **"Will add"**, **"Can't be
+     loaded"** (with the reason) and **"Already there, left as it is"**. **"Add N things"** loads it
+     and shows **"Next"** links. **"Load here"** on a row loads one of your own snapshots, which
+     brings back anything of it you have since deleted.
+  5. **"⋯"** → **"Delete"** removes the snapshot and its share code. Nothing in any workspace
+     changes.
+- **How references are kept:** an automation that started from a form or booking page starts from
+  that item's copy. A filter or column on one of your own fields uses the field with the same name
+  in the workspace it lands in, even if that field was made under a different internal key. If
+  the form an automation started from was not loaded, the preview says **"Its form did not come
+  with it, so it starts for any form"**.
+- **Common mistakes:**
+  - Expecting contacts or deals to move. Snapshots are setup only; use import and export
+    ([§7.20](#720-import-and-export)) for records.
+  - Losing the share code. It is shown once; make a new code (the old one stops working).
+  - Expecting loaded automations to run. They are drafts until you **"Turn on"** each one.
+  - Expecting a loaded pipeline to replace stages you already customized. It does not; the
+    preview says so.
+- **Saved when:** **"“{name}” saved"** with what it holds; **"Code copied"**; **"Sharing stopped"**;
+  **"“{name}” loaded"** with how many things were added; **"“{name}” deleted"**. On failure:
+  **"The snapshot was not saved"**, **"The snapshot was not loaded"**, **"No shared snapshot has
+  this code. Check it, or ask for a new one."**, **"This file is not a ClientVerse snapshot"**, with
+  the reason.
+- **Limits:** 50 snapshots per workspace; a snapshot up to 1 MB holding up to 100 fields, 50
+  booking pages, 50 forms, 50 automations and 50 shared views.
+
+### 7.25 Agency and client accounts
+
+- **Purpose:** run many clients from one agency. Each client gets a **client account**: a
+  workspace of its own, with its own contacts, deals, team, connections and settings. The agency
+  sets accounts up from its snapshots, opens any of them to work there, and pushes a snapshot to
+  many at once.
+- **Where:** **Settings** → **Agency** → **"Client accounts"** (`/settings/agency`), and the
+  **account switcher** at the top of the main menu (it appears once your workspace has a client
+  account). Agency admins only.
+- **Who can do what:**
+  - An **admin of the agency** can create, rename and open every client account, and is an admin
+    inside each one while working there. Taking admin away from them, or disabling them in the
+    agency, ends their access to every client account at once, even mid-session.
+  - A **member of the agency** cannot open client accounts.
+  - A **client account's own people** (invited from its **Team** page) sign in to their account
+    as usual. They never see the agency, its records or any other client. A client account cannot
+    have client accounts of its own.
+- **Common actions:**
+  1. **"New client account"** → the client's name and **"Start from"** (one of your snapshots,
+     or **"A blank account"**) → **"Create account"**. The toast offers **"Open it"**.
+  2. **"Open"** on a row (or pick it in the account switcher). ClientVerse reloads inside that
+     account, and a banner says **"You are working in {client}, a client account of {agency}"**.
+     Everything you do there is done in that account. **"Back to {agency}"** in the banner (or
+     the agency's name in the switcher) returns you.
+  3. Inside the client account, invite the client's team from **Settings** → **"Team and
+     roles"**, then choose who hosts each booking page.
+  4. **"Push a snapshot"** → a snapshot and the accounts (**"Choose all"** or some) →
+     **"Preview"**. Each account shows **"Adds N · M already there"**; open one to see its full
+     list. **"Push to N accounts"** loads it into each, with the same rules as loading a snapshot
+     ([§7.24](#724-snapshots)): only what is missing is added, and nothing a client has is
+     changed. The **"Last snapshot"** column shows what was pushed last and how much it added.
+  5. **"⋯"** → **"Rename"** changes the client's name; their team sees it too.
+- **Booking pages in client accounts:** a page only takes bookings for hosts on that account's
+  team. When a snapshot is loaded into a client account, its booking pages are hosted by the
+  account's first admin; an account with no team yet gets them **paused**, and the preview says
+  **"paused until someone on this account's team hosts it"**. Invite the team, then choose the
+  host and turn the page on.
+- **Common mistakes:**
+  - Looking for a client's records from the agency. Open the client account first; the agency's
+    own lists never show a client's records.
+  - Expecting a push to overwrite a client's own changes. It adds only what is missing.
+  - Pushing before the client's team exists, then wondering why booking pages are paused.
+- **Saved when:** **"“{name}” created"**, **"Account renamed"**, **"“{snapshot}” pushed to N
+  accounts"** with how many things were added in all. On failure: **"The account was not
+  created"**, **"“{name}” could not be opened"**, **"The snapshot was not pushed"**, with the
+  reason. Opening an account, creating one and pushing to it are recorded in the audit log of
+  both the agency and the client account.
+- **Limits:** 200 client accounts per agency; a push reaches up to 100 accounts at once. Every
+  account in a push is checked first: if one is not yours, nothing is loaded anywhere.
+
 ---
 
 ## 8. Users, Roles, and Administration
@@ -1467,6 +1691,9 @@ on every request, and hiding a button is never the protection.
 | Connect / re-authorize / sync / disconnect integrations; see **"Connection health"** | ✓ | ✗ |
 | **"Approve"** / **"Reject"** approvals (workspace, Operations, booking emails, auto-reply wording) | ✓ | ✗ |
 | Website forms, booking pages and pipeline stages — create and change | ✓ | ✗ |
+| Apply an industry template (**Settings → Industry template**; anyone can preview one) | ✓ | ✗ |
+| Snapshots — save, share, download, load and delete (**Settings → Snapshots**) | ✓ | ✗ |
+| Client accounts — create, rename, open and work in, push a snapshot (**Settings → Agency**); an admin of the agency is an admin in every one of its client accounts | ✓ | ✗ |
 | Record conversation consent (API only) | ✓ | ✗ |
 | MCP kill switch, undo, workspace undo window | ✓ | ✗ |
 | Webhook create / enable / reveal secret / rotate secret | ✓ | ✗ |
@@ -2503,6 +2730,11 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |
+| 1.11 | 2026-10-19 | **Agency and client accounts** (§7.25, new): client accounts under an agency, the account switcher and the "working in" banner, opening a client account as an agency admin (checked on every request), creating accounts from a snapshot, and pushing a snapshot to many accounts with a preview per account. **Settings → Agency → "Client accounts"** (§4.3); roles (§8.1). Booking pages loaded into a workspace are hosted by someone on its team, or arrive paused (§7.24, §7.25). |
+| 1.10 | 2026-10-19 | **Snapshots** (§7.24, new): save this workspace's setup (pipeline stages, fields, booking pages, forms, automations, shared views — never records, people, links or secrets), share it with a code shown once, download it as a file, and load one into a workspace through a preview that only adds what is missing. **Settings → Workspace → "Snapshots"**, admin only (§4.3, §8.1). §7.23: a template's stages also stay when a stage in use would change between open, won and lost. |
+| 1.9 | 2026-10-19 | **Industry templates** (§7.23, new): six starting setups (agency, real estate, home services, health and wellness, coaching, B2B sales) that add a pipeline, booking pages, a form, fields and draft automations, only where missing. **Settings → Workspace → "Industry template"** (§4.3); the first step of **"Set up your workspace"** on Today is now **"Choose your industry template"** (§4.2); applying one is admin-only (§8.1). |
+| 1.8 | 2026-10-19 | **Automations** (§7.22, new): triggers, steps, stop rules, recipes, test runs and run receipts. The main-menu **"Automations"** entry opens it (§4.3, §4.4). Client Operations moves to **Settings → Workspace → "Client portal and playbooks"** (§4.3, §7.15). **Workflows** leaves "Coming soon". §7.21 item 3 corrected for the 1,000-person contact list. |
 | 1.7 | 2026-10-19 | **Today** replaces the Command Center page at `/dashboard` (§4.2, §7.1, §4.3, §4.4, §1.4 step 4, §3.2, checklist row 3, the quick answers): four figures, **"Your plan"** in a fixed order with the reason for each item, new leads with **"Call"**, appointments, tasks with a tick to complete, pipeline, clients; won deals and outcome progress are on the Pipeline board and Client 360. |
 | 1.6 | 2026-10-19 | The new app shell: an 11-item main menu (Today, Leads, Inbox, Contacts, Pipeline, Calendar, Tasks, Approvals, Clients, Automations, Reports) with counts, **"Settings"** pinned at the bottom, and a Settings menu (Workspace, Capture, Connections, Compliance, Developer, Coming soon) replacing the grouped sidebar; search moved to the top bar. Updated §1.2–1.4, §3.4, §4.1–4.3 (new map), §5.3, the "Where" lines of §7, §7.19, §8.2, §14 row 20, §15.2, Appendix A. Applies from the deployment that carries this change; until then production shows the grouped sidebar of v1.3. **Settings → Workspace → "Fields"** opens the field manager of v1.5. |
 | 1.5 | 2026-10-19 | Contacts: built-in and saved views, filters, columns (§7.4 item 4); lifecycle stage and how the CRM sets it (item 6); your own fields on contacts, companies and deals — **Settings → Fields** (item 8, §7.5, §4.3); **"Set from history"** in the **"Clean up"** card (item 10); the contact list now shows up to 1,000 people. |

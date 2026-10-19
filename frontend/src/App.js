@@ -23,7 +23,11 @@ import Notifications from "@/pages/Notifications";
 import AcceptInvite from "@/pages/AcceptInvite";
 import Settings from "@/pages/Settings";
 import CustomFieldsSettings from "@/pages/CustomFieldsSettings";
+import IndustryTemplates from "@/pages/IndustryTemplates";
+import Snapshots from "@/pages/Snapshots";
+import AgencyAccounts from "@/pages/AgencyAccounts";
 import ClientOps from "@/pages/ClientOps";
+import Automations from "@/pages/Automations";
 import FieldOps from "@/pages/FieldOps";
 import ClientPortal from "@/pages/ClientPortal";
 import ModuleStatus from "@/pages/ModuleStatus";
@@ -95,6 +99,8 @@ function AppRouter() {
         <Route path="/operations" element={<Operations />} />
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/client-ops" element={<ClientOps />} />
+        <Route path="/automations" element={<Automations />} />
+        <Route path="/automation/workflows" element={<Navigate to="/automations" replace />} />
         <Route path="/proof" element={<RecoveryProof />} />
         <Route path="/leads" element={<Leads />} />
         <Route path="/tasks" element={<Tasks />} />
@@ -105,6 +111,9 @@ function AppRouter() {
         <Route element={<SettingsLayout />}>
           <Route path="/settings" element={<Settings />} />
           <Route path="/settings/fields" element={<CustomFieldsSettings />} />
+          <Route path="/settings/templates" element={<IndustryTemplates />} />
+          <Route path="/settings/snapshots" element={<Snapshots />} />
+          <Route path="/settings/agency" element={<AgencyAccounts />} />
           <Route path="/team" element={<Team />} />
           <Route path="/website-forms" element={<WebsiteForms />} />
           <Route path="/registries" element={<Registries />} />
