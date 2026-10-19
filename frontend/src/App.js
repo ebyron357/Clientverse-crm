@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import "@/App.css";
 import { api, setStoredToken } from "@/lib/api";
@@ -117,7 +117,12 @@ const PUBLIC_PREFIXES = ["/book/", "/booking/", "/portal/"];
 
 function ThemedApp() {
   const { pathname } = useLocation();
-  const forcedTheme = PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix)) ? "light" : undefined;
+  const isPublic = PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  const forcedTheme = isPublic ? "light" : undefined;
+  // They keep their own typeface too (index.css). On <body>, so dialogs rendered there match.
+  useLayoutEffect(() => {
+    document.body.classList.toggle("cv-public", isPublic);
+  }, [isPublic]);
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange storageKey="cv-theme" forcedTheme={forcedTheme}>
       <AppRouter />

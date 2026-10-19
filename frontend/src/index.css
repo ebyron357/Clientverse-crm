@@ -4,12 +4,14 @@
 
 /*
  * ClientVerse design tokens.
- * Neutral surfaces, one brand accent, near-black primary actions. Inter is bundled
- * with the app (see index.js), so no font is fetched from a third party at runtime.
+ * A cool grey canvas, white cards with a quiet border, one brand accent, near-black primary
+ * actions and a deep navy main menu. Plus Jakarta Sans (the signed-in app and the sign-in
+ * pages) and Inter (the public booking and portal pages) are bundled with the app (see
+ * index.js), so no font is fetched from a third party at runtime.
  */
 @layer base {
   :root {
-    --canvas: 220 16% 96.5%;
+    --canvas: 225 25% 96.9%;
     --background: 0 0% 100%;
     --foreground: 222 24% 11%;
     --card: 0 0% 100%;
@@ -26,7 +28,7 @@
     --accent-foreground: 222 24% 11%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 14% 90.5%;
+    --border: 220 21% 91.6%;
     --input: 220 13% 87%;
     --ring: 228 76% 56%;
     --brand: 228 76% 54%;
@@ -38,7 +40,23 @@
     --chart-3: 160 64% 40%;
     --chart-4: 38 92% 50%;
     --chart-5: 268 66% 60%;
-    --radius: 0.625rem;
+    /* Cards (rounded-xl). Controls stay tighter: lg 10px, md 8px, sm 6px (tailwind.config.js). */
+    --radius: 0.875rem;
+
+    /*
+     * The main menu is deep navy in both themes, so these are not redefined under .dark.
+     * Solid colours are HSL channels like every other token. The washes over the navy carry
+     * their own alpha and are used whole: Tailwind cannot add an opacity modifier to them.
+     */
+    --sidebar: 221 53% 9%;                      /* #0B1324 */
+    --sidebar-foreground: 219 22% 82%;          /* #C8CFDC item text */
+    --sidebar-active-foreground: 0 0% 100%;     /* current item, the signed-in name */
+    --sidebar-muted: 219 13% 55%;               /* #7D879A icons, section labels */
+    --sidebar-urgent: 358 75% 59%;              /* #E5484D a count that needs action now */
+    --sidebar-accent: hsl(0 0% 100% / 0.09);    /* current item */
+    --sidebar-hover: hsl(0 0% 100% / 0.05);
+    --sidebar-border: hsl(0 0% 100% / 0.08);
+    --sidebar-pill: hsl(0 0% 100% / 0.12);      /* a count to get to today */
     color-scheme: light;
   }
 
@@ -79,8 +97,7 @@
   body {
     margin: 0;
     min-width: 320px;
-    font-family: 'Inter Variable', Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    font-feature-settings: "cv11", "ss01", "ss03";
+    font-family: 'Plus Jakarta Sans', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     color: hsl(var(--foreground));
@@ -89,9 +106,17 @@
   }
 
   h1, h2, h3, h4, .font-display {
-    font-family: 'Inter Variable', Inter, ui-sans-serif, sans-serif;
+    font-family: 'Plus Jakarta Sans', ui-sans-serif, sans-serif;
     letter-spacing: -0.018em;
   }
+
+  /* The public booking, manage-booking and portal pages (App.js marks them) keep Inter: they
+     are often framed inside another site, and their type was set for it. */
+  body.cv-public,
+  body.cv-public :is(h1, h2, h3, h4, .font-display, .font-sans) {
+    font-family: 'Inter Variable', Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  body.cv-public { font-feature-settings: "cv11", "ss01", "ss03"; }
 
   button, a, input, select, textarea, [role="button"] {
     -webkit-tap-highlight-color: transparent;
@@ -186,7 +211,7 @@
   .cv-scrollbar::-webkit-scrollbar-track { background: transparent; }
   .cv-scrollbar::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
   .cv-scrollbar::-webkit-scrollbar-thumb:hover { background: hsl(var(--input)); }
-  .tabular { font-variant-numeric: tabular-nums; }
+  .tabular { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
   /* Dark theme: tinted status colours become translucent washes with light text. */
   .dark .bg-emerald-50, .dark .bg-emerald-100 { background-color: rgb(16 185 129 / 0.13) !important; }
   .dark .hover\:bg-emerald-50:hover, .dark .hover\:bg-emerald-100:hover { background-color: rgb(16 185 129 / 0.2) !important; }
