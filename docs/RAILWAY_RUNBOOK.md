@@ -186,9 +186,11 @@ sending the header) — no ClientVerse code changes are needed for this.
   live secret does.
 - **`ADMIN_PASSWORD` rotation is not durable if done only in the app.** `seed()` re-syncs
   the admin account's password hash from the `ADMIN_PASSWORD` environment variable on
-  every boot (see `backend/server.py`). There is no product UI or API for changing a
-  password, so the Railway variable is the only way to rotate the owner password: change
-  `ADMIN_PASSWORD` in Railway and let it redeploy (Owner/Admin Manual §9.2). Never change
+  every boot (see `backend/server.py`). Settings → Change password works for the owner
+  account only until the next restart or deploy, so the Railway variable is the only durable
+  way to rotate the owner password: change `ADMIN_PASSWORD` in Railway and let it redeploy
+  (Owner/Admin Manual §9.2). Other accounts change their own password in Settings, and an
+  admin can reset a member's (Team & Access). Never change
   `ADMIN_EMAIL` — a new value seeds a new, empty tenant.
 - **Google OAuth setup is owner-only.** Creating/verifying the OAuth consent screen and
   Web OAuth client in Google Cloud Console, registering the callback URL above, and
