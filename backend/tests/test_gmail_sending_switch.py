@@ -40,12 +40,16 @@ MAILBOX = "owner@acme.test"
 _LOOP = None
 
 
-def run(coro):
+def loop():
     global _LOOP
     if _LOOP is None or _LOOP.is_closed():
         _LOOP = asyncio.new_event_loop()
         asyncio.set_event_loop(_LOOP)
-    return _LOOP.run_until_complete(coro)
+    return _LOOP
+
+
+def run(coro):
+    return loop().run_until_complete(coro)
 
 
 class FakeGmail:
@@ -96,6 +100,7 @@ class RecordingClient:
 @pytest.fixture()
 def db(monkeypatch):
     name = f"cv_switch_{uuid.uuid4().hex[:10]}"
+    loop()  # the client binds to the current loop, so it must exist first
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     database = client[name]
     monkeypatch.setattr(server, "db", database)
