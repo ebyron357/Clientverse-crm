@@ -333,7 +333,136 @@ def stage_outcome(stage: dict) -> str:
     return STAGE_WON if stage.get("is_won") else STAGE_LOST
 
 
+# ------------------------------------------------------- companies, clients, duplicates
+
+# Addresses at these domains belong to a person, not to a company, so they never link
+# a contact to a company and never name a new one.
+FREE_MAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "outlook.com", "hotmail.com",
+    "live.com", "msn.com", "icloud.com", "me.com", "mac.com", "aol.com", "proton.me",
+    "protonmail.com", "gmx.com", "gmx.net", "mail.com", "yandex.com", "zoho.com",
+    "fastmail.com", "hey.com", "comcast.net", "verizon.net", "att.net", "sbcglobal.net",
+})
+
+
+def business_domain(email: Optional[str]) -> Optional[str]:
+    """The company domain an email address points at, or None for a personal address."""
+    text = str(email or "").strip().lower()
+    if "@" not in text:
+        return None
+    domain = text.rsplit("@", 1)[1].strip(". ")
+    if not domain or "." not in domain or domain in FREE_MAIL_DOMAINS:
+        return None
+    return domain
+
+
+def website_domain(value: Optional[str]) -> Optional[str]:
+    """`https://www.acme.com/about` -> `acme.com`; anything unparseable -> None."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text).split("/", 1)[0].split(":", 1)[0]
+    text = text[4:] if text.startswith("www.") else text
+    return text if "." in text else None
+
+
+async def find_company(db, tenant_id: str, *, name: Optional[str] = None,
+                       domain: Optional[str] = None) -> Optional[dict]:
+    """A live company with exactly this name (any case), else one on this domain."""
+    base = {"tenant_id": tenant_id, "archived_at": None}
+    clean = str(name or "").strip()
+    if clean:
+        found = await db[COMPANIES].find_one(
+            {**base, "name": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}}, {"_id": 0})
+        if found:
+            return found
+    if domain:
+        found = await db[COMPANIES].find_one(
+            {**base, "$or": [{"domain": domain},
+                             {"website": {"$regex": rf"(^|[/.]){re.escape(domain)}(/|$)",
+                                          "$options": "i"}}]}, {"_id": 0})
+        if found:
+            return found
+    return None
+
+
+async def link_contact_company(db, tenant_id: str, contact: dict, company_name: Optional[str],
+                               *, new_id: Callable[[str], str], now_iso: Callable[[], str],
+                               actor: str, record_event=None) -> tuple[Optional[str], str]:
+    """Attach a contact to its company: matched by name, then by email domain, or created
+    from the name the person typed. A contact that already has a company keeps it.
+
+    Returns (company_id or None, how) where how is kept / matched / created / none.
+    """
+    if contact.get("company_id"):
+        return contact["company_id"], "kept"
+    name = str(company_name or "").strip()[:200]
+    domain = business_domain(contact.get("email"))
+    company = await find_company(db, tenant_id, name=name or None, domain=domain)
+    how = "matched"
+    if not company and name:
+        now = now_iso()
+        company = {"id": new_id("co"), "tenant_id": tenant_id, "name": name,
+                   "industry": None, "website": None, "domain": domain, "tier": None,
+                   "owner": contact.get("owner"), "created_at": now, "updated_at": now,
+                   "archived_at": None, "source": {"kind": "contact", "contact_id": contact["id"]},
+                   "history": [created_history(actor)]}
+        await db[COMPANIES].insert_one(dict(company))
+        if record_event:
+            await record_event("company.created", "company", company["id"], tenant_id, actor,
+                               payload={"name": name, "from": "contact"})
+        how = "created"
+    if not company:
+        return None, "none"
+    await db[CONTACTS].update_one(
+        {"id": contact["id"], "tenant_id": tenant_id, "company_id": None},
+        {"$set": {"company_id": company["id"], "updated_at": now_iso()},
+         "$push": {"history": _history_entry("company_linked", actor,
+                                             {"company_id": company["id"], "how": how})}})
+    return company["id"], how
+
+
+async def is_existing_client(db, tenant_id: str, contact: dict) -> bool:
+    """True when the business already serves this person: their company has a client
+    workspace, or they are on a won deal. Client work is not a new lead to win."""
+    if contact.get("company_id") and await db.workspaces.find_one(
+            {"tenant_id": tenant_id, "company_id": contact["company_id"],
+             "archived_at": None}, {"_id": 1}):
+        return True
+    won = (await stage_classes(db, tenant_id))[STAGE_WON] | set(LEGACY_WON_STAGES)
+    return bool(await db[DEALS].find_one(
+        {"tenant_id": tenant_id, "contact_ids": contact["id"], "stage": {"$in": list(won)},
+         "archived_at": None}, {"_id": 1}))
+
+
+def _name_key(name: Optional[str]) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+
+
+# Where a contact's id is recorded, so a merge can move every reference at once.
+# (collection, field, kind): kind "value" is a scalar field, "array" a list of ids,
+# "related" a related_type/related_id pair.
+CONTACT_REFERENCES = (
+    (DEALS, "contact_ids", "array"),
+    (TASKS, "related_id", "related"),
+    (ACTIVITIES, "related_id", "related"),
+    ("web_enquiries", "contact_id", "value"),
+    ("appointments", "contact_id", "value"),
+    ("conversations", "contact_id", "value"),
+    ("crm_communications", "contact_ids", "array"),
+)
+
+
 # ------------------------------------------------------------------- request payloads
+
+class CleanupApply(BaseModel):
+    action: str = Field(pattern="^(create_typed_companies|link_by_domain)$")
+    contact_ids: Optional[list[str]] = Field(default=None, max_length=500)
+
+
+class MergeInput(BaseModel):
+    into_id: str = Field(min_length=1, max_length=80)
+
 
 class ContactPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
@@ -564,6 +693,189 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         return merged
 
     # ------------------------------------------------------------------------ contacts
+
+    # ---------------------------------------------------------------- clean-up
+
+    async def cleanup_scan(tenant: str) -> dict:
+        contacts = await db[CONTACTS].find(
+            {"tenant_id": tenant, "archived_at": None},
+            {"_id": 0, "id": 1, "name": 1, "email": 1, "company_id": 1, "custom_fields": 1,
+             "created_at": 1}).to_list(5000)
+        companies = await db[COMPANIES].find(
+            {"tenant_id": tenant, "archived_at": None},
+            {"_id": 0, "id": 1, "name": 1, "domain": 1, "website": 1}).to_list(5000)
+        by_domain: dict[str, dict] = {}
+        by_name = {_name_key(c.get("name")): c for c in companies if c.get("name")}
+        for company in companies:
+            for domain in (company.get("domain"), website_domain(company.get("website"))):
+                if domain:
+                    by_domain.setdefault(str(domain).lower(), company)
+        # Company names people typed into a form, for contacts not yet linked to one.
+        typed: dict[str, dict] = {}
+        domain_matches = []
+        for contact in contacts:
+            if contact.get("company_id"):
+                continue
+            custom = contact.get("custom_fields") or {}
+            name = next((str(custom[k]).strip() for k in ("company", "custom_company", "company_name")
+                         if str(custom.get(k) or "").strip()), "")
+            domain = business_domain(contact.get("email"))
+            if name:
+                group = typed.setdefault(_name_key(name), {
+                    "name": name[:200], "contact_ids": [],
+                    "existing_company_id": (by_name.get(_name_key(name)) or {}).get("id")})
+                group["contact_ids"].append(contact["id"])
+            elif domain and domain in by_domain:
+                company = by_domain[domain]
+                domain_matches.append({"contact_id": contact["id"], "contact_name": contact.get("name"),
+                                       "company_id": company["id"], "company_name": company.get("name"),
+                                       "domain": domain})
+        groups: dict[str, list[dict]] = {}
+        for contact in contacts:
+            email = str(contact.get("email") or "").strip().lower()
+            if email:
+                groups.setdefault(f"email:{email}", []).append(contact)
+        grouped = {c["id"] for members in groups.values() if len(members) > 1 for c in members}
+        for contact in contacts:
+            key = _name_key(contact.get("name"))
+            if key and contact["id"] not in grouped:
+                groups.setdefault(f"name:{key}", []).append(contact)
+        duplicates = [
+            {"reason": "same email" if key.startswith("email:") else "same name",
+             "contacts": [{k: c.get(k) for k in ("id", "name", "email", "company_id", "created_at")}
+                          for c in sorted(members, key=lambda c: c.get("created_at") or "")]}
+            for key, members in groups.items() if len(members) > 1][:50]
+        return {"typed_companies": list(typed.values())[:100],
+                "domain_matches": domain_matches[:100], "duplicates": duplicates}
+
+    @router.get("/contacts/cleanup")
+    async def contacts_cleanup(user=Depends(get_current_user)):
+        """What would tidy the contact list: companies typed in forms but never created,
+        contacts whose work email matches a company, and people entered twice."""
+        return await cleanup_scan(tenant_of(user))
+
+    @router.post("/contacts/cleanup/apply")
+    async def contacts_cleanup_apply(inp: CleanupApply, user=Depends(get_current_user)):
+        tenant = tenant_of(user)
+        scan = await cleanup_scan(tenant)
+        wanted = set(inp.contact_ids or [])
+        linked = created = 0
+        if inp.action == "create_typed_companies":
+            for group in scan["typed_companies"]:
+                for contact_id in group["contact_ids"]:
+                    if wanted and contact_id not in wanted:
+                        continue
+                    contact = await db[CONTACTS].find_one(
+                        {"id": contact_id, "tenant_id": tenant}, {"_id": 0})
+                    if not contact:
+                        continue
+                    company_id, how = await link_contact_company(
+                        db, tenant, contact, group["name"], new_id=new_id, now_iso=now_iso,
+                        actor=user["email"], record_event=record_event)
+                    linked += bool(company_id)
+                    created += how == "created"
+        else:
+            for match in scan["domain_matches"]:
+                if wanted and match["contact_id"] not in wanted:
+                    continue
+                result = await db[CONTACTS].update_one(
+                    {"id": match["contact_id"], "tenant_id": tenant, "company_id": None},
+                    {"$set": {"company_id": match["company_id"], "updated_at": now_iso()},
+                     "$push": {"history": _history_entry("company_linked", user["email"],
+                                                         {"company_id": match["company_id"],
+                                                          "how": "email domain"})}})
+                linked += result.modified_count
+        await record_event("contacts.cleaned_up", "contact", tenant, tenant, user["email"],
+                           payload={"action": inp.action, "linked": linked, "created": created})
+        return {"action": inp.action, "linked": linked, "created_companies": created}
+
+    async def mark_merging(tenant: str, source_id: str, target_id: str) -> None:
+        """Record the destination before anything moves, so a merge that stops part-way
+        is recognised as the same merge when it is run again."""
+        await db[CONTACTS].update_one({"id": source_id, "tenant_id": tenant},
+                                      {"$set": {"merged_into": target_id}})
+
+    @router.post("/contacts/{contact_id}/merge")
+    async def merge_contact(contact_id: str, inp: MergeInput, user=Depends(get_current_user)):
+        """Fold one contact into another: every deal, task, activity, enquiry, appointment
+        and conversation moves to the kept record, which fills its empty fields from the
+        duplicate. The duplicate is archived with `merged_into`, so it can be found.
+
+        Every step is safe to repeat, so a merge interrupted part-way is finished by
+        running it again: references already moved simply match nothing."""
+        if inp.into_id == contact_id:
+            raise HTTPException(status_code=422, detail="Choose a different contact to merge into")
+        tenant = tenant_of(user)
+        source = await load(CONTACTS, contact_id, user)
+        target = await load(CONTACTS, inp.into_id, user)
+        if target.get("archived_at"):
+            raise HTTPException(status_code=422, detail="Restore the contact you are keeping first")
+        if source.get("merged_into") and source["merged_into"] != target["id"]:
+            raise HTTPException(status_code=422, detail="That contact was already merged into another one")
+        # A repeat of a finished or interrupted merge: the fields and inquiries were
+        # already folded in, so only the references and the archive step run again.
+        repeat = source.get("merged_into") == target["id"]
+        now = now_iso()
+        sets: dict[str, Any] = {"updated_at": now}
+        for key in ("email", "phone", "phone_digits", "title", "role", "company_id", "owner",
+                    "consent", "lead_source", "source"):
+            if not target.get(key) and source.get(key):
+                sets[key] = source[key]
+        for key, value in (source.get("custom_fields") or {}).items():
+            if (target.get("custom_fields") or {}).get(key) in (None, ""):
+                sets[f"custom_fields.{key}"] = value
+        if not repeat:
+            await mark_merging(tenant, source["id"], target["id"])
+        await db[CONTACTS].update_one(
+            {"id": target["id"], "tenant_id": tenant},
+            {"$set": sets} if repeat else {"$set": sets,
+             "$addToSet": {"tags": {"$each": list(source.get("tags") or [])}},
+             "$push": {"inquiries": {"$each": list(source.get("inquiries") or []), "$slice": -50},
+                       "history": _history_entry("merged", user["email"],
+                                                 {"merged_contact_id": source["id"],
+                                                  "merged_name": source.get("name")})}})
+        moved: dict[str, int] = {}
+        for collection, field, kind in CONTACT_REFERENCES:
+            if kind == "related":
+                result = await db[collection].update_many(
+                    {"tenant_id": tenant, "related_type": "contact", field: source["id"]},
+                    {"$set": {field: target["id"]}})
+                moved[collection] = result.modified_count
+            elif kind == "value":
+                result = await db[collection].update_many(
+                    {"tenant_id": tenant, field: source["id"]}, {"$set": {field: target["id"]}})
+                moved[collection] = result.modified_count
+            else:
+                count = 0
+                async for row in db[collection].find({"tenant_id": tenant, field: source["id"]},
+                                                     {"_id": 0, "id": 1, field: 1}):
+                    ids = [target["id"] if i == source["id"] else i for i in row.get(field) or []]
+                    await db[collection].update_one(
+                        {"id": row["id"], "tenant_id": tenant},
+                        {"$set": {field: list(dict.fromkeys(ids))}})
+                    count += 1
+                moved[collection] = count
+        count = 0
+        async for row in db.conversations.find(
+                {"tenant_id": tenant,
+                 "participants": {"$elemMatch": {"kind": "contact", "id": source["id"]}}},
+                {"_id": 0, "id": 1, "participants": 1}):
+            participants = [
+                {**p, "id": target["id"]} if p.get("kind") == "contact" and p.get("id") == source["id"]
+                else p for p in row.get("participants") or []]
+            await db.conversations.update_one({"id": row["id"], "tenant_id": tenant},
+                                              {"$set": {"participants": participants}})
+            count += 1
+        moved["conversation participants"] = count
+        await db[CONTACTS].update_one(
+            {"id": source["id"], "tenant_id": tenant},
+            {"$set": {"archived_at": now, "merged_into": target["id"], "updated_at": now},
+             "$push": {"history": _history_entry("merged_into", user["email"],
+                                                 {"contact_id": target["id"]})}})
+        await record_event("contact.merged", "contact", target["id"], tenant, user["email"],
+                           payload={"merged_contact_id": source["id"], "moved": moved})
+        kept = await db[CONTACTS].find_one({"id": target["id"], "tenant_id": tenant}, {"_id": 0})
+        return {"contact": kept, "merged_contact_id": source["id"], "moved": moved}
 
     @router.get("/contacts/{contact_id}")
     async def get_contact(contact_id: str, user=Depends(get_current_user)):

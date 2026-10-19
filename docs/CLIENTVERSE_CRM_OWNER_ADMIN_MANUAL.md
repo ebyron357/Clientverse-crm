@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -922,6 +922,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      happened.
   3. **"Close"** a lead that is finished, **"Spam"** junk, **"Reopen"** a closed one.
   4. **"Export CSV"** downloads the leads in the current view as `leads.csv`.
+- **Existing clients:** a form or booking from someone you already serve (their company has a
+  Client 360 workspace, or they are on a won deal) is marked **"Existing client"**. It opens no new
+  deal, and its task reads **"Reply to client: …"** instead of **"Call new lead now: …"**.
 - **How the clock works:** every new lead gets a call-back task in **Tasks** (due 5 minutes after
   arrival by default) and an alert. Logging a call, text, email or meeting on the contact, or
   ticking that task done, marks the lead contacted. A note does not. Verified (code).
@@ -971,15 +974,31 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
        turn on **"Show archived"**, open them, and click **"Restore"**.
   5. **Open a company** (side panel): tabs **"Contacts"**, **"Deals"**, **"Client 360"**, and the
      **"Details"** panel. It is read-only.
+  6. **Companies fill themselves in.** When a form or booking page asks **"Company"**, the person
+     is linked to that company, which is created if it doesn't exist yet. A person whose work email
+     matches a company's domain or website is linked to it. Personal addresses (Gmail, Outlook,
+     iCloud and similar) never link anyone to a company.
+  7. **"Clean up"** card, at the top of the **"Contacts"** tab, appears only when there is something
+     to tidy:
+     - **"Create and link"** — companies people typed into forms that don't exist yet are created,
+       and those people are linked to them.
+     - **"Link to company"** — people whose work email matches a company are linked to it.
+     - **"Review and merge"** — people entered twice (same email, or the same name). Choose the
+       record to keep → **"Merge into the selected record"**. Its deals, tasks, notes, website
+       requests, appointments and conversations move to the kept record, its empty fields are
+       filled from the other, and the other is archived (turn on **"Show archived"** to see it).
+       Nothing is deleted. If a merge is interrupted, running it again finishes it.
 - **Common mistakes:**
   - **Companies cannot be edited, archived or deleted from the screens.** Type carefully.
     Engineering can edit or archive a company through the server. Nothing can be deleted at all.
-  - Creating the same company twice — search first.
+  - Creating the same company twice — search first. Two people already entered twice can be
+    merged with **"Review and merge"**.
   - Leaving out a contact's email, which stops email and calendar matching.
   - Each list shows at most **200** records. Beyond that, older ones are not visible in the
     screens (UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED whether any organization has reached this).
 - **Saved when:** **"Company created"**, **"Contact created"**, **"Contact saved"**,
-  **"Contact archived"** / **"Contact restored"**. On failure: **"Could not create company"** /
+  **"Contact archived"** / **"Contact restored"**, **"Linked … created …"** after a clean-up, and
+  **"Merged into …"** after a merge. On failure: **"Could not create company"** /
   **"Could not create contact"**, with the reason.
 
 ### 7.5 Deals and Pipeline
@@ -1001,6 +1020,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      message is **"Deal marked as won"** and no workspace is made.
   5. Filter with **"Search deals, people or companies"** and **"Everyone's deals"** / **"My deals"**.
   6. Admin: **"Customize stages"** renames, adds, reorders or removes stages → **"Save stages"**.
+  7. **One open deal per person.** A person who fills in a form and later books a time, or fills
+     in a second form, stays on their one open deal (opened in the last 30 days). Their new request
+     is added to its history instead of opening a second deal.
 - **Common mistakes:**
   - Looking for a lost deal on the board — turn on **"Show lost deals"**. A lost deal can be moved
     back to an open stage the same way as any other.
@@ -1023,6 +1045,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   4. **"Auto-reply"**: write the automatic reply, save it, read it, then **"Approve this wording"**.
      Each reply is still checked before it goes (consent, and an authorised email channel —
      [§6.1](#61-read-this-first--current-status)). Changing the wording needs a new approval.
+- **"Company"** is one of the standard fields. Add it to link each lead to their company
+  ([§7.4](#74-contacts-and-companies)).
 - **Members** can view forms and copy embed codes only.
 - **Common mistakes:** approving reply wording you have not read; forgetting that test leads land
   in **Leads**, tagged **"Test lead"**.
@@ -1043,7 +1067,10 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      in **Operations** → **"Approvals"**. With no authorised email channel nothing is drafted, and
      the appointment says *"Email isn't connected, so nothing was emailed."*
   3. **"Booking pages"** tab (admin): **"Create my booking pages"** the first time, then
-     **"New booking page"**, **"Edit"**, pause, and **"Copy link"** or an embed code.
+     **"New booking page"**, **"Edit"**, pause, and **"Copy link"** or an embed code. A new page
+     starts from **"Meeting"** (30 min, a preparation task, no property questions); the
+     real-estate templates (Home showing, Buyer consultation, Listing appointment, Phone call)
+     are still in the list. Booking pages can also ask **"Company"**.
      **"Copy my link"** copies your own booking page link.
   4. **"Availability"** tab: each agent's weekly hours and days off.
 - **Public pages:** `/book/…` is your public booking page (no sign-in). `/booking/manage/…` is the

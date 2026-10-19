@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { fullDateLabel } from "@/lib/contactHistory";
 import ContactRecord, { MiniStatus, RECORD_SHEET, RecordEmpty, RecordLayout, RecordList, useWideLayout } from "@/components/ContactRecord";
+import ContactCleanup from "@/components/ContactCleanup";
 import { Avatar, PageHeader, PropertyList, StatusDot, Toolbar, ViewTabs } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -112,6 +113,7 @@ export default function Directory({ initialTab = "companies" }) {
         { value: "companies", label: "Companies", icon: Building2, count: loading ? undefined : companies.length },
         { value: "contacts", label: "Contacts", icon: UserRound, count: loading ? undefined : contacts.length },
       ]} />
+    {isContacts && !loading && <ContactCleanup onChanged={() => load({ quiet: true })} />}
     <Toolbar>
       <div className="relative w-full sm:w-64">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
