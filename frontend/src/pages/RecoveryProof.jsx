@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, formatErr, formatMoney } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { Badge } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { PageHeader, PropertyList, Section, StatStrip, StatusDot } from "@/components/page/Page";
 import { SurfaceEmpty, SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
 import { Link } from "react-router-dom";
-import { ArrowRight, BadgeCheck, ChevronLeft, FileSearch, Mail, MailCheck, Reply, ShieldQuestion, Timer } from "lucide-react";
+import { ArrowDownLeft, ArrowRight, ArrowUpRight, BadgeCheck, ChevronLeft, FileSearch } from "lucide-react";
 
 /**
  * The buyer-facing recovery report.
@@ -88,28 +88,57 @@ const BASIS_LABEL = {
   no_contact: "Nothing reached the client",
 };
 
-const BASIS_TONE = {
-  reply_after_contact: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  delivered_contact: "bg-amber-50 text-amber-700 border-amber-200",
-  no_contact: "bg-gray-100 text-gray-600 border-gray-200",
+
+const BASIS_TONE = { reply_after_contact: "success", delivered_contact: "warning", no_contact: "neutral" };
+
+// How a case's state reads as a status dot. Recovered is the only green; closed is quiet.
+const STATE_TONE = {
+  detected: "neutral",
+  planned: "info",
+  awaiting_approval: "warning",
+  approved: "brand",
+  executing: "brand",
+  engaged: "violet",
+  recovered: "success",
+  closed: "neutral",
+  failed: "danger",
 };
 
-function CurrencyBlock({ title, note, byCurrency, tone, footnote }) {
-  const entries = Object.entries(byCurrency || {});
+const cx = (...parts) => parts.filter(Boolean).join(" ");
+const when = (value) => (value ? new Date(value).toLocaleString() : "");
+const fieldClass = "h-8 w-full rounded-md border border-input bg-background px-2.5 text-[13px] text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+/**
+ * Money figures side by side in one divided strip. Each cell keeps its own label and note,
+ * so potential and confirmed value are never read as one number.
+ */
+function ValueStrip({ items, testid }) {
   return (
-    <div className={`rounded-lg border p-4 shadow-sm ${tone}`}>
-      <div className="text-xs font-semibold opacity-70">{title}</div>
-      {entries.length === 0 ? (
-        <div className="font-display mt-2 text-2xl font-semibold">—</div>
-      ) : (
-        <div className="mt-2 space-y-1">
-          {entries.map(([currency, amount]) => (
-            <div key={currency} className="font-display text-2xl font-semibold">{money(amount, currency)}</div>
-          ))}
-        </div>
-      )}
-      <p className="mt-2 text-xs leading-5 opacity-80">{note}</p>
-      {footnote ? <p className="mt-1 text-xs font-medium leading-5 opacity-90" data-testid="proof-potential-footnote">{footnote}</p> : null}
+    <div className={cx("grid divide-y divide-border overflow-hidden rounded-xl border border-border bg-card",
+      items.length === 3 ? "md:grid-cols-3" : "sm:grid-cols-2", items.length === 3 ? "md:divide-x md:divide-y-0" : "sm:divide-x sm:divide-y-0")}
+         data-testid={testid}>
+      {items.map((item) => <ValueCell key={item.title} {...item} />)}
+    </div>
+  );
+}
+
+function ValueCell({ title, note, byCurrency, tone, footnote }) {
+  const entries = Object.entries(byCurrency || {});
+  const dot = { confirmed: "bg-emerald-500", potential: "bg-muted-foreground/60", other: "bg-muted-foreground/25" }[tone] || "bg-muted-foreground/25";
+  return (
+    <div className="flex min-w-0 flex-col px-4 py-3.5">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <span className={cx("size-1.5 rounded-full", dot)} aria-hidden="true" />{title}
+      </div>
+      <div className={cx("mt-1 space-y-0.5", tone === "confirmed" ? "text-emerald-700" : "text-foreground")}>
+        {entries.length === 0 ? (
+          <div className="tabular text-[22px] font-semibold leading-7 tracking-tight text-muted-foreground">—</div>
+        ) : entries.map(([currency, amount]) => (
+          <div key={currency} className="tabular text-[22px] font-semibold leading-7 tracking-tight">{money(amount, currency)}</div>
+        ))}
+      </div>
+      <p className="mt-1.5 text-xs leading-5 text-muted-foreground">{note}</p>
+      {footnote ? <p className="mt-1 text-xs leading-5 text-foreground/80" data-testid="proof-potential-footnote">{footnote}</p> : null}
     </div>
   );
 }
@@ -140,14 +169,14 @@ function CloseCaseControl({ caseId, onClosed }) {
   };
 
   return (
-    <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3" data-testid="proof-case-close">
-      <div className="text-xs font-semibold text-gray-500">Close this case</div>
-      <p className="mt-1 text-xs text-gray-500">
+    <section className="rounded-xl border border-border bg-card p-4" data-testid="proof-case-close">
+      <h3 className="text-sm font-semibold text-foreground">Close this case</h3>
+      <p className="mt-1 text-xs leading-5 text-muted-foreground">
         Takes it out of open potential and withdraws anything still awaiting approval on it. The reason is shown on every report.
       </p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className="mt-3 space-y-2">
         <select
-          className="h-9 rounded-md border border-gray-200 bg-white px-2 text-sm"
+          className={fieldClass}
           value={reason}
           onChange={(event) => setReason(event.target.value)}
           aria-label="Reason for closing"
@@ -156,33 +185,30 @@ function CloseCaseControl({ caseId, onClosed }) {
           {OPERATOR_CLOSE_REASONS.map((key) => <option key={key} value={key}>{closeLabel(key)}</option>)}
         </select>
         <input
-          className="h-9 min-w-[200px] flex-1 rounded-md border border-gray-200 bg-white px-2 text-sm"
+          className={cx(fieldClass, "placeholder:text-muted-foreground")}
           value={note}
           maxLength={500}
           onChange={(event) => setNote(event.target.value)}
           placeholder="Note (optional)"
           aria-label="Note"
         />
-        <Button size="sm" variant="outline" onClick={close} disabled={busy} data-testid="proof-case-close-submit">
+        <Button size="sm" variant="outline" className="w-full" onClick={close} disabled={busy} data-testid="proof-case-close-submit">
           {busy ? "Closing…" : "Close case"}
         </Button>
       </div>
-      {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
-    </div>
+      {error ? <p className="mt-2 text-xs text-red-700" role="alert">{error}</p> : null}
+    </section>
   );
 }
 
 const OPEN_STATES = ["detected", "planned", "awaiting_approval", "approved", "executing", "engaged"];
 
-function Counter({ icon: Icon, label, value, note }) {
+function CloseReasonBadge({ reason, testid, prefix = "" }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center gap-2 text-xs font-semibold text-gray-400">
-        <Icon className="h-3.5 w-3.5" />{label}
-      </div>
-      <div className="font-display mt-2 text-2xl font-semibold text-foreground">{value}</div>
-      {note ? <p className="mt-1 text-xs text-gray-500">{note}</p> : null}
-    </div>
+    <span className="inline-flex items-center rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[11.5px] font-medium text-amber-700"
+          data-testid={testid}>
+      {prefix}{closeLabel(reason)}
+    </span>
   );
 }
 
@@ -200,126 +226,151 @@ function CaseProof({ caseId, onBack, onChanged }) {
   }, [caseId]);
   useEffect(() => { load(); }, [load]);
 
-  if (loadError) return <SurfaceError title="Case proof unavailable" description={String(loadError)} onRetry={load} testid="proof-case-error" />;
-  if (!proof) return <SurfaceLoading rows={3} testid="proof-case-loading" />;
+  const back = (
+    <Button variant="ghost" size="sm" className="-ml-2.5 mb-3 text-muted-foreground hover:text-foreground" onClick={onBack} data-testid="proof-case-back">
+      <ChevronLeft aria-hidden="true" />All cases
+    </Button>
+  );
+
+  if (loadError) return <div>{back}<SurfaceError title="Case proof unavailable" description={String(loadError)} onRetry={load} testid="proof-case-error" /></div>;
+  if (!proof) return <div>{back}<SurfaceLoading rows={3} testid="proof-case-loading" /></div>;
 
   const { communications: comms, value, attribution } = proof;
+  const sourceLink = sourceRecordLink(proof.case.source_event_id);
+  const messages = [...(comms.outbound || []), ...(comms.inbound || [])];
 
   return (
     <div data-testid="proof-case">
-      <Button variant="outline" size="sm" className="mb-4" onClick={onBack} data-testid="proof-case-back">
-        <ChevronLeft className="mr-1 h-4 w-4" />All cases
-      </Button>
+      {back}
 
-      <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="font-display text-2xl font-semibold text-foreground">{proof.case.title || "Recovery case"}</h2>
-          <Badge className="bg-gray-100 text-gray-600 border-gray-200">{stateLabel(proof.case.state)}</Badge>
-          <Badge className="bg-slate-100 text-slate-600 border-slate-200">{sourceLabel(proof.case.source)}</Badge>
+      <header className="border-b border-border pb-4">
+        <h2 className="text-lg font-semibold tracking-tight text-foreground">{proof.case.title || "Recovery case"}</h2>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <StatusDot tone={STATE_TONE[proof.case.state]}>{stateLabel(proof.case.state)}</StatusDot>
+          <span className="text-[13px] text-muted-foreground">{sourceLabel(proof.case.source)}</span>
           {proof.case.close_reason ? (
-            <Badge className="border-amber-200 bg-amber-50 text-amber-800" data-testid="proof-case-close-reason-badge">
-              Closed: {closeLabel(proof.case.close_reason)}
-            </Badge>
+            <CloseReasonBadge reason={proof.case.close_reason} prefix="Closed: " testid="proof-case-close-reason-badge" />
           ) : null}
         </div>
         {proof.case.close_reason ? (
-          <p className="mt-2 text-xs text-gray-500">
-            Closed {proof.case.closed_at ? new Date(proof.case.closed_at).toLocaleString() : ""}
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Closed {proof.case.closed_at ? when(proof.case.closed_at) : ""}
             {proof.case.closed_by ? ` by ${proof.case.closed_by}` : ""}{proof.case.close_note ? ` — ${proof.case.close_note}` : ""}
           </p>
         ) : null}
-        <dl className="mt-4 grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
-          <div><dt className="text-xs text-gray-400">Detected</dt><dd className="mt-1 text-gray-700">{proof.case.detected_at ? new Date(proof.case.detected_at).toLocaleString() : "—"}</dd></div>
-          <div><dt className="text-xs text-gray-400">Owner</dt><dd className="mt-1 text-gray-700">{proof.case.owner_name || proof.case.owner || "Unassigned"}</dd></div>
-          <div>
-            <dt className="text-xs text-gray-400">Source record</dt>
-            <dd className="mt-1">
-              {sourceRecordLink(proof.case.source_event_id) ? (
-                <Link to={sourceRecordLink(proof.case.source_event_id).to} className="inline-flex items-center gap-1 text-sm font-semibold text-brand hover:underline" data-testid="proof-case-source-link">
-                  {sourceRecordLink(proof.case.source_event_id).label}<ArrowRight className="h-3.5 w-3.5" />
-                </Link>
-              ) : (
-                <span className="font-mono text-xs text-gray-600">{proof.source_record ? `${proof.source_record.collection}/${proof.source_record.id}` : proof.case.source_event_id || "—"}</span>
-              )}
-            </dd>
-          </div>
-          <div className="md:col-span-3"><dt className="text-xs text-gray-400">Why it was detected</dt><dd className="mt-1 leading-6 text-gray-700">{proof.case.reason_detected}</dd></div>
-        </dl>
-        {isAdmin && OPEN_STATES.includes(proof.case.state) ? (
-          <CloseCaseControl caseId={caseId} onClosed={() => { load(); if (onChanged) onChanged(); }} />
-        ) : null}
-      </div>
+      </header>
 
-      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-        <CurrencyBlock
-          title="Potential value"
-          tone="border-slate-200 bg-slate-50 text-slate-800"
-          byCurrency={value.potential_value ? { [value.currency]: value.potential_value } : {}}
-          note={`What this opportunity might be worth. An estimate, not revenue.${value.potential_value_basis ? ` Basis: ${value.potential_value_basis}.` : ""}`}
-          footnote={value.potential_value_note ? `The source's value was not used: ${value.potential_value_note}.` : ""}
-        />
-        <CurrencyBlock
-          title="Confirmed recovered"
-          tone="border-emerald-200 bg-emerald-50 text-emerald-900"
-          byCurrency={value.confirmed_recovered_value ? { [value.confirmed_currency || value.currency]: value.confirmed_recovered_value } : {}}
-          note="Money a record says arrived. Never derived from the figure beside it."
-        />
-      </div>
+      <div className="mt-5 lg:flex">
+        <div className="min-w-0 flex-1 space-y-6 lg:pr-6">
+          {proof.case.reason_detected ? (
+            <Section title="Why it was detected">
+              <p className="max-w-3xl text-[13px] leading-6 text-foreground/80">{proof.case.reason_detected}</p>
+            </Section>
+          ) : null}
 
-      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-4">
-        <Counter icon={Mail} label="Messages drafted" value={comms.messages_drafted} />
-        <Counter icon={MailCheck} label="Actually sent" value={comms.messages_actually_sent} note="Accepted by a provider" />
-        <Counter icon={Reply} label="Replies" value={comms.replies_received} />
-        <Counter icon={ShieldQuestion} label="Outcome unknown" value={comms.messages_outcome_unknown} note="Never counted as sent" />
-      </div>
+          <ValueStrip items={[
+            {
+              title: "Potential value",
+              tone: "potential",
+              byCurrency: value.potential_value ? { [value.currency]: value.potential_value } : {},
+              note: `What this opportunity might be worth. An estimate, not revenue.${value.potential_value_basis ? ` Basis: ${value.potential_value_basis}.` : ""}`,
+              footnote: value.potential_value_note ? `The source's value was not used: ${value.potential_value_note}.` : "",
+            },
+            {
+              title: "Confirmed recovered",
+              tone: "confirmed",
+              byCurrency: value.confirmed_recovered_value ? { [value.confirmed_currency || value.currency]: value.confirmed_recovered_value } : {},
+              note: "Money a record says arrived. Never derived from the figure beside it.",
+            },
+          ]} />
 
-      <div className="mt-4 rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
-        <h3 className="font-display text-lg font-semibold text-foreground">Attribution</h3>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Badge className={BASIS_TONE[attribution.basis] || BASIS_TONE.no_contact}>
-            {BASIS_LABEL[attribution.basis] || "No claim"}
-          </Badge>
-          {attribution.claimed ? <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700">Claimed</Badge>
-            : <Badge className="border-gray-200 bg-gray-100 text-gray-600">Not claimed</Badge>}
+          <StatStrip items={[
+            { label: "Messages drafted", value: comms.messages_drafted },
+            { label: "Actually sent", value: comms.messages_actually_sent, detail: "Accepted by a provider" },
+            { label: "Replies", value: comms.replies_received },
+            { label: "Outcome unknown", value: comms.messages_outcome_unknown, detail: "Never counted as sent" },
+          ]} />
+
+          <Section title="Attribution">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <StatusDot tone={BASIS_TONE[attribution.basis] || "neutral"}>{BASIS_LABEL[attribution.basis] || "No claim"}</StatusDot>
+              <StatusDot tone={attribution.claimed ? "success" : "neutral"}>{attribution.claimed ? "Claimed" : "Not claimed"}</StatusDot>
+            </div>
+            <p className="mt-2 max-w-3xl text-[13px] leading-6 text-muted-foreground">{attribution.reason}</p>
+            {attribution.evidence?.length > 0 && (
+              <ul className="mt-3 divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-card" data-testid="proof-attribution-evidence">
+                {attribution.evidence.map((item) => (
+                  <li key={item.record_id} className="px-4 py-2.5 text-[13px]">
+                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                      <span className="font-medium text-foreground">{item.kind.replace(/_/g, " ")}</span>
+                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{item.record_id}</code>
+                      {item.at ? <time className="tabular ml-auto text-xs text-muted-foreground" dateTime={item.at}>{when(item.at)}</time> : null}
+                    </div>
+                    {item.detail ? <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{item.detail}</div> : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+
+          {comms.outbound?.length > 0 && (
+            <Section title={<>Messages <span className="tabular ml-1 font-normal text-muted-foreground">{messages.length}</span></>}>
+              <ol className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-card">
+                {messages.map((message) => {
+                  const inbound = message.direction === "inbound";
+                  const DirectionIcon = inbound ? ArrowDownLeft : ArrowUpRight;
+                  const at = message.sent_at || message.created_at;
+                  return (
+                    <li key={message.id} className="flex gap-3 px-4 py-3" data-testid={`proof-message-${message.id}`}>
+                      <span className={cx("mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full",
+                        inbound ? "bg-sky-50 text-sky-700" : "bg-muted text-muted-foreground")} aria-hidden="true">
+                        <DirectionIcon className="size-3.5" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
+                          <span className="font-medium capitalize text-foreground">{message.direction}</span>
+                          <StatusDot tone="neutral" className="text-xs">{message.status}</StatusDot>
+                          {at ? <time className="tabular text-muted-foreground" dateTime={at}>{when(at)}</time> : null}
+                          {message.provider_message_id ? <code className="truncate font-mono text-[11px] text-muted-foreground">{message.provider_message_id}</code> : null}
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-foreground/80">{message.body}</p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </Section>
+          )}
         </div>
-        <p className="mt-3 text-sm leading-6 text-gray-600">{attribution.reason}</p>
-        {attribution.evidence?.length > 0 && (
-          <ul className="mt-4 space-y-2" data-testid="proof-attribution-evidence">
-            {attribution.evidence.map((item) => (
-              <li key={item.record_id} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-xs">
-                <span className="font-semibold text-gray-700">{item.kind.replace(/_/g, " ")}</span>
-                <span className="ml-2 font-mono text-gray-500">{item.record_id}</span>
-                {item.at ? <span className="ml-2 text-gray-400">{new Date(item.at).toLocaleString()}</span> : null}
-                <div className="mt-1 text-gray-500">{item.detail}</div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
 
-      {comms.outbound?.length > 0 && (
-        <div className="mt-4 rounded-lg border border-gray-200 bg-white shadow-sm">
-          <h3 className="font-display border-b border-gray-100 px-6 py-4 text-lg font-semibold text-foreground">Messages</h3>
-          <div className="divide-y divide-gray-100">
-            {[...comms.outbound, ...comms.inbound].map((message) => (
-              <div key={message.id} className="px-6 py-3" data-testid={`proof-message-${message.id}`}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className={message.direction === "inbound" ? "border-sky-200 bg-sky-50 text-sky-700" : "border-gray-200 bg-gray-100 text-gray-600"}>
-                    {message.direction}
-                  </Badge>
-                  <Badge className="border-gray-200 bg-white text-gray-600">{message.status}</Badge>
-                  <span className="text-xs text-gray-400">{message.sent_at || message.created_at ? new Date(message.sent_at || message.created_at).toLocaleString() : ""}</span>
-                  {message.provider_message_id ? <span className="font-mono text-[10px] text-gray-300">{message.provider_message_id}</span> : null}
-                </div>
-                <p className="mt-1 line-clamp-2 text-sm text-gray-600">{message.body}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        <aside className="mt-6 space-y-5 lg:mt-0 lg:w-80 lg:shrink-0 lg:border-l lg:border-border lg:pl-6">
+          <Section title="Details">
+            <PropertyList items={[
+              { label: "State", value: <StatusDot tone={STATE_TONE[proof.case.state]}>{stateLabel(proof.case.state)}</StatusDot> },
+              { label: "Detected", value: proof.case.detected_at ? <span className="tabular">{when(proof.case.detected_at)}</span> : "—" },
+              { label: "Owner", value: proof.case.owner_name || proof.case.owner || "Unassigned" },
+              {
+                label: "Source record",
+                value: sourceLink ? (
+                  <Link to={sourceLink.to} className="inline-flex items-center gap-1 font-medium text-brand hover:underline" data-testid="proof-case-source-link">
+                    {sourceLink.label}<ArrowRight className="size-3.5" aria-hidden="true" />
+                  </Link>
+                ) : (
+                  <code className="break-all font-mono text-xs text-muted-foreground">{proof.source_record ? `${proof.source_record.collection}/${proof.source_record.id}` : proof.case.source_event_id || "—"}</code>
+                ),
+              },
+            ]} />
+          </Section>
+          {isAdmin && OPEN_STATES.includes(proof.case.state) ? (
+            <CloseCaseControl caseId={caseId} onClosed={() => { load(); if (onChanged) onChanged(); }} />
+          ) : null}
+        </aside>
+      </div>
     </div>
   );
 }
+
+const caseColumns = "sm:grid-cols-[minmax(0,1fr)_150px_110px_110px] lg:grid-cols-[minmax(0,1fr)_160px_180px_120px_120px]";
 
 export default function RecoveryProof() {
   const { user } = useAuth();
@@ -361,111 +412,119 @@ export default function RecoveryProof() {
 
   return (
     <div className="cv-page" data-testid="proof-page">
-      <div className="cv-page-header">
-        <div>
-          <div className="cv-eyebrow">Lost revenue</div>
-          <h1 className="cv-page-title">Recovery Proof</h1>
-          <p className="cv-page-description">
-            Leads, follow-ups and deals that went quiet, what they could be worth, and what was won back. Potential
-            value and confirmed recovered value are reported as separate figures and are never added together.
-          </p>
-          {recheck.note ? <p className="mt-1 text-xs text-gray-500" data-testid="proof-recheck-note">{recheck.note}</p> : null}
-        </div>
-        {isAdmin ? (
+      <PageHeader
+        icon={BadgeCheck}
+        title="Recovery Proof"
+        description="Potential and confirmed recovered value are reported separately and never added together."
+        actions={isAdmin ? (
           <Button size="sm" variant="outline" onClick={recheckSources} disabled={recheck.busy} data-testid="proof-recheck">
             {recheck.busy ? "Re-checking…" : "Re-check sources"}
           </Button>
         ) : null}
-      </div>
+      >
+        {recheck.note ? (
+          <p className="-mt-2 text-xs text-muted-foreground" data-testid="proof-recheck-note" role="status">{recheck.note}</p>
+        ) : null}
+      </PageHeader>
 
       {!report ? <SurfaceLoading rows={3} testid="proof-loading" /> : selected ? (
         <CaseProof caseId={selected} onBack={() => setSelected(null)} onChanged={load} />
       ) : (
-        <>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3" data-testid="proof-revenue">
-            <CurrencyBlock
-              title="Open potential"
-              tone="border-slate-200 bg-slate-50 text-slate-800"
-              byCurrency={report.revenue.potential_value_open_by_currency}
-              note="An estimate of what un-recovered cases might be worth, each opportunity counted once. Not revenue."
-              footnote={openPotentialFootnote(report.revenue)}
-            />
-            <CurrencyBlock
-              title="Attributed recovered"
-              tone="border-emerald-200 bg-emerald-50 text-emerald-900"
-              byCurrency={report.revenue.attributed_recovered_value_by_currency}
-              note="Money a record says arrived, on cases where outreach demonstrably reached the client."
-            />
-            <CurrencyBlock
-              title="Unattributed outcomes"
-              tone="border-gray-200 bg-white text-gray-700"
-              byCurrency={report.revenue.unattributed_outcome_value_by_currency}
-              note="Real revenue this system does not claim to have caused. Shown so the figure beside it has a denominator."
-            />
+        <div className="space-y-6">
+          <ValueStrip testid="proof-revenue" items={[
+            {
+              title: "Open potential",
+              tone: "potential",
+              byCurrency: report.revenue.potential_value_open_by_currency,
+              note: "An estimate of what un-recovered cases might be worth, each opportunity counted once. Not revenue.",
+              footnote: openPotentialFootnote(report.revenue),
+            },
+            {
+              title: "Attributed recovered",
+              tone: "confirmed",
+              byCurrency: report.revenue.attributed_recovered_value_by_currency,
+              note: "Money a record says arrived, on cases where outreach demonstrably reached the client.",
+            },
+            {
+              title: "Unattributed outcomes",
+              tone: "other",
+              byCurrency: report.revenue.unattributed_outcome_value_by_currency,
+              note: "Real revenue this system does not claim to have caused. Shown so the figure beside it has a denominator.",
+            },
+          ]} />
+
+          <div className="space-y-3">
+            <StatStrip items={[
+              { label: "Cases detected", value: report.cases.detected, detail: `${report.cases.not_yet_worked} not yet worked` },
+              { label: "Cases worked", value: report.cases.worked, detail: `${report.cases.awaiting_approval} awaiting approval` },
+              { label: "Messages sent", value: report.messages.actually_sent, detail: `of ${report.messages.drafted} drafted` },
+              { label: "Replies received", value: report.messages.replies_received },
+            ]} />
+            <StatStrip items={[
+              { label: "Outcome unknown", value: report.messages.outcome_unknown, detail: "Never counted as sent" },
+              { label: "Blocked or failed", value: report.messages.blocked_or_failed, detail: "Proven not sent" },
+              {
+                label: "Median time to recovery",
+                value: report.time_to_recovery.median_days != null ? `${report.time_to_recovery.median_days} days` : "—",
+                detail: report.time_to_recovery.measured_entries ? `over ${report.time_to_recovery.measured_entries} recovered case(s)` : "Not measurable yet",
+              },
+              { label: "Cases recovered", value: report.cases.recovered ?? "—", tone: report.cases.recovered ? "success" : undefined },
+            ]} />
           </div>
 
-          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-4">
-            <Counter icon={FileSearch} label="Cases detected" value={report.cases.detected} note={`${report.cases.not_yet_worked} not yet worked`} />
-            <Counter icon={BadgeCheck} label="Cases worked" value={report.cases.worked} note={`${report.cases.awaiting_approval} awaiting approval`} />
-            <Counter icon={MailCheck} label="Messages sent" value={report.messages.actually_sent} note={`of ${report.messages.drafted} drafted`} />
-            <Counter icon={Reply} label="Replies received" value={report.messages.replies_received} />
-          </div>
-
-          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <Counter icon={ShieldQuestion} label="Outcome unknown" value={report.messages.outcome_unknown} note="Dispatches nobody can confirm; never counted as sent" />
-            <Counter icon={Mail} label="Blocked or failed" value={report.messages.blocked_or_failed} note="Proven not to have gone out" />
-            <Counter
-              icon={Timer}
-              label="Median time to recovery"
-              value={report.time_to_recovery.median_days != null ? `${report.time_to_recovery.median_days} days` : "—"}
-              note={report.time_to_recovery.measured_entries ? `over ${report.time_to_recovery.measured_entries} recovered case(s)` : "Not measurable yet"}
-            />
-          </div>
-
-          <div className="mt-6 rounded-lg border border-gray-200 bg-white shadow-sm">
-            <h2 className="font-display border-b border-gray-100 px-6 py-4 text-lg font-semibold text-foreground">Cases</h2>
+          <Section title={<>Cases {cases?.length ? <span className="tabular ml-1 font-normal text-muted-foreground">{cases.length}</span> : null}</>}>
             {cases && cases.length > 0 ? (
-              <div className="divide-y divide-gray-100">
-                {cases.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setSelected(item.id)}
-                    className="flex w-full items-center gap-4 px-6 py-3.5 text-left hover:bg-gray-50"
-                    data-testid={`proof-case-row-${item.id}`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-sm font-semibold text-foreground">{item.title || item.reason}</span>
-                        <Badge className="border-gray-200 bg-gray-100 text-gray-600">{stateLabel(item.state)}</Badge>
-                        <Badge className="border-slate-200 bg-slate-50 text-slate-600">{sourceLabel(item.source)}</Badge>
-                        {item.close_reason ? <Badge className="border-amber-200 bg-amber-50 text-amber-800">{closeLabel(item.close_reason)}</Badge> : null}
-                      </div>
-                      <div className="mt-1 truncate text-xs text-gray-500">{item.reason}</div>
-                    </div>
-                    <div className="shrink-0 text-right text-xs">
-                      <div className="text-gray-400">potential</div>
-                      <div className="font-semibold text-gray-600">{item.potential_value != null ? money(item.potential_value, item.currency) : "—"}</div>
-                    </div>
-                    <div className="shrink-0 text-right text-xs">
-                      <div className="text-gray-400">confirmed</div>
-                      <div className="font-semibold text-emerald-700">{item.confirmed_value != null ? money(item.confirmed_value, item.confirmed_currency || item.confirmed_value_evidence?.outcome?.currency || item.currency) : "—"}</div>
-                    </div>
-                  </button>
-                ))}
+              <div className="overflow-hidden rounded-xl border border-border bg-card">
+                <div className={cx("hidden h-9 items-center gap-4 border-b border-border bg-muted/40 px-4 text-xs font-medium text-muted-foreground sm:grid", caseColumns)} aria-hidden="true">
+                  <span>Case</span><span>State</span><span className="hidden lg:block">Source</span>
+                  <span className="text-right">Potential</span><span className="text-right">Confirmed</span>
+                </div>
+                {cases.map((item) => {
+                  const confirmed = item.confirmed_value != null
+                    ? money(item.confirmed_value, item.confirmed_currency || item.confirmed_value_evidence?.outcome?.currency || item.currency) : null;
+                  const potential = item.potential_value != null ? money(item.potential_value, item.currency) : null;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setSelected(item.id)}
+                      className={cx("grid w-full items-center gap-x-4 gap-y-1 border-b border-border/70 px-4 py-2.5 text-left text-[13px] transition-colors last:border-0 hover:bg-muted/50 focus-visible:bg-muted/50", caseColumns)}
+                      data-testid={`proof-case-row-${item.id}`}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium text-foreground">{item.title || item.reason}</span>
+                        <span className="block truncate text-xs text-muted-foreground">{item.reason}</span>
+                        <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:hidden">
+                          <StatusDot tone={STATE_TONE[item.state]} className="text-xs">{stateLabel(item.state)}</StatusDot>
+                          <span className="text-muted-foreground">{sourceLabel(item.source)}</span>
+                          {item.close_reason ? <span className="text-muted-foreground">Closed: {closeLabel(item.close_reason)}</span> : null}
+                        </span>
+                        <span className="tabular mt-1 flex gap-4 text-xs text-muted-foreground sm:hidden">
+                          <span>potential <span className="font-medium text-foreground/80">{potential || "—"}</span></span>
+                          <span>confirmed <span className={cx("font-medium", confirmed ? "text-emerald-700" : "")}>{confirmed || "—"}</span></span>
+                        </span>
+                      </span>
+                      <span className="hidden min-w-0 text-[13px] sm:block">
+                        <StatusDot tone={STATE_TONE[item.state]}>{stateLabel(item.state)}</StatusDot>
+                        {item.close_reason ? <span className="text-muted-foreground"> · {closeLabel(item.close_reason)}</span> : null}
+                      </span>
+                      <span className="hidden truncate text-muted-foreground lg:block">{sourceLabel(item.source)}</span>
+                      <span className={cx("tabular hidden text-right sm:block", potential ? "text-foreground/80" : "text-muted-foreground")}>{potential || "—"}</span>
+                      <span className={cx("tabular hidden text-right sm:block", confirmed ? "font-medium text-emerald-700" : "text-muted-foreground")}>{confirmed || "—"}</span>
+                    </button>
+                  );
+                })}
               </div>
             ) : (
-              <div className="p-5">
-                <SurfaceEmpty
-                  icon={FileSearch}
-                  title="No recovery cases yet"
-                  description="Cases appear here once the detectors run. An empty report is the honest state, not a rendering problem."
-                  testid="proof-empty"
-                />
-              </div>
+              <SurfaceEmpty
+                icon={FileSearch}
+                title="No recovery cases yet"
+                description="Cases appear here once the detectors run. An empty report is the honest state, not a rendering problem."
+                testid="proof-empty"
+              />
             )}
-          </div>
-        </>
+          </Section>
+        </div>
       )}
     </div>
   );

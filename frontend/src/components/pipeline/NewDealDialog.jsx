@@ -13,6 +13,8 @@ import ContactPicker from "@/components/pipeline/ContactPicker";
 
 const NO_COMPANY = "__none__";
 const MAX_VALUE = 1e10;
+const INPUT = "h-9 text-[13px] md:text-[13px]";
+const TRIGGER = "h-9 bg-card text-[13px] shadow-xs";
 
 function blankForm(defaults) {
   return { name: "", value: "", currency: defaults.currency, stage: defaults.stage, expected_close_date: "", owner: defaults.owner, company_id: NO_COMPANY, contacts: [] };
@@ -55,73 +57,73 @@ export default function NewDealDialog({ open, onOpenChange, openStages, companie
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-lg" data-testid="new-deal-dialog">
-        <DialogHeader>
-          <DialogTitle className="font-display text-2xl">New deal</DialogTitle>
-          <DialogDescription>Add what you know now. You can change any of it later from the deal.</DialogDescription>
+      <DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg" data-testid="new-deal-dialog">
+        <DialogHeader className="space-y-1 border-b border-border px-5 py-4 pr-12 text-left">
+          <DialogTitle className="text-base font-semibold tracking-tight">New deal</DialogTitle>
+          <DialogDescription className="text-[13px]">Add what you know now. You can change any of it later from the deal.</DialogDescription>
         </DialogHeader>
-        <div className="grid gap-4 py-2">
-          <div className="grid gap-1.5">
-            <Label htmlFor="new-deal-name">Deal name <span className="text-red-500">*</span></Label>
-            <Input id="new-deal-name" value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder="e.g. Jane Buyer · 77 Bay Rd" data-testid="new-deal-name" />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="new-deal-contacts">Who is it with?</Label>
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto px-5 py-4">
+          <Field label={<>Deal name <span className="text-red-600" aria-hidden="true">*</span></>} htmlFor="new-deal-name">
+            <Input id="new-deal-name" value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder="e.g. Jane Buyer · 77 Bay Rd" aria-required="true" className={INPUT} data-testid="new-deal-name" />
+          </Field>
+          <Field label="Who is it with?" htmlFor="new-deal-contacts">
             <ContactPicker id="new-deal-contacts" selected={form.contacts} onChange={(contacts) => setField("contacts", contacts)} testId="new-deal-contacts" />
-          </div>
+          </Field>
           <div className="grid grid-cols-[minmax(0,1fr)_7.5rem] gap-3 [&>*]:min-w-0">
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-deal-value">Expected value</Label>
-              <Input id="new-deal-value" type="number" inputMode="decimal" min="0" step="any" value={form.value} onChange={(event) => setField("value", event.target.value)} placeholder="e.g. 18000" data-testid="new-deal-value" />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-deal-currency">Currency</Label>
+            <Field label="Expected value" htmlFor="new-deal-value">
+              <Input id="new-deal-value" type="number" inputMode="decimal" min="0" step="any" value={form.value} onChange={(event) => setField("value", event.target.value)} placeholder="e.g. 18000" className={`${INPUT} tabular`} data-testid="new-deal-value" />
+            </Field>
+            <Field label="Currency" htmlFor="new-deal-currency">
               <Select value={form.currency} onValueChange={(value) => setField("currency", value)}>
-                <SelectTrigger id="new-deal-currency" data-testid="new-deal-currency"><SelectValue /></SelectTrigger>
-                <SelectContent>{currencyOptions(defaults.currency).map((code) => <SelectItem key={code} value={code}>{code}</SelectItem>)}</SelectContent>
+                <SelectTrigger id="new-deal-currency" aria-label="Currency" className={TRIGGER} data-testid="new-deal-currency"><SelectValue /></SelectTrigger>
+                <SelectContent>{currencyOptions(defaults.currency).map((code) => <SelectItem key={code} value={code} className="text-[13px]">{code}</SelectItem>)}</SelectContent>
               </Select>
-            </div>
+            </Field>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-deal-stage">Starting stage</Label>
+            <Field label="Starting stage" htmlFor="new-deal-stage">
               <Select value={form.stage} onValueChange={(value) => setField("stage", value)}>
-                <SelectTrigger id="new-deal-stage" data-testid="new-deal-stage"><SelectValue /></SelectTrigger>
-                <SelectContent>{openStages.map((stage) => <SelectItem key={stage.key} value={stage.key}>{stage.label}</SelectItem>)}</SelectContent>
+                <SelectTrigger id="new-deal-stage" aria-label="Starting stage" className={TRIGGER} data-testid="new-deal-stage"><SelectValue /></SelectTrigger>
+                <SelectContent>{openStages.map((stage) => <SelectItem key={stage.key} value={stage.key} className="text-[13px]">{stage.label}</SelectItem>)}</SelectContent>
               </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-deal-close">Expected close date</Label>
-              <Input id="new-deal-close" type="date" value={form.expected_close_date} onChange={(event) => setField("expected_close_date", event.target.value)} data-testid="new-deal-close-date" />
-            </div>
+            </Field>
+            <Field label="Expected close date" htmlFor="new-deal-close">
+              <Input id="new-deal-close" type="date" value={form.expected_close_date} onChange={(event) => setField("expected_close_date", event.target.value)} className={INPUT} data-testid="new-deal-close-date" />
+            </Field>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-deal-owner">Owner</Label>
+            <Field label="Owner" htmlFor="new-deal-owner">
               <Select value={form.owner} onValueChange={(value) => setField("owner", value)}>
-                <SelectTrigger id="new-deal-owner" data-testid="new-deal-owner"><SelectValue placeholder="Choose who owns it" /></SelectTrigger>
-                <SelectContent>{owners.map((owner) => <SelectItem key={owner.email} value={owner.email}>{ownerLabel(owner)}</SelectItem>)}</SelectContent>
+                <SelectTrigger id="new-deal-owner" aria-label="Owner" className={TRIGGER} data-testid="new-deal-owner"><SelectValue placeholder="Choose who owns it" /></SelectTrigger>
+                <SelectContent>{owners.map((owner) => <SelectItem key={owner.email} value={owner.email} className="text-[13px]">{ownerLabel(owner)}</SelectItem>)}</SelectContent>
               </Select>
-            </div>
+            </Field>
             {companies.length > 0 && (
-              <div className="grid gap-1.5">
-                <Label htmlFor="new-deal-company">Company <span className="font-normal text-slate-400">(optional)</span></Label>
+              <Field label={<>Company <span className="font-normal text-muted-foreground">(optional)</span></>} htmlFor="new-deal-company">
                 <Select value={form.company_id} onValueChange={(value) => setField("company_id", value)}>
-                  <SelectTrigger id="new-deal-company" data-testid="new-deal-company"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="new-deal-company" aria-label="Company (optional)" className={TRIGGER} data-testid="new-deal-company"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={NO_COMPANY}>No company</SelectItem>
-                    {companies.map((company) => <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>)}
+                    <SelectItem value={NO_COMPANY} className="text-[13px]">No company</SelectItem>
+                    {companies.map((company) => <SelectItem key={company.id} value={company.id} className="text-[13px]">{company.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
             )}
           </div>
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button disabled={saving} onClick={submit} className="cv-action-primary" data-testid="new-deal-submit">{saving ? "Creating…" : "Create deal"}</Button>
+        <DialogFooter className="gap-2 border-t border-border bg-muted/30 px-5 py-3 sm:space-x-0">
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button size="sm" disabled={saving} onClick={submit} data-testid="new-deal-submit">{saving ? "Creating…" : "Create deal"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+/** A label above its control. */
+function Field({ label, htmlFor, children }) {
+  return <div className="grid min-w-0 grid-cols-1 gap-1.5">
+    <Label htmlFor={htmlFor} className="text-[13px] font-medium text-foreground">{label}</Label>
+    {children}
+  </div>;
 }

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from
 import "@/App.css";
 import { api, setStoredToken } from "@/lib/api";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
 import AppErrorBoundary from "@/components/AppErrorBoundary";
 import AppShell from "@/components/AppShell";
@@ -53,12 +54,12 @@ function AuthCallback() {
       }
     })();
   }, [navigate]);
-  return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Signing you in…</div>;
+  return <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">Signing you in…</div>;
 }
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="flex min-h-screen items-center justify-center bg-canvas p-6"><div className="cv-card w-full max-w-sm p-7"><div className="h-2 w-20 animate-pulse rounded-full bg-brand-soft" /><div className="mt-5 h-7 w-44 animate-pulse rounded-lg bg-slate-100" /><div className="mt-3 h-4 w-full animate-pulse rounded-lg bg-slate-100" /><div className="mt-2 h-4 w-4/5 animate-pulse rounded-lg bg-slate-100" /></div></div>;
+  if (loading) return <div className="flex min-h-screen items-center justify-center bg-canvas p-6"><div className="cv-card w-full max-w-sm p-7"><div className="h-2 w-20 animate-pulse rounded-full bg-brand-soft" /><div className="mt-5 h-7 w-44 animate-pulse rounded-lg bg-muted" /><div className="mt-3 h-4 w-full animate-pulse rounded-lg bg-muted" /><div className="mt-2 h-4 w-4/5 animate-pulse rounded-lg bg-muted" /></div></div>;
   if (!user) return <Navigate to="/login" replace />;
   if (user.must_change_password) return <ChooseOwnPassword />;
   return children;
@@ -110,13 +111,27 @@ function AppRouter() {
   );
 }
 
+// Pages a client or a website visitor sees (booking, manage-booking, the client portal) stay
+// light: they are often embedded in someone else's site, which sets its own colours.
+const PUBLIC_PREFIXES = ["/book/", "/booking/", "/portal/"];
+
+function ThemedApp() {
+  const { pathname } = useLocation();
+  const forcedTheme = PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix)) ? "light" : undefined;
+  return (
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange storageKey="cv-theme" forcedTheme={forcedTheme}>
+      <AppRouter />
+      <Toaster position="top-right" />
+    </ThemeProvider>
+  );
+}
+
 export default function App() {
   return (
     <AppErrorBoundary>
       <AuthProvider>
         <BrowserRouter>
-          <AppRouter />
-          <Toaster position="top-right" />
+          <ThemedApp />
         </BrowserRouter>
       </AuthProvider>
     </AppErrorBoundary>

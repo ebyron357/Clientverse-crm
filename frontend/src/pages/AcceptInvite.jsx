@@ -29,12 +29,12 @@ function Shell({ children }) {
 }
 
 function StatusPanel({ icon: Icon, tone = "slate", title, children, action, testid }) {
-  const tones = { slate: "bg-slate-100 text-slate-500", red: "bg-red-50 text-red-500", emerald: "bg-emerald-50 text-emerald-600" };
+  const tones = { slate: "bg-muted text-muted-foreground", red: "bg-red-50 text-red-500", emerald: "bg-emerald-50 text-emerald-600" };
   return (
     <div data-testid={testid}>
       <div className={`mb-4 flex h-10 w-10 items-center justify-center rounded-lg ${tones[tone]}`}><Icon className="h-5 w-5" /></div>
       <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
-      <div className="mt-2 text-sm leading-6 text-slate-500">{children}</div>
+      <div className="mt-2 text-sm leading-6 text-muted-foreground">{children}</div>
       {action && <div className="mt-6">{action}</div>}
     </div>
   );
@@ -110,7 +110,7 @@ export default function AcceptInvite() {
         : loadError}
     </StatusPanel></Shell>;
   }
-  if (!inv || loading) return <Shell><div className="flex items-center gap-2 text-sm text-slate-500" data-testid="invite-loading"><Loader2 className="h-4 w-4 animate-spin" />Opening your invitation…</div></Shell>;
+  if (!inv || loading) return <Shell><div className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="invite-loading"><Loader2 className="h-4 w-4 animate-spin" />Opening your invitation…</div></Shell>;
 
   if (inv.status === "expired") {
     return <Shell><StatusPanel icon={Clock} title="This invitation has expired" testid="invite-expired">
@@ -140,7 +140,7 @@ export default function AcceptInvite() {
         <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-brand-soft text-brand"><UserPlus className="h-5 w-5" /></div>
         <div className="cv-eyebrow">You're invited</div>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">Join {inv.tenant_name}</h1>
-        <p className="mt-2 text-sm leading-6 text-slate-500" data-testid="invite-summary">
+        <p className="mt-2 text-sm leading-6 text-muted-foreground" data-testid="invite-summary">
           {inviter ? <><span className="font-medium text-foreground">{inviter}</span> invited you</> : "You've been invited"} to join as {roleLabel(inv.role)}.
         </p>
 
@@ -149,7 +149,7 @@ export default function AcceptInvite() {
             <div className="mt-6 space-y-4" data-testid="invite-existing-account">
               <div className="rounded-lg border border-brand/20 bg-brand-soft px-4 py-3 text-sm leading-6 text-brand-strong">You already have a ClientVerse account with <span className="font-semibold">{inv.email}</span>. Sign in and you'll come straight back here to join {inv.tenant_name}.</div>
               <Button className="h-10 w-full cv-action-primary" onClick={() => navigate(loginHref)} data-testid="invite-existing-signin">Sign in to accept<ArrowRight className="ml-2 h-4 w-4" /></Button>
-              <button type="button" className="w-full text-center text-sm font-medium text-slate-500 hover:text-slate-700" onClick={() => setExistingAccount(false)}>Back</button>
+              <button type="button" className="w-full text-center text-sm font-medium text-muted-foreground hover:text-foreground/80" onClick={() => setExistingAccount(false)}>Back</button>
             </div>
           ) : (
             <>
@@ -158,15 +158,15 @@ export default function AcceptInvite() {
                 <div className="grid gap-1.5"><Label htmlFor="invite-name">Your name</Label><Input id="invite-name" data-testid="invite-name-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoComplete="name" placeholder="First and last name" required /></div>
                 <div className="grid gap-1.5">
                   <Label htmlFor="invite-email">Email</Label>
-                  <div className="relative"><Input id="invite-email" data-testid="invite-email-input" value={inv.email} readOnly aria-readonly="true" autoComplete="username" className="bg-slate-50 pr-9 text-slate-600" /><LockKeyhole className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /></div>
-                  <p className="text-xs text-slate-500">This is the address your invitation was sent to.</p>
+                  <div className="relative"><Input id="invite-email" data-testid="invite-email-input" value={inv.email} readOnly aria-readonly="true" autoComplete="username" className="bg-muted/50 pr-9 text-muted-foreground" /><LockKeyhole className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /></div>
+                  <p className="text-xs text-muted-foreground">This is the address your invitation was sent to.</p>
                 </div>
-                <div className="grid gap-1.5"><Label htmlFor="invite-password">Create a password</Label><Input id="invite-password" type="password" data-testid="invite-password-input" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete="new-password" required /><p className="text-xs text-slate-500">At least {MIN_PASSWORD} characters.</p></div>
+                <div className="grid gap-1.5"><Label htmlFor="invite-password">Create a password</Label><Input id="invite-password" type="password" data-testid="invite-password-input" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete="new-password" required /><p className="text-xs text-muted-foreground">At least {MIN_PASSWORD} characters.</p></div>
                 <div className="grid gap-1.5"><Label htmlFor="invite-password-confirm">Confirm password</Label><Input id="invite-password-confirm" type="password" data-testid="invite-password-confirm-input" value={form.confirm} onChange={(e) => setForm({ ...form, confirm: e.target.value })} autoComplete="new-password" required /></div>
                 {error && <ErrorNote testid="invite-action-error">{error}</ErrorNote>}
                 <Button type="submit" disabled={busy} className="h-10 w-full cv-action-primary" data-testid="invite-create-account">{busy ? "Creating your account…" : `Create account and join`}{!busy && <ArrowRight className="ml-2 h-4 w-4" />}</Button>
               </form>
-              <p className="mt-6 text-center text-sm text-slate-500">Already have a ClientVerse account? <button type="button" onClick={() => navigate(loginHref)} className="font-medium text-foreground underline-offset-4 hover:underline" data-testid="invite-signin">Sign in</button></p>
+              <p className="mt-6 text-center text-sm text-muted-foreground">Already have a ClientVerse account? <button type="button" onClick={() => navigate(loginHref)} className="font-medium text-foreground underline-offset-4 hover:underline" data-testid="invite-signin">Sign in</button></p>
             </>
           )
         ) : !signedInAsInvitee ? (
@@ -176,13 +176,13 @@ export default function AcceptInvite() {
           </div>
         ) : (
           <div className="mt-6 space-y-4">
-            <p className="text-sm leading-6 text-slate-500">You're signed in as <span className="font-medium text-foreground">{user.email}</span>.</p>
+            <p className="text-sm leading-6 text-muted-foreground">You're signed in as <span className="font-medium text-foreground">{user.email}</span>.</p>
             {error && <ErrorNote testid="invite-action-error">{error}</ErrorNote>}
             <Button className="h-10 w-full cv-action-primary" onClick={accept} disabled={busy} data-testid="invite-accept-button">{busy ? "Joining…" : `Accept and join ${inv.tenant_name}`}</Button>
           </div>
         )}
 
-        {expiryLabel(inv.expires_at) && <p className="mt-6 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-400">This invitation can be used once and expires on {expiryLabel(inv.expires_at)}.</p>}
+        {expiryLabel(inv.expires_at) && <p className="mt-6 border-t border-border pt-4 text-xs leading-5 text-muted-foreground">This invitation can be used once and expires on {expiryLabel(inv.expires_at)}.</p>}
       </div>
     </Shell>
   );

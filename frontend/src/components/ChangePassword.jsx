@@ -13,12 +13,14 @@ import AuthLayout from "@/components/AuthLayout";
 
 const MIN_LENGTH = 8;
 
-function PasswordField({ id, label, value, onChange, autoComplete, shown, testid }) {
+function PasswordField({ id, label, value, onChange, autoComplete, shown, testid, hint }) {
   return (
     <div className="grid gap-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <Input id={id} type={shown ? "text" : "password"} value={value} autoComplete={autoComplete}
+      <Label htmlFor={id} className="text-[13px]">{label}</Label>
+      <Input id={id} type={shown ? "text" : "password"} value={value} autoComplete={autoComplete} className="h-9"
+        aria-describedby={hint ? `${id}-hint` : undefined}
         onChange={(event) => onChange(event.target.value)} data-testid={testid} />
+      {hint && <p id={`${id}-hint`} className="text-xs leading-5 text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -56,17 +58,19 @@ export function ChangePasswordForm({ temporary = false, onDone }) {
       <PasswordField id="current-password" label={temporary ? "Temporary password" : "Current password"} value={current}
         onChange={setCurrent} autoComplete="current-password" shown={shown} testid="current-password-input" />
       <PasswordField id="new-password" label="New password" value={next} onChange={setNext}
-        autoComplete="new-password" shown={shown} testid="new-password-input" />
+        autoComplete="new-password" shown={shown} testid="new-password-input"
+        hint={`At least ${MIN_LENGTH} characters. A short sentence you'll remember works well.`} />
       <PasswordField id="confirm-password" label="New password again" value={confirm} onChange={setConfirm}
         autoComplete="new-password" shown={shown} testid="confirm-password-input" />
-      <button type="button" onClick={() => setShown((value) => !value)} className="flex w-fit items-center gap-1.5 text-xs font-semibold text-brand">
-        {shown ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}{shown ? "Hide passwords" : "Show passwords"}
-      </button>
-      <p className="text-xs leading-5 text-slate-500">At least {MIN_LENGTH} characters. A short sentence you'll remember works well.</p>
-      {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert" data-testid="change-password-error">{error}</div>}
-      <Button type="submit" className="cv-action-primary" disabled={busy || !current || !next || !confirm} data-testid="change-password-submit">
-        {busy ? "Saving…" : temporary ? "Save my password" : "Change password"}
-      </Button>
+      {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700" role="alert" data-testid="change-password-error">{error}</div>}
+      <div className={temporary ? "grid gap-3" : "flex flex-col-reverse gap-3 pt-1 sm:flex-row sm:items-center sm:justify-between"}>
+        <button type="button" onClick={() => setShown((value) => !value)} aria-pressed={shown} className="flex w-fit items-center gap-1.5 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+          {shown ? <EyeOff className="size-3.5" aria-hidden="true" /> : <Eye className="size-3.5" aria-hidden="true" />}{shown ? "Hide passwords" : "Show passwords"}
+        </button>
+        <Button type="submit" size={temporary ? "default" : "sm"} className={temporary ? "w-full" : ""} disabled={busy || !current || !next || !confirm} data-testid="change-password-submit">
+          {busy ? "Saving…" : temporary ? "Save my password" : "Change password"}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -94,11 +98,11 @@ export function ChooseOwnPassword() {
       <div data-testid="choose-own-password">
         <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-soft text-brand"><KeyRound className="h-5 w-5" /></span>
         <h1 className="mt-4 text-2xl font-semibold tracking-tight text-foreground">Choose your own password</h1>
-        <p className="mt-2 text-sm leading-6 text-slate-600">
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
           {user?.name ? `Welcome, ${user.name.split(" ")[0]}. ` : ""}You signed in with a temporary password. Type it once more, then choose a password only you know.
         </p>
         <div className="mt-5"><ChangePasswordForm temporary /></div>
-        <button type="button" onClick={logout} className="mt-5 flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-700">
+        <button type="button" onClick={logout} className="mt-5 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground/80">
           <LogOut className="h-3.5 w-3.5" />Sign out
         </button>
       </div>

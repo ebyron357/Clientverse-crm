@@ -2,17 +2,20 @@
 
    Columns are the tenant's own stages from GET /pipelines/default: open stages in order,
    then won, with lost stages behind "Show lost deals". Cards move by drag and drop on a
-   computer, and by each card's stage menu or "Next" button everywhere (keyboard and
-   phone). A move shows at once and is undone, with a message, if the server refuses it.
-   On a phone the board becomes a stage picker over one vertical list instead of a wide
-   board that scrolls sideways. `?deal=<id>` opens a deal's record. */
+   computer, and by each card's stage menu everywhere (keyboard and phone). A move shows
+   at once and is undone, with a message, if the server refuses it. On a phone the board
+   becomes a stage picker over one vertical list instead of a wide board that scrolls
+   sideways. `?deal=<id>` opens a deal's record. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr, formatMoney } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { OUTCOME, daysInStage, dealCurrency, formatDay, initials, isOverdue, isWebsiteLead, ownerName, splitStages, stageAccent, stageOutcome, totalParts, totalsByCurrency, usualCurrency } from "@/lib/pipeline";
+import { OUTCOME, daysInStage, dealCurrency, formatDay, isOverdue, isWebsiteLead, ownerName, splitStages, stageAccent, stageOutcome, totalParts, totalsByCurrency, usualCurrency } from "@/lib/pipeline";
+import { Avatar, PageHeader, Toolbar } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
@@ -20,12 +23,15 @@ import { Switch } from "@/components/ui/switch";
 import DealRecord from "@/components/pipeline/DealRecord";
 import NewDealDialog from "@/components/pipeline/NewDealDialog";
 import StageEditor from "@/components/pipeline/StageEditor";
-import { ArrowRight, CalendarDays, CircleDollarSign, Filter, GitBranch, Globe, Plus, RefreshCw, Search, Settings2, Sparkles, Trophy, Users, X } from "lucide-react";
+import { ArrowRight, CalendarDays, Check, GitBranch, Globe, MoreHorizontal, Plus, RefreshCw, Search, Settings2, Sparkles, Users, X } from "lucide-react";
 
 const PHONE_QUERY = "(max-width: 767px)";
 // Deals whose stage the pipeline no longer has. They get a column of their own so they
 // can be moved somewhere real, rather than silently vanishing from the board.
 const UNSTAGED = { key: "__unstaged__", label: "Needs a stage", is_closed: false, is_won: false, virtual: true };
+const UNSTAGED_ACCENT = "bg-muted-foreground/40";
+
+const cx = (...parts) => parts.filter(Boolean).join(" ");
 
 function useIsPhone() {
   const [phone, setPhone] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.(PHONE_QUERY).matches));
@@ -83,6 +89,7 @@ export default function Pipeline() {
   }, [user]);
 
   const groups = useMemo(() => splitStages(stages), [stages]);
+  const orderedStages = useMemo(() => [...groups.open, ...groups.won, ...groups.lost], [groups]);
   const stageByKey = useMemo(() => Object.fromEntries(stages.map((stage) => [stage.key, stage])), [stages]);
   const accentByKey = useMemo(() => Object.fromEntries(stages.map((stage) => [stage.key, stageAccent(stage, groups.open.indexOf(stage))])), [stages, groups]);
   const labelOf = useCallback((key) => stageByKey[key]?.label || UNSTAGED.label, [stageByKey]);
@@ -173,104 +180,104 @@ export default function Pipeline() {
   const newDealDefaults = useMemo(() => ({ currency: defaultCurrency, stage: groups.open[0]?.key || "", owner: user?.email || "" }), [defaultCurrency, groups, user]);
   const phoneColumns = columns;
   const activePhoneStage = phoneColumns.find((stage) => stage.key === phoneStage) || phoneColumns.find((stage) => dealsIn(stage).length) || phoneColumns.find((stage) => !stage.virtual) || phoneColumns[0];
+  const accentOf = (stage) => (stage.virtual ? UNSTAGED_ACCENT : accentByKey[stage.key]);
 
-  if (error) return <div className="cv-page"><div className="cv-empty"><GitBranch className="h-9 w-9 text-red-500" /><h1 className="mt-4 font-display text-xl font-semibold">Pipeline unavailable</h1><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">{error}</p><Button onClick={load} className="mt-5 cv-action-primary"><RefreshCw className="mr-2 h-4 w-4" />Try again</Button></div></div>;
+  if (error) {
+    return <div className="cv-page" data-testid="pipeline-page">
+      <PageHeader icon={GitBranch} title="Pipeline" />
+      <EmptyState icon={GitBranch} tone="danger" title="Pipeline unavailable" text={error} action={<Button size="sm" variant="outline" onClick={load}><RefreshCw />Try again</Button>} />
+    </div>;
+  }
 
-  const cardProps = { stages, groups, labelOf, nextStageFor, onMove: move, onOpen: openDeal, owners, companyName, draggable: !isPhone, compact: !isPhone, cardDrag, draggingId: dragId };
+  const cardProps = { stages: orderedStages, accentByKey, labelOf, nextStageFor, onMove: move, onOpen: openDeal, owners, companyName, draggable: !isPhone, touch: isPhone, cardDrag, draggingId: dragId };
+  const filteredView = filtered.length !== live.length;
 
   return (
     <div className="cv-page" data-testid="pipeline-page">
-      <div className="cv-page-header">
-        <div>
-          <div className="cv-eyebrow">Sales pipeline</div>
-          <h1 className="cv-page-title">Pipeline</h1>
-          <p className="cv-page-description">{isPhone ? "Every deal from first enquiry to closing. Tap a deal to update it, or use Next to move it along." : "Every deal from first enquiry to closing. Drag a card to move it, or open it to update the details and log what happened."}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {isAdmin && <Button variant="outline" onClick={() => setStagesOpen(true)} data-testid="customize-stages"><Settings2 className="mr-1.5 h-4 w-4" />Customize stages</Button>}
-          <Button className="cv-action-primary" onClick={() => setNewOpen(true)} disabled={!groups.open.length} data-testid="new-deal"><Plus className="mr-1.5 h-4 w-4" />New deal</Button>
-        </div>
-      </div>
+      <PageHeader icon={GitBranch} title="Pipeline" count={loading ? undefined : live.length}
+        description={isPhone ? "Tap a deal to update it, or use its menu to move it to another stage." : "Drag a card between stages, or open it to update the details and log what happened."}
+        actions={<>
+          {isAdmin && <Button variant="outline" size="sm" onClick={() => setStagesOpen(true)} data-testid="customize-stages"><Settings2 />Customize stages</Button>}
+          <Button size="sm" onClick={() => setNewOpen(true)} disabled={!groups.open.length} data-testid="new-deal"><Plus />New deal</Button>
+        </>} />
 
-      <section className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-[1fr_1fr_minmax(0,1.4fr)]" aria-label="Pipeline summary and filters">
-        <div className="cv-card flex min-w-0 items-center gap-4 p-3 sm:p-4">
-          <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand sm:flex"><CircleDollarSign className="h-5 w-5" /></span>
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-slate-500">Open deals</div>
-            <div className="mt-0.5 font-display text-xl font-semibold text-foreground sm:text-2xl" data-testid="pipeline-open-total"><MoneyTotals totals={totalsByCurrency(openDeals)} preferred={defaultCurrency} /></div>
-            <div className="text-xs text-slate-500">{openDeals.length} deal{openDeals.length === 1 ? "" : "s"} still in play</div>
-          </div>
+      <Toolbar className="pt-0 pb-4">
+        <div className="relative w-full sm:w-72">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} className="h-8 pl-8 pr-8 text-[13px] md:text-[13px]" placeholder="Search deals, people or companies" aria-label="Search deals" data-testid="pipeline-search" />
+          {query && <button type="button" onClick={() => setQuery("")} className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="Clear search"><X className="size-3.5" /></button>}
         </div>
-        <div className="cv-card flex min-w-0 items-center gap-4 p-3 sm:p-4">
-          <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 sm:flex"><Trophy className="h-5 w-5" /></span>
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-slate-500">Won</div>
-            <div className="mt-0.5 font-display text-xl font-semibold text-foreground sm:text-2xl" data-testid="pipeline-won-total"><MoneyTotals totals={totalsByCurrency(wonDeals)} preferred={defaultCurrency} /></div>
-            <div className="text-xs text-slate-500">{wonDeals.length} deal{wonDeals.length === 1 ? "" : "s"} closed and won</div>
+        <Select value={ownerFilter} onValueChange={setOwnerFilter}>
+          <SelectTrigger className="h-8 w-auto max-w-[14rem] justify-start gap-1.5 bg-card text-[13px] shadow-xs" aria-label="Whose deals to show" data-testid="pipeline-owner-filter">
+            <Users className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" /><SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Everyone's deals</SelectItem>
+            <SelectItem value="mine">My deals</SelectItem>
+            {owners.filter((owner) => owner.email !== user?.email).map((owner) => <SelectItem key={owner.email} value={owner.email}>{owner.name || owner.email}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {groups.lost.length > 0 && (
+          <div className="flex h-8 items-center gap-2 px-1">
+            <Switch id="show-lost" checked={showLost} onCheckedChange={setShowLost} data-testid="toggle-lost" />
+            <Label htmlFor="show-lost" className="cursor-pointer text-[13px] font-normal text-muted-foreground">Show lost deals{lostCount ? ` (${lostCount})` : ""}</Label>
           </div>
-        </div>
-        <div className="cv-card col-span-2 flex flex-col gap-2 p-3 xl:col-span-1">
-          <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-3">
-            <Search className="h-4 w-4 shrink-0 text-slate-400" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} className="h-9 w-full min-w-0 bg-transparent text-sm text-foreground outline-none placeholder:text-slate-400" placeholder="Search deals, people or companies" aria-label="Search deals" data-testid="pipeline-search" />
-            {query && <button type="button" onClick={() => setQuery("")} className="text-slate-400 hover:text-slate-600" aria-label="Clear search"><X className="h-4 w-4" /></button>}
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-1.5">
-              <Filter className="h-4 w-4 shrink-0 text-slate-400" />
-              <Select value={ownerFilter} onValueChange={setOwnerFilter}>
-                <SelectTrigger className="h-8 min-w-0 border-0 bg-transparent px-1 text-sm shadow-none focus:ring-0" aria-label="Whose deals to show" data-testid="pipeline-owner-filter"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Everyone's deals</SelectItem>
-                  <SelectItem value="mine">My deals</SelectItem>
-                  {owners.filter((owner) => owner.email !== user?.email).map((owner) => <SelectItem key={owner.email} value={owner.email}>{owner.name || owner.email}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            {groups.lost.length > 0 && (
-              <div className="flex items-center gap-2">
-                <Switch id="show-lost" checked={showLost} onCheckedChange={setShowLost} data-testid="toggle-lost" />
-                <Label htmlFor="show-lost" className="cursor-pointer text-sm font-medium text-slate-600">Show lost deals{lostCount ? ` (${lostCount})` : ""}</Label>
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
+        )}
+        <dl className="flex w-full items-center gap-4 text-[13px] sm:ml-auto sm:w-auto" aria-label="Pipeline summary">
+          <SummaryFigure label="Open" testid="pipeline-open-total" totals={totalsByCurrency(openDeals)} currency={defaultCurrency} count={openDeals.length} />
+          <span className="h-4 w-px bg-border" aria-hidden="true" />
+          <SummaryFigure label="Won" testid="pipeline-won-total" totals={totalsByCurrency(wonDeals)} currency={defaultCurrency} count={wonDeals.length} won />
+        </dl>
+      </Toolbar>
 
       {loading ? (
-        <div className="flex gap-4 overflow-hidden">{[0, 1, 2, 3].map((index) => <div key={index} className="h-72 min-w-[240px] flex-1 animate-pulse rounded-xl border border-slate-200 bg-white" />)}</div>
+        <div className="flex gap-3 overflow-hidden" aria-busy="true" aria-label="Loading the pipeline">
+          {[0, 1, 2, 3, 4].map((index) => <div key={index} className="w-[17rem] shrink-0">
+            <div className="flex h-9 items-center gap-2 px-1.5"><span className="h-3 w-24 animate-pulse rounded bg-muted" /></div>
+            <div className="h-80 animate-pulse rounded-xl bg-muted/40" />
+          </div>)}
+        </div>
       ) : !live.length ? (
-        <div className="cv-empty"><Sparkles className="h-9 w-9 text-brand" /><h2 className="mt-4 font-display text-xl font-semibold text-foreground">No deals yet</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">Deals appear here when a website form brings in a lead, or when you add one yourself.</p><Button onClick={() => setNewOpen(true)} className="mt-5 cv-action-primary" disabled={!groups.open.length}><Plus className="mr-1.5 h-4 w-4" />Create your first deal</Button></div>
+        <EmptyState icon={Sparkles} title="No deals yet" text="Deals appear here when a website form brings in a lead, or when you add one yourself."
+          action={<Button size="sm" onClick={() => setNewOpen(true)} disabled={!groups.open.length}><Plus />Create your first deal</Button>} />
       ) : isPhone ? (
         <section aria-label="Deals by stage" data-testid="pipeline-phone">
-          <div className="mb-3 flex flex-wrap gap-1.5" role="tablist" aria-label="Stages">
+          <div className="cv-scrollbar -mx-4 mb-3 flex gap-4 overflow-x-auto border-b border-border px-4" role="tablist" aria-label="Stages">
             {phoneColumns.map((stage) => {
               const count = dealsIn(stage).length;
               const active = activePhoneStage?.key === stage.key;
-              return <button key={stage.key} type="button" role="tab" aria-selected={active} onClick={() => setPhoneStage(stage.key)} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-semibold ${active ? "border-foreground bg-foreground text-white" : "border-slate-200 bg-white text-slate-600"}`} data-testid={`phone-stage-${stage.key}`}><span className={`h-2 w-2 rounded-full ${stage.virtual ? "bg-slate-300" : accentByKey[stage.key]}`} />{stage.label}<span className={active ? "text-white/70" : "text-slate-400"}>{count}</span></button>;
+              return <button key={stage.key} type="button" role="tab" aria-selected={active} onClick={() => setPhoneStage(stage.key)}
+                className={cx("-mb-px flex h-9 shrink-0 items-center gap-1.5 border-b-2 px-0.5 text-[13.5px] font-medium transition-colors", active ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}
+                data-testid={`phone-stage-${stage.key}`}>
+                <span className={cx("size-2 shrink-0 rounded-full", accentOf(stage))} aria-hidden="true" />{stage.label}
+                <span className={cx("tabular rounded px-1 text-xs", active ? "bg-muted text-foreground" : "text-muted-foreground")}>{count}</span>
+              </button>;
             })}
           </div>
           {activePhoneStage && (
             <div role="tabpanel" aria-label={activePhoneStage.label}>
-              <div className="mb-3 flex items-baseline justify-between gap-3 px-1">
-                <h2 className="text-sm font-bold text-foreground">{activePhoneStage.label}</h2>
-                <span className="text-right font-display text-base font-semibold text-foreground"><MoneyTotals totals={totalsByCurrency(dealsIn(activePhoneStage))} preferred={defaultCurrency} /></span>
+              <div className="mb-2 flex items-baseline justify-between gap-3 px-1">
+                <h2 className="text-[13px] font-medium text-foreground">{activePhoneStage.label}</h2>
+                <span className="tabular text-right text-xs text-muted-foreground"><MoneyTotals totals={totalsByCurrency(dealsIn(activePhoneStage))} preferred={defaultCurrency} /></span>
               </div>
-              <div className="space-y-3">
+              <div className="space-y-1.5 rounded-xl bg-muted/40 p-1.5">
                 {dealsIn(activePhoneStage).map((deal) => <DealCard key={deal.id} deal={deal} {...cardProps} />)}
-                {!dealsIn(activePhoneStage).length && <EmptyColumn stage={activePhoneStage} filtered={filtered.length !== live.length} />}
+                {!dealsIn(activePhoneStage).length && <EmptyColumn stage={activePhoneStage} filtered={filteredView} />}
               </div>
             </div>
           )}
         </section>
       ) : (
-        <section aria-label="Deals by stage" className="cv-scrollbar overflow-x-auto pb-3" data-testid="pipeline-board">
-          <div className="flex min-w-max gap-3 lg:min-w-0">
+        <section aria-label="Deals by stage" className="cv-scrollbar -mx-4 overflow-x-auto px-4 pb-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8" data-testid="pipeline-board">
+          <div className="flex w-max gap-3">
             {columns.map((stage) => (
-              <StageColumn key={stage.key} stage={stage} accent={stage.virtual ? "bg-slate-300" : accentByKey[stage.key]} deals={dealsIn(stage)} currency={defaultCurrency} isDropTarget={dropTarget === stage.key} dragging={Boolean(dragId)} dragProps={dragProps(stage)} filteredView={filtered.length !== live.length} cardProps={cardProps} />
+              <StageColumn key={stage.key} stage={stage} accent={accentOf(stage)} deals={dealsIn(stage)} currency={defaultCurrency} isDropTarget={dropTarget === stage.key} dragging={Boolean(dragId)} dragProps={dragProps(stage)} filteredView={filteredView} cardProps={cardProps} />
             ))}
             {dragId && !showLost && groups.lost.map((stage) => (
-              <div key={stage.key} {...dragProps(stage)} className={`flex w-[150px] shrink-0 flex-col items-center justify-center rounded-xl border-2 border-dashed p-3 text-center text-xs font-semibold transition-colors ${dropTarget === stage.key ? "border-rose-400 bg-rose-50 text-rose-700" : "border-slate-300 bg-white/70 text-slate-500"}`} data-testid={`drop-lost-${stage.key}`}>
+              <div key={stage.key} {...dragProps(stage)}
+                className={cx("mt-9 flex w-40 shrink-0 flex-col items-center justify-center gap-2 rounded-xl border border-dashed p-3 text-center text-xs font-medium transition-colors", dropTarget === stage.key ? "border-rose-200 bg-rose-50 text-rose-700" : "border-input text-muted-foreground")}
+                data-testid={`drop-lost-${stage.key}`}>
+                <X className="size-4" aria-hidden="true" />
                 Drop here to mark as {stage.label.toLowerCase()}
               </div>
             ))}
@@ -282,7 +289,7 @@ export default function Pipeline() {
       {isAdmin && <StageEditor open={stagesOpen} onOpenChange={setStagesOpen} stages={stages} onSaved={(saved) => { setStages(saved); load(); }} />}
 
       <Sheet open={Boolean(openDealId)} onOpenChange={(value) => { if (!value) closeDeal(); }}>
-        <SheetContent className="w-full overflow-y-auto sm:max-w-xl" data-testid="deal-sheet">
+        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-2xl lg:max-w-5xl" data-testid="deal-sheet">
           {openDealId && <DealRecord key={openDealId} dealId={openDealId} stages={stages} owners={owners} workspaces={workspaces} currentUser={user} onMove={move} onChanged={mergeDeal} />}
         </SheetContent>
       </Sheet>
@@ -290,20 +297,35 @@ export default function Pipeline() {
   );
 }
 
+/** One figure of the toolbar summary: "Open $185,000 · 7". */
+function SummaryFigure({ label, totals, currency, count, testid, won = false }) {
+  return <div className="flex min-w-0 items-baseline gap-1.5">
+    <dt className="text-muted-foreground">{label}</dt>
+    <dd className={cx("tabular font-semibold", won && count ? "text-emerald-700" : "text-foreground")} data-testid={testid}><MoneyTotals totals={totals} preferred={currency} /></dd>
+    <dd className="tabular text-xs text-muted-foreground">· {count} deal{count === 1 ? "" : "s"}</dd>
+  </div>;
+}
+
+function EmptyState({ icon: Icon, title, text, action, tone }) {
+  return <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border px-6 py-12 text-center">
+    <span className={cx("flex size-10 items-center justify-center rounded-full bg-muted", tone === "danger" ? "text-red-600" : "text-muted-foreground")}><Icon className="size-[18px]" aria-hidden="true" /></span>
+    <h2 className="mt-3 text-sm font-medium text-foreground">{title}</h2>
+    <p className="mt-1 max-w-sm text-[13px] leading-5 text-muted-foreground">{text}</p>
+    {action && <div className="mt-4">{action}</div>}
+  </div>;
+}
+
 function StageColumn({ stage, accent, deals, currency, isDropTarget, dragging, dragProps, filteredView, cardProps }) {
   const outcome = stage.virtual ? null : stageOutcome(stage);
   return (
-    <section aria-label={`${stage.label}: ${deals.length} deal${deals.length === 1 ? "" : "s"}`} {...dragProps}
-      className={`flex w-[264px] shrink-0 flex-col rounded-xl border p-2 transition-colors lg:w-auto lg:min-w-[196px] lg:flex-1 lg:basis-0 ${isDropTarget ? "border-brand bg-brand-soft/70" : outcome === OUTCOME.WON ? "border-emerald-200/80 bg-emerald-50/40" : outcome === OUTCOME.LOST ? "border-rose-200/80 bg-rose-50/40" : "border-slate-200/90 bg-slate-100/55"}`}
-      data-testid={`stage-column-${stage.key}`}>
-      <header className="mb-2.5 rounded-lg bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(10,22,40,.03)]">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2"><span className={`h-2.5 w-2.5 shrink-0 rounded-full ${accent}`} /><h2 className="truncate text-sm font-bold text-foreground">{stage.label}</h2></div>
-          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-600" data-testid={`stage-count-${stage.key}`}>{deals.length}</span>
-        </div>
-        <p className="mt-1 break-words font-display text-base font-semibold text-foreground" data-testid={`stage-total-${stage.key}`}><MoneyTotals totals={totalsByCurrency(deals)} preferred={currency} /></p>
+    <section aria-label={`${stage.label}: ${deals.length} deal${deals.length === 1 ? "" : "s"}`} {...dragProps} className="flex w-[17rem] shrink-0 flex-col" data-testid={`stage-column-${stage.key}`}>
+      <header className="flex h-9 items-center gap-2 px-1.5">
+        <span className={cx("size-2 shrink-0 rounded-full", accent)} aria-hidden="true" />
+        <h2 className="truncate text-[13px] font-medium text-foreground">{stage.label}</h2>
+        <span className="tabular rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium leading-none text-muted-foreground" data-testid={`stage-count-${stage.key}`}>{deals.length}</span>
+        <span className={cx("tabular ml-auto truncate text-xs", outcome === OUTCOME.WON && deals.length ? "text-emerald-700" : "text-muted-foreground")} data-testid={`stage-total-${stage.key}`}><MoneyTotals totals={totalsByCurrency(deals)} preferred={currency} /></span>
       </header>
-      <div className="flex-1 space-y-2.5">
+      <div className={cx("flex min-h-[max(20rem,calc(100vh-18rem))] flex-1 flex-col gap-1.5 rounded-xl p-1.5 transition-colors", isDropTarget ? "bg-brand-soft ring-1 ring-inset ring-brand/40" : "bg-muted/40")}>
         {deals.map((deal) => <DealCard key={deal.id} deal={deal} {...cardProps} />)}
         {!deals.length && <EmptyColumn stage={stage} dragging={dragging} filtered={filteredView} />}
       </div>
@@ -313,16 +335,16 @@ function StageColumn({ stage, accent, deals, currency, isDropTarget, dragging, d
 
 function EmptyColumn({ stage, dragging, filtered }) {
   const text = dragging ? `Drop here to move to ${stage.label}` : filtered ? "Nothing here matches your search" : `No deals in ${stage.label}`;
-  return <div className="rounded-lg border border-dashed border-slate-300 bg-white/60 px-3 py-7 text-center text-xs text-slate-400">{text}</div>;
+  return <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">{text}</div>;
 }
 
 /** Totals per currency, each kept on one line so "CA$21,000" never splits from its digits. */
 function MoneyTotals({ totals, preferred }) {
   const parts = totalParts(totals, preferred);
-  return parts.map((part, index) => <span key={`${index}-${part}`}>{index > 0 && <span className="text-slate-400"> · </span>}<span className="whitespace-nowrap">{part}</span></span>);
+  return parts.map((part, index) => <span key={`${index}-${part}`}>{index > 0 && <span className="text-muted-foreground"> · </span>}<span className="whitespace-nowrap">{part}</span></span>);
 }
 
-function DealCard({ deal, stages, labelOf, nextStageFor, onMove, onOpen, owners, companyName, draggable, cardDrag, draggingId, compact }) {
+function DealCard({ deal, stages, accentByKey, labelOf, nextStageFor, onMove, onOpen, owners, companyName, draggable, touch, cardDrag, draggingId }) {
   const next = nextStageFor(deal);
   const days = daysInStage(deal);
   const contacts = deal.contacts || [];
@@ -331,37 +353,60 @@ function DealCard({ deal, stages, labelOf, nextStageFor, onMove, onOpen, owners,
   const owner = ownerName(deal.owner, owners);
   const closed = stageOutcome(stages.find((stage) => stage.key === deal.stage)) !== OUTCOME.OPEN;
   const overdue = !closed && isOverdue(deal.expected_close_date);
-  const elsewhere = stages.filter((stage) => stage.key !== deal.stage);
   return (
     <article draggable={draggable} onDragStart={draggable ? cardDrag.start(deal) : undefined} onDragEnd={draggable ? cardDrag.end : undefined}
-      className={`rounded-lg border border-slate-200 bg-white shadow-[0_1px_2px_rgba(10,22,40,.03)] transition-shadow hover:shadow-[0_8px_18px_rgba(10,22,40,.08)] ${draggable ? "cursor-grab active:cursor-grabbing" : ""} ${draggingId === deal.id ? "opacity-50" : ""}`}
+      className={cx("group relative rounded-lg border border-border bg-card shadow-xs transition-colors hover:border-input", draggable && "cursor-grab active:cursor-grabbing", draggingId === deal.id && "opacity-50")}
       data-testid={`opportunity-card-${deal.id}`}>
-      <button type="button" onClick={() => onOpen(deal)} className="block w-full rounded-t-lg p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand" data-testid={`open-deal-${deal.id}`}>
-        <h3 className="line-clamp-2 text-sm font-bold leading-5 text-foreground">{deal.name}</h3>
-        <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-          <span className="font-display text-[15px] font-semibold text-foreground">{formatMoney(deal.value, dealCurrency(deal))}</span>
-          {isWebsiteLead(deal) && <span className="inline-flex items-center gap-1 rounded-full bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand"><Globe className="h-3 w-3" />Website lead</span>}
+      <button type="button" onClick={() => onOpen(deal)} className="block w-full rounded-lg p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid={`open-deal-${deal.id}`}>
+        <h3 className="line-clamp-2 pr-6 text-[13px] font-medium leading-5 text-foreground">{deal.name}</h3>
+        <div className="mt-1 flex items-center gap-2">
+          <span className="tabular text-[13px] font-semibold text-foreground">{formatMoney(deal.value, dealCurrency(deal))}</span>
+          {isWebsiteLead(deal) && <span className="inline-flex items-center gap-1 text-[11px] font-medium text-brand"><Globe className="size-3" aria-hidden="true" />Website lead</span>}
         </div>
-        {(people || company) && <p className="mt-1.5 flex items-center gap-1 text-xs text-slate-600"><Users className="h-3 w-3 shrink-0 text-slate-400" /><span className="truncate">{people || company}</span></p>}
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-500">
-          {deal.expected_close_date && <span className={`inline-flex items-center gap-1 ${overdue ? "font-semibold text-red-600" : ""}`} title={overdue ? "The expected close date has passed" : "Expected close date"}><CalendarDays className="h-3 w-3" />{overdue ? "Was due " : "Closes "}{formatDay(deal.expected_close_date, { month: "short", day: "numeric" })}</span>}
-          {days != null && !closed && <span title="Days in this stage">{days === 0 ? "New in stage" : `${days} day${days === 1 ? "" : "s"} in stage`}</span>}
+        {(people || company) && <p className="mt-0.5 truncate text-xs text-muted-foreground">{people || company}</p>}
+        <div className="mt-2.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          {owner ? <span className="flex min-w-0 items-center gap-1.5" title={`Owner: ${deal.owner}`}><Avatar name={owner} size="sm" className="!size-5 !text-[9px]" /><span className="truncate">{owner}</span></span> : <span>No owner</span>}
+          {days != null && !closed && <span className="tabular shrink-0" title="Days in this stage"><span aria-hidden="true">· </span>{days === 0 ? "New in stage" : `${days}d in stage`}</span>}
+          {deal.expected_close_date && (
+            <span className={cx("tabular ml-auto inline-flex shrink-0 items-center gap-1", overdue && "font-medium text-red-600")} title={overdue ? "The expected close date has passed" : "Expected close date"}>
+              <CalendarDays className="size-3" aria-hidden="true" />{overdue ? "Was due " : ""}{formatDay(deal.expected_close_date, { month: "short", day: "numeric" })}
+            </span>
+          )}
         </div>
-        {owner && <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500" title={`Owner: ${deal.owner}`}><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[9px] font-bold text-slate-600">{initials(owner)}</span><span className="truncate">{owner}</span></div>}
       </button>
-      <div className="flex items-center gap-1.5 border-t border-slate-100 px-2.5 py-2">
-        {/* The keyboard and phone way to move a deal: a menu of the other stages. */}
-        <Select value="" onValueChange={(value) => onMove(deal, value)}>
-          <SelectTrigger className="h-8 min-w-0 flex-1 border-slate-200 bg-slate-50 px-2.5 text-xs font-medium text-slate-600" aria-label={`Move ${deal.name} from ${labelOf(deal.stage)} to another stage`} data-testid={`stage-select-${deal.id}`}><SelectValue placeholder="Move to…" /></SelectTrigger>
-          <SelectContent>{elsewhere.map((stage) => <SelectItem key={stage.key} value={stage.key}>{stage.label}</SelectItem>)}</SelectContent>
-        </Select>
-        {next && (
-          <Button size="sm" className={`h-8 shrink-0 cv-action-primary text-xs ${compact ? "w-8 px-0" : "px-2.5"}`} onClick={() => onMove(deal, next.key)} aria-label={`Move ${deal.name} to ${next.label}`} title={`Move to ${next.label}`} data-testid={`advance-${deal.id}`}>
-            {/* Board columns are narrow, so the board shows the arrow alone; its tooltip names the stage. */}
-            {!compact && "Next"}<ArrowRight className={compact ? "h-3.5 w-3.5" : "ml-1 h-3 w-3"} />
-          </Button>
-        )}
-      </div>
+      <MoveMenu deal={deal} stages={stages} accentByKey={accentByKey} labelOf={labelOf} next={next} onMove={onMove} touch={touch} />
     </article>
+  );
+}
+
+/** The keyboard and phone way to move a deal: a menu of stages behind the card's "⋯". */
+function MoveMenu({ deal, stages, accentByKey, labelOf, next, onMove, touch }) {
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label={`Move ${deal.name} from ${labelOf(deal.stage)} to another stage`} data-testid={`stage-select-${deal.id}`}
+          className={cx("absolute right-1.5 top-1.5 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:opacity-100 data-[state=open]:bg-muted data-[state=open]:text-foreground data-[state=open]:opacity-100",
+            touch ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100")}>
+          <MoreHorizontal className="size-4" aria-hidden="true" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        {next && <>
+          <DropdownMenuItem onSelect={() => onMove(deal, next.key)} className="text-[13px]" data-testid={`advance-${deal.id}`}>
+            <ArrowRight className="text-muted-foreground" aria-hidden="true" />Move to {next.label}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+        </>}
+        <DropdownMenuLabel className="py-1 text-xs font-medium text-muted-foreground">Move to stage</DropdownMenuLabel>
+        {stages.map((stage) => {
+          const current = stage.key === deal.stage;
+          return <DropdownMenuItem key={stage.key} disabled={current} onSelect={() => onMove(deal, stage.key)} className="text-[13px]" data-testid={`stage-option-${deal.id}-${stage.key}`}>
+            <span className={cx("ml-1 mr-0.5 size-2 shrink-0 rounded-full", accentByKey[stage.key])} aria-hidden="true" />
+            <span className="truncate">{stage.label}</span>
+            {current && <Check className="ml-auto text-muted-foreground" aria-label="Current stage" />}
+          </DropdownMenuItem>;
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { useTheme } from "next-themes";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
 import BrandMark from "@/components/BrandMark";
 import { CLIENTVERSE_MODULES, getModuleByRoute, MODULE_GROUPS, MODULE_STATES, PINNED_GROUPS } from "@/platform/modules";
-import { ChevronDown, LogOut, Menu, PanelLeft, Plus, Search, X } from "lucide-react";
+import { ChevronDown, ChevronRight, LogOut, Menu, Monitor, Moon, PanelLeft, Plus, Search, Sun, X } from "lucide-react";
 
 // Which optional navigation groups a person has opened. Pinned groups are always open.
 const OPEN_GROUPS_KEY = "cv.nav.open-groups";
@@ -29,9 +30,10 @@ export default function AppShell() {
   // own group, so the full route decides which group opens; the page decides the heading.
   const navModule = useMemo(() => getModuleByRoute(`${location.pathname}${location.search}`) || activeModule,
     [location.pathname, location.search, activeModule]);
-  const heading = location.pathname.startsWith("/workspaces/")
-    ? ["Client 360", "Account health, outcomes, commitments, and relationship context"]
-    : [activeModule?.label || "ClientVerse", activeModule?.description || "Relationship operating system"];
+  // Top bar breadcrumb: the section, then the page. The page itself carries the detail.
+  const crumbs = location.pathname.startsWith("/workspaces/")
+    ? ["Client Success", "Client 360"]
+    : activeModule ? [activeModule.group, activeModule.label] : ["ClientVerse"];
 
   useEffect(() => { setMobileOpen(false); }, [location.pathname]);
   const doLogout = async () => { await logout(); navigate("/login"); };
@@ -46,7 +48,7 @@ export default function AppShell() {
 
   return <div className="min-h-screen bg-canvas text-foreground">
     {mobileOpen && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-foreground/40 backdrop-blur-[1px] lg:hidden" onClick={() => setMobileOpen(false)} />}
-    <aside className={`cv-scrollbar fixed inset-y-0 left-0 z-40 flex flex-col overflow-y-auto bg-canvas transition-[width,transform] duration-200 max-lg:border-r max-lg:border-border max-lg:shadow-xl lg:translate-x-0 ${collapsed ? "w-[68px]" : "w-[252px]"} ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
+    <aside className={`fixed inset-y-0 left-0 z-40 flex flex-col overflow-hidden bg-canvas transition-[width,transform] duration-200 max-lg:border-r max-lg:border-border max-lg:shadow-xl lg:translate-x-0 ${collapsed ? "w-[68px]" : "w-[252px]"} ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
       <div className={`flex h-14 shrink-0 items-center ${collapsed ? "justify-center" : "justify-between pl-4 pr-2"}`}>
         <button className="flex min-w-0 items-center gap-2.5 rounded-md text-left" onClick={() => navigate("/dashboard")} aria-label="Go to ClientVerse command center">
           <BrandMark className="size-7" />
@@ -64,7 +66,7 @@ export default function AppShell() {
           {!collapsed && <><span className="flex-1 text-left">Search</span><kbd className="cv-kbd">⌘K</kbd></>}
         </button>
       </div>
-      <nav aria-label="Primary navigation" className={`flex flex-col gap-3 pb-4 ${collapsed ? "px-2" : "px-3"}`}>
+      <nav aria-label="Primary navigation" className={`cv-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pb-4 ${collapsed ? "px-2" : "px-3"}`}>
         {MODULE_GROUPS.map((group) => {
           const items = CLIENTVERSE_MODULES.filter((item) => item.group === group && (!item.adminOnly || user?.role === "admin"));
           if (!items.length) return null;
@@ -79,14 +81,15 @@ export default function AppShell() {
                   <span className="flex-1 text-left">{group}</span>
                   <ChevronDown className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`} aria-hidden="true" />
                 </button>)}
-            {open && <div id={listId} className="flex flex-col gap-px">{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} />)}</div>}
+            {open && <div id={listId} className="flex flex-col gap-px">{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} active={item.id === navModule?.id} />)}</div>}
           </section>;
         })}
       </nav>
-      <div className={`mt-auto border-t border-border/70 ${collapsed ? "p-2" : "p-3"}`}>
+      <div className={`shrink-0 border-t border-border/70 ${collapsed ? "p-2" : "p-3"}`}>
         <div className={`flex items-center ${collapsed ? "flex-col gap-2" : "gap-2.5"}`}>
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand" title={collapsed ? user?.name : undefined}>{initials}</div>
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand-strong" title={collapsed ? user?.name : undefined}>{initials}</div>
           {!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium text-foreground">{user?.name}</div><div className="truncate text-xs text-muted-foreground">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}
+          <ThemeButton />
           <button onClick={doLogout} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out" title="Sign out"><LogOut className="size-4" /></button>
         </div>
       </div>
@@ -97,10 +100,12 @@ export default function AppShell() {
         <header className="sticky top-0 z-20 border-b border-border/80 bg-background/85 backdrop-blur-xl lg:rounded-t-xl">
           <div className="flex h-14 items-center gap-2 px-4 sm:px-6 lg:px-8">
             <button onClick={() => setMobileOpen(true)} className="-ml-1 rounded-md p-2 text-muted-foreground hover:bg-accent lg:hidden" aria-label="Open navigation"><Menu className="size-5" /></button>
-            <div className="flex min-w-0 flex-1 items-baseline gap-3">
-              <div className="truncate text-[15px] font-semibold tracking-tight text-foreground">{heading[0]}</div>
-              <div className="hidden truncate text-[13px] text-muted-foreground xl:block">{heading[1]}</div>
-            </div>
+            <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1.5 text-[13.5px]">
+              {crumbs.map((crumb, index) => <span key={crumb} className="flex min-w-0 items-center gap-1.5">
+                {index > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/70" aria-hidden="true" />}
+                <span className={`truncate ${index === crumbs.length - 1 ? "font-medium text-foreground" : "hidden text-muted-foreground sm:inline"}`} aria-current={index === crumbs.length - 1 ? "page" : undefined}>{crumb}</span>
+              </span>)}
+            </nav>
             <button onClick={() => setCommandOpen(true)} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
             <button onClick={triggerQuickCreate} className="hidden h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-xs hover:bg-primary/90 sm:flex"><Plus className="size-4" />Create</button>
             <button onClick={triggerQuickCreate} className="inline-flex rounded-md bg-primary p-2 text-primary-foreground sm:hidden" aria-label="Quick create"><Plus className="size-4" /></button>
@@ -115,15 +120,31 @@ export default function AppShell() {
   </div>;
 }
 
-function SidebarLink({ item, collapsed }) {
+// Light, dark, or follow the device. One button cycles through them.
+const THEMES = [
+  { value: "light", label: "Light", icon: Sun },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "system", label: "Match device", icon: Monitor },
+];
+function ThemeButton() {
+  const { theme = "light", setTheme } = useTheme();
+  const index = Math.max(0, THEMES.findIndex((option) => option.value === theme));
+  const current = THEMES[index];
+  const next = THEMES[(index + 1) % THEMES.length];
+  const Icon = current.icon;
+  return <button type="button" onClick={() => setTheme(next.value)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={`Theme: ${current.label}. Switch to ${next.label}`} title={`Theme: ${current.label}`} data-testid="theme-toggle"><Icon className="size-4" /></button>;
+}
+
+/** One module link. Active is decided by the shell (path plus query), so two links that share a path never light up together. */
+function SidebarLink({ item, collapsed, active }) {
   const Icon = item.icon;
   const pending = item.state !== MODULE_STATES.AVAILABLE;
-  return <NavLink to={item.route} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={({ isActive }) => `group relative flex h-8 items-center rounded-md text-[13.5px] font-medium transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2"} ${isActive ? "bg-card text-foreground shadow-xs ring-1 ring-border" : "text-foreground/70 hover:bg-accent hover:text-foreground"}`}>
-    {({ isActive }) => <>
-      <Icon className={`size-4 shrink-0 ${isActive ? "text-brand" : "text-muted-foreground group-hover:text-foreground"}`} />
+  return <Link to={item.route} aria-current={active ? "page" : undefined} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={`group relative flex h-8 items-center rounded-md text-[13.5px] font-medium transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2"} ${active ? "bg-card text-foreground shadow-xs ring-1 ring-border" : "text-foreground/70 hover:bg-accent hover:text-foreground"}`}>
+    <>
+      <Icon className={`size-4 shrink-0 ${active ? "text-brand" : "text-muted-foreground group-hover:text-foreground"}`} />
       {!collapsed && <><span className="min-w-0 flex-1 truncate">{item.label}</span>{pending && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Contract pending" aria-label="Backend contract pending" />}</>}
-    </>}
-  </NavLink>;
+    </>
+  </Link>;
 }
 
 export function Badge({ children, className = "" }) {
