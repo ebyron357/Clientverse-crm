@@ -1,28 +1,43 @@
 # ClientVerse CRM — Agent Memory
 
-## Session state (2026-09-30)
+## Session state (2026-10-19)
+
+- **Running application code is `main@1a39fa4`** (PR #41, interior redesign + dark mode),
+  Railway deployment `d4d2e07f-b201-44f9-90fe-a06c59dabad5`, live 2026-10-19T00:16Z. Boot
+  log clean (`Registered outbound channel provider: gmail`, scheduler 13 jobs,
+  `Application startup complete`, `/api/health` 200). Read the live id from Railway.
+- **GitHub Actions runs again.** CI (frontend build, backend lint/types, backend API tests)
+  ran and passed on PR #41 on 2026-10-18; the 2026-09-28 "Actions has run nothing" note
+  below is stale. CI is the gate again.
+- **UI conventions:** every signed-in page uses the primitives in
+  `frontend/src/components/page/Page.jsx` and semantic colour tokens only (dark mode
+  depends on it). Public `/book/`, `/booking/`, `/portal/` routes are forced light.
+- **PR #36** (Codex, draft, conflicting): its two delivery-safety fixes and their tests
+  are ported onto current `main` by `claude/quirky-franklin-emex2n`; its PyMongo bump is
+  already on `main` (4.18.2 / Motor 3.7.1); its Recovery Proof scroll navigation targets
+  the pre-redesign page and is not ported.
+- Cursor Bugbot is out of usage quota (it skips); Copilot code review and the Cursor
+  Security Agent still run on every PR.
+
+## Owner/Admin Manual (PR #34)
 
 - **Owner/admin procedures live in one place:**
   `docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md` (Issue #33). It is registered as the owner
-  source of truth in the governing document, v1.11 §0.5. Change the manual in the same commit
-  as any change to a screen label, route, sign-in rule, Google scope or cron job. Do not write
-  new owner instructions anywhere else.
-- **GitHub Actions is running again, and the scheduler reaches production.** Scheduled-jobs runs
-  #3551–#3555 were green from 16:11Z, with Railway `200` on all twelve `/api/cron/*` endpoints.
-  Earlier runs #3544–#3550 failed on `401` (a cron secret mismatch, since fixed). The 2026-09-28
-  and 2026-09-21 notes below saying Actions runs nothing and the scheduler never ran are **stale**.
-- **The Google grant needs owner re-authorization.** The 16:08Z `integration-sync` got `400` from
-  Google's token endpoint.
-- **Outbound email has two further blockers**, besides `gmail.send`:
+  source of truth in the governing document, v1.16 §0.5. Change the manual in the same commit
+  as any change to a screen label, route, sign-in rule, Google scope, cron job or owner
+  procedure. Do not write new owner instructions anywhere else.
+- **Outbound email has two blockers besides the Google grant:**
   - The tenant's Gmail `integrations` catalogue record is `REQUIRES_CONFIGURATION`, so
     `authorized_channels` refuses email. Only a database change clears it; that is a
     certification decision.
-  - No UI composes, sends, or records consent.
+  - No screen writes an email to a contact or records consent. The only screen-released
+    emails are Calendar booking emails and an approved Website Forms auto-reply.
 
   See governing document M-01 and §8 #27–#28.
-- Production is on `main@8f23f63` (application code identical to `c9f5a6e`). The production
-  host still refuses CONNECT (403) from agent sessions; Railway MCP tools and GitHub Actions
-  records work.
+- **History (2026-09-30):** the Scheduled jobs workflow first reached production (runs
+  #3551–#3555, after #3544–#3550 failed on a `401` secret mismatch), and Google's token
+  endpoint refused the stored grant (`400`). Since PR #42 a Google connection records the
+  scopes Google granted, so the owner reconnects Google once (manual §5.6–§5.8).
 
 ## Session state (2026-09-28)
 
