@@ -48,11 +48,11 @@
      * Solid colours are HSL channels like every other token. The washes over the navy carry
      * their own alpha and are used whole: Tailwind cannot add an opacity modifier to them.
      */
-    --sidebar: 221 53% 9%;                      /* #0B1324 */
-    --sidebar-foreground: 219 22% 82%;          /* #C8CFDC item text */
+    --sidebar: 220.8 53.2% 9.2%;                /* #0B1324 */
+    --sidebar-foreground: 219 22.2% 82.4%;      /* #C8CFDC item text */
     --sidebar-active-foreground: 0 0% 100%;     /* current item, the signed-in name */
-    --sidebar-muted: 219 13% 55%;               /* #7D879A icons, section labels */
-    --sidebar-urgent: 358 75% 59%;              /* #E5484D a count that needs action now */
+    --sidebar-muted: 219.3 12.6% 54.7%;         /* #7D879A icons, section labels */
+    --sidebar-urgent: 358.1 75.1% 59%;          /* #E5484D a count that needs action now */
     --sidebar-accent: hsl(0 0% 100% / 0.09);    /* current item */
     --sidebar-hover: hsl(0 0% 100% / 0.05);
     --sidebar-border: hsl(0 0% 100% / 0.08);
@@ -139,6 +139,8 @@
   .cv-page {
     @apply mx-auto w-full max-w-[1440px] px-4 pb-10 sm:px-6 lg:px-8;
   }
+  /* A page opened inside the Settings hub: the hub already sets the width and the gutters. */
+  .cv-settings-content .cv-page { max-width: none; padding-left: 0; padding-right: 0; padding-bottom: 0; }
 
   /* Page heading: one compact row. The section a page belongs to is in the top-bar
      breadcrumb, so the old eyebrow label is not repeated here. */
@@ -211,6 +213,8 @@
   .cv-scrollbar::-webkit-scrollbar-track { background: transparent; }
   .cv-scrollbar::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
   .cv-scrollbar::-webkit-scrollbar-thumb:hover { background: hsl(var(--input)); }
+  .cv-sidebar-scroll::-webkit-scrollbar-thumb { background: var(--sidebar-pill); }
+  .cv-sidebar-scroll::-webkit-scrollbar-thumb:hover { background: hsl(var(--sidebar-muted)); }
   .tabular { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
   /* Dark theme: tinted status colours become translucent washes with light text. */
   .dark .bg-emerald-50, .dark .bg-emerald-100 { background-color: rgb(16 185 129 / 0.13) !important; }
