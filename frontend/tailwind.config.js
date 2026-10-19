@@ -8,21 +8,35 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Inter Variable"', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        display: ['"Inter Variable"', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif']
+        sans: ['"Plus Jakarta Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        display: ['"Plus Jakarta Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif']
       },
       boxShadow: {
         xs: '0 1px 2px 0 rgb(16 24 40 / 0.04)',
         sm: '0 1px 3px 0 rgb(16 24 40 / 0.06), 0 1px 2px -1px rgb(16 24 40 / 0.05)',
         panel: '0 0 0 1px rgb(16 24 40 / 0.04), 0 1px 3px rgb(16 24 40 / 0.05)'
       },
+      // Cards are rounded-xl (14px); buttons, inputs and inner panels keep their tighter radii.
       borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)'
+        xl: 'var(--radius)',
+        lg: 'calc(var(--radius) - 4px)',
+        md: 'calc(var(--radius) - 6px)',
+        sm: 'calc(var(--radius) - 8px)'
       },
       colors: {
         canvas: 'hsl(var(--canvas))',
+        // The main menu only (AppShell). The washes are whole colours, so no /opacity on them.
+        sidebar: {
+          DEFAULT: 'hsl(var(--sidebar))',
+          foreground: 'hsl(var(--sidebar-foreground))',
+          'active-foreground': 'hsl(var(--sidebar-active-foreground))',
+          muted: 'hsl(var(--sidebar-muted))',
+          urgent: 'hsl(var(--sidebar-urgent))',
+          accent: 'var(--sidebar-accent)',
+          hover: 'var(--sidebar-hover)',
+          border: 'var(--sidebar-border)',
+          pill: 'var(--sidebar-pill)'
+        },
         brand: {
           DEFAULT: 'hsl(var(--brand))',
           foreground: 'hsl(var(--brand-foreground))',

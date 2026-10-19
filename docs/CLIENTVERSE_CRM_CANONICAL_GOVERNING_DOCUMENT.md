@@ -1,6 +1,6 @@
 # ClientVerse CRM — Canonical Governing Document
 
-**Version:** 1.18 — complete replacement
+**Version:** 1.21 — complete replacement
 **Effective:** 2026-10-19
 **Owner/admin handoff guide:** [`docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md`](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) — the official owner/admin source of truth for operating production (§0.5)
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
@@ -89,6 +89,8 @@ Rules:
 
 ClientVerse CRM is the **AI-native client operations platform** for the complete customer lifecycle — **WIN → ONBOARD → SERVE → RETAIN → EXPAND** — operated as one commercial program with the `clientverse.io` public website. The website sells the promise; the CRM must visibly prove it. Neither is commercially closed in isolation.
 
+**Owner directive 2026-10-19 — market and scope.** ClientVerse is a CRM for any business, not one industry. It competes with Salesforce, HubSpot, Zoho CRM, Pipedrive, HighLevel, Microsoft Dynamics 365 Sales, monday CRM, Freshsales, Close and Attio. Real estate is one industry template among several (agency and services, home services, health and wellness, coaching and consulting, B2B sales), and nothing may assume a real-estate business unless that template is chosen. The owner set the feature scope in §1.5.
+
 ### 1.2 Commercial north star (recovered verbatim in intent from ClickUp `CONTROL — W2` §11)
 
 The representative revenue-recovery workflow the product must be able to run end to end:
@@ -120,6 +122,59 @@ This workflow is the spine of the **Second Chance** capability family in §4.C. 
 - No test, demo, or smoke records may persist in a customer-production tenant.
 - Every external agent skill, MCP server, MCP tool, agent plugin, or external agent package must pass the §6 security pipeline before it is eligible for production use.
 - No capability may weaken or disable a test to pass a gate.
+
+### 1.5 Owner feature scope (2026-10-19)
+
+The owner's list, verbatim in substance, with each item's status against `main@de1277e` plus this branch. LIVE = in production; PARTIAL = part of it is in production and the gap is named; MISSING = not built. Phases are the build order (§9 continues to govern the existing waves).
+
+**Must-have CRM features**
+
+| # | Feature | Status | Gap | Phase |
+|---|---|---|---|---|
+| 1 | Contact, company and customer management | LIVE (C-03, C-05, C-27, C-32) | — | 1 |
+| 2 | Lead capture, qualification and assignment | LIVE (C-30, M-05; lifecycle stages C-33 on branch) | Qualification scoring; templates beyond real estate | 1 |
+| 3 | Customizable sales pipelines | PARTIAL (C-04) | More than one pipeline | 2 |
+| 4 | Email synchronization and communication history | PARTIAL (C-17, M-02) | Outlook; compose box; forms and bookings in the inbox | 2 |
+| 5 | Tasks, reminders and follow-up tracking | LIVE (C-27, E-04) | — | — |
+| 6 | Calendar synchronization and appointment booking | PARTIAL (M-05) | Writing bookings back to Google or Outlook | 2 |
+| 7 | Workflow automation with stop rules | PARTIAL (C-30, E-22, C-15 safe rules and playbooks) | Visual builder with user-set stop rules (M-06) | 2 |
+| 8 | Sales reporting and dashboards | PARTIAL (M-10 recovery proof) | Report builder, dashboards, forecasting | 3 |
+| 9 | Custom fields, filters and views | PARTIAL (C-30 form fields; C-33 field manager, server-side filters and saved views — `TESTED` on branch) | Saved views on the company and deal lists; sorting by a custom field | 1 |
+| 10 | Integrations, API access and webhooks | PARTIAL (C-10, C-11, C-17) | API keys and public docs; Zapier; Slack | 3 |
+| 11 | Data import, export and duplicate management | PARTIAL (C-27, C-32) | Field mapping, CRM importers (M-12) | 1–2 |
+| 12 | Accessible desktop and mobile interfaces | PARTIAL (new shell: 11-item main menu, Settings hub — built on branch) | Installable mobile app | 1, 4 |
+| 13 | Security, permissions, audit logs and backups | PARTIAL (C-01, C-02, C-13, C-14) | Two-factor login, SSO, finer permissions, tested restore | 3 |
+| 14 | Guided onboarding, migration and customer support | PARTIAL (setup checklist) | Industry template at sign-up, importers, in-app help (M-09) | 2 |
+
+**Features that provide additional value**
+
+| # | Feature | Status | Gap | Phase |
+|---|---|---|---|---|
+| 1 | Lost-lead and missed-opportunity recovery | LIVE (E-03, E-04, E-23) | — | — |
+| 2 | Dormant-customer reactivation | PARTIAL (dormant-deal lane) | Dormant client lane after the sale | 3 |
+| 3 | AI-assisted customer-record updates with source references | PARTIAL (E-07 cites sources; C-19 blocked on the owner's AI key) | AI updates | 2 |
+| 4 | Call and meeting summaries with action extraction | MISSING (E-16) | Needs call or meeting capture first | 3 |
+| 5 | Prioritized daily work plans | PARTIAL (C-34 Today plan `TESTED` on branch; C-07, C-08, E-07) | Not yet in production | 1 |
+| 6 | Explainable next-action recommendations | LIVE (E-07) | — | — |
+| 7 | Verified automation with execution receipts | PARTIAL (C-28, E-22, C-14) | A receipt per automation run | 2 |
+| 8 | Human approval controls and duplicate-send protection | LIVE (C-09, M-07, M-02) | — | — |
+| 9 | Connection-health monitoring and failure alerts | LIVE (C-12, C-28) | — | — |
+| 10 | Automated sales-to-onboarding handoffs | PARTIAL (a won deal with a company creates a Client 360 workspace) | Onboarding tasks and kickoff from a template | 2 |
+| 11 | Customer portals for documents, approvals and status | PARTIAL (C-15) | Approvals and branding in the portal | 3 |
+| 12 | Proposal, contract and payment integrations | PARTIAL (C-15 estimates → invoices; C-18 blocked) | E-signature; payments need Stripe keys | 3 |
+| 13 | Renewal, retention and referral workflows | PARTIAL (C-15 referrals, reviews) | Renewal workflow | 3 |
+| 14 | Industry-specific templates and ready-to-use workflows | PARTIAL (real estate only) | Other industries; neutral defaults (C-32 started) | 2 |
+| 15 | Measurable revenue recovery and customer-value reporting | LIVE (M-10, M-08 attribution) | — | — |
+
+**Agency and white-label**
+
+| # | Feature | Status | Gap | Phase |
+|---|---|---|---|---|
+| 1 | Branded client workspaces and custom domains | PARTIAL (brand name on booking pages and the portal) | Logo, colours and domain per account | 4 |
+| 2 | Secure separation between client accounts | PARTIAL (C-02 tenant isolation) | Client accounts under one agency | 4 |
+| 3 | Reusable client configurations and workflow templates | MISSING | Copy a setup between accounts | 4 |
+| 4 | Centralized management across client accounts | MISSING | Agency view across accounts | 4 |
+| 5 | Subscription billing, usage tracking and spending controls | MISSING (C-18 blocked) | Plans, usage meters, caps | 4 |
 
 ---
 
@@ -249,6 +304,9 @@ The module registry is the **contract of record** for which surfaces exist and w
 | C-28 | Scheduled-run ledger and scheduler health | DEPLOYED | `backend/cron_ledger.py` (10 tests): every scheduled request, including rejected ones, is recorded in `cron_run_log`; `GET /api/cron/runs` and `GET /api/cron/health` (`receiving_scheduled_traffic`). Production has recorded scheduled traffic since 2026-09-30T16:08Z: the workflow's ledger read-back (`GET /api/cron/runs` 200) passes on every green run. | Same |
 | C-29 | Backend CI gates — `ruff`, `scripts/typecheck.py` ratchet, `pip-audit`, `scripts/validate_config.py` | MERGED | `.github/workflows/ci.yml` job *Backend lint and types*. CI configuration, so `DEPLOYED` does not apply; the job cannot currently run (O-16). All four pass locally on `main` (2026-09-28). | Same |
 | C-30 | Website forms and automatic lead handling — managed real-estate forms (8 templates, 24-field catalogue, custom fields), a public door real websites can use (CORS-open public paths without credentials; JSON, `text/plain`, URL-encoded and multipart bodies; HTML-form redirects), embeds (inline, pop-up with delay/scroll/exit triggers, slide-in, iframe-able hosted page, raw HTML, API), honeypot + fill-time + rate limits + idempotent `_sid` + duplicate window, contact match-or-create, owner assignment (existing / specific / round-robin), a deal valued at expected commission, a speed-to-lead task, in-app and email alerts, `lead.received` webhook event, an in-process SLA watcher with one-time escalation, response-time capture, a leads inbox and a form editor | DEPLOYED | `backend/website_forms.py`, `frontend/src/pages/Leads.jsx`, `frontend/src/pages/WebsiteForms.jsx`; `backend/tests/test_website_forms.py` (30 tests, every one through the public HTTP door with browser headers); an 18-step real-browser run from a separate origin. The legacy token door (E-23) now runs through the same pipeline; it previously refused browsers, refused HTML forms and dropped every unrecognised field, and had no test. Guide and GoHighLevel feature map: `docs/WEBSITE_FORMS.md`. Merged in PR #37 (`main@9bd9723`) and deployed to Railway 2026-10-17 (deployment `6d1116b3-…`: startup complete, `/api/health` 200). Not `LIVE VERIFIED`: no production lead has been submitted from an agent's site yet. | DIRECTIVE 2026-10-17 (owner: connect agents' real-estate websites end to end, GoHighLevel option parity, automatic) |
+| C-34 | Today plan — `GET /api/today?tz=` ranks one person's day from recorded facts, each item with its reason: new leads oldest first (three by name, the rest summed), appointments starting within 2 hours, overdue tasks, approvals waiting (admins), at-risk or breached commitments, tasks due today, and open deals with no activity for 14 days and no task. Tasks are the caller's plus unassigned ones; "today" ends at midnight in the caller's time zone. It also returns the screen's figures (leads waiting and the oldest wait, bookings this week by kind, open and probability-weighted pipeline per currency, approvals and risks), leads with their next appointment, the week's appointments, stage counts and values, tasks and at-risk commitments. The `/dashboard` page becomes **Today** | TESTED | `backend/today.py` (in the blocking typecheck set), `frontend/src/pages/Dashboard.jsx`; `backend/tests/test_today.py` (11 tests: ranking and reasons, the summed lead item, task scope for a member, time-zone day boundary, appointment preparation, weighted pipeline, stalled deals, admin-only approvals, tenant isolation). Browser run on local data at 1440 px light and dark and 390 px: no horizontal scroll, no console errors. | DIRECTIVE 2026-10-19 (owner feature scope, §1.5 value-add 5) |
+| C-33 | Custom fields, filters, saved views and lifecycle — an admin defines typed fields (text, long text, number, date, choice, yes/no, email, phone, web address) on contacts, companies and deals with stable keys `cf_<slug>` (`GET/POST/PATCH /api/custom-fields`); values are checked against their type on every record `PATCH` (`custom_fields`) and stored beside form answers, with history; archiving keeps values. Lists take `?where=` filters (`GET /api/contacts`, `/api/companies`, `/api/opportunities`) compiled on the server against an allow-list of built-in and the tenant's own fields. Saved views (`GET/POST/PATCH/DELETE /api/views`) store filters, columns and order, shared or private; only the maker or an admin changes one. Contacts carry a lifecycle stage: website/booking contacts start as `lead`, winning a deal makes `lead`/`qualified`/unset contacts `customer`, and a clean-up action sets unset stages from history. Screens: Contacts views, filter builder, columns, **Settings → Fields**, **"More fields"** on contact, company and deal records | TESTED | `backend/record_fields.py`, `backend/crm_core.py`, `backend/server.py`, `backend/website_forms.py`; `frontend/src/components/ListViews.jsx`, `frontend/src/components/CustomFields.jsx`, `frontend/src/pages/CustomFieldsSettings.jsx`, `frontend/src/pages/Directory.jsx`; `backend/tests/test_record_fields.py` (15 tests: typing, admin-only definitions, tenant isolation, filters including refused fields and regex text, views sharing and permissions, lifecycle). Browser run on local data: filter, columns, save, reload of a saved view, record fields, Fields page; no horizontal scroll at 390px. | DIRECTIVE 2026-10-19 (owner feature scope, §1.5 must-haves 1, 2, 9) |
+| C-32 | Data integrity — one open deal per person across forms and bookings (`opportunity.reuse_open_deal`, default on); a form or booking from an existing client (company with a Client 360 workspace, or a won deal) opens no deal and gets a "Reply to client" task; a **Company** catalogue field on forms and booking pages that links or creates the company, and linking by work email domain (personal domains never link); contacts clean-up suggestions and actions (`GET /api/contacts/cleanup`, `POST /api/contacts/cleanup/apply`) and a repeat-safe merge (`POST /api/contacts/{id}/merge`) that moves deals, tasks, activities, enquiries, appointments and conversations; new booking pages default to the neutral `meeting` preset, and only real-estate pages value deals at commission | TESTED | `backend/crm_core.py`, `backend/website_forms.py`, `backend/booking.py`, `frontend/src/components/ContactCleanup.jsx`, `frontend/src/pages/Directory.jsx`, `frontend/src/pages/Leads.jsx`; `backend/tests/test_data_integrity.py` (15 tests through the public form and booking doors). Found by loading data through the real doors on 2026-10-19: a form fill then a booking opened two deals; an existing client's check-in opened a new $0 deal; companies typed into forms were never created; a page made without a preset inherited "Confirm the showing… arrange access to the property". | DIRECTIVE 2026-10-19 (owner feature scope, §1.5 must-haves 1, 2, 11) |
 | C-31 | In-process scheduled jobs — the API runs every `/api/cron/*` job itself on the workflow's cadences, once per window across replicas under a MongoDB lease, recorded in the cron ledger as `origin: in_process`; it skips a window an external request already ran | DEPLOYED | `backend/scheduler.py`, `backend/tests/test_scheduler.py`; `IN_PROCESS_SCHEDULER=0` turns it off; `scripts/validate_config.py` checks its job table against `.github/workflows/scheduled-jobs.yml`. Merged in PR #38 (`main@b854059`) and deployed 2026-10-18 (deployment `a65dc4e1-…`): `In-process scheduler started for 13 job(s)`, and its deferral to external runs is in the boot log (§3.2). | DIRECTIVE 2026-10-17 (owner: finish the client product) |
 
 ### 4.B Approved module contracts — registered, not yet built
@@ -670,6 +728,9 @@ ClientVerse CRM is closed only when all of the following hold:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.21 | 2026-10-19 | Added C-34 (Today plan; `TESTED` on branch); §1.5 value-add 5 and must-have 12 updated. |
+| 1.20 | 2026-10-19 | Added C-33 (custom fields, filters, saved views, lifecycle; `TESTED` on branch); §1.5 must-haves 2 and 9 updated. |
+| 1.19 | 2026-10-19 | Owner directive: ClientVerse is a CRM for any business, competing with ten named CRMs; real estate becomes one industry template (§1.1). Recorded the owner's feature scope of 34 items with status, gap and phase (§1.5). Added C-32 (data integrity, `TESTED` on branch). |
 | 1.18 | 2026-10-19 | Email sending switch built (§8 #28, M-01 item 2): an admin certifies the Gmail catalogue record after a test email; it resets on disconnect or a reconnect that loses `gmail.send` or changes mailbox. Disconnecting Calendar no longer revokes the Google grant Gmail shares. O-01: the owner reconnected Google with send permission (02:02Z). |
 | 1.17 | 2026-10-19 | Custom domain `crm.clientverse.io` live (§3.2, O-12): Railway variables `FRONTEND_URL`, `GOOGLE_REDIRECT_URI` and `CORS_ORIGINS` set; production redeployed as `e7790295-…`. No code change. |
 | 1.16 | 2026-10-19 | **Owner/admin handoff** (PR #34, merged with `main` at v1.15). Registered [`docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md`](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) (Issue #33) as the owner handoff source of truth: header, §0.1, §0.2 item 5 and §0.5. Superseded the owner-facing parts of twelve other documents with banners, and corrected `README.md`, `SECURITY.md` and `docs/RAILWAY_RUNBOOK.md` in place. The manual (v1.1) is re-verified against `main@838f00d`: in-process scheduler (C-31) with the workflow as an optional second driver, password change and admin reset of a temporary password, the redesigned screens (PRs #40/#41), Leads, Tasks, Website Forms and Calendar. §3.2 records the 2026-09-30 observations as history (the workflow first reached production; the stored Google grant failed to refresh) and the 2026-10-19 deployments of `1a39fa4` (`d4d2e07f-…`) and `838f00d` (`406f320e-…`, PR #42: a refused lookup never means "not sent"; the connection records the granted Google scopes, so the owner reconnects once). O-12 records the unverified `crm.clientverse.io`. C-16, C-25, O-03, O-16 and O-01 keep v1.15's status and gain those facts; C-25 and O-03 now say the workflow fails loudly (§3.3). **Corrected M-01** (§3.3): besides the grant, outbound email is held by an unrecorded certification gate — the tenant's Gmail catalogue record is seeded `REQUIRES_CONFIGURATION` and nothing but a direct database change alters it — and no screen composes an owner-written email or records consent. Added §8 #27–#29 for the owner-operability gaps the manual audit found (#29 is now partly delivered). Nothing moves to `LIVE VERIFIED`. |

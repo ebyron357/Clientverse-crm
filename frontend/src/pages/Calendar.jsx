@@ -730,7 +730,7 @@ function BookingPageRow({ page, catalog, isAdmin, onEdit, onEmbed, onToggle, tog
 function BookingPagesTab({ pages, status, catalog, hosts, isAdmin, onChanged, loading, creating, setCreating }) {
   const [editing, setEditing] = useState(null);
   const [embedding, setEmbedding] = useState(null);
-  const [newPage, setNewPage] = useState({ preset: "home_showing", name: "" });
+  const [newPage, setNewPage] = useState({ preset: "meeting", name: "" });
   const [installing, setInstalling] = useState(false);
   const [toggling, setToggling] = useState(null);
   const install = async () => {
@@ -744,7 +744,7 @@ function BookingPagesTab({ pages, status, catalog, hosts, isAdmin, onChanged, lo
   const create = async () => {
     try {
       const { data } = await api.post("/booking/event-types", { preset: newPage.preset, name: newPage.name.trim() || undefined });
-      setCreating(false); setNewPage({ preset: "home_showing", name: "" });
+      setCreating(false); setNewPage({ preset: "meeting", name: "" });
       toast.success("Booking page created");
       await onChanged();
       setEditing(data);

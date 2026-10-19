@@ -136,6 +136,7 @@ FIELD_CATALOG: dict[str, dict] = {
     "name": {"label": "Full name", "type": "text", "autocomplete": "name"},
     "email": {"label": "Email", "type": "email", "autocomplete": "email"},
     "phone": {"label": "Phone", "type": "tel", "autocomplete": "tel"},
+    "company": {"label": "Company", "type": "text", "autocomplete": "organization"},
     "message": {"label": "Message", "type": "textarea"},
     "lead_type": {"label": "I'm interested in", "type": "select"},
     "property_address": {"label": "Property address", "type": "text",
@@ -658,7 +659,10 @@ def _default_settings(preset_key: str) -> dict:
                        "weights": {}},
         "opportunity": {"enabled": preset["create_opportunity"], "stage": None,
                         "value_mode": "fixed", "fixed_value": 0.0,
-                        "commission_rate": 2.5, "currency": "USD"},
+                        "commission_rate": 2.5, "currency": "USD",
+                        # A person's open deal carries every later form or booking of
+                        # theirs; off means each submission opens its own deal.
+                        "reuse_open_deal": True},
         "speed_to_lead": {"task_enabled": True, "due_minutes": 5,
                           "escalate_after_minutes": 15},
         "notify": {"in_app": True, "email": True},
@@ -847,6 +851,8 @@ def merge_settings(current: dict, patch: dict) -> dict:
             raise HTTPException(status_code=422, detail=f"opportunity.{numeric} is out of range")
         opportunity[numeric] = number
     opportunity["currency"] = (str(opportunity.get("currency") or "USD").upper()[:3])
+    if not isinstance(opportunity.get("reuse_open_deal", True), bool):
+        raise HTTPException(status_code=422, detail="opportunity.reuse_open_deal must be true or false")
     stl = merged["speed_to_lead"]
     for numeric, low, high in (("due_minutes", 1, 1440), ("escalate_after_minutes", 1, 10080)):
         try:
@@ -1297,6 +1303,16 @@ class LeadPipeline:
         contact, created_contact = await self._upsert_contact(form, enquiry)
         await self._log(enquiry, "contact", "created" if created_contact else "matched",
                         contact["id"])
+        company_id, company_how = await crm_core.link_contact_company(
+            self.db, tenant_id, contact, (enquiry.get("fields") or {}).get("company"),
+            new_id=self.new_id, now_iso=self.now_iso, actor=f"website_form:{form['id']}",
+            record_event=self.record_event)
+        if company_id:
+            contact = {**contact, "company_id": company_id}
+            await self._log(enquiry, "company", company_how, company_id)
+        # Someone the business already serves is not a new lead to win: their form or
+        # booking is client work, so it opens no deal and its task says so.
+        existing_client = await crm_core.is_existing_client(self.db, tenant_id, contact)
         assignee = await self._assign(form, contact)
         await self._log(enquiry, "assignment", "assigned" if assignee else "unassigned",
                         assignee or "No agent configured; every admin is alerted.")
@@ -1304,24 +1320,31 @@ class LeadPipeline:
             await self.db.contacts.update_one({"id": contact["id"], "tenant_id": tenant_id},
                                               {"$set": {"owner": assignee}})
         opportunity = None
-        if settings["opportunity"]["enabled"]:
+        if settings["opportunity"]["enabled"] and existing_client:
+            await self._log(enquiry, "opportunity", "skipped",
+                            "Existing client: no new deal is opened for client work.")
+        elif settings["opportunity"]["enabled"]:
             opportunity, created_deal = await self._opportunity(form, enquiry, contact, assignee)
             await self._log(enquiry, "opportunity", "created" if created_deal else "linked",
                             opportunity["id"])
         task = None
         if settings["speed_to_lead"]["task_enabled"]:
-            task = await self._task(form, enquiry, contact, assignee)
+            task = await self._task(form, enquiry, contact, assignee,
+                                    existing_client=existing_client)
             await self._log(enquiry, "task", "created", task["id"])
 
         # The lead's value is the deal's value, which the form's own configuration set.
         # No deal (a newsletter sign-up, say) means no value -- not a guess.
         value = (opportunity or {}).get("value")
         update = {"contact_id": contact["id"], "assigned_to": assignee,
+                  "company_id": contact.get("company_id"),
+                  "existing_client": existing_client,
                   "opportunity_id": (opportunity or {}).get("id"),
                   "task_id": (task or {}).get("id"),
                   "created_contact": created_contact,
                   "estimated_value": value or None,
-                  "currency": settings["opportunity"]["currency"]}
+                  # A reused deal keeps its own currency; the form's is for a new one.
+                  "currency": (opportunity or {}).get("currency") or settings["opportunity"]["currency"]}
         await self.db[detectors.WEB_ENQUIRIES].update_one(
             {"id": enquiry["id"], "tenant_id": tenant_id}, {"$set": update})
         enquiry = {**enquiry, **update}
@@ -1388,7 +1411,7 @@ class LeadPipeline:
                   "at": enquiry["received_at"]}
         custom = {k: v for k, v in fields.items()
                   if k not in ("first_name", "last_name", "name", "email", "phone", "message",
-                               "consent_sms", "consent_email")}
+                               "company", "consent_sms", "consent_email")}
         existing = None
         if settings.get("duplicate_policy", "update_existing") == "update_existing":
             existing = await self._find_contact(tenant_id, enquiry.get("email"),
@@ -1426,6 +1449,7 @@ class LeadPipeline:
             "title": None, "role": None, "company_id": None,
             "influence": "medium", "sentiment": "neutral",
             "tags": sorted(set(tags)), "lead_source": "website", "source": source,
+            "lifecycle": "lead",
             "first_attribution": enquiry.get("attribution") or {},
             "last_attribution": enquiry.get("attribution") or {},
             "custom_fields": custom, "consent": enquiry.get("consent"),
@@ -1474,16 +1498,28 @@ class LeadPipeline:
         stages = await crm_core.resolve_stages(self.db, tenant_id)
         open_keys = [s["key"] for s in stages if not s.get("is_closed")]
         cutoff = _iso(_now() - timedelta(days=OPEN_DEAL_REUSE_DAYS))
-        existing = await self.db.opportunities.find_one(
-            {"tenant_id": tenant_id, "archived_at": None, "contact_ids": contact["id"],
-             "stage": {"$in": open_keys}, "source.form_id": form["id"],
-             "created_at": {"$gte": cutoff}}, {"_id": 0})
+        # One open deal per person: a booking made after a form fill, or a second form,
+        # is the same opportunity moving forward. A form can opt out with
+        # `reuse_open_deal: false` when each submission is genuinely separate business.
+        # Opted out, every submission is its own deal; a retried submission is caught
+        # earlier by its `_sid`, not here.
+        existing = None
+        if cfg.get("reuse_open_deal", True) is not False:
+            existing = await self.db.opportunities.find_one(
+                {"tenant_id": tenant_id, "archived_at": None, "contact_ids": contact["id"],
+                 "stage": {"$in": open_keys}, "created_at": {"$gte": cutoff}},
+                {"_id": 0}, sort=[("created_at", -1)])
         if existing:
+            changes: dict[str, Any] = {"updated_at": self.now_iso()}
+            # A company named only on the later request still reaches the deal, so winning
+            # it opens the client workspace. A company the deal already has is kept.
+            if not existing.get("company_id") and contact.get("company_id"):
+                changes["company_id"] = existing["company_id"] = contact["company_id"]
             await self.db.opportunities.update_one(
                 {"id": existing["id"], "tenant_id": tenant_id},
                 {"$push": {"history": crm_core._history_entry(
                     "website_inquiry", SYSTEM_ACTOR, {"enquiry_id": enquiry["id"]})},
-                 "$set": {"updated_at": self.now_iso()}})
+                 "$set": changes})
             return existing, False
 
         stage = cfg.get("stage") if cfg.get("stage") in open_keys else (open_keys[0] if open_keys else "lead")
@@ -1495,7 +1531,8 @@ class LeadPipeline:
         now = self.now_iso()
         doc = {
             "id": self.new_id("opp"), "tenant_id": tenant_id, "name": " · ".join(parts)[:200],
-            "company_id": None, "value": value, "stage": stage, "owner": assignee,
+            "company_id": contact.get("company_id"), "value": value, "stage": stage,
+            "owner": assignee,
             "currency": cfg.get("currency") or "USD", "expected_close_date": None,
             "contact_ids": [contact["id"]], "created_at": now, "updated_at": now,
             "archived_at": None, "lead_source": "website",
@@ -1545,7 +1582,7 @@ class LeadPipeline:
     # ------------------------------------------------------------------ task
 
     async def _task(self, form: dict, enquiry: dict, contact: dict,
-                    assignee: Optional[str]) -> dict:
+                    assignee: Optional[str], *, existing_client: bool = False) -> dict:
         label = form_label(form)
         lines = [f"{k.replace('_', ' ').title()}: {v}" for k, v in (enquiry.get("fields") or {}).items()
                  if k not in ("first_name", "last_name") and v not in (None, "", False)]
@@ -1554,7 +1591,9 @@ class LeadPipeline:
         now = self.now_iso()
         doc = {
             "id": self.new_id("task"), "tenant_id": enquiry["tenant_id"],
-            "title": f"Call new lead now: {contact.get('name') or 'website lead'} ({label})"[:300],
+            "title": (f"Reply to client: {contact.get('name') or 'client'} ({label})"
+                      if existing_client else
+                      f"Call new lead now: {contact.get('name') or 'website lead'} ({label})")[:300],
             "assignee": assignee, "due_date": (enquiry.get("sla") or {}).get("due_at"),
             "status": "todo", "priority": "high", "notes": "\n".join(lines)[:4000],
             "related_type": "contact", "related_id": contact["id"], "workspace_id": None,

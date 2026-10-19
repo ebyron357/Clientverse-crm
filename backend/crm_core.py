@@ -39,6 +39,8 @@ from typing import Any, Optional
 from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+import record_fields
+
 logger = logging.getLogger("clientverse.crm_core")
 
 # --------------------------------------------------------------------------- constants
@@ -86,7 +88,7 @@ SEARCHABLE = {
     TASKS: ("title", "assignee"),
 }
 SORTABLE = {
-    CONTACTS: ("created_at", "updated_at", "name", "owner"),
+    CONTACTS: ("created_at", "updated_at", "name", "owner", "lifecycle"),
     COMPANIES: ("created_at", "updated_at", "name", "owner"),
     DEALS: ("created_at", "updated_at", "name", "value", "stage", "expected_close_date", "owner"),
     TASKS: ("created_at", "updated_at", "due_date", "status", "assignee", "title",
@@ -204,6 +206,10 @@ async def ensure_indexes(db) -> None:
                                        ("related_id", 1), ("occurred_at", -1)])
     await db[ACTIVITIES].create_index([("tenant_id", 1), ("type", 1), ("occurred_at", -1)])
     await db[PIPELINES].create_index([("tenant_id", 1), ("id", 1)], unique=True)
+    await db[CONTACTS].create_index([("tenant_id", 1), ("lifecycle", 1)])
+    await db[record_fields.FIELD_DEFS].create_index(
+        [("tenant_id", 1), ("object", 1), ("key", 1)], unique=True)
+    await db[record_fields.SAVED_VIEWS].create_index([("tenant_id", 1), ("object", 1), ("owner", 1)])
 
 
 # ------------------------------------------------------------- helpers used by server
@@ -228,7 +234,8 @@ async def query_records(db, collection: str, tenant_id: str, *,
                         order: Optional[str] = None,
                         limit: int = 200,
                         offset: int = 0,
-                        include_archived: bool = False) -> list[dict]:
+                        include_archived: bool = False,
+                        conditions: Optional[list[dict]] = None) -> list[dict]:
     """Search, filter and sort one collection inside one tenant.
 
     Returns a bare list because the endpoints that use it always have: the directory
@@ -237,6 +244,7 @@ async def query_records(db, collection: str, tenant_id: str, *,
 
     Only the fields named in SEARCHABLE / SORTABLE are reachable. A caller cannot steer
     a query at a field it has no business reading, and cannot sort by one either.
+    `conditions` are a saved view's filters, already checked by `record_fields`.
     """
     query: dict[str, Any] = {"tenant_id": tenant_id}
     if q and q.strip():
@@ -249,6 +257,8 @@ async def query_records(db, collection: str, tenant_id: str, *,
         # Records created before archiving existed have no `archived_at` field at all,
         # so "not archived" has to mean missing-or-null, not null.
         query["archived_at"] = None
+    if conditions:
+        query["$and"] = conditions
     sortable = SORTABLE.get(collection, ("created_at",))
     field = sort if sort in sortable else "created_at"
     direction = 1 if (order or "desc").lower() == "asc" else -1
@@ -333,7 +343,165 @@ def stage_outcome(stage: dict) -> str:
     return STAGE_WON if stage.get("is_won") else STAGE_LOST
 
 
+# ------------------------------------------------------- companies, clients, duplicates
+
+# Addresses at these domains belong to a person, not to a company, so they never link
+# a contact to a company and never name a new one.
+FREE_MAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "outlook.com", "hotmail.com",
+    "live.com", "msn.com", "icloud.com", "me.com", "mac.com", "aol.com", "proton.me",
+    "protonmail.com", "gmx.com", "gmx.net", "mail.com", "yandex.com", "zoho.com",
+    "fastmail.com", "hey.com", "comcast.net", "verizon.net", "att.net", "sbcglobal.net",
+})
+
+
+def business_domain(email: Optional[str]) -> Optional[str]:
+    """The company domain an email address points at, or None for a personal address."""
+    text = str(email or "").strip().lower()
+    if "@" not in text:
+        return None
+    domain = text.rsplit("@", 1)[1].strip(". ")
+    if not domain or "." not in domain or domain in FREE_MAIL_DOMAINS:
+        return None
+    return domain
+
+
+def website_domain(value: Optional[str]) -> Optional[str]:
+    """`https://www.acme.com/about` -> `acme.com`; anything unparseable -> None."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text).split("/", 1)[0].split(":", 1)[0]
+    text = text[4:] if text.startswith("www.") else text
+    return text if "." in text else None
+
+
+async def find_company(db, tenant_id: str, *, name: Optional[str] = None,
+                       domain: Optional[str] = None) -> Optional[dict]:
+    """A live company with exactly this name (any case), else one on this domain."""
+    base = {"tenant_id": tenant_id, "archived_at": None}
+    clean = str(name or "").strip()
+    if clean:
+        found = await db[COMPANIES].find_one(
+            {**base, "name": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}}, {"_id": 0})
+        if found:
+            return found
+    if domain:
+        found = await db[COMPANIES].find_one(
+            {**base, "$or": [{"domain": domain},
+                             {"website": {"$regex": rf"(^|[/.]){re.escape(domain)}(/|$)",
+                                          "$options": "i"}}]}, {"_id": 0})
+        if found:
+            return found
+    return None
+
+
+async def link_contact_company(db, tenant_id: str, contact: dict, company_name: Optional[str],
+                               *, new_id: Callable[[str], str], now_iso: Callable[[], str],
+                               actor: str, record_event=None) -> tuple[Optional[str], str]:
+    """Attach a contact to its company: matched by name, then by email domain, or created
+    from the name the person typed. A contact that already has a company keeps it.
+
+    Returns (company_id or None, how) where how is kept / matched / created / none.
+    """
+    if contact.get("company_id"):
+        return contact["company_id"], "kept"
+    name = str(company_name or "").strip()[:200]
+    domain = business_domain(contact.get("email"))
+    company = await find_company(db, tenant_id, name=name or None, domain=domain)
+    how = "matched"
+    if not company and name:
+        now = now_iso()
+        company = {"id": new_id("co"), "tenant_id": tenant_id, "name": name,
+                   "industry": None, "website": None, "domain": domain, "tier": None,
+                   "owner": contact.get("owner"), "created_at": now, "updated_at": now,
+                   "archived_at": None, "source": {"kind": "contact", "contact_id": contact["id"]},
+                   "history": [created_history(actor)]}
+        await db[COMPANIES].insert_one(dict(company))
+        if record_event:
+            await record_event("company.created", "company", company["id"], tenant_id, actor,
+                               payload={"name": name, "from": "contact"})
+        how = "created"
+    if not company:
+        return None, "none"
+    await db[CONTACTS].update_one(
+        {"id": contact["id"], "tenant_id": tenant_id, "company_id": None},
+        {"$set": {"company_id": company["id"], "updated_at": now_iso()},
+         "$push": {"history": _history_entry("company_linked", actor,
+                                             {"company_id": company["id"], "how": how})}})
+    return company["id"], how
+
+
+async def is_existing_client(db, tenant_id: str, contact: dict) -> bool:
+    """True when the business already serves this person: their company has a client
+    workspace, or they are on a won deal. Client work is not a new lead to win."""
+    if contact.get("company_id") and await db.workspaces.find_one(
+            {"tenant_id": tenant_id, "company_id": contact["company_id"],
+             "archived_at": None}, {"_id": 1}):
+        return True
+    won = (await stage_classes(db, tenant_id))[STAGE_WON] | set(LEGACY_WON_STAGES)
+    return bool(await db[DEALS].find_one(
+        {"tenant_id": tenant_id, "contact_ids": contact["id"], "stage": {"$in": list(won)},
+         "archived_at": None}, {"_id": 1}))
+
+
+def _name_key(name: Optional[str]) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+
+
+# Where a contact's id is recorded, so a merge can move every reference at once.
+# (collection, field, kind): kind "value" is a scalar field, "array" a list of ids,
+# "related" a related_type/related_id pair.
+CONTACT_REFERENCES = (
+    (DEALS, "contact_ids", "array"),
+    (TASKS, "related_id", "related"),
+    (ACTIVITIES, "related_id", "related"),
+    ("web_enquiries", "contact_id", "value"),
+    ("appointments", "contact_id", "value"),
+    ("conversations", "contact_id", "value"),
+    ("crm_communications", "contact_ids", "array"),
+)
+
+
+# Where a person stands with the business. Set by hand, or by the CRM: a website lead
+# starts as "lead", and winning a deal makes everyone on it a "customer".
+LIFECYCLE_STAGES = ("lead", "qualified", "customer", "former_customer", "partner", "other")
+
+
+async def promote_to_customers(db, tenant_id: str, contact_ids: Iterable[str], actor: str) -> int:
+    """Everyone on a won deal is a customer, unless someone already said otherwise
+    (a partner stays a partner). Called wherever a person can end up on a won deal: the
+    deal is moved to won, created already won, or has people added once won."""
+    ids = [cid for cid in dict.fromkeys(contact_ids) if cid]
+    if not ids:
+        return 0
+    result = await db[CONTACTS].update_many(
+        {"tenant_id": tenant_id, "id": {"$in": ids}, "lifecycle": {"$in": [None, "lead", "qualified"]}},
+        {"$set": {"lifecycle": "customer", "updated_at": _iso()},
+         "$push": {"history": _history_entry("lifecycle_set", actor, {"lifecycle": "customer", "how": "deal won"})}})
+    return result.modified_count
+
+
+async def is_won_stage(db, tenant_id: str, stage: Optional[str]) -> bool:
+    return classify_stage(stage, await stage_classes(db, tenant_id)) == STAGE_WON
+
+
+def check_lifecycle(value: Optional[str]) -> Optional[str]:
+    if value is not None and value not in LIFECYCLE_STAGES:
+        raise ValueError(f"lifecycle must be one of {', '.join(LIFECYCLE_STAGES)}")
+    return value
+
+
 # ------------------------------------------------------------------- request payloads
+
+class CleanupApply(BaseModel):
+    action: str = Field(pattern="^(create_typed_companies|link_by_domain|set_lifecycle)$")
+    contact_ids: Optional[list[str]] = Field(default=None, max_length=500)
+
+
+class MergeInput(BaseModel):
+    into_id: str = Field(min_length=1, max_length=80)
+
 
 class ContactPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
@@ -345,6 +513,13 @@ class ContactPatch(BaseModel):
     owner: Optional[str] = Field(default=None, max_length=200)
     influence: Optional[str] = None
     sentiment: Optional[str] = None
+    lifecycle: Optional[str] = None
+    custom_fields: Optional[dict] = None
+
+    @field_validator("lifecycle")
+    @classmethod
+    def _lifecycle_known(cls, value: Optional[str]) -> Optional[str]:
+        return check_lifecycle(value)
 
 
 class CompanyPatch(BaseModel):
@@ -355,6 +530,7 @@ class CompanyPatch(BaseModel):
     tier: Optional[str] = Field(default=None, max_length=60)
     owner: Optional[str] = Field(default=None, max_length=200)
     annual_value: Optional[float] = Field(default=None, ge=0)
+    custom_fields: Optional[dict] = None
 
 
 class DealPatch(BaseModel):
@@ -370,6 +546,7 @@ class DealPatch(BaseModel):
     owner: Optional[str] = Field(default=None, max_length=200)
     expected_close_date: Optional[str] = None
     description: Optional[str] = Field(default=None, max_length=4000)
+    custom_fields: Optional[dict] = None
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -499,6 +676,33 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                            user["email"], payload={"changed": sorted(changed)})
         return await load(collection, record_id, user)
 
+    async def patch_with_custom(collection: str, object_name: str, record_id: str, user,
+                                changes: dict, event_type: str, resource_type: str) -> dict:
+        """`apply_patch`, plus admin-defined field values checked against their types.
+
+        Custom values are compared and stored one key at a time under `custom_fields.`,
+        so setting one field never overwrites the answers a website form captured.
+        """
+        values = changes.pop("custom_fields", None)
+        if values:
+            updates = await record_fields.value_updates(db, tenant_of(user), object_name, values)
+            existing = await load(collection, record_id, user)
+            current = existing.get("custom_fields") or {}
+            changed = {k: v for k, v in updates.items() if current.get(k) != v}
+            if changed:
+                await db[collection].update_one(
+                    {"id": record_id, "tenant_id": tenant_of(user)},
+                    {"$set": {**{f"custom_fields.{k}": v for k, v in changed.items()},
+                              "updated_at": now_iso()},
+                     "$push": {"history": _history_entry(
+                         "updated", user["email"],
+                         {"changed": [f"custom_fields.{k}" for k in sorted(changed)],
+                          "from": {f"custom_fields.{k}": current.get(k) for k in changed}})}})
+                await record_event(event_type, resource_type, record_id, tenant_of(user),
+                                   user["email"],
+                                   payload={"changed": [f"custom_fields.{k}" for k in sorted(changed)]})
+        return await apply_patch(collection, record_id, user, changes, event_type, resource_type)
+
     def text_filter(collection: str, term: Optional[str]) -> dict:
         if not term or not term.strip():
             return {}
@@ -565,6 +769,228 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     # ------------------------------------------------------------------------ contacts
 
+    # ---------------------------------------------------------------- clean-up
+
+    async def cleanup_scan(tenant: str) -> dict:
+        contacts = await db[CONTACTS].find(
+            {"tenant_id": tenant, "archived_at": None},
+            {"_id": 0, "id": 1, "name": 1, "email": 1, "company_id": 1, "custom_fields": 1,
+             "created_at": 1, "lifecycle": 1, "last_inquiry_at": 1}).to_list(5000)
+        companies = await db[COMPANIES].find(
+            {"tenant_id": tenant, "archived_at": None},
+            {"_id": 0, "id": 1, "name": 1, "domain": 1, "website": 1}).to_list(5000)
+        by_domain: dict[str, dict] = {}
+        by_name = {_name_key(c.get("name")): c for c in companies if c.get("name")}
+        for company in companies:
+            for domain in (company.get("domain"), website_domain(company.get("website"))):
+                if domain:
+                    by_domain.setdefault(str(domain).lower(), company)
+        # Company names people typed into a form, for contacts not yet linked to one.
+        typed: dict[str, dict] = {}
+        domain_matches = []
+        for contact in contacts:
+            if contact.get("company_id"):
+                continue
+            custom = contact.get("custom_fields") or {}
+            name = next((str(custom[k]).strip() for k in ("company", "custom_company", "company_name")
+                         if str(custom.get(k) or "").strip()), "")
+            domain = business_domain(contact.get("email"))
+            if name:
+                group = typed.setdefault(_name_key(name), {
+                    "name": name[:200], "contact_ids": [],
+                    "existing_company_id": (by_name.get(_name_key(name)) or {}).get("id")})
+                group["contact_ids"].append(contact["id"])
+            elif domain and domain in by_domain:
+                company = by_domain[domain]
+                domain_matches.append({"contact_id": contact["id"], "contact_name": contact.get("name"),
+                                       "company_id": company["id"], "company_name": company.get("name"),
+                                       "domain": domain})
+        groups: dict[str, list[dict]] = {}
+        for contact in contacts:
+            email = str(contact.get("email") or "").strip().lower()
+            if email:
+                groups.setdefault(f"email:{email}", []).append(contact)
+        grouped = {c["id"] for members in groups.values() if len(members) > 1 for c in members}
+        for contact in contacts:
+            key = _name_key(contact.get("name"))
+            if key and contact["id"] not in grouped:
+                groups.setdefault(f"name:{key}", []).append(contact)
+        duplicates = [
+            {"reason": "same email" if key.startswith("email:") else "same name",
+             "contacts": [{k: c.get(k) for k in ("id", "name", "email", "company_id", "created_at")}
+                          for c in sorted(members, key=lambda c: c.get("created_at") or "")]}
+            for key, members in groups.items() if len(members) > 1][:50]
+        return {"typed_companies": list(typed.values())[:100],
+                "domain_matches": domain_matches[:100], "duplicates": duplicates,
+                "lifecycle": await lifecycle_suggestions(tenant, contacts)}
+
+    async def lifecycle_suggestions(tenant: str, contacts: list[dict]) -> dict:
+        """A lifecycle stage for people who have none, read from their history: on a won
+        deal or at a company with a client workspace -> customer; on an open deal or with a
+        website enquiry -> lead. Anyone else is left for a person to decide."""
+        unset = [c for c in contacts if not c.get("lifecycle")]
+        if not unset:
+            return {"customer": [], "lead": []}
+        classes = await stage_classes(db, tenant)
+        won = classes[STAGE_WON] | set(LEGACY_WON_STAGES)
+        closed = won | classes[STAGE_LOST] | set(LEGACY_LOST_STAGES)
+        deals = await db[DEALS].find(
+            {"tenant_id": tenant, "archived_at": None, "contact_ids": {"$in": [c["id"] for c in unset]}},
+            {"_id": 0, "contact_ids": 1, "stage": 1}).to_list(10000)
+        on_won = {cid for d in deals if d.get("stage") in won for cid in d.get("contact_ids") or []}
+        on_open = {cid for d in deals if d.get("stage") not in closed for cid in d.get("contact_ids") or []}
+        served = {w["company_id"] for w in await db.workspaces.find(
+            {"tenant_id": tenant, "archived_at": None, "company_id": {"$ne": None}},
+            {"_id": 0, "company_id": 1}).to_list(5000)}
+        customer, lead = [], []
+        for contact in unset:
+            if contact["id"] in on_won or (contact.get("company_id") in served):
+                customer.append(contact["id"])
+            elif contact["id"] in on_open or contact.get("last_inquiry_at"):
+                lead.append(contact["id"])
+        return {"customer": customer[:1000], "lead": lead[:1000]}
+
+    @router.get("/contacts/cleanup")
+    async def contacts_cleanup(user=Depends(get_current_user)):
+        """What would tidy the contact list: companies typed in forms but never created,
+        contacts whose work email matches a company, and people entered twice."""
+        return await cleanup_scan(tenant_of(user))
+
+    @router.post("/contacts/cleanup/apply")
+    async def contacts_cleanup_apply(inp: CleanupApply, user=Depends(get_current_user)):
+        tenant = tenant_of(user)
+        scan = await cleanup_scan(tenant)
+        wanted = set(inp.contact_ids or [])
+        linked = created = 0
+        if inp.action == "create_typed_companies":
+            for group in scan["typed_companies"]:
+                for contact_id in group["contact_ids"]:
+                    if wanted and contact_id not in wanted:
+                        continue
+                    contact = await db[CONTACTS].find_one(
+                        {"id": contact_id, "tenant_id": tenant}, {"_id": 0})
+                    if not contact:
+                        continue
+                    company_id, how = await link_contact_company(
+                        db, tenant, contact, group["name"], new_id=new_id, now_iso=now_iso,
+                        actor=user["email"], record_event=record_event)
+                    linked += bool(company_id)
+                    created += how == "created"
+        elif inp.action == "set_lifecycle":
+            for stage in ("customer", "lead"):
+                ids = [cid for cid in scan["lifecycle"][stage] if not wanted or cid in wanted]
+                if not ids:
+                    continue
+                # Only people still without a stage: one set by hand meanwhile stays.
+                result = await db[CONTACTS].update_many(
+                    {"tenant_id": tenant, "id": {"$in": ids}, "lifecycle": None},
+                    {"$set": {"lifecycle": stage, "updated_at": now_iso()},
+                     "$push": {"history": _history_entry("lifecycle_set", user["email"],
+                                                         {"lifecycle": stage, "how": "clean-up"})}})
+                linked += result.modified_count
+        else:
+            for match in scan["domain_matches"]:
+                if wanted and match["contact_id"] not in wanted:
+                    continue
+                result = await db[CONTACTS].update_one(
+                    {"id": match["contact_id"], "tenant_id": tenant, "company_id": None},
+                    {"$set": {"company_id": match["company_id"], "updated_at": now_iso()},
+                     "$push": {"history": _history_entry("company_linked", user["email"],
+                                                         {"company_id": match["company_id"],
+                                                          "how": "email domain"})}})
+                linked += result.modified_count
+        await record_event("contacts.cleaned_up", "contact", tenant, tenant, user["email"],
+                           payload={"action": inp.action, "linked": linked, "created": created})
+        return {"action": inp.action, "linked": linked, "created_companies": created}
+
+    async def mark_merging(tenant: str, source_id: str, target_id: str) -> None:
+        """Record the destination before anything moves, so a merge that stops part-way
+        is recognised as the same merge when it is run again."""
+        await db[CONTACTS].update_one({"id": source_id, "tenant_id": tenant},
+                                      {"$set": {"merged_into": target_id}})
+
+    @router.post("/contacts/{contact_id}/merge")
+    async def merge_contact(contact_id: str, inp: MergeInput, user=Depends(get_current_user)):
+        """Fold one contact into another: every deal, task, activity, enquiry, appointment
+        and conversation moves to the kept record, which fills its empty fields from the
+        duplicate. The duplicate is archived with `merged_into`, so it can be found.
+
+        Every step is safe to repeat, so a merge interrupted part-way is finished by
+        running it again: references already moved simply match nothing."""
+        if inp.into_id == contact_id:
+            raise HTTPException(status_code=422, detail="Choose a different contact to merge into")
+        tenant = tenant_of(user)
+        source = await load(CONTACTS, contact_id, user)
+        target = await load(CONTACTS, inp.into_id, user)
+        if target.get("archived_at"):
+            raise HTTPException(status_code=422, detail="Restore the contact you are keeping first")
+        if source.get("merged_into") and source["merged_into"] != target["id"]:
+            raise HTTPException(status_code=422, detail="That contact was already merged into another one")
+        # A repeat of a finished or interrupted merge: the fields and inquiries were
+        # already folded in, so only the references and the archive step run again.
+        repeat = source.get("merged_into") == target["id"]
+        now = now_iso()
+        sets: dict[str, Any] = {"updated_at": now}
+        for key in ("email", "phone", "phone_digits", "title", "role", "company_id", "owner",
+                    "consent", "lead_source", "source"):
+            if not target.get(key) and source.get(key):
+                sets[key] = source[key]
+        for key, value in (source.get("custom_fields") or {}).items():
+            if (target.get("custom_fields") or {}).get(key) in (None, ""):
+                sets[f"custom_fields.{key}"] = value
+        if not repeat:
+            await mark_merging(tenant, source["id"], target["id"])
+        await db[CONTACTS].update_one(
+            {"id": target["id"], "tenant_id": tenant},
+            {"$set": sets} if repeat else {"$set": sets,
+             "$addToSet": {"tags": {"$each": list(source.get("tags") or [])}},
+             "$push": {"inquiries": {"$each": list(source.get("inquiries") or []), "$slice": -50},
+                       "history": _history_entry("merged", user["email"],
+                                                 {"merged_contact_id": source["id"],
+                                                  "merged_name": source.get("name")})}})
+        moved: dict[str, int] = {}
+        for collection, field, kind in CONTACT_REFERENCES:
+            if kind == "related":
+                result = await db[collection].update_many(
+                    {"tenant_id": tenant, "related_type": "contact", field: source["id"]},
+                    {"$set": {field: target["id"]}})
+                moved[collection] = result.modified_count
+            elif kind == "value":
+                result = await db[collection].update_many(
+                    {"tenant_id": tenant, field: source["id"]}, {"$set": {field: target["id"]}})
+                moved[collection] = result.modified_count
+            else:
+                count = 0
+                async for row in db[collection].find({"tenant_id": tenant, field: source["id"]},
+                                                     {"_id": 0, "id": 1, field: 1}):
+                    ids = [target["id"] if i == source["id"] else i for i in row.get(field) or []]
+                    await db[collection].update_one(
+                        {"id": row["id"], "tenant_id": tenant},
+                        {"$set": {field: list(dict.fromkeys(ids))}})
+                    count += 1
+                moved[collection] = count
+        count = 0
+        async for row in db.conversations.find(
+                {"tenant_id": tenant,
+                 "participants": {"$elemMatch": {"kind": "contact", "id": source["id"]}}},
+                {"_id": 0, "id": 1, "participants": 1}):
+            participants = [
+                {**p, "id": target["id"]} if p.get("kind") == "contact" and p.get("id") == source["id"]
+                else p for p in row.get("participants") or []]
+            await db.conversations.update_one({"id": row["id"], "tenant_id": tenant},
+                                              {"$set": {"participants": participants}})
+            count += 1
+        moved["conversation participants"] = count
+        await db[CONTACTS].update_one(
+            {"id": source["id"], "tenant_id": tenant},
+            {"$set": {"archived_at": now, "merged_into": target["id"], "updated_at": now},
+             "$push": {"history": _history_entry("merged_into", user["email"],
+                                                 {"contact_id": target["id"]})}})
+        await record_event("contact.merged", "contact", target["id"], tenant, user["email"],
+                           payload={"merged_contact_id": source["id"], "moved": moved})
+        kept = await db[CONTACTS].find_one({"id": target["id"], "tenant_id": tenant}, {"_id": 0})
+        return {"contact": kept, "merged_contact_id": source["id"], "moved": moved}
+
     @router.get("/contacts/{contact_id}")
     async def get_contact(contact_id: str, user=Depends(get_current_user)):
         """One contact with the context that makes it worth opening."""
@@ -604,8 +1030,8 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             changes["phone"] = (changes["phone"] or "").strip() or None
             changes["phone_digits"] = phone_digits(changes["phone"]) or None
         await assert_exists(COMPANIES, changes.get("company_id"), user, "company_id")
-        return await apply_patch(CONTACTS, contact_id, user, changes,
-                                 "contact.updated", "contact")
+        return await patch_with_custom(CONTACTS, "contacts", contact_id, user, changes,
+                                       "contact.updated", "contact")
 
     @router.post("/contacts/{contact_id}/archive")
     async def archive_contact(contact_id: str, user=Depends(get_current_user)):
@@ -663,8 +1089,8 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
     async def update_company(company_id: str, inp: CompanyPatch,
                              user=Depends(get_current_user)):
         changes = inp.model_dump(exclude_unset=True)
-        return await apply_patch(COMPANIES, company_id, user, changes,
-                                 "company.updated", "company")
+        return await patch_with_custom(COMPANIES, "companies", company_id, user, changes,
+                                       "company.updated", "company")
 
     @router.post("/companies/{company_id}/archive")
     async def archive_company(company_id: str, user=Depends(get_current_user)):
@@ -761,8 +1187,11 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 raise HTTPException(status_code=422,
                                     detail=f"Unknown contact_id(s): {', '.join(unknown[:5])}")
             changes["contact_ids"] = contact_ids
-        return await apply_patch(DEALS, deal_id, user, changes, "opportunity.updated",
-                                 "opportunity")
+        deal = await patch_with_custom(DEALS, "deals", deal_id, user, changes,
+                                       "opportunity.updated", "opportunity")
+        if changes.get("contact_ids") and await is_won_stage(db, tenant_of(user), deal.get("stage")):
+            await promote_to_customers(db, tenant_of(user), changes["contact_ids"], user["email"])
+        return deal
 
     @router.post("/opportunities/{deal_id}/archive")
     async def archive_deal(deal_id: str, user=Depends(get_current_user)):

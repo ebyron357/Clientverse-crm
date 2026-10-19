@@ -152,8 +152,9 @@ LOCATION_KINDS = {
 }
 
 # The website-forms catalogue fields a booking page may ask, beyond name and email.
-QUESTION_KEYS = ("phone", "property_address", "listing_id", "pre_approved", "working_with_agent",
-                 "timeline", "price_max", "message", "consent_sms", "consent_email")
+QUESTION_KEYS = ("phone", "company", "property_address", "listing_id", "pre_approved",
+                 "working_with_agent", "timeline", "price_max", "message", "consent_sms",
+                 "consent_email")
 IDENTITY_FIELDS = (("first_name", True), ("last_name", True), ("email", True))
 
 RESERVED_KEYS = {"manage", "embed", "embed-js"}
@@ -167,6 +168,22 @@ def _q(*spec: tuple) -> list[dict]:
 
 
 PRESETS: dict[str, dict] = {
+    # The page a business of any kind starts from: no property, no showing, no
+    # commission. The real-estate pages below are one industry's set.
+    "meeting": {
+        "label": "Meeting", "duration": 30, "before": 0, "after": 10,
+        "notice_hours": 2, "days_ahead": 60, "interval": 15,
+        "description": "Pick a time that suits you and tell us what you would like to cover.",
+        "location": {"kind": "phone", "text": ""},
+        "questions": _q(("phone", False), ("company", False), ("message", False),
+                        ("consent_sms", False)),
+        "opportunity": True,
+        "task": {"enabled": True, "lead_minutes": 60,
+                 "title": "Prepare for the {type} with {name}"},
+        "reminders": [24, 1],
+        "confirmation": "You're booked. If anything changes, use the link below to reschedule "
+                        "or cancel.",
+    },
     "home_showing": {
         "label": "Home showing", "duration": 30, "before": 15, "after": 15,
         "notice_hours": 2, "days_ahead": 30, "interval": 30,
@@ -222,6 +239,8 @@ PRESETS: dict[str, dict] = {
     },
 }
 DEFAULT_PRESET_ORDER = ("home_showing", "buyer_consultation", "listing_appointment", "phone_call")
+# Pages whose deal value is the agent's expected commission on a property price.
+COMMISSION_PRESETS = frozenset({"home_showing", "buyer_consultation", "listing_appointment"})
 
 
 # ------------------------------------------------------------------------ helpers
@@ -440,7 +459,8 @@ def new_event_type(preset_key: str, *, tenant_id: str, name: Optional[str], crea
         "questions": [dict(q) for q in preset["questions"]],
         "confirmation_message": preset["confirmation"],
         "opportunity": {"enabled": preset["opportunity"], "stage": None,
-                        "value_mode": "commission", "fixed_value": 0.0,
+                        "value_mode": "commission" if preset_key in COMMISSION_PRESETS else "fixed",
+                        "fixed_value": 0.0,
                         "commission_rate": 2.5, "currency": "USD"},
         "prep_task": dict(preset["task"]),
         "reminders": {"hours": list(preset["reminders"])},
@@ -2064,7 +2084,7 @@ def register_booking_routes(router, db, *, pipeline: wf.LeadPipeline, new_id, no
 
     @router.post("/booking/event-types")
     async def create_event_type(inp: EventTypeInput, user=Depends(require_role("admin"))):
-        preset = inp.preset or "home_showing"
+        preset = inp.preset or "meeting"
         if preset not in PRESETS:
             raise HTTPException(status_code=422, detail=f"preset must be one of {', '.join(PRESETS)}")
         doc = new_event_type(preset, tenant_id=user["tenant_id"], name=inp.name, creator=user["email"],

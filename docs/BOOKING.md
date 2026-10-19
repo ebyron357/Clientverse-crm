@@ -91,7 +91,7 @@ Signed-in (`Authorization: Bearer …`):
 | `GET /api/booking/status` | all | email channel, Google Calendar account, emails waiting for approval |
 | `GET /api/booking/hosts` | all | active team members, with time zones |
 | `GET /api/booking/event-types` · `GET …/{id}` | all | booking pages, with links and embed codes |
-| `POST /api/booking/event-types` | admin | new page from a preset |
+| `POST /api/booking/event-types` | admin | new page from a preset; without one, the neutral `meeting` preset |
 | `POST /api/booking/event-types/defaults` | admin | the four presets, plus your default hours (`{"timezone"}`) |
 | `PATCH /api/booking/event-types/{id}` | admin | change a page |
 | `GET /api/booking/event-types/{id}/slots?start&end&tz&ignore` | all | free times for an agent rescheduling (no minimum notice) |

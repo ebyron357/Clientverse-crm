@@ -217,7 +217,7 @@ GHL behaviour is taken from GHL's help-centre and tutorial material:
 
 | GHL option | ClientVerse | Notes |
 |---|---|---|
-| Field builder, standard + custom fields, reorder, required | ✅ | Real-estate catalogue of 24 fields plus custom text / long text / dropdown / checkbox / number / date |
+| Field builder, standard + custom fields, reorder, required | ✅ | Catalogue of 25 fields (real-estate fields plus Company) plus custom text / long text / dropdown / checkbox / number / date |
 | Templates | ✅ | 8 real-estate templates |
 | Hidden fields / URL capture (UTM, source, page) | ✅ | Automatic: page, referrer, landing page, UTM ×5, gclid, fbclid; listing prefill from the page or URL |
 | T&C / SMS consent checkbox | ✅ | Wording configurable; stored with evidence (time, IP, page, user agent) |

@@ -1,119 +1,152 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import { api } from "@/lib/api";
 import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
 import BrandMark from "@/components/BrandMark";
-import { CLIENTVERSE_MODULES, getModuleByRoute, MODULE_GROUPS, MODULE_STATES, PINNED_GROUPS } from "@/platform/modules";
-import { ChevronDown, ChevronRight, LogOut, Menu, Monitor, Moon, PanelLeft, Plus, Search, Sun, X } from "lucide-react";
+import { Avatar } from "@/components/page/Page";
+import { breadcrumbFor, MAIN_MENU, menuEntryFor, SETTINGS_ENTRY } from "@/platform/navigation";
+import { ChevronRight, LogOut, Menu, Monitor, Moon, PanelLeft, Plus, Search, Sun, X } from "lucide-react";
 
-// Which optional navigation groups a person has opened. Pinned groups are always open.
-const OPEN_GROUPS_KEY = "cv.nav.open-groups";
-const readOpenGroups = () => {
-  try { return new Set(JSON.parse(window.localStorage.getItem(OPEN_GROUPS_KEY) || "[]")); }
-  catch { return new Set(); }
+// A per-browser convenience: whether the main menu is shrunk to icons on a wide screen.
+const COLLAPSED_KEY = "cv.nav.collapsed";
+const readCollapsed = () => {
+  try { return window.localStorage.getItem(COLLAPSED_KEY) === "1"; } catch { return false; }
 };
+const WIDE = "(min-width: 1024px)";
+const isWide = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(WIDE).matches;
+const SHORTCUT = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "") ? "⌘K" : "Ctrl K";
+
+// The counts beside menu items. Each comes from an endpoint a page already reads, so the
+// badge agrees with what the page shows. A failed or zero count shows no badge.
+const OPEN_TASK_STATUSES = "todo,in_progress,blocked";
+const COUNT_SOURCES = {
+  leads: () => api.get("/leads/summary").then(({ data }) => data?.open_now),
+  inbox: () => api.get("/conversations/summary").then(({ data }) => data?.open_conversations),
+  // The Tasks page's Overdue tab in its default view: my open tasks past due, plus unowned ones.
+  tasks: () => api.get("/tasks", {
+    params: { status: OPEN_TASK_STATUSES, due_before: new Date(Date.now() - 1).toISOString(), mine: true, include_unassigned: true, limit: 1 },
+  }).then(({ data }) => data?.total),
+  approvals: () => api.get("/approval-queue/summary").then(({ data }) => data?.awaiting_decision),
+};
+
+/** Fetches every count when the shell mounts and again whenever the page changes; never blocks rendering. */
+function useMenuCounts(locationKey) {
+  const [counts, setCounts] = useState({});
+  const latest = useRef(0);
+  useEffect(() => {
+    const run = ++latest.current;
+    const keys = Object.keys(COUNT_SOURCES);
+    Promise.allSettled(keys.map((key) => COUNT_SOURCES[key]())).then((results) => {
+      if (run !== latest.current) return;
+      setCounts(Object.fromEntries(keys.map((key, index) => {
+        const value = results[index].status === "fulfilled" ? Number(results[index].value) : 0;
+        return [key, Number.isFinite(value) && value > 0 ? value : 0];
+      })));
+    });
+  }, [locationKey]);
+  return counts;
+}
 
 export default function AppShell() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedPreference, setCollapsedPreference] = useState(readCollapsed);
+  const [wide, setWide] = useState(isWide);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
-  const [openGroups, setOpenGroups] = useState(readOpenGroups);
-  const activeModule = useMemo(() => getModuleByRoute(location.pathname), [location.pathname]);
-  // A tab of a shared page (Unified Inbox is /operations?tab=conversations) belongs to its
-  // own group, so the full route decides which group opens; the page decides the heading.
-  const navModule = useMemo(() => getModuleByRoute(`${location.pathname}${location.search}`) || activeModule,
-    [location.pathname, location.search, activeModule]);
-  // Top bar breadcrumb: the section, then the page. The page itself carries the detail.
-  const crumbs = location.pathname.startsWith("/workspaces/")
-    ? ["Client Success", "Client 360"]
-    : activeModule ? [activeModule.group, activeModule.label] : ["ClientVerse"];
+  // The drawer on a narrow screen always shows labels; only a wide screen shrinks to icons.
+  const collapsed = collapsedPreference && wide;
+  const activeEntry = useMemo(() => menuEntryFor(location), [location]);
+  const crumbs = useMemo(() => breadcrumbFor(location), [location]);
+  const counts = useMenuCounts(`${location.pathname}${location.search}`);
+  const isAdmin = user?.role === "admin";
+  const menu = MAIN_MENU.filter((entry) => !entry.adminOnly || isAdmin);
 
-  useEffect(() => { setMobileOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return undefined;
+    const query = window.matchMedia(WIDE);
+    const update = () => setWide(query.matches);
+    query.addEventListener?.("change", update);
+    return () => query.removeEventListener?.("change", update);
+  }, []);
+  useEffect(() => { setMobileOpen(false); }, [location.pathname, location.search]);
+  const setCollapsed = (value) => {
+    setCollapsedPreference(value);
+    try { window.localStorage.setItem(COLLAPSED_KEY, value ? "1" : "0"); } catch { /* storage unavailable */ }
+  };
   const doLogout = async () => { await logout(); navigate("/login"); };
   const triggerQuickCreate = () => setQuickCreateOpen(true);
-  const toggleGroup = (group) => setOpenGroups((current) => {
-    const next = new Set(current);
-    if (next.has(group)) next.delete(group); else next.add(group);
-    try { window.localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify([...next])); } catch { /* storage unavailable */ }
-    return next;
-  });
-  const initials = user?.name?.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase() || "CV";
 
   return <div className="min-h-screen bg-canvas text-foreground">
-    {mobileOpen && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-foreground/40 backdrop-blur-[1px] lg:hidden" onClick={() => setMobileOpen(false)} />}
-    <aside className={`fixed inset-y-0 left-0 z-40 flex flex-col overflow-hidden bg-canvas transition-[width,transform] duration-200 max-lg:border-r max-lg:border-border max-lg:shadow-xl lg:translate-x-0 ${collapsed ? "w-[68px]" : "w-[252px]"} ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
-      <div className={`flex h-14 shrink-0 items-center ${collapsed ? "justify-center" : "justify-between pl-4 pr-2"}`}>
-        <button className="flex min-w-0 items-center gap-2.5 rounded-md text-left" onClick={() => navigate("/dashboard")} aria-label="Go to ClientVerse command center">
-          <BrandMark className="size-7" />
-          {!collapsed && <span className="truncate text-[15px] font-semibold tracking-tight text-foreground">ClientVerse</span>}
+    {mobileOpen && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-sidebar/60 backdrop-blur-[1px] lg:hidden" onClick={() => setMobileOpen(false)} />}
+    <aside className={`fixed inset-y-0 left-0 z-40 flex w-[260px] flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width,transform] duration-200 lg:translate-x-0 ${collapsed ? "lg:w-[68px]" : "lg:w-[228px]"} ${mobileOpen ? "translate-x-0 max-lg:shadow-2xl" : "-translate-x-full"}`} data-testid="app-sidebar">
+      <div className={`flex h-[60px] shrink-0 items-center ${collapsed ? "justify-center" : "justify-between pl-4 pr-2"}`}>
+        <button className="flex min-w-0 items-center gap-2.5 rounded-lg text-left" onClick={() => navigate("/dashboard")} aria-label="Go to Today">
+          <BrandMark className="size-[30px]" />
+          {!collapsed && <span className="truncate text-[15px] font-bold tracking-tight text-sidebar-active-foreground">ClientVerse</span>}
         </button>
         {!collapsed && <>
-          <button className="hidden rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground lg:inline-flex" onClick={() => setCollapsed(true)} aria-label="Collapse navigation"><PanelLeft className="size-4" /></button>
-          <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-4" /></button>
+          <button className="hidden rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground lg:inline-flex" onClick={() => setCollapsed(true)} aria-label="Collapse navigation" title="Collapse navigation"><PanelLeft className="size-4" /></button>
+          <button className="rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-4" /></button>
         </>}
       </div>
-      <div className={collapsed ? "flex flex-col items-center gap-1 px-2 pb-2" : "px-3 pb-2"}>
-        {collapsed && <button className="mb-1 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => setCollapsed(false)} aria-label="Expand navigation"><PanelLeft className="size-4" /></button>}
-        <button onClick={() => setCommandOpen(true)} className={`flex items-center rounded-md border border-border bg-card text-[13px] text-muted-foreground shadow-xs transition-colors hover:border-input hover:text-foreground ${collapsed ? "size-9 justify-center" : "h-8 w-full gap-2 px-2.5"}`} aria-label="Search or jump to a page">
-          <Search className="size-3.5 shrink-0" />
-          {!collapsed && <><span className="flex-1 text-left">Search</span><kbd className="cv-kbd">⌘K</kbd></>}
-        </button>
-      </div>
-      <nav aria-label="Primary navigation" className={`cv-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pb-4 ${collapsed ? "px-2" : "px-3"}`}>
-        {MODULE_GROUPS.map((group) => {
-          const items = CLIENTVERSE_MODULES.filter((item) => item.group === group && (!item.adminOnly || user?.role === "admin"));
-          if (!items.length) return null;
-          const pinned = PINNED_GROUPS.includes(group);
-          const containsActive = items.some((item) => item.id === navModule?.id);
-          const open = collapsed || pinned || containsActive || openGroups.has(group);
-          const listId = `nav-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-          return <section key={group} aria-label={group}>
-            {!collapsed && (pinned
-              ? <div className="mb-0.5 px-2 py-1 text-xs font-medium text-muted-foreground">{group}</div>
-              : <button type="button" onClick={() => toggleGroup(group)} aria-expanded={open} aria-controls={listId} className="group mb-0.5 flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground">
-                  <span className="flex-1 text-left">{group}</span>
-                  <ChevronDown className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`} aria-hidden="true" />
-                </button>)}
-            {open && <div id={listId} className="flex flex-col gap-px">{items.map((item) => <SidebarLink key={item.id} item={item} collapsed={collapsed} active={item.id === navModule?.id} />)}</div>}
-          </section>;
-        })}
+      {collapsed && <div className="flex justify-center pb-2">
+        <button className="rounded-md p-2 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground" onClick={() => setCollapsed(false)} aria-label="Expand navigation" title="Expand navigation"><PanelLeft className="size-4" /></button>
+      </div>}
+
+      <nav aria-label="Main" className="flex min-h-0 flex-1 flex-col">
+        <ul className={`cv-scrollbar cv-sidebar-scroll flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pb-3 pt-1 ${collapsed ? "px-2" : "px-3"}`}>
+          {menu.map((entry) => <li key={entry.id}><MenuLink entry={entry} to={entry.route} collapsed={collapsed} active={activeEntry?.id === entry.id} count={entry.count ? counts[entry.count] : 0} /></li>)}
+        </ul>
+        {/* Pinned to the bottom, below the scrolling list. */}
+        <div className={`shrink-0 pb-1 ${collapsed ? "px-2" : "px-3"}`}>
+          <MenuLink entry={SETTINGS_ENTRY} to={SETTINGS_ENTRY.route} collapsed={collapsed} active={activeEntry?.id === SETTINGS_ENTRY.id} />
+        </div>
       </nav>
-      <div className={`shrink-0 border-t border-border/70 ${collapsed ? "p-2" : "p-3"}`}>
-        <div className={`flex items-center ${collapsed ? "flex-col gap-2" : "gap-2.5"}`}>
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand-strong" title={collapsed ? user?.name : undefined}>{initials}</div>
-          {!collapsed && <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium text-foreground">{user?.name}</div><div className="truncate text-xs text-muted-foreground">{user?.role === "admin" ? "Workspace admin" : "Team member"}</div></div>}
-          <ThemeButton />
-          <button onClick={doLogout} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out" title="Sign out"><LogOut className="size-4" /></button>
+      <div className={`shrink-0 border-t border-sidebar-border ${collapsed ? "px-2 py-3" : "p-3"}`}>
+        <div className={`flex items-center ${collapsed ? "flex-col gap-2" : "gap-2"}`}>
+          <span className="flex" title={collapsed ? user?.name : undefined}><Avatar name={user?.name || user?.email || "ClientVerse"} /></span>
+          {!collapsed && <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-semibold text-sidebar-active-foreground">{user?.name}</div>
+            <div className="truncate text-xs text-sidebar-muted">{isAdmin ? "Workspace admin" : "Team member"}</div>
+          </div>}
+          <div className={`flex shrink-0 items-center ${collapsed ? "flex-col gap-1" : "-mr-1"}`}>
+            <ThemeButton />
+            <button onClick={doLogout} className="rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground" aria-label="Sign out" title="Sign out" data-testid="sign-out-button"><LogOut className="size-4" /></button>
+          </div>
         </div>
       </div>
     </aside>
 
-    <div className={`min-h-screen transition-[margin] duration-200 lg:py-2 lg:pr-2 ${collapsed ? "lg:ml-[68px]" : "lg:ml-[252px]"}`}>
-      <div className="flex min-h-screen flex-col bg-background lg:min-h-[calc(100vh-1rem)] lg:rounded-xl lg:shadow-panel">
-        <header className="sticky top-0 z-20 border-b border-border/80 bg-background/85 backdrop-blur-xl lg:rounded-t-xl">
-          <div className="flex h-14 items-center gap-2 px-4 sm:px-6 lg:px-8">
-            <button onClick={() => setMobileOpen(true)} className="-ml-1 rounded-md p-2 text-muted-foreground hover:bg-accent lg:hidden" aria-label="Open navigation"><Menu className="size-5" /></button>
-            <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1.5 text-[13.5px]">
-              {crumbs.map((crumb, index) => <span key={crumb} className="flex min-w-0 items-center gap-1.5">
-                {index > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/70" aria-hidden="true" />}
-                <span className={`truncate ${index === crumbs.length - 1 ? "font-medium text-foreground" : "hidden text-muted-foreground sm:inline"}`} aria-current={index === crumbs.length - 1 ? "page" : undefined}>{crumb}</span>
-              </span>)}
-            </nav>
-            <button onClick={() => setCommandOpen(true)} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
-            <button onClick={triggerQuickCreate} className="hidden h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-xs hover:bg-primary/90 sm:flex"><Plus className="size-4" />Create</button>
-            <button onClick={triggerQuickCreate} className="inline-flex rounded-md bg-primary p-2 text-primary-foreground sm:hidden" aria-label="Quick create"><Plus className="size-4" /></button>
-            <NotificationBell />
-          </div>
-        </header>
-        <main className="flex-1 py-6 sm:py-8"><Outlet /></main>
-      </div>
+    <div className={`flex min-h-screen flex-col transition-[margin] duration-200 ${collapsed ? "lg:ml-[68px]" : "lg:ml-[228px]"}`}>
+      <header className="sticky top-0 z-20 border-b border-border bg-card/95 backdrop-blur-xl">
+        <div className="flex h-[60px] items-center gap-2 px-4 sm:gap-3 sm:px-6">
+          <button onClick={() => setMobileOpen(true)} className="-ml-1 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Open navigation" aria-expanded={mobileOpen}><Menu className="size-5" /></button>
+          <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
+            {crumbs.map((crumb, index) => <span key={`${index}-${crumb}`} className="flex min-w-0 items-center gap-1.5">
+              {index > 0 && <ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground/70 sm:block" aria-hidden="true" />}
+              <span className={`truncate ${index === crumbs.length - 1 ? "text-[15px] font-bold tracking-tight text-foreground" : "hidden font-medium text-muted-foreground sm:inline"}`} aria-current={index === crumbs.length - 1 ? "page" : undefined}>{crumb}</span>
+            </span>)}
+          </nav>
+          <button onClick={() => setCommandOpen(true)} className="hidden h-9 w-60 items-center gap-2 rounded-lg border border-border bg-canvas px-3 text-[13px] text-muted-foreground transition-colors hover:border-input hover:text-foreground md:flex lg:w-72 xl:w-[400px]" aria-label="Search or jump to a page" data-testid="global-search-button">
+            <Search className="size-4 shrink-0" aria-hidden="true" />
+            <span className="flex-1 truncate text-left">Search or jump to…</span>
+            <kbd className="cv-kbd">{SHORTCUT}</kbd>
+          </button>
+          <button onClick={() => setCommandOpen(true)} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground md:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
+          {/* The dark theme's brand blue is light, so the label turns dark on it (as Calendar's today does). */}
+          <button onClick={triggerQuickCreate} className="hidden h-9 items-center gap-1.5 rounded-lg bg-brand px-3.5 text-[13px] font-semibold text-brand-foreground shadow-xs transition-colors hover:bg-brand/90 dark:text-background sm:flex" data-testid="quick-create-button"><Plus className="size-4" aria-hidden="true" />Create</button>
+          <button onClick={triggerQuickCreate} className="inline-flex rounded-lg bg-brand p-2 text-brand-foreground dark:text-background sm:hidden" aria-label="Quick create"><Plus className="size-4" /></button>
+          <NotificationBell />
+        </div>
+      </header>
+      <main className="flex-1 py-5 sm:py-6"><Outlet /></main>
     </div>
     <GlobalCommandDialog open={commandOpen} onOpenChange={setCommandOpen} onQuickCreate={triggerQuickCreate} />
     <QuickCreateDialog open={quickCreateOpen} onOpenChange={setQuickCreateOpen} onCreated={(type, data) => { if (type === "workspace" && data?.id) navigate(`/workspaces/${data.id}`); else if (type === "opportunity") navigate("/pipeline"); else if (type === "company" || type === "contact") navigate("/directory"); }} />
@@ -132,18 +165,24 @@ function ThemeButton() {
   const current = THEMES[index];
   const next = THEMES[(index + 1) % THEMES.length];
   const Icon = current.icon;
-  return <button type="button" onClick={() => setTheme(next.value)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={`Theme: ${current.label}. Switch to ${next.label}`} title={`Theme: ${current.label}`} data-testid="theme-toggle"><Icon className="size-4" /></button>;
+  return <button type="button" onClick={() => setTheme(next.value)} className="rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground" aria-label={`Theme: ${current.label}. Switch to ${next.label}`} title={`Theme: ${current.label}`} data-testid="theme-toggle"><Icon className="size-4" /></button>;
 }
 
-/** One module link. Active is decided by the shell (path plus query), so two links that share a path never light up together. */
-function SidebarLink({ item, collapsed, active }) {
-  const Icon = item.icon;
-  const pending = item.state !== MODULE_STATES.AVAILABLE;
-  return <Link to={item.route} aria-current={active ? "page" : undefined} data-testid={`nav-${item.id}-link`} title={collapsed ? `${item.label}${pending ? " · contract pending" : ""}` : undefined} className={`group relative flex h-8 items-center rounded-md text-[13.5px] font-medium transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2"} ${active ? "bg-card text-foreground shadow-xs ring-1 ring-border" : "text-foreground/70 hover:bg-accent hover:text-foreground"}`}>
-    <>
-      <Icon className={`size-4 shrink-0 ${active ? "text-brand" : "text-muted-foreground group-hover:text-foreground"}`} />
-      {!collapsed && <><span className="min-w-0 flex-1 truncate">{item.label}</span>{pending && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Contract pending" aria-label="Backend contract pending" />}</>}
-    </>
+const countText = (count) => (count > 99 ? "99+" : String(count));
+
+/** One main menu link, with its count. Which link is current is decided by the shell (path plus query). */
+function MenuLink({ entry, to, collapsed, active, count = 0 }) {
+  const Icon = entry.icon;
+  const tone = entry.urgent ? "bg-sidebar-urgent text-sidebar-active-foreground" : "bg-sidebar-pill text-sidebar-foreground";
+  const summary = count > 0 ? `${countText(count)} ${entry.countLabel}` : "";
+  return <Link to={to} aria-current={active ? "page" : undefined} data-testid={entry.testid} title={collapsed ? [entry.label, summary].filter(Boolean).join(" · ") : undefined}
+    className={`group relative flex h-9 items-center rounded-[9px] text-[13.5px] font-semibold transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2.5"} ${active ? "bg-sidebar-accent text-sidebar-active-foreground" : "text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-active-foreground"}`}>
+    <Icon className={`size-[18px] shrink-0 ${active ? "text-sidebar-active-foreground" : "text-sidebar-muted group-hover:text-sidebar-foreground"}`} strokeWidth={1.85} aria-hidden="true" />
+    {collapsed ? <span className="sr-only">{entry.label}</span> : <span className="min-w-0 flex-1 truncate">{entry.label}</span>}
+    {count > 0 && <>
+      <span className="sr-only">{`, ${summary}`}</span>
+      <span aria-hidden="true" data-testid={`nav-${entry.id}-count`} className={`tabular flex items-center justify-center rounded-full font-bold leading-none ${tone} ${collapsed ? "absolute right-0.5 top-0.5 h-4 min-w-4 px-1 text-[10px] ring-2 ring-sidebar" : "h-5 min-w-5 px-1.5 text-[11px]"}`}>{countText(count)}</span>
+    </>}
   </Link>;
 }
 

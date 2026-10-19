@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { api, formatErr, formatMoney } from "@/lib/api";
 import { OUTCOME, currencyOptions, dateInputValue, daysInStage, dealCurrency, formatDay, isWebsiteLead, ownerLabel, ownerName, splitStages, stageAccent, stageOutcome } from "@/lib/pipeline";
 import { Avatar, PropertyList } from "@/components/page/Page";
+import { CustomFieldsSection } from "@/components/CustomFields";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -440,6 +441,8 @@ export default function DealRecord({ dealId, stages, owners, workspaces, current
           </div>
 
           {about.length > 0 && <PropertyList items={about} className="mt-5 border-t border-border pt-1" />}
+          <CustomFieldsSection object="deals" endpoint={`/opportunities/${deal.id}`} values={deal.custom_fields} isAdmin={currentUser?.role === "admin"} disabled={Boolean(deal.archived_at)} testid="deal-fields"
+            onSaved={async () => { const data = await load(); if (data) onChanged({ ...data.deal, contacts: form?.contacts || data.contacts }); }} />
 
           {!deal.archived_at && (
             <div className="mt-5 border-t border-border pt-4">

@@ -169,6 +169,7 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
 
   const details = present([
     { label: "Form", value: lead.form_name },
+    ...(lead.existing_client ? [{ label: "Relationship", value: "Existing client · no new deal opened" }] : []),
     { label: "Email", value: lead.email },
     { label: "Phone", value: lead.phone },
     ...Object.entries(fields).filter(([key]) => !SKIP_FIELDS.has(key)).map(([key, value]) => ({
@@ -304,6 +305,7 @@ function LeadRow({ lead, showStatus, onOpen }) {
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-[13px] font-medium text-foreground">{leadName(lead)}</span>
             {lead.is_test && <TestFlag />}
+            {lead.existing_client && <StatusDot tone="success" className="text-xs text-muted-foreground">Existing client</StatusDot>}
             {showStatus && <StatusDot tone={STATUS_TONE[lead.status]} className="text-xs text-muted-foreground">{STATUS_LABEL[lead.status]}</StatusDot>}
           </div>
           <div className="truncate text-xs text-muted-foreground">{meta}</div>
