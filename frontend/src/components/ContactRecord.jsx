@@ -15,7 +15,9 @@ import {
   ACTIVITY_KINDS, CALL_OUTCOMES, LEAD_STATUS_LABEL, OUTREACH_KINDS,
   agoLabel, fullDateLabel, historyEntries, stageLabel,
 } from "@/lib/contactHistory";
+import { lifecycleOf, LIFECYCLE } from "@/lib/recordFields";
 import { Avatar, PropertyList, StatusDot } from "@/components/page/Page";
+import { CustomFieldsSection } from "@/components/CustomFields";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -278,6 +280,7 @@ function formFrom(contact) {
     name: contact.name || "", phone: contact.phone || "", email: contact.email || "",
     company_id: contact.company_id || NONE, role: contact.role || "", title: contact.title || "",
     owner: contact.owner || NONE, influence: contact.influence || "medium", sentiment: contact.sentiment || "neutral",
+    lifecycle: contact.lifecycle || NONE,
   };
 }
 
@@ -299,6 +302,7 @@ function EditForm({ contact, companies, members, isAdmin, saving, onSave, onCanc
       company_id: form.company_id === NONE ? null : form.company_id,
       role: form.role.trim() || null, title: form.title.trim() || null,
       influence: form.influence, sentiment: form.sentiment,
+      lifecycle: form.lifecycle === NONE ? null : form.lifecycle,
     };
     if (isAdmin) payload.owner = form.owner === NONE ? null : form.owner;
     onSave(payload);
@@ -312,6 +316,16 @@ function EditForm({ contact, companies, members, isAdmin, saving, onSave, onCanc
       <div className="grid grid-cols-2 gap-3">
         <div className="grid gap-1.5"><Label htmlFor="contact-role" className={FIELD_LABEL}>Role</Label><Input id="contact-role" className={FIELD_INPUT} value={form.role} onChange={(event) => setField("role", event.target.value)} placeholder="e.g. Buyer" data-testid="contact-edit-role" /></div>
         <div className="grid gap-1.5"><Label htmlFor="contact-title" className={FIELD_LABEL}>Job title</Label><Input id="contact-title" className={FIELD_INPUT} value={form.title} onChange={(event) => setField("title", event.target.value)} placeholder="Optional" data-testid="contact-edit-title" /></div>
+      </div>
+      <div className="grid gap-1.5">
+        <Label htmlFor="contact-lifecycle" className={FIELD_LABEL}>Lifecycle stage</Label>
+        <Select value={form.lifecycle} onValueChange={(value) => setField("lifecycle", value)}>
+          <SelectTrigger id="contact-lifecycle" className="h-8 text-[13px]" data-testid="contact-edit-lifecycle"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>Not set</SelectItem>
+            {LIFECYCLE.map((stage) => <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
       </div>
       <div className="grid gap-1.5">
         <Label htmlFor="contact-company" className={FIELD_LABEL}>Company</Label>
@@ -544,6 +558,7 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
   const tags = (contact?.tags || []).filter((tag) => tag !== "website-lead");
   const relationship = RELATIONSHIP.find(([value]) => value === (contact?.sentiment || "neutral"));
   const influence = INFLUENCE.find(([value]) => value === (contact?.influence || "medium"));
+  const lifecycle = lifecycleOf(contact?.lifecycle);
 
   const details = contact && (editing ? (
     <EditForm contact={contact} companies={companies} members={members} isAdmin={isAdmin} saving={saving} onSave={save} onCancel={() => setEditing(false)} />
@@ -554,6 +569,7 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
         <PropertyList items={[
           { label: "Phone", value: contact.phone ? <a className={linkClass} href={`tel:${contact.phone}`}>{contact.phone}</a> : notSet() },
           { label: "Email", value: contact.email ? <a className={longLinkClass} href={`mailto:${contact.email}`} title={contact.email}>{contact.email}</a> : notSet() },
+          { label: "Lifecycle", value: lifecycle ? <StatusDot tone={lifecycle.tone}>{lifecycle.label}</StatusDot> : notSet("Not set"), testid: "contact-lifecycle" },
           company && { label: "Company", value: company.name },
           contact.role && { label: "Role", value: contact.role },
           contact.title && { label: "Job title", value: contact.title },
@@ -566,6 +582,8 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
           { label: "Added", value: fullDateLabel(contact.created_at) || "—" },
         ].filter(Boolean)} />
       </section>
+      <CustomFieldsSection object="contacts" endpoint={`/contacts/${contact.id}`} values={contact.custom_fields} isAdmin={isAdmin} disabled={Boolean(contact.archived_at)}
+        onSaved={async () => { await load(); onChanged?.(); }} testid="contact-fields" />
       {!contact.archived_at && (
         <section className="mt-6 border-t border-border pt-4">
           <Button variant="outline" size="sm" className="text-red-700" disabled={saving} onClick={() => setArchived(true)} data-testid="contact-archive"><Archive className="size-3.5" />Archive contact</Button>

@@ -3,11 +3,12 @@ import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Building2, Link2, Sparkles, Users } from "lucide-react";
+import { Building2, Flag, Link2, Sparkles, Users } from "lucide-react";
 
 // What would tidy the contact list, and the one-click fix for each: companies people
-// typed into a form that were never created, work emails that match a company, and
-// people entered twice. Renders nothing when the list is already clean.
+// typed into a form that were never created, work emails that match a company, people
+// entered twice, and people with no lifecycle stage whose history shows one.
+// Renders nothing when the list is already clean.
 export default function ContactCleanup({ onChanged }) {
   const [scan, setScan] = useState(null);
   const [busy, setBusy] = useState("");
@@ -33,7 +34,10 @@ export default function ContactCleanup({ onChanged }) {
   const typed = scan.typed_companies || [];
   const matches = scan.domain_matches || [];
   const twins = scan.duplicates || [];
-  const total = (typed.length ? 1 : 0) + (matches.length ? 1 : 0) + (twins.length ? 1 : 0);
+  const customers = scan.lifecycle?.customer || [];
+  const leads = scan.lifecycle?.lead || [];
+  const staged = customers.length + leads.length;
+  const total = (typed.length ? 1 : 0) + (matches.length ? 1 : 0) + (twins.length ? 1 : 0) + (staged ? 1 : 0);
   if (!total) return null;
 
   return <section aria-labelledby="cleanup-title" className="rounded-xl border border-brand/30 bg-card p-3 shadow-xs" data-testid="contact-cleanup">
@@ -42,7 +46,7 @@ export default function ContactCleanup({ onChanged }) {
       <h2 id="cleanup-title" className="text-sm font-semibold">Clean up {total} {total === 1 ? "thing" : "things"}</h2>
       <span className="text-xs text-muted-foreground">Found in your records</span>
     </div>
-    <div className="grid gap-2.5 md:grid-cols-3">
+    <div className={`grid gap-2.5 ${total > 3 ? "md:grid-cols-2 xl:grid-cols-4" : "md:grid-cols-3"}`}>
       {typed.length > 0 && <Fix icon={Building2} testId="cleanup-typed"
         title={`${typed.length} ${typed.length === 1 ? "company" : "companies"} only typed in forms`}
         detail={typed.map((group) => group.name).join(", ")}
@@ -55,13 +59,17 @@ export default function ContactCleanup({ onChanged }) {
         title={twins.length === 1 ? `${twins[0].contacts.length} people named ${twins[0].contacts[0].name}` : `${twins.length} possible duplicates`}
         detail={twins.length === 1 ? twins[0].contacts.map((c) => c.email || "no email").join(" · ") : twins.map((group) => group.contacts[0].name).join(", ")}
         action={<Button size="sm" variant="outline" onClick={() => setReviewing(true)} disabled={Boolean(busy)} data-testid="cleanup-review-duplicates">Review and merge</Button>} />}
+      {staged > 0 && <Fix icon={Flag} testId="cleanup-lifecycle"
+        title={`${staged} ${staged === 1 ? "person has" : "people have"} no lifecycle stage`}
+        detail={[customers.length && `${customers.length} on a won deal or with a client workspace → Customer`, leads.length && `${leads.length} with an open deal or a website request → Lead`].filter(Boolean).join(" · ")}
+        action={<Button size="sm" variant="outline" onClick={() => apply("set_lifecycle", (d) => `Set the stage for ${d.linked} ${d.linked === 1 ? "person" : "people"}`)} disabled={Boolean(busy)} data-testid="cleanup-set-lifecycle">Set from history</Button>} />}
     </div>
     {reviewing && <MergeDialog groups={twins} onClose={() => setReviewing(false)} onMerged={async () => { await load(); onChanged?.(); }} />}
   </section>;
 }
 
 function Fix({ icon: Icon, title, detail, action, testId }) {
-  return <div className="flex items-start gap-2.5 rounded-lg bg-muted/60 p-2.5" data-testid={testId}>
+  return <div className="flex min-w-0 items-start gap-2.5 rounded-lg bg-muted/60 p-2.5" data-testid={testId}>
     <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
     <div className="min-w-0 flex-1">
       <div className="text-[13px] font-medium">{title}</div>

@@ -39,6 +39,8 @@ from typing import Any, Optional
 from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+import record_fields
+
 logger = logging.getLogger("clientverse.crm_core")
 
 # --------------------------------------------------------------------------- constants
@@ -86,7 +88,7 @@ SEARCHABLE = {
     TASKS: ("title", "assignee"),
 }
 SORTABLE = {
-    CONTACTS: ("created_at", "updated_at", "name", "owner"),
+    CONTACTS: ("created_at", "updated_at", "name", "owner", "lifecycle"),
     COMPANIES: ("created_at", "updated_at", "name", "owner"),
     DEALS: ("created_at", "updated_at", "name", "value", "stage", "expected_close_date", "owner"),
     TASKS: ("created_at", "updated_at", "due_date", "status", "assignee", "title",
@@ -204,6 +206,10 @@ async def ensure_indexes(db) -> None:
                                        ("related_id", 1), ("occurred_at", -1)])
     await db[ACTIVITIES].create_index([("tenant_id", 1), ("type", 1), ("occurred_at", -1)])
     await db[PIPELINES].create_index([("tenant_id", 1), ("id", 1)], unique=True)
+    await db[CONTACTS].create_index([("tenant_id", 1), ("lifecycle", 1)])
+    await db[record_fields.FIELD_DEFS].create_index(
+        [("tenant_id", 1), ("object", 1), ("key", 1)], unique=True)
+    await db[record_fields.SAVED_VIEWS].create_index([("tenant_id", 1), ("object", 1), ("owner", 1)])
 
 
 # ------------------------------------------------------------- helpers used by server
@@ -228,7 +234,8 @@ async def query_records(db, collection: str, tenant_id: str, *,
                         order: Optional[str] = None,
                         limit: int = 200,
                         offset: int = 0,
-                        include_archived: bool = False) -> list[dict]:
+                        include_archived: bool = False,
+                        conditions: Optional[list[dict]] = None) -> list[dict]:
     """Search, filter and sort one collection inside one tenant.
 
     Returns a bare list because the endpoints that use it always have: the directory
@@ -237,6 +244,7 @@ async def query_records(db, collection: str, tenant_id: str, *,
 
     Only the fields named in SEARCHABLE / SORTABLE are reachable. A caller cannot steer
     a query at a field it has no business reading, and cannot sort by one either.
+    `conditions` are a saved view's filters, already checked by `record_fields`.
     """
     query: dict[str, Any] = {"tenant_id": tenant_id}
     if q and q.strip():
@@ -249,6 +257,8 @@ async def query_records(db, collection: str, tenant_id: str, *,
         # Records created before archiving existed have no `archived_at` field at all,
         # so "not archived" has to mean missing-or-null, not null.
         query["archived_at"] = None
+    if conditions:
+        query["$and"] = conditions
     sortable = SORTABLE.get(collection, ("created_at",))
     field = sort if sort in sortable else "created_at"
     direction = 1 if (order or "desc").lower() == "asc" else -1
@@ -453,10 +463,21 @@ CONTACT_REFERENCES = (
 )
 
 
+# Where a person stands with the business. Set by hand, or by the CRM: a website lead
+# starts as "lead", and winning a deal makes everyone on it a "customer".
+LIFECYCLE_STAGES = ("lead", "qualified", "customer", "former_customer", "partner", "other")
+
+
+def check_lifecycle(value: Optional[str]) -> Optional[str]:
+    if value is not None and value not in LIFECYCLE_STAGES:
+        raise ValueError(f"lifecycle must be one of {', '.join(LIFECYCLE_STAGES)}")
+    return value
+
+
 # ------------------------------------------------------------------- request payloads
 
 class CleanupApply(BaseModel):
-    action: str = Field(pattern="^(create_typed_companies|link_by_domain)$")
+    action: str = Field(pattern="^(create_typed_companies|link_by_domain|set_lifecycle)$")
     contact_ids: Optional[list[str]] = Field(default=None, max_length=500)
 
 
@@ -474,6 +495,13 @@ class ContactPatch(BaseModel):
     owner: Optional[str] = Field(default=None, max_length=200)
     influence: Optional[str] = None
     sentiment: Optional[str] = None
+    lifecycle: Optional[str] = None
+    custom_fields: Optional[dict] = None
+
+    @field_validator("lifecycle")
+    @classmethod
+    def _lifecycle_known(cls, value: Optional[str]) -> Optional[str]:
+        return check_lifecycle(value)
 
 
 class CompanyPatch(BaseModel):
@@ -484,6 +512,7 @@ class CompanyPatch(BaseModel):
     tier: Optional[str] = Field(default=None, max_length=60)
     owner: Optional[str] = Field(default=None, max_length=200)
     annual_value: Optional[float] = Field(default=None, ge=0)
+    custom_fields: Optional[dict] = None
 
 
 class DealPatch(BaseModel):
@@ -499,6 +528,7 @@ class DealPatch(BaseModel):
     owner: Optional[str] = Field(default=None, max_length=200)
     expected_close_date: Optional[str] = None
     description: Optional[str] = Field(default=None, max_length=4000)
+    custom_fields: Optional[dict] = None
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -628,6 +658,33 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                            user["email"], payload={"changed": sorted(changed)})
         return await load(collection, record_id, user)
 
+    async def patch_with_custom(collection: str, object_name: str, record_id: str, user,
+                                changes: dict, event_type: str, resource_type: str) -> dict:
+        """`apply_patch`, plus admin-defined field values checked against their types.
+
+        Custom values are compared and stored one key at a time under `custom_fields.`,
+        so setting one field never overwrites the answers a website form captured.
+        """
+        values = changes.pop("custom_fields", None)
+        if values:
+            updates = await record_fields.value_updates(db, tenant_of(user), object_name, values)
+            existing = await load(collection, record_id, user)
+            current = existing.get("custom_fields") or {}
+            changed = {k: v for k, v in updates.items() if current.get(k) != v}
+            if changed:
+                await db[collection].update_one(
+                    {"id": record_id, "tenant_id": tenant_of(user)},
+                    {"$set": {**{f"custom_fields.{k}": v for k, v in changed.items()},
+                              "updated_at": now_iso()},
+                     "$push": {"history": _history_entry(
+                         "updated", user["email"],
+                         {"changed": [f"custom_fields.{k}" for k in sorted(changed)],
+                          "from": {f"custom_fields.{k}": current.get(k) for k in changed}})}})
+                await record_event(event_type, resource_type, record_id, tenant_of(user),
+                                   user["email"],
+                                   payload={"changed": [f"custom_fields.{k}" for k in sorted(changed)]})
+        return await apply_patch(collection, record_id, user, changes, event_type, resource_type)
+
     def text_filter(collection: str, term: Optional[str]) -> dict:
         if not term or not term.strip():
             return {}
@@ -700,7 +757,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         contacts = await db[CONTACTS].find(
             {"tenant_id": tenant, "archived_at": None},
             {"_id": 0, "id": 1, "name": 1, "email": 1, "company_id": 1, "custom_fields": 1,
-             "created_at": 1}).to_list(5000)
+             "created_at": 1, "lifecycle": 1, "last_inquiry_at": 1}).to_list(5000)
         companies = await db[COMPANIES].find(
             {"tenant_id": tenant, "archived_at": None},
             {"_id": 0, "id": 1, "name": 1, "domain": 1, "website": 1}).to_list(5000)
@@ -746,7 +803,34 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                           for c in sorted(members, key=lambda c: c.get("created_at") or "")]}
             for key, members in groups.items() if len(members) > 1][:50]
         return {"typed_companies": list(typed.values())[:100],
-                "domain_matches": domain_matches[:100], "duplicates": duplicates}
+                "domain_matches": domain_matches[:100], "duplicates": duplicates,
+                "lifecycle": await lifecycle_suggestions(tenant, contacts)}
+
+    async def lifecycle_suggestions(tenant: str, contacts: list[dict]) -> dict:
+        """A lifecycle stage for people who have none, read from their history: on a won
+        deal or at a company with a client workspace -> customer; on an open deal or with a
+        website enquiry -> lead. Anyone else is left for a person to decide."""
+        unset = [c for c in contacts if not c.get("lifecycle")]
+        if not unset:
+            return {"customer": [], "lead": []}
+        classes = await stage_classes(db, tenant)
+        won = classes[STAGE_WON] | set(LEGACY_WON_STAGES)
+        closed = won | classes[STAGE_LOST] | set(LEGACY_LOST_STAGES)
+        deals = await db[DEALS].find(
+            {"tenant_id": tenant, "archived_at": None, "contact_ids": {"$in": [c["id"] for c in unset]}},
+            {"_id": 0, "contact_ids": 1, "stage": 1}).to_list(10000)
+        on_won = {cid for d in deals if d.get("stage") in won for cid in d.get("contact_ids") or []}
+        on_open = {cid for d in deals if d.get("stage") not in closed for cid in d.get("contact_ids") or []}
+        served = {w["company_id"] for w in await db.workspaces.find(
+            {"tenant_id": tenant, "archived_at": None, "company_id": {"$ne": None}},
+            {"_id": 0, "company_id": 1}).to_list(5000)}
+        customer, lead = [], []
+        for contact in unset:
+            if contact["id"] in on_won or (contact.get("company_id") in served):
+                customer.append(contact["id"])
+            elif contact["id"] in on_open or contact.get("last_inquiry_at"):
+                lead.append(contact["id"])
+        return {"customer": customer[:1000], "lead": lead[:1000]}
 
     @router.get("/contacts/cleanup")
     async def contacts_cleanup(user=Depends(get_current_user)):
@@ -774,6 +858,18 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                         actor=user["email"], record_event=record_event)
                     linked += bool(company_id)
                     created += how == "created"
+        elif inp.action == "set_lifecycle":
+            for stage in ("customer", "lead"):
+                ids = [cid for cid in scan["lifecycle"][stage] if not wanted or cid in wanted]
+                if not ids:
+                    continue
+                # Only people still without a stage: one set by hand meanwhile stays.
+                result = await db[CONTACTS].update_many(
+                    {"tenant_id": tenant, "id": {"$in": ids}, "lifecycle": None},
+                    {"$set": {"lifecycle": stage, "updated_at": now_iso()},
+                     "$push": {"history": _history_entry("lifecycle_set", user["email"],
+                                                         {"lifecycle": stage, "how": "clean-up"})}})
+                linked += result.modified_count
         else:
             for match in scan["domain_matches"]:
                 if wanted and match["contact_id"] not in wanted:
@@ -916,8 +1012,8 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             changes["phone"] = (changes["phone"] or "").strip() or None
             changes["phone_digits"] = phone_digits(changes["phone"]) or None
         await assert_exists(COMPANIES, changes.get("company_id"), user, "company_id")
-        return await apply_patch(CONTACTS, contact_id, user, changes,
-                                 "contact.updated", "contact")
+        return await patch_with_custom(CONTACTS, "contacts", contact_id, user, changes,
+                                       "contact.updated", "contact")
 
     @router.post("/contacts/{contact_id}/archive")
     async def archive_contact(contact_id: str, user=Depends(get_current_user)):
@@ -975,8 +1071,8 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
     async def update_company(company_id: str, inp: CompanyPatch,
                              user=Depends(get_current_user)):
         changes = inp.model_dump(exclude_unset=True)
-        return await apply_patch(COMPANIES, company_id, user, changes,
-                                 "company.updated", "company")
+        return await patch_with_custom(COMPANIES, "companies", company_id, user, changes,
+                                       "company.updated", "company")
 
     @router.post("/companies/{company_id}/archive")
     async def archive_company(company_id: str, user=Depends(get_current_user)):
@@ -1073,8 +1169,8 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                 raise HTTPException(status_code=422,
                                     detail=f"Unknown contact_id(s): {', '.join(unknown[:5])}")
             changes["contact_ids"] = contact_ids
-        return await apply_patch(DEALS, deal_id, user, changes, "opportunity.updated",
-                                 "opportunity")
+        return await patch_with_custom(DEALS, "deals", deal_id, user, changes,
+                                       "opportunity.updated", "opportunity")
 
     @router.post("/opportunities/{deal_id}/archive")
     async def archive_deal(deal_id: str, user=Depends(get_current_user)):

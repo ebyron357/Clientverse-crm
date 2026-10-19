@@ -21,6 +21,7 @@ import Team from "@/pages/Team";
 import Notifications from "@/pages/Notifications";
 import AcceptInvite from "@/pages/AcceptInvite";
 import Settings from "@/pages/Settings";
+import CustomFieldsSettings from "@/pages/CustomFieldsSettings";
 import ClientOps from "@/pages/ClientOps";
 import FieldOps from "@/pages/FieldOps";
 import ClientPortal from "@/pages/ClientPortal";
@@ -95,6 +96,7 @@ function AppRouter() {
         <Route path="/team" element={<Team />} />
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/settings/fields" element={<CustomFieldsSettings />} />
         <Route path="/audit" element={<Audit />} />
         <Route path="/client-ops" element={<ClientOps />} />
         <Route path="/proof" element={<RecoveryProof />} />

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -406,6 +406,8 @@ Pages that have **no sidebar entry**:
 
 - **Field Ops** — `/field`. Type the address to open it.
 - **Directory** — `/directory`. The combined contacts-and-companies page.
+- **Fields** — `/settings/fields`. Your own fields on contacts, companies and deals; reached from
+  **"Contacts"** → **"Columns"** → **"Manage fields…"** ([§7.4](#74-contacts-and-companies) item 8).
 - **Accept invitation** — `/invite`. Opened from an invitation.
 - **Client portal** — `/portal/…`. For clients, opened from a portal link.
 - **Public booking page** — `/book/…`. For the public, opened from a booking link ([§7.7](#77-calendar-and-online-booking)).
@@ -964,21 +966,62 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      matching depend on it.
   3. Search (**"Search name, phone, email…"** / **"Search companies…"**), filter by company or
      tier, and sort.
-  4. **Open a contact** (side panel):
+  4. **Views of the contact list.** The row above the list holds the views:
+     - **"All contacts"**, **"Leads"**, **"Customers"**, **"My contacts"** and **"No company"** are
+       built in. **"Leads"** and **"Customers"** go by the **Lifecycle** stage (item 6).
+     - **"Filter"** → choose a field → a condition (**"is"**, **"is not"**, **"contains"**,
+       **"is empty"**, **"is not empty"**, **"more than"**, **"less than"**, **"before"**,
+       **"after"**) → a value → **"Apply"**. Each filter shows as a chip under the toolbar; **"×"**
+       removes it and **"Clear filters"** removes them all. A list shows only people who meet
+       *every* filter. Your own fields (item 8) can be filtered too.
+     - **"Columns"** chooses what the list shows. **"Manage fields…"** at the bottom opens
+       **Settings → Fields**.
+     - **"+ Save view"** → **"Name"** → **"Share with the team"** (on: everyone sees it; off: only
+       you, marked with a lock) → **"Save view"**. It keeps the filters, the columns and the order.
+       Change an open saved view and **"Save changes"** appears; the **"⋯"** beside it deletes it.
+       Only the person who made a view, or an admin, can change or delete it.
+     - The address of the page names the open view (`/contacts?view=…`), so a view can be
+       bookmarked or sent to a colleague who can see it.
+  5. **Open a contact** (side panel):
      - tabs **"Activity"**, **"Deals"**, **"Tasks"**, **"Website requests"**, and the
        **"Details"** panel
-     - **"Edit"** (or **"Edit · add phone"**) → change details → **"Save changes"**
+     - **"Edit"** (or **"Edit · add phone"**) → change details, including **"Lifecycle stage"** →
+       **"Save changes"**
+     - **"More fields"** → **"Edit"** → fill in your own fields → **"Save fields"**. Each value is
+       checked against its field: a number field takes only a number, a choice only one of its
+       choices.
      - **"Activity"** → **"Log what happened"**: Call, Text, Email, Meeting or Note. Logging an
        email records it; *nothing is sent to them*.
      - **"Archive contact"** hides them from the list (nothing is deleted). To bring one back,
        turn on **"Show archived"**, open them, and click **"Restore"**.
-  5. **Open a company** (side panel): tabs **"Contacts"**, **"Deals"**, **"Client 360"**, and the
-     **"Details"** panel. It is read-only.
-  6. **Companies fill themselves in.** When a form or booking page asks **"Company"**, the person
+  6. **Lifecycle stage** — where a person stands with you: **Lead**, **Qualified**, **Customer**,
+     **Former customer**, **Partner** or **Other**. It is shown in the **"Details"** panel and as a
+     list column. The CRM sets it in two cases and never overrides a stage someone chose:
+     - a person who first arrives through a website form or booking page starts as **Lead**;
+     - when a deal is won, everyone on it who is a **Lead**, **Qualified** or not yet staged
+       becomes **Customer**. A **Partner** stays a **Partner**.
+  7. **Open a company** (side panel): tabs **"Contacts"**, **"Deals"**, **"Client 360"**, and the
+     **"Details"** panel. Only **"More fields"** can be edited there.
+  8. **Your own fields** (**Settings → Fields**, `/settings/fields`; also **"Columns"** →
+     **"Manage fields…"**). An admin adds the details the business tracks on every contact,
+     company or deal:
+     1. Choose the tab **"Contacts"**, **"Companies"** or **"Deals"** → **"New … field"**.
+     2. **"Name"** (for example *Budget*), **"Type"** (Short text, Long text, Number, Date, Choice,
+        Yes / no, Email, Phone, Web address), for a **Choice** its **"Choices, one per line"**, and
+        optional **"Help text"** → **"Add field"**.
+     3. The field appears on every record under **"More fields"**, in **"Filter"** and in
+        **"Columns"**.
+     - The **type cannot be changed** once the field exists, so stored values always fit it.
+       Renaming keeps the values.
+     - The archive button hides a field from records and keeps every value; **"Show archived"** →
+       the restore button brings it back. A field is never deleted.
+     - **"API key"** (`custom_fields.cf_…`) is the name integrations and the API use.
+     - Members see this page but cannot change it.
+  9. **Companies fill themselves in.** When a form or booking page asks **"Company"**, the person
      is linked to that company, which is created if it doesn't exist yet. A person whose work email
      matches a company's domain or website is linked to it. Personal addresses (Gmail, Outlook,
      iCloud and similar) never link anyone to a company.
-  7. **"Clean up"** card, at the top of the **"Contacts"** tab, appears only when there is something
+  10. **"Clean up"** card, at the top of the **"Contacts"** tab, appears only when there is something
      to tidy:
      - **"Create and link"** — companies people typed into forms that don't exist yet are created,
        and those people are linked to them.
@@ -988,18 +1031,28 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
        requests, appointments and conversations move to the kept record, its empty fields are
        filled from the other, and the other is archived (turn on **"Show archived"** to see it).
        Nothing is deleted. If a merge is interrupted, running it again finishes it.
+     - **"Set from history"** — people with no lifecycle stage get one from what has happened:
+       on a won deal, or at a company with a Client 360 workspace → **Customer**; on an open deal,
+       or with a website request → **Lead**. Anyone else is left for you to set. A stage set by
+       hand is never changed.
 - **Common mistakes:**
   - **Companies cannot be edited, archived or deleted from the screens.** Type carefully.
     Engineering can edit or archive a company through the server. Nothing can be deleted at all.
   - Creating the same company twice — search first. Two people already entered twice can be
     merged with **"Review and merge"**.
   - Leaving out a contact's email, which stops email and calendar matching.
-  - Each list shows at most **200** records. Beyond that, older ones are not visible in the
-    screens (UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED whether any organization has reached this).
+  - The contact list shows at most **1,000** people per view; filter it to see the ones you need.
+    The company list shows at most **200** (UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED whether
+    any organization has reached either limit).
+  - Expecting **"Customers"** to list everyone you have served before stages existed: run
+    **"Set from history"** in the **"Clean up"** card first.
 - **Saved when:** **"Company created"**, **"Contact created"**, **"Contact saved"**,
   **"Contact archived"** / **"Contact restored"**, **"Linked … created …"** after a clean-up, and
-  **"Merged into …"** after a merge. On failure: **"Could not create company"** /
-  **"Could not create contact"**, with the reason.
+  **"Merged into …"** after a merge, **"Fields saved"**, **"Saved “{view}”"** /
+  **"Updated “{view}”"** / **"Deleted “{view}”"**, and **"Added “{field}”"** /
+  **"Field saved"** on **Settings → Fields**. On failure: **"Could not create company"** /
+  **"Could not create contact"**, **"Nothing was saved"**, **"The view was not saved"** or
+  **"The field was not saved"**, with the reason.
 
 ### 7.5 Deals and Pipeline
 
@@ -1014,7 +1067,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      stage"** (the only way on a phone).
   3. **Open a deal** (side panel): edit its name, value, close date, owner and notes →
      **"Save changes"**; **"Log activity"** (Call, Email, Meeting, Note — logging an email sends
-     nothing); read **"Stage history"**; move it on with **"Move to …"** or **"Mark as won"**.
+     nothing); read **"Stage history"**; move it on with **"Move to …"** or **"Mark as won"**;
+     **"More fields"** → **"Edit"** fills in your own deal fields ([§7.4](#74-contacts-and-companies)
+     item 8). Winning a deal makes the people on it **Customers** (§7.4 item 6).
   4. **Winning** a deal that has a company **automatically creates a Client 360 workspace**:
      **"Deal won — client workspace created"**, with **"Open workspace"**. Without a company the
      message is **"Deal marked as won"** and no workspace is made.
@@ -2402,6 +2457,8 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.5 | 2026-10-19 | Contacts: built-in and saved views, filters, columns (§7.4 item 4); lifecycle stage and how the CRM sets it (item 6); your own fields on contacts, companies and deals — **Settings → Fields** (item 8, §7.5, §4.3); **"Set from history"** in the **"Clean up"** card (item 10); the contact list now shows up to 1,000 people. |
+| 1.4 | 2026-10-19 | One record per real thing: existing clients (§7.2), companies filled in from forms and email domains, the **"Clean up"** card and merging (§7.4), one open deal per person (§7.5), the **"Company"** question (§7.6), the **"Meeting"** booking preset (§7.7). |
 | 1.3 | 2026-10-19 | Email sending switch: §5.10 (new), §5.7, §5.8, §6.1, capability status, troubleshooting, checklist row 13, escalation, Appendices B and C. Google reconnected with send permission (§6.1). Disconnecting Calendar no longer cancels Gmail's permission (§5.7). |
 | 1.2 | 2026-10-19 | `crm.clientverse.io` is live: addresses (§2.1–2.2, §3.2), Google addresses (§10.2), Appendices B and D. Review fixes ([ebyron357/Clientverse-crm#43](https://github.com/ebyron357/Clientverse-crm/pull/43)): signing everyone out when the owner password may be known (§9.2, §13.4); scheduler health when the GitHub workflow runs first (§11.4, §11.5, checklist row 17, Appendix A); access codes in `/portal/` and `/booking/manage/` addresses (§13.7, §15.2). |
 | 1.1 | 2026-10-19 | Refreshed for `main@838f00d` (PRs #35–#42). Scheduler: built into the CRM (13 jobs), with the GitHub workflow as an optional second driver; health is read from `scheduled_jobs_running` and `in_process`. Sign-in: the redesigned page, password change in Settings, admin reset of a temporary password, invitation sign-up and invitation emails. Screens: collapsible sidebar groups, breadcrumbs, theme button, side panels; new Leads, Tasks, Website Forms and Calendar sections; contacts and deals can now be edited and archived; deals move by drag or **"⋯"** → **"Move to stage"**. Email: booking emails and form auto-replies are the screen-released emails; a connection records the scopes Google granted (PR #42), so reconnect once; a refused lookup never counts as "not sent". Custom domain `crm.clientverse.io` recorded as added but not live. Verified against the code and Railway deployment records and logs of 2026-10-19. |

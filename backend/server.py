@@ -43,6 +43,7 @@ import detectors
 import email_inbound
 import gmail_provider
 import next_best_action as nba_service
+import record_fields
 import recovery_case as recovery_case_service
 import recovery_intake
 import recovery_lifecycle
@@ -1166,6 +1167,7 @@ async def list_companies(
     include_archived: bool = False,
     sort: Optional[str] = None,
     order: Optional[str] = None,
+    where: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
     user=Depends(get_current_user),
@@ -1179,7 +1181,9 @@ async def list_companies(
                if v}
     return await crm_core.query_records(
         db, crm_core.COMPANIES, user["tenant_id"], q=q, filters=filters, sort=sort,
-        order=order, limit=limit, offset=offset, include_archived=include_archived)
+        order=order, limit=limit, offset=offset, include_archived=include_archived,
+        conditions=await record_fields.compile_filters(
+            db, user["tenant_id"], "companies", record_fields.parse_where(where)))
 
 @api.post("/companies")
 async def create_company(inp: CompanyInput, user=Depends(get_current_user)):
@@ -1199,23 +1203,34 @@ class ContactInput(BaseModel):
     company_id: Optional[str] = None
     influence: Optional[str] = "medium"
     sentiment: Optional[str] = "neutral"
+    lifecycle: Optional[str] = None
+
+    @field_validator("lifecycle")
+    @classmethod
+    def _lifecycle_known(cls, value):
+        return crm_core.check_lifecycle(value)
 
 @api.get("/contacts")
 async def list_contacts(
     company_id: Optional[str] = None,
     q: Optional[str] = None,
     owner: Optional[str] = None,
+    lifecycle: Optional[str] = None,
     include_archived: bool = False,
     sort: Optional[str] = None,
     order: Optional[str] = None,
+    where: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
     user=Depends(get_current_user),
 ):
-    filters = {k: v for k, v in (("company_id", company_id), ("owner", owner)) if v}
+    filters = {k: v for k, v in (("company_id", company_id), ("owner", owner),
+                                 ("lifecycle", lifecycle)) if v}
     return await crm_core.query_records(
         db, crm_core.CONTACTS, user["tenant_id"], q=q, filters=filters, sort=sort,
-        order=order, limit=limit, offset=offset, include_archived=include_archived)
+        order=order, limit=limit, offset=offset, include_archived=include_archived,
+        conditions=await record_fields.compile_filters(
+            db, user["tenant_id"], "contacts", record_fields.parse_where(where)))
 
 @api.post("/contacts")
 async def create_contact(inp: ContactInput, user=Depends(get_current_user)):
@@ -1273,6 +1288,7 @@ async def list_opps(
     include_archived: bool = False,
     sort: Optional[str] = None,
     order: Optional[str] = None,
+    where: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
     expand: Optional[str] = None,
@@ -1282,7 +1298,9 @@ async def list_opps(
                                  ("company_id", company_id)) if v}
     deals = await crm_core.query_records(
         db, crm_core.DEALS, user["tenant_id"], q=q, filters=filters, sort=sort,
-        order=order, limit=limit, offset=offset, include_archived=include_archived)
+        order=order, limit=limit, offset=offset, include_archived=include_archived,
+        conditions=await record_fields.compile_filters(
+            db, user["tenant_id"], "deals", record_fields.parse_where(where)))
     if "contacts" in (expand or "").split(","):
         # The pipeline board shows who each deal is with. One read for the whole page
         # rather than one per card, and tenant-scoped like every other read: an id that
@@ -1378,6 +1396,12 @@ async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user
             await record_event("client_workspace.created", "workspace", wid, user["tenant_id"], user["email"], workspace_id=wid, payload={"from_opportunity": opp_id})
             await record_event("onboarding.started", "workspace", wid, user["tenant_id"], user["email"], workspace_id=wid)
             workspace_id, workspace_created = wid, True
+    if outcome == crm_core.STAGE_WON and opp.get("contact_ids"):
+        # Everyone on a won deal is now a customer, unless someone already said otherwise.
+        await db.contacts.update_many(
+            {"tenant_id": user["tenant_id"], "id": {"$in": opp["contact_ids"]},
+             "lifecycle": {"$in": [None, "lead", "qualified"]}},
+            {"$set": {"lifecycle": "customer", "updated_at": now_iso()}})
     return {"ok": True, "stage": inp.stage, "outcome": outcome,
             "workspace_created": workspace_created, "workspace_id": workspace_id}
 
@@ -4782,6 +4806,7 @@ async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: 
     await lead_pipeline.task_status_changed(task, previous, actor)
 
 
+record_fields.register_record_field_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
                                   on_activity_logged=_after_activity_logged,
                                   on_task_status_changed=_lead_task_status_changed)

@@ -1448,6 +1448,7 @@ class LeadPipeline:
             "title": None, "role": None, "company_id": None,
             "influence": "medium", "sentiment": "neutral",
             "tags": sorted(set(tags)), "lead_source": "website", "source": source,
+            "lifecycle": "lead",
             "first_attribution": enquiry.get("attribution") or {},
             "last_attribution": enquiry.get("attribution") or {},
             "custom_fields": custom, "consent": enquiry.get("consent"),
