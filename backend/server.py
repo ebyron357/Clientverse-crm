@@ -3445,6 +3445,14 @@ async def google_callback(state: str = Query(None), code: str = Query(None), err
         await set_conn(tenant_id, p, status="active", account_identity=email, scopes=creds["scopes"],
                        connected_by=actor, connected_at=now_iso(), revoked_at=None, last_error=None, credential_version=version)
         await record_event("integration.connected", "integration", p, tenant_id, actor, payload={"provider": p, "account": email})
+    # Sending was proven for one mailbox with send permission. A reconnect that changes
+    # either has proven nothing yet.
+    await _void_pending_gmail_tests(tenant_id)
+    certified = ((await _gmail_catalogue(tenant_id)) or {}).get("certification") or {}
+    if gmail_provider.GMAIL_SEND_SCOPE not in creds["scopes"]:
+        await _turn_off_gmail_sending(tenant_id, actor, "Google was reconnected without permission to send email")
+    elif certified.get("mailbox") and certified["mailbox"].lower() != (email or "").lower():
+        await _turn_off_gmail_sending(tenant_id, actor, "Google was reconnected with a different mailbox")
     return RedirectResponse(url=f"{dest}&oauth=connected")
 
 class StripeConnectInput(BaseModel):
@@ -3975,16 +3983,29 @@ async def disconnect_provider(provider: str, user=Depends(require_role("admin"))
     if provider not in PROVIDERS:
         raise HTTPException(status_code=404, detail="Unknown provider")
     if provider in ("gmail", "google_calendar"):
-        creds = await db.google_credentials.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0})
-        if creds:
-            try:
-                tok = dec_secret(creds["enc"]).get("refresh_token") or dec_secret(creds["enc"]).get("access_token")
-                async with httpx.AsyncClient(timeout=10) as client:
-                    await client.post("https://oauth2.googleapis.com/revoke", params={"token": tok})
-            except Exception:
-                pass
-        if not await db.integration_connections.find_one({"tenant_id": user["tenant_id"], "provider": ("google_calendar" if provider == "gmail" else "gmail"), "status": "active"}):
+        # Gmail and Calendar share one Google grant. Revoking it cancels both, so it is
+        # revoked only with the last of the two; until then the other keeps working.
+        # This row is marked disconnected *before* the other is read, so of two
+        # disconnects running at once at least one sees the other gone and revokes.
+        await set_conn(user["tenant_id"], provider, status="disconnected", account_identity=None, scopes=[],
+                       revoked_at=now_iso())
+        other = "google_calendar" if provider == "gmail" else "gmail"
+        # Any state short of disconnected or revoked may still need the grant: a sync
+        # marks its row `connecting`, a transient failure `degraded` (as run_sync tests).
+        if not await db.integration_connections.find_one({"tenant_id": user["tenant_id"], "provider": other,
+                                                          "status": {"$nin": ["disconnected", "revoked"]}}):
+            creds = await db.google_credentials.find_one({"tenant_id": user["tenant_id"]}, {"_id": 0})
+            if creds:
+                try:
+                    tok = dec_secret(creds["enc"]).get("refresh_token") or dec_secret(creds["enc"]).get("access_token")
+                    # In the form body, not the URL: request URLs are written to the log.
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        await client.post("https://oauth2.googleapis.com/revoke", data={"token": tok})
+                except Exception:
+                    pass
             await db.google_credentials.delete_one({"tenant_id": user["tenant_id"]})
+        if provider == "gmail":
+            await _turn_off_gmail_sending(user["tenant_id"], user["email"], "Gmail was disconnected")
     if provider == "stripe":
         try:
             await db.stripe_credentials.delete_one({"tenant_id": user["tenant_id"]})
@@ -3994,6 +4015,117 @@ async def disconnect_provider(provider: str, user=Depends(require_role("admin"))
                    revoked_at=now_iso())
     await record_event("integration.disconnected", "integration", provider, user["tenant_id"], user["email"], payload={"provider": provider})
     return {"ok": True}
+
+# ---- Email sending switch ----
+# Outbound email needs an active Gmail connection *and* the tenant's Gmail catalogue
+# record past configuration (recovery_strategy.authorized_channels). This switch is the
+# only thing that moves that record, and it turns sending on only after Gmail has
+# accepted a test message from the connected mailbox to itself. Every client message
+# still needs the contact's consent and a human approval of its exact words.
+
+GMAIL_CATALOGUE_NAME = {"$regex": "^gmail$", "$options": "i"}
+
+
+def _sending_on(record: dict) -> bool:
+    return str(record.get("status") or "").upper() in recovery_service.CONFIGURED_INTEGRATION_STATUSES
+
+
+async def _gmail_catalogue_records(tenant_id: str) -> list[dict]:
+    # Normally one. authorized_channels honours any certified Gmail record, so everything
+    # here acts on all of them: a stray duplicate must not keep sending on.
+    return await db.integrations.find({"tenant_id": tenant_id, "name": GMAIL_CATALOGUE_NAME}, {"_id": 0}).to_list(20)
+
+
+async def _gmail_catalogue(tenant_id: str) -> Optional[dict]:
+    records = await _gmail_catalogue_records(tenant_id)
+    return next((r for r in records if _sending_on(r)), records[0] if records else None)
+
+
+async def _gmail_sending_state(tenant_id: str) -> dict:
+    record = await _gmail_catalogue(tenant_id) or {}
+    channel = (await recovery_service.authorized_channels(db, tenant_id)).get(recovery_service.CHANNEL_EMAIL) or {}
+    certification = record.get("certification") or {}
+    return {"enabled": _sending_on(record), "status": str(record.get("status") or "REQUIRES_CONFIGURATION"),
+            "enabled_at": record.get("certified_at"), "enabled_by": record.get("certified_by"),
+            "mailbox": certification.get("mailbox"), "test_message_id": certification.get("test_message_id"),
+            "authorized": bool(channel.get("authorized")), "reason": channel.get("reason")}
+
+
+async def _void_pending_gmail_tests(tenant_id: str) -> None:
+    # An enable commits only if `sending_revision` has not moved since its test email left,
+    # so moving it voids any test still in flight, whether or not sending is on.
+    await db.integrations.update_many({"tenant_id": tenant_id, "name": GMAIL_CATALOGUE_NAME},
+                                      {"$inc": {"sending_revision": 1}})
+
+
+async def _turn_off_gmail_sending(tenant_id: str, actor: str, reason: str) -> bool:
+    await _void_pending_gmail_tests(tenant_id)
+    on = [r["id"] for r in await _gmail_catalogue_records(tenant_id) if _sending_on(r)]
+    if not on:
+        return False
+    await db.integrations.update_many(
+        {"tenant_id": tenant_id, "id": {"$in": on}},
+        {"$set": {"status": "REQUIRES_CONFIGURATION", "certified_at": None, "certified_by": None,
+                  "certification": None, "sending_disabled_at": now_iso(), "sending_disabled_by": actor,
+                  "sending_disabled_reason": reason}})
+    await record_event("integration.sending_disabled", "integration", "gmail", tenant_id, actor,
+                       payload={"provider": "gmail", "reason": reason})
+    return True
+
+
+@api.get("/integrations/gmail/sending")
+async def gmail_sending(user=Depends(get_current_user)):
+    return await _gmail_sending_state(user["tenant_id"])
+
+
+SENDING_CHANGED = "Google or email sending changed while the test email was being sent, so sending stays off. Try again."
+
+
+@api.post("/integrations/gmail/sending/enable")
+async def enable_gmail_sending(user=Depends(require_role("admin"))):
+    tenant_id = user["tenant_id"]
+    provider = conversation_service.REGISTRY.get(conversation_service.CHANNEL_EMAIL)
+    if provider is None or not hasattr(provider, "send_test"):
+        raise HTTPException(status_code=409, detail="Email sending is not available here: this deployment has no Google OAuth client.")
+    record = await _gmail_catalogue(tenant_id)
+    if not record:
+        record = {"id": new_id("intg"), "tenant_id": tenant_id, "name": "Gmail", "provider": "Google",
+                  "category": "communications", "status": "REQUIRES_CONFIGURATION", "auth_method": "OAuth",
+                  "scopes": ["mail.send", "mail.read"], "sending_revision": 0, "created_at": now_iso(),
+                  "description": "Outbound email through the tenant's connected Gmail mailbox."}
+        await db.integrations.insert_one(dict(record))
+    revision = record.get("sending_revision") or 0
+    try:
+        result = await provider.send_test(tenant_id=tenant_id)
+    except conversation_service.DeliveryRejected as exc:
+        raise HTTPException(status_code=409, detail=f"Sending stays off. {exc}")
+    # The test proves one mailbox with send permission. If Google now holds anything else,
+    # it proves nothing about what would send.
+    connection = await _google_connection(tenant_id) or {}
+    if (str(connection.get("status") or "").lower() != "active"
+            or str(connection.get("account_identity") or "").lower() != result["mailbox"].lower()
+            or gmail_provider.GMAIL_SEND_SCOPE not in (connection.get("scopes") or [])):
+        raise HTTPException(status_code=409, detail=SENDING_CHANGED)
+    now = now_iso()
+    committed = await db.integrations.update_one(
+        {"tenant_id": tenant_id, "id": record["id"], "sending_revision": revision or {"$in": [0, None]}},
+        {"$set": {"status": "CERTIFIED", "certified_at": now, "certified_by": user["email"],
+                  "certification": {"method": "test_message_to_self", "mailbox": result["mailbox"],
+                                    "test_message_id": result["provider_message_id"]},
+                  "sending_disabled_at": None, "sending_disabled_by": None, "sending_disabled_reason": None},
+         "$inc": {"sending_revision": 1}})
+    if not committed.matched_count:
+        raise HTTPException(status_code=409, detail=SENDING_CHANGED)
+    await record_event("integration.sending_enabled", "integration", "gmail", tenant_id, user["email"],
+                       payload={"provider": "gmail", "mailbox": result["mailbox"],
+                                "test_message_id": result["provider_message_id"]})
+    return await _gmail_sending_state(tenant_id)
+
+
+@api.post("/integrations/gmail/sending/disable")
+async def disable_gmail_sending(user=Depends(require_role("admin"))):
+    await _turn_off_gmail_sending(user["tenant_id"], user["email"], "Turned off by an admin")
+    return await _gmail_sending_state(user["tenant_id"])
 
 @api.post("/integrations/{provider}/sync")
 async def sync_provider(provider: str, user=Depends(require_role("admin"))):

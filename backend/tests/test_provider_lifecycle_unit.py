@@ -102,6 +102,15 @@ class CaptureCollection:
         self.deleted.append(deepcopy(query))
         return SimpleNamespace(deleted_count=1)
 
+    async def update_many(self, query, update, **kwargs):
+        self.updated.append((deepcopy(query), deepcopy(update), deepcopy(kwargs)))
+        return SimpleNamespace(matched_count=0, modified_count=0)
+
+    def find(self, *args, **kwargs):
+        async def to_list(*_args, **_kwargs):
+            return []
+        return SimpleNamespace(to_list=to_list)
+
 
 def run(coro):
     return asyncio.run(coro)
@@ -363,6 +372,7 @@ def test_google_callback_preserves_refresh_token_and_actual_grant(monkeypatch, g
     monkeypatch.setattr(server, "db", SimpleNamespace(
         oauth_states=oauth_states,
         google_credentials=credentials,
+        integrations=CaptureCollection(),
     ))
     monkeypatch.setattr(server, "GOOGLE_CLIENT_ID", "client-id")
     monkeypatch.setattr(server, "GOOGLE_CLIENT_SECRET", "client-secret")
@@ -418,6 +428,7 @@ def test_google_disconnect_keeps_shared_credentials_until_both_providers_inactiv
     monkeypatch.setattr(server, "db", SimpleNamespace(
         google_credentials=credentials,
         integration_connections=other_connections,
+        integrations=CaptureCollection(),
     ))
     monkeypatch.setattr(server, "dec_secret", lambda _value: {
         "refresh_token": "fake-refresh-token",
@@ -432,14 +443,18 @@ def test_google_disconnect_keeps_shared_credentials_until_both_providers_inactiv
 
     monkeypatch.setattr(server, "set_conn", fake_set_conn)
     monkeypatch.setattr(server, "record_event", fake_record_event)
-    revoke_client = FakeAsyncClient(post_responses=[FakeResponse(200), FakeResponse(200)])
+    revoke_client = FakeAsyncClient(post_responses=[FakeResponse(200)])
     monkeypatch.setattr(server.httpx, "AsyncClient", lambda **kwargs: revoke_client)
     user = {"tenant_id": "ten_a", "email": "admin@example.com"}
 
     assert run(server.disconnect_provider("gmail", user=user)) == {"ok": True}
-    assert credentials.deleted == []
+    # Calendar still uses the shared grant, so it is neither revoked nor deleted.
+    assert credentials.deleted == [] and revoke_client.post_calls == []
     assert run(server.disconnect_provider("google_calendar", user=user)) == {"ok": True}
     assert credentials.deleted == [{"tenant_id": "ten_a"}]
+    # Revoked once, with the token in the form body: request URLs are logged.
+    assert revoke_client.post_calls == [
+        ("https://oauth2.googleapis.com/revoke", {"data": {"token": "fake-refresh-token"}})]
 
 
 def test_stripe_payment_intent_success_is_test_only_tenant_scoped_and_idempotent(monkeypatch):

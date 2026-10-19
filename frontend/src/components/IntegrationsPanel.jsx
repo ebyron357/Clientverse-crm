@@ -5,10 +5,10 @@ import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { SurfaceError, SurfaceLoading } from "@/components/SurfaceState";
 import { StatusDot } from "@/components/page/Page";
-import { Mail, Calendar, CreditCard, RefreshCw, Plug, Unplug, AlertTriangle, Clock, ShieldAlert, Info } from "lucide-react";
+import { Mail, Calendar, CreditCard, RefreshCw, Plug, Unplug, AlertTriangle, Clock, ShieldAlert, Info, Send } from "lucide-react";
 
 const META = {
-  gmail: { label: "Gmail", icon: Mail, desc: "Read-only message + thread metadata, matched to CRM contacts.", kind: "google" },
+  gmail: { label: "Gmail", icon: Mail, desc: "Client email matched to CRM contacts. Sends approved messages once email sending is on.", kind: "google" },
   google_calendar: { label: "Google Calendar", icon: Calendar, desc: "Upcoming client meetings with attendee matching.", kind: "google" },
   stripe: { label: "Stripe", icon: CreditCard, desc: "Read-only customers, invoices & subscriptions.", kind: "stripe" },
 };
@@ -39,12 +39,15 @@ export default function IntegrationsPanel() {
   const [conns, setConns] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
+  const [sending, setSending] = useState(null);
 
   const load = useCallback(async () => {
     setLoadError("");
     try {
       const { data } = await api.get("/integrations/connections");
       setConns(data);
+      // The sending switch is extra detail on the Gmail row; the panel works without it.
+      api.get("/integrations/gmail/sending").then(({ data: s }) => setSending(s), () => setSending(null));
     } catch (e) {
       const message = formatErr(e.response?.data?.detail) || "Could not load provider connections.";
       setLoadError(message);
@@ -89,6 +92,18 @@ export default function IntegrationsPanel() {
       if (data.status === "completed") toast.success(`Synced ${META[provider].label}: ${data.matched} record(s) matched`);
       else toast.error(`Sync failed: ${data.error || "unknown"}`);
       load();
+    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
+    finally { setBusy(""); }
+  };
+
+  // Turning sending on sends one test email from the mailbox to itself first; the server
+  // turns sending on only if Gmail accepts it.
+  const setSendingOn = async (on) => {
+    setBusy("gmail-sending");
+    try {
+      const { data } = await api.post(`/integrations/gmail/sending/${on ? "enable" : "disable"}`);
+      setSending(data);
+      toast.success(on ? `Test email sent to ${data.mailbox}. Email sending is on.` : "Email sending is off.");
     } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
     finally { setBusy(""); }
   };
@@ -156,6 +171,23 @@ export default function IntegrationsPanel() {
                     </div>
                   </div>
                 </div>
+                {c.provider === "gmail" && c.status === "active" && sending && (
+                  <div className="ml-12 mt-2.5 flex flex-col gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 sm:flex-row sm:items-center sm:justify-between" data-testid="gmail-sending">
+                    <div className="min-w-0 text-xs leading-5 text-muted-foreground">
+                      <StatusDot tone={sending.enabled ? "success" : "neutral"} className="mr-2 align-middle font-medium">{sending.enabled ? "Email sending on" : "Email sending off"}</StatusDot>
+                      {sending.enabled
+                        ? `Tested ${sending.enabled_at ? new Date(sending.enabled_at).toLocaleString() : ""}${sending.enabled_by ? ` by ${sending.enabled_by}` : ""}.`
+                        : `Turning it on first sends one test email to ${c.account_identity || "this mailbox"}.`}
+                      {" "}Each client email still needs the contact's consent and an approval.
+                      {sending.enabled && !sending.authorized && sending.reason && <div className="mt-1 text-amber-700" data-testid="gmail-sending-blocked">{sending.reason}</div>}
+                    </div>
+                    {isAdmin && (sending.enabled ? (
+                      <Button size="sm" variant="ghost" className="shrink-0 text-muted-foreground" disabled={busy === "gmail-sending"} onClick={() => setSendingOn(false)} data-testid="gmail-sending-off">Turn off sending</Button>
+                    ) : (
+                      <Button size="sm" variant="outline" className="shrink-0" disabled={busy === "gmail-sending"} onClick={() => setSendingOn(true)} data-testid="gmail-sending-on"><Send aria-hidden="true" />Send test &amp; turn on</Button>
+                    ))}
+                  </div>
+                )}
                 {c.last_error && <div className="ml-12 mt-2.5 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700" data-testid={`integration-error-${c.provider}`}><AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />{c.last_error}</div>}
               </div>
             );

@@ -312,3 +312,43 @@ def test_a_lookup_that_cannot_be_completed_raises_rather_than_answering_no():
     provider, _ = make_provider(get_responses=[FakeResponse(500, text="boom")])
     with pytest.raises(RuntimeError):
         run(provider.locate(tenant_id=TENANT, idempotency_key="k1"))
+
+
+# ------------------------------------------------------------------ sending test
+
+def test_the_sending_test_goes_from_the_connected_mailbox_to_itself_and_nowhere_else():
+    provider, log = make_provider(post_responses=[FakeResponse(200, {"id": "gmail-test-1"})])
+
+    result = run(provider.send_test(tenant_id=TENANT))
+
+    assert result == {"provider_message_id": "gmail-test-1", "mailbox": "sales@acme.test"}
+    [(method, url, payload)] = log
+    assert (method, url) == ("POST", f"{gmail_provider.GMAIL_API}/messages/send")
+    mail = message_from_bytes(base64.urlsafe_b64decode(payload["raw"]))
+    assert mail["To"] == "sales@acme.test" and "sales@acme.test" in mail["From"]
+    assert mail["Subject"] == gmail_provider.TEST_SUBJECT
+
+
+def test_the_sending_test_is_refused_without_the_send_scope_and_nothing_is_sent():
+    provider, log = make_provider(connection={**ACTIVE_CONNECTION,
+                                              "scopes": [gmail_provider.GMAIL_READ_SCOPE]})
+    with pytest.raises(gmail_provider.GmailNotAuthorized):
+        run(provider.send_test(tenant_id=TENANT))
+    assert log == []
+
+
+def test_the_sending_test_is_refused_when_the_mailbox_is_unknown():
+    provider, log = make_provider(connection={**ACTIVE_CONNECTION, "account_identity": None})
+    with pytest.raises(gmail_provider.GmailNotAuthorized):
+        run(provider.send_test(tenant_id=TENANT))
+    assert log == []
+
+
+@pytest.mark.parametrize("answer", [FakeResponse(403, text="forbidden"),
+                                    FakeResponse(500, text="boom"),
+                                    FakeResponse(200, {}),
+                                    ConnectionError("connection reset by peer")])
+def test_a_sending_test_gmail_did_not_clearly_accept_is_not_a_pass(answer):
+    provider, _ = make_provider(post_responses=[answer])
+    with pytest.raises(cv.DeliveryRejected):
+        run(provider.send_test(tenant_id=TENANT))

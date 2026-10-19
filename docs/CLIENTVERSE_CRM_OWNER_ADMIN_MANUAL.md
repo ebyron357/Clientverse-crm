@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -602,17 +602,16 @@ If the rows return to **"Needs auth"** within about a week, see
 
 **Full reset procedure**
 
-1. Tell your team that Gmail sync, reply capture and outbound email pause until you reconnect.
-   Do this when no approved email is waiting to be sent.
+1. Tell your team that Gmail sync, reply capture and outbound email pause until you reconnect,
+   and that email sending must be turned on again afterwards ([§5.10](#510-turn-email-sending-on-or-off)). Do this when no approved
+   email is waiting to be sent.
 2. On the **Gmail** row, click **"Disconnect"**. **Check:** **"Disconnected Gmail"**.
 3. On the **Google Calendar** row, click **"Disconnect"**. **Check:**
    **"Disconnected Google Calendar"**.
-   - **Why both:** both rows share one saved Google permission. Disconnecting either row
-     revokes it at Google.
-     - The CRM deletes its saved copy when you disconnect a row while the other row is **not**
-       **"Connected"**.
-     - If the other row is still **"Connected"**, the saved copy stays (already revoked) until you
-       disconnect that row too.
+   - **Why both:** both rows share one saved Google permission. The CRM revokes it at Google,
+     and deletes its saved copy, only when you disconnect the second row. While either row is
+     still **"Connected"**, it keeps working.
+     - Disconnecting **Gmail** also turns **email sending** off ([§5.10](#510-turn-email-sending-on-or-off)).
      - Disconnecting both rows always leaves a clean slate.
 4. (Recommended for a stale or looping permission.) Open **Google Account** → **Security** →
    the list of third-party apps and services with access to your account. Find your ClientVerse
@@ -645,8 +644,8 @@ Work down this list. Each check is stronger than the one before it.
    - **"Email — No connected email provider (gmail is not connected)."** — the Gmail row is not
      **"Connected"**. Re-authorize or reconnect.
    - **"Email — gmail is connected, but no integration record marks it configured for this tenant,
-     so outbound email is not certified."** — the Google side is fine. Sending is held by the CRM's
-     **certification gate**, which only engineering can clear ([§6.1](#61-read-this-first--current-status)).
+     so outbound email is not certified."** — the Google side is fine, but **email sending** is
+     off. An admin turns it on with a test email ([§5.10](#510-turn-email-sending-on-or-off)).
    - **Email not listed at all** — the email channel is authorized. (This view does not check
      `gmail.send`; checks 1 and 2 do.)
 4. **Definitive proof.** A real message reaches status **"sent"** ([§6](#6-email-production-verification)).
@@ -710,8 +709,39 @@ to **"Error"**.
 | Owner can do it | Needs engineering |
 |---|---|
 | Connect, Re-authorize, Sync, Disconnect | Changing `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` or `PUBLIC_BACKEND_URL` (with the owner) |
-| Google Cloud consent screen, test users, redirect URI, publishing status | Outbound email certification ([§6.1](#61-read-this-first--current-status)) |
+| Google Cloud consent screen, test users, redirect URI, publishing status; turning email sending on or off ([§5.10](#510-turn-email-sending-on-or-off)) | — |
 | Removing app access in the Google account | Any error that survives a full reset |
+
+### 5.10 Turn email sending on or off
+
+Outbound email needs two things: Gmail **"Connected"** with send permission
+([§5.8](#58-verify-that-gmailsend-was-actually-granted)), and **email sending** turned on. Turning
+it on is the organization's decision that email may leave the CRM. Each email to a client still
+needs that contact's consent and a human approval of its exact words.
+
+**Turn it on (admin):**
+
+1. **Registries** → **"Integrations"**. The Gmail row reads **"Connected"**.
+2. Under it, the strip reads **"Email sending off"**. Click **"Send test & turn on"**.
+3. The CRM sends one test email from the connected mailbox **to itself**
+   (*"ClientVerse: test message before email sending is turned on"*). No client receives it.
+4. **Check:** the message *"Test email sent to \<mailbox\>. Email sending is on."*, and the strip
+   reads **"Email sending on"**, with the time and who turned it on. The test email is in that
+   mailbox's inbox and **Sent**.
+5. If Gmail refuses, sending stays off and the message says why — for example a connection
+   without send permission: do the full reset in [§5.7](#57-disconnect-safely-and-when-it-is-required)
+   and tick every box.
+
+**Turn it off (admin):** click **"Turn off sending"** on the same strip. Email already approved is
+then refused until sending is turned on again.
+
+**It turns itself off when the proof no longer holds:**
+
+- Gmail is disconnected.
+- Google is reconnected **without** permission to send, or with a **different** mailbox.
+
+Every change is recorded in **Automation & Audit** as `integration.sending_enabled` or
+`integration.sending_disabled`, with who made it and why.
 
 ---
 
@@ -719,11 +749,13 @@ to **"Error"**.
 
 ### 6.1 Read this first — current status
 
-**Status on 2026-10-19: BLOCKED.** Three verified reasons, and each needs a different person:
+**Status on 2026-10-19:** three things decide whether email can go out. The first is done; the
+other two need different people:
 
-1. **The Google permission needs reconnecting** ([§1.4](#14-first-things-to-verify)): Google
-   refused the refresh on 2026-09-30, and any connection made before 2026-10-19 must be renewed so
-   the CRM records what Google granted. **Owner:** [§5.6](#56-re-authorize-google) or
+1. **The Google permission — done.** Verified (live, 2026-10-19 02:02 UTC): the owner reconnected
+   Google on `crm.clientverse.io`, and Google granted `gmail.readonly`, `gmail.send` and
+   `calendar.readonly` (Railway log of the Google callback). If the Gmail row ever shows
+   **"Needs auth"** again: [§5.6](#56-re-authorize-google) or
    [§5.7](#57-disconnect-safely-and-when-it-is-required).
 2. **No screen lets you write your own email to a contact, or record a contact's consent.**
    - **Operations** → **"Conversations"** can only *read* a thread, **"Hand to human"** /
@@ -737,21 +769,18 @@ to **"Error"**.
    - **Engineering-assisted:** for the full send / duplicate / reply test below, an engineer
      performs the API steps ([Appendix C](#appendix-c-engineer-assisted-email-verification)) while
      the owner approves and verifies in the screens.
-3. **The outbound certification gate.**
+3. **Email sending must be turned on.**
    - The CRM lets email go out only when the organization's **Gmail catalogue record** (shown under
-     **Registries** → **"Governed capability contracts"**) is in a certified state.
-   - It is created as **REQUIRES_CONFIGURATION**, and no screen or API changes it. Verified (code).
-     Whether production's record has since been changed by hand is UNVERIFIED — OWNER/ENGINEERING
-     INPUT REQUIRED.
-   - Until engineering records that certification, every send is refused with
-     *"…no integration record marks it configured for this tenant, so outbound email is not
-     certified."*
-   - **Engineering**, after the owner approves certification.
+     **Registries** → **"Governed capability contracts"**) is certified.
+   - An admin certifies it with **"Send test & turn on"** on the Gmail row: Gmail must accept a
+     test email from the connected mailbox to itself first ([§5.10](#510-turn-email-sending-on-or-off)). **Owner.**
+   - Until then, every send is refused with *"…no integration record marks it configured for
+     this tenant, so outbound email is not certified."*
 
 Reply capture also needs the scheduler, which runs inside the CRM ([§11](#11-scheduler--automations)).
 
-**How do I send a real email?** Today, only through the engineer-assisted procedure below, or by
-approving a booking email or form auto-reply, once reasons 1 and 3 are cleared. The Gmail
+**How do I send a real email?** Once email sending is on: by approving a booking email or form
+auto-reply, or through the engineer-assisted procedure below for an email you write yourself. The Gmail
 **"Sync"** button does not send anything; it is a read-only mirror of the inbox. Invitation and
 alert emails use a separate delivery service, not Gmail ([§10.6](#106-email-notifications-and-ai)).
 
@@ -1471,7 +1500,6 @@ For a teammate who forgot their password, or is locked out.
 | Change `ADMIN_EMAIL` | It would create a new, empty organization |
 | Edit or archive companies; import data; export anything but leads | API only, no screen. Deleting records, and editing workspaces, are not possible even through the API. |
 | Revoke a client portal link | No revoke button |
-| Certify outbound email | Certification record ([§6.1](#61-read-this-first--current-status)) |
 | Clear a lockout on the owner account early | Database change ([§9.3](#93-account-locked-out)) |
 
 ---
@@ -1610,7 +1638,7 @@ DEFERRED, DEPRECATED.
 | Integration | Exists in the product | Status |
 |---|---|---|
 | **Google — Gmail and Google Calendar connection** | Yes (**Registries**) | **DEGRADED** — Google refused the permission refresh on 2026-09-30, and no Google sync appears in production's log on 2026-10-19. Reconnect once ([§5.6](#56-re-authorize-google), [§5.7](#57-disconnect-safely-and-when-it-is-required)). The flows have never been live-certified. |
-| **Gmail — outbound email** | Yes (server, approvals, booking emails, form auto-reply) | **CONFIGURATION REQUIRED** — certification gate, and no screen to write your own email ([§6.1](#61-read-this-first--current-status)) |
+| **Gmail — outbound email** | Yes (server, approvals, booking emails, form auto-reply) | **OFF UNTIL AN ADMIN TURNS IT ON** — **"Send test & turn on"** on the Gmail row ([§5.10](#510-turn-email-sending-on-or-off)); no screen to write your own email ([§6.1](#61-read-this-first--current-status)) |
 | **Gmail — reply capture** | Yes (scheduler) | **AVAILABLE BUT NOT CERTIFIED** — never tested live ([§6.6](#66-procedure-c--capture-the-reply)) |
 | **Google Calendar — meeting sync and booking busy times** | Yes | **AVAILABLE BUT NOT CERTIFIED** |
 | **Website forms** | Yes (**Website Forms**) | **AVAILABLE BUT NOT CERTIFIED** — no production lead from a real website recorded yet (governing document C-30) |
@@ -1903,7 +1931,7 @@ adding jobs, or any failure that is not explained in §11.5.
 | **Google token refresh 400** — "Needs auth", `token_refresh_failed:400` | Permission revoked or expired; consent screen in Testing (7-day expiry); client secret rotated | **"Re-authorize"** (§5.6) | It recurs within a week (Testing mode), or the reconnect itself ends in "Error" / `token_exchange_failed` (secret or redirect mismatch) |
 | **Integration says disconnected** — "Not connected" | Never connected, or someone disconnected it | Admin → **"Connect"** (§5.5). Check **Automation & Audit** for `integration.disconnected` to see who. | Connect fails |
 | **Gmail send refused as "read-only"** | The connection does not record `gmail.send`: unticked at Google, or made before 2026-10-19 | Full reset and tick **send** on consent (§5.7, §5.8) | It still says read-only after that |
-| **Gmail send fails** — message "Blocked" | Not connected, no consent, certification gate | Read the reason on the message. Fix the connection (§5.6). Certification needs engineering (§6.1). | The reason mentions certification, consent or a provider |
+| **Gmail send fails** — message "Blocked" | Not connected, no consent, or email sending off | Read the reason on the message. Fix the connection (§5.6). Turn email sending on (§5.10). | The reason mentions consent or a provider |
 | **Gmail send fails** — message "Failed" (the engineer finds HTTP 403 in the message's `error` field) | Send permission not actually granted | Full reset, and tick **send** on consent (§5.7, §5.8) | It still fails after that |
 | **Gmail send** — "Outcome unknown" | Google did not confirm | **Do not re-send.** Wait for the :10 / :40 reconcile; if Google is not **"Connected"**, reconnect first (§6.7). | Still unknown 1 hour after Google is connected |
 | **Booking email not sent** — "Waiting for approval", "Could not send", or "Email isn't connected…" | Awaiting an admin; Gmail failed; email channel not authorised | Admin: **"Review and approve"** (§7.7). Otherwise as the Gmail rows above. | The reason is unclear |
@@ -2056,7 +2084,7 @@ the owner account.
 | 10 | Edit record works | Open `ZZ Test Person` → **"Edit"** → add a phone → **"Save changes"**; move a test deal **Lead → Qualified**; reload | **"Contact saved"**, **"Moved to Qualified"**; both persist after the reload | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 11 | Archive / restore | **"Archive contact"** on `ZZ Test Person`; **"Show archived"**; **"Restore"** | **"Contact archived"**, **"Contact restored"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 12 | Google connected | Registries → Gmail | **"Connected"**, no red line, connected on or after 2026-10-19 | No Google sync in the 2026-10-19 log; reconnect needed (§1.4) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
-| 13 | gmail.send verified | §5.8 checks 1–3 | Google lists send permission; Email not listed as unauthorised | Blocked by 12 and by certification | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
+| 13 | gmail.send verified | §5.8 checks 1–3, §5.10 | Google lists send permission; **"Email sending on"**; Email not listed as unauthorised | Google granted `gmail.send` on 2026-10-19 02:02 UTC; sending not yet turned on | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 14 | Outbound email works | §6.4 | **"Sent"**; in Gmail Sent; received | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 15 | Duplicate-send protection | §6.5 | Refused; one copy only | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 16 | Inbound reply works | §6.6 | Inbound **"Received"** on the same thread | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
@@ -2078,7 +2106,7 @@ the owner account.
 |---|---|
 | Anything this manual lets the owner fix (sign-in, member passwords, Google reconnect, invitations, scheduler secrets) | **Owner** — follow the chapter |
 | Site down, deployment FAILED or CRASHED, database down, automation stopped, any repeated `500` | **Engineering — urgent** |
-| Outbound email certification, company edits, deletes, export or import | **Engineering — planned** |
+| Company edits, deletes, export or import | **Engineering — planned** |
 | Leaked secret or suspicious access | **Rotate now**, then report **privately** (§13.6) |
 | Google Cloud, Stripe account, GitHub billing, DNS, MongoDB Atlas account decisions | **Owner** (engineering can advise) |
 
@@ -2180,7 +2208,7 @@ A first-time owner must be able to answer each question from this manual alone.
 | No Google connection is being synced | No Google API request in the `d4d2e07f` log through 01:09 UTC, although `integration-sync` ran; that job syncs only active or degraded connections (`run_integration_sync_sweep` in `backend/server.py`). Last known: the refresh refused on 2026-09-30. |
 | A connection records the scopes Google granted | Code since PR #42: `google_callback` in `backend/server.py` stores `creds["scopes"]`; `backend/gmail_provider.py` refuses to send without `gmail.send` |
 | The custom domain is live | Railway domain status for `crm.clientverse.io`: verified, certificate valid, CNAME propagated. Railway variables `FRONTEND_URL` and `GOOGLE_REDIRECT_URI` point to it; `CORS_ORIGINS` lists it and the Railway address. Railway's HTTP log shows pages served on `crm.clientverse.io` from 01:36 UTC, and Google returning to its callback at 01:42 UTC. |
-| Outbound email is held by a certification gate | Code: `backend/recovery_strategy.py` (`authorized_channels`, `CONFIGURED_INTEGRATION_STATUSES`); the Gmail catalogue record is seeded `REQUIRES_CONFIGURATION` in `backend/server.py`, and nothing updates it |
+| Outbound email is off until an admin turns it on | Code: `backend/recovery_strategy.py` (`authorized_channels`, `CONFIGURED_INTEGRATION_STATUSES`). The Gmail catalogue record is seeded `REQUIRES_CONFIGURATION`; only `POST /api/integrations/gmail/sending/enable` certifies it, after Gmail accepts a test email (`send_test` in `backend/gmail_provider.py`), and disconnecting Gmail or reconnecting without `gmail.send` or with another mailbox resets it |
 | No screen writes an email to a contact or records consent | Code: `frontend/src/pages/Operations.jsx` calls only conversation handoff and close. The only screen-released emails are booking emails (`frontend/src/pages/Calendar.jsx`) and an approved auto-reply (`frontend/src/pages/WebsiteForms.jsx`). |
 | Invitations are emailed only when email delivery is configured | Code: `_email_invitation` in `backend/server.py`; `email_configured()` reads `EMERGENT_EMAIL_KEY` |
 | Last full live production smoke | 2026-09-01 on `ca30587` (`docs/evidence/production-smoke-20260901.json`). No live smoke since. |
@@ -2201,8 +2229,7 @@ Never paste a real token into a ticket or log.
 2. The organization's Gmail catalogue record (`integrations` collection, `name: "Gmail"`, the
    owner organization) is in a certified state — one of `CONNECTED`, `ACTIVE`, `CERTIFIED`,
    `ENABLED`, `AVAILABLE` (`backend/recovery_strategy.py`).
-   - There is no API for this. It is a **deliberate certification decision the owner approves**.
-     Record it in the governing document before changing the record.
+   - An admin sets it with **"Send test & turn on"** ([§5.10](#510-turn-email-sending-on-or-off)). Never change the record by hand.
 3. `GET /api/recovery-strategies/channel-authority` shows `email.authorized: true`.
 
 **Secret handling in this procedure.** Run it in `bash`. The password is typed at a hidden
@@ -2348,6 +2375,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.3 | 2026-10-19 | Email sending switch: §5.10 (new), §5.7, §5.8, §6.1, capability status, troubleshooting, checklist row 13, escalation, Appendices B and C. Google reconnected with send permission (§6.1). Disconnecting Calendar no longer cancels Gmail's permission (§5.7). |
 | 1.2 | 2026-10-19 | `crm.clientverse.io` is live: addresses (§2.1–2.2, §3.2), Google addresses (§10.2), Appendices B and D. Review fixes ([ebyron357/Clientverse-crm#43](https://github.com/ebyron357/Clientverse-crm/pull/43)): signing everyone out when the owner password may be known (§9.2, §13.4); scheduler health when the GitHub workflow runs first (§11.4, §11.5, checklist row 17, Appendix A); access codes in `/portal/` and `/booking/manage/` addresses (§13.7, §15.2). |
 | 1.1 | 2026-10-19 | Refreshed for `main@838f00d` (PRs #35–#42). Scheduler: built into the CRM (13 jobs), with the GitHub workflow as an optional second driver; health is read from `scheduled_jobs_running` and `in_process`. Sign-in: the redesigned page, password change in Settings, admin reset of a temporary password, invitation sign-up and invitation emails. Screens: collapsible sidebar groups, breadcrumbs, theme button, side panels; new Leads, Tasks, Website Forms and Calendar sections; contacts and deals can now be edited and archived; deals move by drag or **"⋯"** → **"Move to stage"**. Email: booking emails and form auto-replies are the screen-released emails; a connection records the scopes Google granted (PR #42), so reconnect once; a refused lookup never counts as "not sent". Custom domain `crm.clientverse.io` recorded as added but not live. Verified against the code and Railway deployment records and logs of 2026-10-19. |
 | 1.0 | 2026-09-30 | First complete owner/admin manual ([ebyron357/Clientverse-crm#33](https://github.com/ebyron357/Clientverse-crm/issues/33)). Verified against `main@8f23f63` code, Railway deployment records and logs, and GitHub Actions run records of 2026-09-30. |
