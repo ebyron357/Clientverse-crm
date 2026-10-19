@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -94,8 +94,8 @@ The shortest path from nothing to a working, checked CRM. About ten minutes.
 2. Under the heading **"Sign in to ClientVerse"**, type your owner email in **"Work email"** and
    your password in **"Password"**. The eye button beside the password shows or hides what you typed.
 3. Click **"Sign in"**.
-4. **Check:** the page changes to **Command Center**. At the bottom of the left sidebar you see
-   your name and **"Workspace admin"**.
+4. **Check:** the page changes to **Today** (`/dashboard`, headed **"Command Center"**). At the
+   bottom of the dark menu on the left you see your name and **"Workspace admin"**.
 
 **Warning:** Do not click **"Continue with Google"** (the first button on the page) or
 **"Create a workspace"** at the bottom. Both can create a *separate, empty* organization that is
@@ -103,13 +103,13 @@ not your CRM ([§3.1](#31-supported-sign-in-methods)).
 
 ### 1.3 Find Settings and Integrations
 
-The sidebar groups **Command**, **CRM** and **Client Success** are always open. The others —
-including **Platform** — open when you click their name.
+The main menu on the left lists the eleven everyday pages. **"Settings"** is pinned at its
+bottom, and the Settings page has its own menu on the left ([§4.3](#43-main-menu-and-settings-map--every-item-and-whether-it-is-active)).
 
-- **Settings:** left sidebar → click **Platform** → **"Settings"**.
-- **Integrations** (Google, Stripe): left sidebar → **Platform** → **"Registries"**. The
-  **"Integrations"** tab opens first. You can also go through **Settings** → the
-  **"Integrations"** section → **"View integrations"**.
+- **Settings:** left menu → **"Settings"** (bottom). It opens on **"General"**.
+- **Integrations** (Google, Stripe): **Settings** → **Connections** → **"Integrations"**. This opens
+  the **Registries** page on its **"Integrations"** tab. You can also go through **Settings** →
+  **"General"** → the **"Integrations"** section → **"View integrations"**.
 
 ### 1.4 First things to verify
 
@@ -121,7 +121,7 @@ Do these five checks after every first sign-in, and whenever something seems wro
 | 2 | The service and database are up | Open `/api/health` (link in [§1.1](#11-quick-reference-card)) | `"status":"ok"` and `"database":"up"` |
 | 3 | Google is connected | **Registries** → **Integrations** → **Gmail** row | **"Connected"**, no red error line. If it says **"Needs auth"**, follow [§5.6](#56-re-authorize-google) |
 | 4 | Automation is running | Open `/api/cron/health` while signed in as admin | `"scheduled_jobs_running": true` ([§11.4](#114-verify-that-automation-is-healthy)) |
-| 5 | No critical alerts | **Action Center** (sidebar → **Command**) | Nothing unexpected under **"Needs action"** |
+| 5 | No critical alerts | **Action Center** (the bell → **"View all in Action Center"**) | Nothing unexpected under **"Needs action"** |
 
 **Check 3 is expected to fail until you reconnect Google once.** Google refused to refresh the
 saved Google permission on 2026-09-30 (Verified (live, 2026-09-30): Railway log
@@ -264,7 +264,8 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
 - **Sidebar footer** (bottom left) shows your initials, your name and either **"Workspace admin"**
   or **"Team member"**.
 - **Settings** → **"Profile"** shows **"Name"**, **"Email"** and **"Access level"**.
-- Admins see **"Team & Access"** in the sidebar under **Platform**. Members do not.
+- Admins see **"Team and roles"** under **Workspace**, and the **Developer** group, in the Settings
+  menu. Members do not.
 
 ### 3.5 Sign out
 
@@ -332,18 +333,19 @@ See [Chapter 13](#13-security-and-owner-safety).
 
 | Landmark | Where | What it does |
 |---|---|---|
-| **Sidebar** | Left edge | All modules, in groups. **Command**, **CRM** and **Client Success** are always open; click any other group's name to open or close it (the browser remembers). The **"Collapse navigation"** button shrinks it to icons. On a phone it opens from the menu button. |
-| **Search** | Top of the sidebar: **"Search"** (Ctrl/⌘ K) | Jumps to a *module or action*. It does **not** search your records ([§7.19](#719-search)). |
-| **Sidebar footer** | Bottom of sidebar | Your initials, name and role (**"Workspace admin"** / **"Team member"**), the theme button (light → dark → match device) and the sign-out icon. |
-| **Breadcrumb** | Top bar, left | The sidebar group and the page you are on, for example *CRM › Contacts*. |
+| **Main menu** (the dark sidebar) | Left edge | The eleven everyday pages — **Today**, **Leads**, **Inbox**, **Contacts**, **Pipeline**, **Calendar**, **Tasks**, **Approvals**, **Clients**, **Automations**, **Reports** — with **"Settings"** pinned at the bottom ([§4.3](#43-main-menu-and-settings-map--every-item-and-whether-it-is-active)). The **"Collapse navigation"** button shrinks it to icons (the browser remembers). On a phone it opens from the menu button. |
+| **Counts** beside menu items | Main menu | **Leads**: new leads nobody has contacted. **Inbox**: open conversations. **Tasks**: your overdue tasks, plus overdue tasks nobody owns. **Approvals**: requests waiting for a decision. Red means act now; grey is a count to get to today. No badge means zero, or the count could not be read. |
+| **Search** | Top bar: **"Search or jump to…"** (Ctrl/⌘ K) | Jumps to a *page or action*. It does **not** search your records ([§7.19](#719-search)). |
+| **Menu footer** | Bottom of the main menu | Your initials, name and role (**"Workspace admin"** / **"Team member"**), the theme button (light → dark → match device) and the sign-out icon. |
+| **Breadcrumb** | Top bar, left | Where the page sits, for example *Contacts*, *Pipeline › Deals* or *Settings › Audit log*. |
 | **"Create"** | Top bar, right | Quick create: company, contact, opportunity or client workspace. |
 | **Bell** | Top bar, far right | Notifications, with an unread count ([§7.12](#712-action-center-and-notifications)). |
-| **Amber dot** beside a sidebar item | Sidebar | The module is **not active yet** (placeholder page). |
+| **Settings menu** | Left of every Settings page | Workspace, Capture, Connections, Compliance, Developer (admins only) and **Coming soon** — the modules that are **not active yet** (placeholder pages). |
 | **Side panel** | Right edge, over the page | Opening a contact, company, deal, lead or task slides its record in from the right: tabs on one side, a **"Details"** panel on the other. Close it with ✕ or Esc. |
 
 ### 4.2 What you see after sign-in: Command Center
 
-**Command Center** (`/dashboard`) is the home page. Its header reads **"Command Center"** —
+**Command Center** (`/dashboard`, **"Today"** in the main menu) is the home page. Its header reads **"Command Center"** —
 *"Revenue, delivery risk and the client relationships that need your team next."* — with the
 buttons **"Refresh"** and **"Review pipeline"**. From top to bottom:
 
@@ -364,50 +366,59 @@ buttons **"Refresh"** and **"Review pipeline"**. From top to bottom:
 A new, empty CRM shows friendly empty states — for example **"Your pipeline starts here"**. That
 is correct, not an error.
 
-### 4.3 Sidebar map — every item and whether it is active
+### 4.3 Main menu and Settings map — every item and whether it is active
 
-Verified (code): `frontend/src/platform/modules.js`, `frontend/src/App.js`.
+Verified (code): `frontend/src/platform/navigation.js`, `frontend/src/platform/modules.js`,
+`frontend/src/App.js`.
 
-| Group | Sidebar item | Opens | Status | Admin only |
-|---|---|---|---|---|
-| Command | **Command Center** | `/dashboard` | Active | |
-| Command | **Action Center** | `/notifications` | Active | |
-| CRM | **Leads** | `/leads` | Active | |
-| CRM | **Tasks** | `/tasks` | Active | |
-| CRM | **Website Forms** | `/website-forms` | Active | Creating and changing forms: admin |
-| CRM | **Contacts** | `/contacts` | Active | |
-| CRM | **Companies** | `/companies` | Active | |
-| CRM | **Deals** | `/deals` (the Pipeline board) | Active | **"Customize stages"**: admin |
-| CRM | **Pipelines** | `/pipeline` (the same board) | Active | |
-| Client Success | **Client 360** | `/workspaces` | Active | |
-| Client Success | **Client Operations** | `/client-ops` | Active | Some buttons: admin |
-| Communications | **Email** | `/communications/email` | **Not active** — "Configuration required" | |
-| Communications | **Unified Inbox** | `/operations?tab=conversations` | Active (read, hand off and close only — [§7.13](#713-operations)) | |
-| Communications | **SMS** | `/communications/sms` | **Not active** — "Configuration required" | |
-| Communications | **Calling** | `/communications/calling` | **Not active** — "Backend contract pending" | |
-| Scheduling | **Calendar** | `/scheduling/calendar` | Active — online booking ([§7.7](#77-calendar-and-online-booking)) | Booking pages and approving emails: admin |
-| Automation | **Workflows** | `/automation/workflows` | **Not active** — "Backend contract pending" | |
-| Automation | **Approvals** | `/operations?tab=approvals` | Active | Deciding: admin |
-| Automation | **Operations** | `/operations` | Active | Some buttons: admin |
-| Revenue | **Revenue Operations** | `/revenue` | **Not active** — "Backend contract pending" | |
-| Revenue | **Recovery Proof** | `/proof` | Active | |
-| Support | **Support** | `/support` | **Not active** — "Backend contract pending" | |
-| Intelligence | **Reporting** | `/intelligence/reporting` | **Not active** — "Backend contract pending" | |
-| Intelligence | **Relationship Intelligence** | `/intelligence/relationships` | **Not active** — "Backend contract pending" | |
-| Platform | **Migration** | `/platform/migration` | **Not active** — "Backend contract pending" | |
-| Platform | **Registries** (integrations) | `/registries` | Active | Connect/sync: admin |
-| Platform | **MCP Console** | `/mcp` | Active | Kill switch and undo: admin |
-| Platform | **Automation & Audit** | `/audit` | Active | Undo: admin |
-| Platform | **Team & Access** | `/team` | Active | **Yes** (hidden from members) |
-| Platform | **Settings** | `/settings` | Active | |
-| Platform | **Knowledge** | `/platform/knowledge` | **Not active** — "Backend contract pending" | |
+**Main menu** (left edge, in this order). Every item is active. A module that is not active
+never appears here.
 
-Pages that have **no sidebar entry**:
+| Menu item | Opens (page heading) | Count badge | Admin only |
+|---|---|---|---|
+| **Today** | `/dashboard` (**Command Center**) | | |
+| **Leads** | `/leads` | New leads nobody has contacted (red) | |
+| **Inbox** | `/operations?tab=conversations` (Operations → **Conversations**; read, hand off and close only — [§7.13](#713-operations)) | Open conversations (red) | |
+| **Contacts** | `/contacts` — the page with the **"Companies"** and **"Contacts"** tabs (`/companies` opens the other tab) | | |
+| **Pipeline** | `/pipeline` (the Pipeline board; `/deals` opens the same board) | | **"Customize stages"**: admin |
+| **Calendar** | `/scheduling/calendar` — online booking ([§7.7](#77-calendar-and-online-booking)) | | Booking pages and approving emails: admin |
+| **Tasks** | `/tasks` | Your overdue tasks, plus overdue tasks nobody owns (grey) | |
+| **Approvals** | `/operations?tab=approvals` (Operations → **Approvals**) | Requests waiting for a decision (grey) | Deciding: admin |
+| **Clients** | `/workspaces` (**Client 360**) | | |
+| **Automations** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, portal and commercial records) | | Some buttons: admin |
+| **Reports** | `/proof` (**Recovery Proof**) | | |
+| **Settings** (pinned at the bottom) | `/settings` (**General**) | | |
 
+**Settings menu** (left of every Settings page).
+
+| Group | Item | Opens (page heading) | Admin only |
+|---|---|---|---|
+| Workspace | **General** | `/settings` — profile, security, notifications, integration status, organization | |
+| Workspace | **Fields** | `/settings/fields` — your own fields on contacts, companies and deals ([§7.4](#74-contacts-and-companies) item 8) | Adding and changing fields: admin |
+| Workspace | **Team and roles** | `/team` (**Team & Access**) | **Yes** (hidden from members) |
+| Workspace | **Lead routing** | `/website-forms` — each form's **"Assign the lead"** section sets who gets its leads | Changing it: admin |
+| Capture | **Forms** | `/website-forms` (**Website Forms**) | Creating and changing forms: admin |
+| Capture | **Booking pages** | `/scheduling/calendar?tab=pages` (Calendar → **"Booking pages"**) | Creating and changing pages: admin |
+| Connections | **Integrations** | `/registries?tab=integrations` (Registries → **"Integrations"**) | Connect/sync: admin |
+| Connections | **Email sending** | The same page: the sending switch is on the **Gmail** row ([§5.10](#510-turn-email-sending-on-or-off)) | Turning it on or off: admin |
+| Compliance | **Audit log** | `/audit` (**Automation & Audit**) | Undo: admin |
+| Developer | **MCP console** | `/mcp` (**MCP Console**) | **Yes** (the group is hidden from members); kill switch and undo: admin |
+| Developer | **Registries** | `/registries` (MCP servers, plugins, webhooks) | **Yes** |
+| Developer | **Operations** | `/operations` (work queue, recovery strategies, security gate) | **Yes**; some buttons: admin |
+| Coming soon | **Email**, **SMS** | `/communications/email`, `/communications/sms` | **Not active** — "Configuration required" |
+| Coming soon | **Calling**, **Workflows**, **Revenue Operations**, **Support**, **Reporting**, **Relationship Intelligence**, **Migration**, **Knowledge** | `/communications/calling`, `/automation/workflows`, `/revenue`, `/support`, `/intelligence/reporting`, `/intelligence/relationships`, `/platform/migration`, `/platform/knowledge` | **Not active** — "Backend contract pending" |
+
+The Settings menu sits beside General, Fields, Team and roles, Forms, Integrations and Registries, Audit
+log, MCP console and every Coming soon page. **Booking pages** and **Operations** open pages that
+are also reached from the main menu (Calendar; Inbox and Approvals), so those keep their own
+layout and the Settings menu is one click back. A member's address for **Operations** still
+works; only the menu entry is hidden.
+
+Pages that have **no menu entry**:
+
+- **Action Center** — `/notifications`. Open it from the bell → **"View all in Action Center"**.
 - **Field Ops** — `/field`. Type the address to open it.
 - **Directory** — `/directory`. The combined contacts-and-companies page.
-- **Fields** — `/settings/fields`. Your own fields on contacts, companies and deals; reached from
-  **"Contacts"** → **"Columns"** → **"Manage fields…"** ([§7.4](#74-contacts-and-companies) item 8).
 - **Accept invitation** — `/invite`. Opened from an invitation.
 - **Client portal** — `/portal/…`. For clients, opened from a portal link.
 - **Public booking page** — `/book/…`. For the public, opened from a booking link ([§7.7](#77-calendar-and-online-booking)).
@@ -495,10 +506,10 @@ How the request is made:
 
 ### 5.3 Where the Google controls are
 
-- **Path A:** **Settings** → the **"Integrations"** section lists **Gmail**, **Google Calendar**
-  and **Stripe** with a status. Admins see **"Connect"** or **"Manage"** on each row, and
-  **"View integrations"** at the bottom. All of them open the Registries page.
-- **Path B:** sidebar → **Platform** → **"Registries"**.
+- **Path A:** **Settings** → **"General"** → the **"Integrations"** section lists **Gmail**,
+  **Google Calendar** and **Stripe** with a status. Admins see **"Connect"** or **"Manage"** on
+  each row, and **"View integrations"** at the bottom. All of them open the Registries page.
+- **Path B:** **Settings** → **Connections** → **"Integrations"** (or **"Email sending"**).
 
 Either path lands on the **Registries** page, on the **"Integrations"** tab (the first of
 **"Integrations"**, **"MCP Servers"**, **"Plugins"**, **"Webhooks"**). The tab shows:
@@ -896,7 +907,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** your daily starting point — pipeline value, won revenue, active clients, delivery
   risk, recommended next steps, alerts and client health.
-- **Where:** sidebar → **Command** → **"Command Center"**; or click the ClientVerse logo.
+- **Where:** main menu → **"Today"**; or click the ClientVerse logo.
 - **Common actions:**
   1. Click a figure in the top strip to open its list.
   2. Work the **"Next actions"** list from the top.
@@ -914,7 +925,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** every lead from your website forms and online booking, with its speed-to-lead
   clock and what the CRM did automatically.
-- **Where:** sidebar → **CRM** → **"Leads"**. New teammates land here after accepting an invitation.
+- **Where:** main menu → **"Leads"** (the red count is new leads nobody has contacted). New
+  teammates land here after accepting an invitation.
 - **Common actions:**
   1. Read the tabs **"New"**, **"Contacted"**, **"Closed"**, **"Spam"**, **"All"**. Search by name,
      email, phone, address or MLS number; filter by form (**"All forms"**). The list refreshes
@@ -940,7 +952,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 ### 7.3 Tasks
 
 - **Purpose:** every call-back and follow-up in one list, with what is late at the top.
-- **Where:** sidebar → **CRM** → **"Tasks"**.
+- **Where:** main menu → **"Tasks"** (the count is your overdue tasks, plus overdue tasks nobody
+  owns — the **"Overdue"** tab of the default view).
 - **Common actions:**
   1. Read the tabs **"Overdue"**, **"Today"**, **"Upcoming"** and **"Done"** (finished tasks stay
      7 days). Admins can switch between **"My tasks"** and **"Everyone"**.
@@ -955,7 +968,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** the people and accounts behind every relationship.
 - **Where:**
-  - sidebar → **CRM** → **"Contacts"** or **"Companies"**
+  - main menu → **"Contacts"**
   - one page with the tabs **"Companies"** and **"Contacts"**
   - the top-bar **"Create"** button also creates both
 - **Common actions:**
@@ -1002,7 +1015,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
        becomes **Customer**. A **Partner** stays a **Partner**.
   7. **Open a company** (side panel): tabs **"Contacts"**, **"Deals"**, **"Client 360"**, and the
      **"Details"** panel. Only **"More fields"** can be edited there.
-  8. **Your own fields** (**Settings → Fields**, `/settings/fields`; also **"Columns"** →
+  8. **Your own fields** (**Settings** → **Workspace** → **"Fields"**, `/settings/fields`; also **"Columns"** →
      **"Manage fields…"**). An admin adds the details the business tracks on every contact,
      company or deal:
      1. Choose the tab **"Contacts"**, **"Companies"** or **"Deals"** → **"New … field"**.
@@ -1058,7 +1071,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** move revenue opportunities through your stages — by default **Lead → Qualified →
   Proposal → Negotiation → Closed won**, with **Closed lost** behind **"Show lost deals"**.
-- **Where:** sidebar → **CRM** → **"Deals"** or **"Pipelines"**. Both open the **Pipeline** board.
+- **Where:** main menu → **"Pipeline"**. It opens the **Pipeline** board (`/deals` opens the same board).
 - **Common actions:**
   1. **"New deal"**: **"Deal name"**, **"Who is it with?"**, **"Company (optional)"**,
      **"Expected value"**, **"Currency"**, **"Starting stage"**, **"Expected close date"**,
@@ -1090,7 +1103,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** the forms on your website. Every submission becomes a contact, an owner, a deal, a
   call-back task and an alert, automatically.
-- **Where:** sidebar → **CRM** → **"Website Forms"**. Engineering guide: [WEBSITE_FORMS.md](WEBSITE_FORMS.md).
+- **Where:** **Settings** → **Capture** → **"Forms"** (**Workspace** → **"Lead routing"** opens the
+  same page). Engineering guide: [WEBSITE_FORMS.md](WEBSITE_FORMS.md).
 - **Common actions (admin):**
   1. **"New form"** → choose a **"Template"** → **"Create form"**.
   2. Work through the tabs **"Fields"**, **"Settings"**, **"Automation"**, **"Auto-reply"** and
@@ -1111,7 +1125,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** appointments people book online, the booking pages they book through, and each
   agent's hours.
-- **Where:** sidebar → click **Scheduling** → **"Calendar"**. Engineering guide: [BOOKING.md](BOOKING.md).
+- **Where:** main menu → **"Calendar"**; or **Settings** → **Capture** → **"Booking pages"**,
+  which opens its **"Booking pages"** tab. Engineering guide: [BOOKING.md](BOOKING.md).
 - **Common actions:**
   1. **"Upcoming"** tab: appointments by day (**"Mine"** / **"Everyone's"**, **"List"** /
      **"Week"**). For each: **"Attended"**, **"No-show"**, **"Reschedule"**, **"Cancel"**.
@@ -1139,7 +1154,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** one operating page per client — health, commitments, outcomes, activity, timeline,
   tasks, deliverables, requests and approvals.
-- **Where:** sidebar → **Client Success** → **"Client 360"** (list), then click a row.
+- **Where:** main menu → **"Clients"** (the **Client 360** list), then click a row.
 - **Common actions:**
   1. **"New workspace"**: **"Workspace name"**, **"Company"**, **"Lifecycle stage"** →
      **"Create workspace"**. Or win a deal ([§7.5](#75-deals-and-pipeline)).
@@ -1177,7 +1192,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   5. **Approvals:** an admin sees **"Approve"** / **"Reject"**. Members see **"Awaiting admin"**.
 - **Common mistakes:**
   - Only the title can be entered for tasks, deliverables and requests, and nothing here can be
-    edited or deleted later. (The **Tasks** page in the CRM group is separate and fully editable.)
+    edited or deleted later. (The **Tasks** page in the main menu is separate and fully editable.)
   - The owner and due date of a commitment cannot be changed after creation.
   - Status-menu changes show no message if they fail. Refresh the tab to confirm.
 - **Saved when:** **"Commitment added"**, **"Updated"**, **"Approval requested"**,
@@ -1222,7 +1237,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** client risks and delivery blockers that need a person, plus your notification
   preferences.
-- **Where:** sidebar → **Command** → **"Action Center"**; or the bell → the gear icon.
+- **Where:** the bell → **"View all in Action Center"**, or the bell → the gear icon.
 - **Common actions:**
   1. **"Inbox"** tab:
      - **"Needs action"** → **"Open client"**, **"Acknowledge"**, **"Resolve"**
@@ -1246,7 +1261,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** the control room for automation — recommendations, the durable work queue,
   recovery strategies, approvals, client conversations and the security gate.
-- **Where:** sidebar → **Automation** → **"Operations"**.
+- **Where:** **Settings** → **Developer** → **"Operations"** (admins). Main menu → **"Inbox"** opens
+  its **"Conversations"** tab and **"Approvals"** its **"Approvals"** tab, for everyone.
 - **Tabs and common actions:**
 
   | Tab | What you can do | Admin only |
@@ -1276,7 +1292,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** what the recovery engine found, what was actually sent, and what was recovered,
   with the records that prove it.
-- **Where:** sidebar → **Revenue** → **"Recovery Proof"**.
+- **Where:** main menu → **"Reports"**.
 - **What you see:**
   - **"Open potential"** — an estimate, *not revenue*
   - **"Attributed recovered"** — money a record says arrived after outreach reached the client
@@ -1288,15 +1304,15 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 - **Common mistakes:** adding "potential" and "recovered" together. They are deliberately separate.
   An empty report (**"No recovery cases yet"**) is honest, not broken.
 - **Saved when:** a closed case shows **"Closed"**.
-- The sidebar **"Reporting"** item is not active; this is the live report.
+- **Settings** → **Coming soon** → **"Reporting"** is not active; this is the live report.
 
 ### 7.15 Client Operations and the client portal
 
 - **Purpose:** client-facing coordination per workspace — secure portal links, documents,
   estimates and invoices (local records only), appointments, referrals, review requests, safe
   internal automations and playbooks.
-- **Where:** sidebar → **Client Success** → **"Client Operations"**. Pick a workspace in
-  **"Choose a workspace"**.
+- **Where:** main menu → **"Automations"** (the page is headed **"Client Operations"**). Pick a
+  workspace in **"Choose a workspace"**.
   - Tabs: **"Overview"**, **"Client portal"**, **"Commercial"**.
   - **"More workflows"** adds **"Appointments"**, **"Growth"**, **"Safe automation"** and
     **"Capacity & playbooks"**.
@@ -1326,7 +1342,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 ### 7.16 Field Ops
 
 - **Purpose:** on-site check-ins from a phone.
-- **Where:** type `/field` after the production address. There is no sidebar entry.
+- **Where:** type `/field` after the production address. There is no menu entry.
 - **Common actions:**
   - **"Check in to a client workspace"**: **"Workspace"**, **"Location label"**, **"Onsite note"**,
     then **"Save check-in"**
@@ -1339,8 +1355,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 - **Purpose:** the organization's record of every significant change, including approvals, sends,
   password changes and resets, permission denials (`authz.denied`) and team changes. Failed
   sign-ins are **not** recorded here.
-- **Where:** sidebar → **Platform** → **"Automation & Audit"**; or **Settings** → **"Organization"**
-  → **"Open audit"**.
+- **Where:** **Settings** → **Compliance** → **"Audit log"**; or **Settings** → **"General"** →
+  **"Organization"** → **"Open audit"**.
 - **Common actions:** read the newest events; filter by event, actor or record, and by resource.
   Admin: **"Undo"** on an approved AI-tool write, within the undo window (default 60 minutes), with
   a **required reason**.
@@ -1350,7 +1366,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 - **Purpose:** run the CRM's governed tools. Read tools run at once; write tools need approval
   first.
-- **Where:** sidebar → **Platform** → **"MCP Console"**.
+- **Where:** **Settings** → **Developer** → **"MCP console"** (the group is shown to admins; a
+  member can still open `/mcp`).
 - **Common actions:**
   - Pick a tool, fill its fields, **"Invoke tool"**.
   - A Level-2 write returns **"Approval required (Level 2)"**; an admin approves it in
@@ -1364,9 +1381,11 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 ### 7.19 Search
 
-- **Ctrl/⌘ K** (the **"Search"** box at the top of the sidebar) opens **"Search modules and
-  actions…"**. It finds **modules and actions only** — for example "Pipeline", "Team & Access",
-  "Create opportunity". **It does not find contacts, companies, deals or workspaces.**
+- **Ctrl/⌘ K** (the **"Search or jump to…"** box in the top bar) opens **"Search pages and
+  actions…"**. It lists the main menu, the Settings menu, a few other pages and **Coming soon**,
+  in the menus' words, and finds **pages and actions only** — for example "Pipeline",
+  "Team and roles", "Create opportunity". **It does not find contacts, companies, deals or
+  workspaces.**
 - To find a record, open its list page and use that page's search box:
   - Leads: name, email, phone, address or MLS number
   - Contacts: **"Search name, phone, email…"**; Companies: **"Search companies…"**
@@ -1432,7 +1451,7 @@ A member who tries an admin action sees **"You do not have permission to perform
 
 ### 8.2 Invite a user
 
-1. Sidebar → **Platform** → **"Team & Access"**.
+1. **Settings** → **Workspace** → **"Team and roles"** (the page is headed **"Team & Access"**).
 2. Click **"Invite"**. The dialog **"Invite a teammate"** opens.
 3. **"Their email"** — the person's work address. **"What they can do"** — **"Member"** (default)
    or **"Admin"**.
@@ -2173,7 +2192,7 @@ the owner account.
 | 17 | Automation healthy | §11.4 A | `scheduled_jobs_running: true`; recent `in_process.last_run_at`, or a recent `last_authenticated_call_at` when the workflow runs too | Boot log shows the built-in scheduler; workflow calls answered 200 | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 18 | Railway deployment healthy | Railway → Deployments | Newest **SUCCESS**, no crash loop | `838f00d` SUCCESS 01:16 UTC | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 19 | Integrations show correct status | Settings → **"Integrations"** vs Registries | Same statuses in both; Stripe **"Not connected"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
-| 20 | No visible critical errors | Visit every active sidebar item | No **"This view needs a refresh"**, no "…unavailable" | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
+| 20 | No visible critical errors | Visit every main menu item and every Settings item above **Coming soon** | No **"This view needs a refresh"**, no "…unavailable" | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 21 | Clean up | Archive `ZZ Test Person` and the test deal; disable the test member. The test company has no archive button — note its name for engineering. | Recorded | — | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 
 **Sign-off:** date ____________ · verified by ____________ · evidence location ____________
@@ -2195,7 +2214,7 @@ the owner account.
 ### 15.2 Evidence to collect before you escalate
 
 - [ ] **Time** of the problem, with your timezone (for example `2026-10-19 01:16 UTC`)
-- [ ] **Page or module** — the sidebar item and tab, and the address bar with every access code
+- [ ] **Page or module** — the menu item and tab, and the address bar with every access code
       removed: any `?token=` part, and the code after `/portal/` or `/booking/manage/` (write
       `/portal/<removed>`). Those codes open a client's portal or booking to whoever has them.
 - [ ] **Action attempted** — the exact button you clicked, and what you typed (never passwords)
@@ -2263,8 +2282,8 @@ A first-time owner must be able to answer each question from this manual alone.
 | How do I log in? | Email + password → **"Sign in"**. Not Google. | [§3.2](#32-sign-in-with-email-and-password) |
 | What account type am I using? | The **admin** account whose email is Railway `ADMIN_EMAIL`, in your organization (first named "ClientVerse HQ") | [§3.3](#33-which-account-the-owner-uses) |
 | What do I see after login? | Command Center — four figures, next actions, next best actions, client health | [§4.2](#42-what-you-see-after-sign-in-command-center) |
-| Where are Settings? | Sidebar → Platform → **"Settings"** | [§1.3](#13-find-settings-and-integrations) |
-| Where are Integrations? | Sidebar → Platform → **"Registries"** → **"Integrations"** tab (or Settings → **"View integrations"**) | [§5.3](#53-where-the-google-controls-are) |
+| Where are Settings? | Main menu → **"Settings"** (pinned at the bottom) | [§1.3](#13-find-settings-and-integrations) |
+| Where are Integrations? | **Settings** → **Connections** → **"Integrations"** (or Settings → **"General"** → **"View integrations"**) | [§5.3](#53-where-the-google-controls-are) |
 | How do I connect Google? | Registries → Gmail → **"Connect"** → consent (tick all) → **"Google connected"** | [§5.5](#55-connect-google-first-time) |
 | How do I reconnect Google? | **"Re-authorize"** on "Needs auth"; otherwise disconnect **both** rows, then Connect. Reconnect once since 2026-10-19. | [§5.6](#56-re-authorize-google), [§5.7](#57-disconnect-safely-and-when-it-is-required) |
 | How do I verify gmail.send? | Google Account → third-party connections shows send permission; the connection records `gmail.send`; Operations → Recovery strategies does not list Email | [§5.8](#58-verify-that-gmailsend-was-actually-granted) |
@@ -2457,6 +2476,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.6 | 2026-10-19 | The new app shell: an 11-item main menu (Today, Leads, Inbox, Contacts, Pipeline, Calendar, Tasks, Approvals, Clients, Automations, Reports) with counts, **"Settings"** pinned at the bottom, and a Settings menu (Workspace, Capture, Connections, Compliance, Developer, Coming soon) replacing the grouped sidebar; search moved to the top bar. Updated §1.2–1.4, §3.4, §4.1–4.3 (new map), §5.3, the "Where" lines of §7, §7.19, §8.2, §14 row 20, §15.2, Appendix A. Applies from the deployment that carries this change; until then production shows the grouped sidebar of v1.3. **Settings → Workspace → "Fields"** opens the field manager of v1.5. |
 | 1.5 | 2026-10-19 | Contacts: built-in and saved views, filters, columns (§7.4 item 4); lifecycle stage and how the CRM sets it (item 6); your own fields on contacts, companies and deals — **Settings → Fields** (item 8, §7.5, §4.3); **"Set from history"** in the **"Clean up"** card (item 10); the contact list now shows up to 1,000 people. |
 | 1.4 | 2026-10-19 | One record per real thing: existing clients (§7.2), companies filled in from forms and email domains, the **"Clean up"** card and merging (§7.4), one open deal per person (§7.5), the **"Company"** question (§7.6), the **"Meeting"** booking preset (§7.7). |
 | 1.3 | 2026-10-19 | Email sending switch: §5.10 (new), §5.7, §5.8, §6.1, capability status, troubleshooting, checklist row 13, escalation, Appendices B and C. Google reconnected with send permission (§6.1). Disconnecting Calendar no longer cancels Gmail's permission (§5.7). |

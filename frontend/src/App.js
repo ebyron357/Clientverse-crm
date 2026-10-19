@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import "@/App.css";
 import { api, setStoredToken } from "@/lib/api";
@@ -7,6 +7,7 @@ import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
 import AppErrorBoundary from "@/components/AppErrorBoundary";
 import AppShell from "@/components/AppShell";
+import SettingsLayout from "@/components/settings/SettingsLayout";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Pipeline from "@/pages/Pipeline";
@@ -90,23 +91,28 @@ function AppRouter() {
         <Route path="/companies" element={<Directory initialTab="companies" />} />
         <Route path="/workspaces" element={<Workspaces />} />
         <Route path="/workspaces/:id" element={<WorkspaceDetail />} />
-        <Route path="/registries" element={<Registries />} />
-        <Route path="/mcp" element={<Mcp />} />
+        {/* Operations is also Inbox and Approvals in the main menu, so it keeps its own layout. */}
         <Route path="/operations" element={<Operations />} />
-        <Route path="/team" element={<Team />} />
         <Route path="/notifications" element={<Notifications />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/settings/fields" element={<CustomFieldsSettings />} />
-        <Route path="/audit" element={<Audit />} />
         <Route path="/client-ops" element={<ClientOps />} />
         <Route path="/proof" element={<RecoveryProof />} />
         <Route path="/leads" element={<Leads />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/tasks/:taskId" element={<TaskRedirect />} />
-        <Route path="/website-forms" element={<WebsiteForms />} />
         <Route path="/scheduling/calendar" element={<CalendarPage />} />
         <Route path="/field" element={<FieldOps />} />
-        {CLIENTVERSE_MODULES.filter((module) => module.state !== MODULE_STATES.AVAILABLE).map((module) => <Route key={module.id} path={module.route} element={<ModuleStatus moduleId={module.id} />} />)}
+        {/* Pages that live only under Settings show the Settings menu beside them. */}
+        <Route element={<SettingsLayout />}>
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings/fields" element={<CustomFieldsSettings />} />
+          <Route path="/team" element={<Team />} />
+          <Route path="/website-forms" element={<WebsiteForms />} />
+          <Route path="/registries" element={<Registries />} />
+          <Route path="/audit" element={<Audit />} />
+          <Route path="/mcp" element={<Mcp />} />
+          {/* Modules that are not available yet: Settings → Coming soon. */}
+          {CLIENTVERSE_MODULES.filter((module) => module.state !== MODULE_STATES.AVAILABLE).map((module) => <Route key={module.id} path={module.route} element={<ModuleStatus moduleId={module.id} />} />)}
+        </Route>
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
@@ -119,7 +125,12 @@ const PUBLIC_PREFIXES = ["/book/", "/booking/", "/portal/"];
 
 function ThemedApp() {
   const { pathname } = useLocation();
-  const forcedTheme = PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix)) ? "light" : undefined;
+  const isPublic = PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  const forcedTheme = isPublic ? "light" : undefined;
+  // They keep their own typeface too (index.css). On <body>, so dialogs rendered there match.
+  useLayoutEffect(() => {
+    document.body.classList.toggle("cv-public", isPublic);
+  }, [isPublic]);
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange storageKey="cv-theme" forcedTheme={forcedTheme}>
       <AppRouter />

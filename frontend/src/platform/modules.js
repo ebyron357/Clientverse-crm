@@ -45,11 +45,8 @@ export const CLIENTVERSE_MODULES = [
   { id: "knowledge", group: "Platform", label: "Knowledge", description: "Reusable relationship and operating knowledge", route: "/platform/knowledge", icon: BookOpenCheck, state: MODULE_STATES.CONTRACT_PENDING, contract: "Knowledge item service", actions: [] },
 ];
 
-export const PINNED_GROUPS = ["Command", "CRM", "Client Success"];
-export const MODULE_GROUPS = [
-  ...PINNED_GROUPS,
-  ...[...new Set(CLIENTVERSE_MODULES.map((module) => module.group))].filter((group) => !PINNED_GROUPS.includes(group)),
-];
+// Where each module is reached from (the main menu, Settings, or Settings → Coming soon) is
+// decided in navigation.js. `group` is the module's operating domain, shown on status pages.
 export const getModule = (id) => CLIENTVERSE_MODULES.find((module) => module.id === id);
 // Several modules are tabs of a shared page and carry a query string in their route so the
 // sidebar can deep-link to them. A pathname never equals such a route, so those entries

@@ -3,7 +3,6 @@
    field from records and keeps every value already stored, so nothing is lost. */
 
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { api, formatErr } from "@/lib/api";
@@ -17,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Archive, ArchiveRestore, ChevronLeft, Pencil, Plus, SlidersHorizontal } from "lucide-react";
+import { Archive, ArchiveRestore, Pencil, Plus, SlidersHorizontal } from "lucide-react";
 
 const TH = "h-9 whitespace-nowrap px-4 text-left text-xs font-medium text-muted-foreground";
 const TD = "px-4 py-2.5 align-top";
@@ -42,7 +41,6 @@ export default function CustomFieldsSettings() {
   };
 
   return <div className="cv-page">
-    <Link to="/settings" className="mb-2 inline-flex items-center gap-1 text-[13px] text-muted-foreground hover:text-foreground"><ChevronLeft className="size-3.5" aria-hidden="true" />Settings</Link>
     <PageHeader icon={SlidersHorizontal} title="Fields" description="The details your business tracks on every contact, company and deal. Add a field once and it appears on each record, in filters and as a list column."
       actions={isAdmin && <Button size="sm" className="cv-action-primary" onClick={() => setEditing({ object })} data-testid="field-new"><Plus className="size-3.5" />New {SINGULAR[object]} field</Button>} />
     <ViewTabs label="Record type" value={object} onChange={setObject} items={RECORD_OBJECTS.map((item) => ({ value: item.value, label: item.label, testid: `fields-tab-${item.value}` }))}

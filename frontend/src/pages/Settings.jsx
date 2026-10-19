@@ -1,5 +1,6 @@
-/* Settings: a Vercel-style page. A sticky list of sections on the left; on the right one
-   card per section, each setting a row (label and one muted line, control on the right). */
+/* Settings → General. The Settings menu (SettingsLayout) sits on the left; here a sticky row
+   of section links over one card per section, each setting a row (label and one muted line,
+   control on the right). */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
@@ -43,7 +44,7 @@ function SettingRow({ label, detail, children, htmlFor, testid }) {
 }
 
 function SettingsCard({ id, title, description, footer, children, testid }) {
-  return <Section card title={title} description={description} testid={testid} className="scroll-mt-20 overflow-hidden" bodyClassName="divide-y divide-border/70">
+  return <Section card title={title} description={description} testid={testid} className="scroll-mt-32 overflow-hidden" bodyClassName="divide-y divide-border/70">
     <span id={sectionId(id)} hidden />
     {children}
     {footer && <div className="flex flex-col items-start gap-2.5 border-t border-border bg-muted/30 px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between">{footer}</div>}
@@ -54,14 +55,15 @@ function FooterNote({ children }) {
   return <p className="text-[12.5px] leading-5 text-muted-foreground">{children}</p>;
 }
 
+// A row of the page's sections that stays under the top bar while the cards scroll.
 function SettingsNav({ active, onSelect }) {
-  return <nav aria-label="Settings sections" className="-mx-4 overflow-x-auto px-4 lg:sticky lg:top-20 lg:mx-0 lg:w-48 lg:shrink-0 lg:overflow-visible lg:px-0">
-    <ul className="flex gap-1 lg:flex-col lg:gap-0.5">
+  return <nav aria-label="General sections" className="sticky top-[60px] z-10 -mx-4 overflow-x-auto bg-canvas/95 px-4 py-2 backdrop-blur lg:mx-0 lg:px-0">
+    <ul className="flex gap-1">
       {SECTIONS.map(({ id, label, icon: Icon }) => {
         const current = active === id;
         return <li key={id} className="shrink-0">
           <a href={`#${sectionId(id)}`} onClick={(event) => { event.preventDefault(); onSelect(id); }} aria-current={current ? "true" : undefined}
-            className={`flex h-8 items-center gap-2 rounded-md px-2.5 text-[13px] transition-colors ${current ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"}`}>
+            className={`flex h-8 items-center gap-2 rounded-md px-2.5 text-[13px] transition-colors ${current ? "bg-card font-semibold text-foreground shadow-xs ring-1 ring-border" : "text-muted-foreground hover:bg-card/70 hover:text-foreground"}`}>
             <Icon className="size-4 shrink-0" aria-hidden="true" />{label}
           </a>
         </li>;
@@ -132,8 +134,8 @@ export default function Settings() {
 
   const ready = Boolean(prefs && connections);
   // Highlight the section being read as the page scrolls: the last card whose top has passed
-  // the sticky top bar, or the last card once the page cannot scroll any further. A click on
-  // the list pins its choice while the smooth scroll runs.
+  // the sticky top bar and section row, or the last card once the page cannot scroll any
+  // further. A click on the row pins its choice while the smooth scroll runs.
   const pinnedUntil = useRef(0);
   useEffect(() => {
     if (!ready) return undefined;
@@ -145,7 +147,7 @@ export default function Settings() {
       if (!cards.length) return;
       const atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
       let current = cards[0].id;
-      cards.forEach(({ id, card }) => { if (card.getBoundingClientRect().top <= 120) current = id; });
+      cards.forEach(({ id, card }) => { if (card.getBoundingClientRect().top <= 140) current = id; });
       setActive(atBottom && window.scrollY > 0 ? cards[cards.length - 1].id : current);
     };
     const onScroll = () => { if (!frame) frame = window.requestAnimationFrame(update); };
@@ -187,22 +189,22 @@ export default function Settings() {
 
   if (!ready) return <div className="cv-page" data-testid="settings-loading">
     <div className="mb-5 space-y-2"><Skeleton className="h-7 w-32" /><Skeleton className="h-4 w-72 max-w-full" /></div>
-    <div className="flex flex-col gap-6 lg:flex-row lg:gap-10">
-      <div className="hidden w-48 space-y-1.5 lg:block">{SECTIONS.map(({ id }) => <Skeleton key={id} className="h-8 rounded-md" />)}</div>
-      <div className="min-w-0 max-w-3xl flex-1 space-y-5"><Skeleton className="h-56 rounded-xl" /><Skeleton className="h-40 rounded-xl" /></div>
+    <div className="max-w-3xl space-y-5">
+      <div className="flex gap-1">{SECTIONS.map(({ id }) => <Skeleton key={id} className="h-8 w-24 rounded-md" />)}</div>
+      <Skeleton className="h-56 rounded-xl" /><Skeleton className="h-40 rounded-xl" />
     </div>
   </div>;
 
   const emailConfigured = Boolean(prefs.email_configured);
   const inApp = Boolean(prefs.effective?.channels?.in_app);
   return <div className="cv-page" data-testid="settings-page">
-    <PageHeader icon={SettingsIcon} title="Settings" description="Your account, security, notifications, connected providers and organization."
+    <PageHeader icon={SettingsIcon} title="General" description="Your account, security, notifications, connected providers and organization."
       actions={<Button variant="outline" size="sm" onClick={load} data-testid="settings-refresh"><RefreshCw aria-hidden="true" />Refresh</Button>} />
 
-    <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-10">
+    <div className="max-w-3xl">
       <SettingsNav active={active} onSelect={selectSection} />
 
-      <div className="min-w-0 max-w-3xl flex-1 space-y-5">
+      <div className="mt-3 space-y-5">
         {loadError && <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800" role="status">
           <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />Some status information could not be refreshed. Settings controls remain available.
         </div>}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import WebhookManager from "@/components/WebhookManager";
@@ -64,7 +65,11 @@ function RowList({ items }) {
 export default function Registries() {
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("integrations");
+  // The tab is part of the URL (?tab=webhooks) so Settings can link straight to one.
+  const [params, setParams] = useSearchParams();
+  const requested = params.get("tab");
+  const tab = TABS.some((t) => t.key === requested) ? requested : "integrations";
+  const setTab = (next) => setParams(next === "integrations" ? {} : { tab: next }, { replace: true });
 
   useEffect(() => {
     (async () => {
