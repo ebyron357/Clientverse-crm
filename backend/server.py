@@ -33,6 +33,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
+import agency as agency_service
 import approval_queue as approval_service
 import attribution as attribution_service
 import automations
@@ -178,6 +179,7 @@ async def lifespan(_: FastAPI):
         ("recovery_case", lambda: recovery_case_service.ensure_indexes(db)),
         ("automations", lambda: automation_engine.ensure_indexes()),
         ("snapshots", lambda: snapshots.ensure_indexes(db)),
+        ("agency", lambda: db.tenants.create_index("parent_tenant_id", sparse=True)),
     ]
     for name, build in index_builders:
         try:
@@ -273,7 +275,7 @@ def verify_password(pw: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(user_id: str, email: str) -> str:
+def create_access_token(user_id: str, email: str, acting_tenant: Optional[str] = None) -> str:
     # jti keeps two tokens issued in the same second from being byte-identical (JWT
     # exp/iat only have second granularity) -- without it, revoking one login's token
     # would also revoke a different login's token that happened to match exactly.
@@ -283,6 +285,10 @@ def create_access_token(user_id: str, email: str) -> str:
     payload = {"sub": user_id, "email": email, "type": "access", "jti": secrets.token_hex(16),
                "iat": int(now.timestamp()), "iat_ms": int(now.timestamp() * 1000),
                "exp": now + timedelta(days=7)}
+    if acting_tenant:
+        # An agency admin working in one of its client accounts (agency.act_as checks it
+        # again on every request).
+        payload["act"] = acting_tenant
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 def set_auth_cookie(response: Response, token: str):
@@ -454,7 +460,10 @@ async def get_current_user(request: Request) -> dict:
         if refusal:
             raise refusal
         user.pop("password_hash", None)
-        return await resolve_membership(user)
+        user = await resolve_membership(user)
+        if payload.get("act"):
+            user = await agency_service.act_as(db, user, payload["act"])
+        return user
     except jwt.InvalidTokenError:
         pass
     # Google session_token path
@@ -618,7 +627,7 @@ async def google_session(request: Request, response: Response):
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return user
+    return {**user, "workspace": await agency_service.workspace_info(db, user)}
 
 @api.post("/auth/logout")
 async def logout(request: Request, response: Response):
@@ -4836,6 +4845,11 @@ template_service = industry_templates.TemplateService(setup_loader_service)
 industry_templates.register_template_routes(api, template_service, get_current_user, require_role)
 snapshots.register_snapshot_routes(api, db, setup_loader_service, new_id=new_id, now_iso=now_iso,
                                    record_event=record_event, require_role=require_role)
+agency_service.register_agency_routes(api, db, setup_loader_service, new_id=new_id, now_iso=now_iso,
+                                      record_event=record_event, get_current_user=get_current_user,
+                                      create_access_token=create_access_token, set_auth_cookie=set_auth_cookie,
+                                      extract_token=_extract_token, revoke_token=_revoke_token,
+                                      resolve_membership=resolve_membership)
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
                                   on_activity_logged=_after_activity_logged,
                                   on_task_status_changed=_lead_task_status_changed)

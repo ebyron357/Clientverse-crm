@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.10 |
+| **Version** | 1.11 |
 | **Date** | 2026-10-19 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
@@ -417,6 +417,7 @@ never appears here.
 | Workspace | **General** | `/settings` — profile, security, notifications, integration status, organization | |
 | Workspace | **Industry template** | `/settings/templates` — a starting setup for your kind of business ([§7.23](#723-industry-templates)) | Applying one: admin |
 | Workspace | **Snapshots** | `/settings/snapshots` — save this workspace's setup and load it into another ([§7.24](#724-snapshots)) | **Yes** (hidden from members) |
+| Agency | **Client accounts** | `/settings/agency` — the client accounts your agency runs ([§7.25](#725-agency-and-client-accounts)); not shown inside a client account's own workspace | **Yes** (the group is hidden from members) |
 | Workspace | **Fields** | `/settings/fields` — your own fields on contacts, companies and deals ([§7.4](#74-contacts-and-companies) item 8) | Adding and changing fields: admin |
 | Workspace | **Team and roles** | `/team` (**Team & Access**) | **Yes** (hidden from members) |
 | Workspace | **Client portal and playbooks** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, the client portal and commercial records — [§7.15](#715-client-operations-and-the-client-portal)) | Some buttons: admin |
@@ -1573,8 +1574,9 @@ These are verified behaviours of the deployed code. None loses data.
 - **What a snapshot holds:** pipeline stages, fields, booking pages, website forms, automations
   and shared list views. It never holds contacts, companies, deals, leads, messages,
   appointments, team members, connected accounts, public links or passwords. On the way in:
-  - booking pages leave their host behind (the person who loads them hosts them) and get a new
-    link;
+  - booking pages leave their host behind and get a new link. The person who loads them hosts
+    them; when that person is not on the workspace's team (an agency admin in a client account),
+    its first admin does, and a workspace with no team yet gets them paused ([§7.25](#725-agency-and-client-accounts));
   - forms leave their website addresses, thank-you redirect, lead assignment and CAPTCHA keys
     behind, and their auto-reply arrives switched off;
   - automations leave behind anyone they named: a task for a named person becomes a task for the
@@ -1618,6 +1620,56 @@ These are verified behaviours of the deployed code. None loses data.
 - **Limits:** 50 snapshots per workspace; a snapshot up to 1 MB holding up to 100 fields, 50
   booking pages, 50 forms, 50 automations and 50 shared views.
 
+### 7.25 Agency and client accounts
+
+- **Purpose:** run many clients from one agency. Each client gets a **client account**: a
+  workspace of its own, with its own contacts, deals, team, connections and settings. The agency
+  sets accounts up from its snapshots, opens any of them to work there, and pushes a snapshot to
+  many at once.
+- **Where:** **Settings** → **Agency** → **"Client accounts"** (`/settings/agency`), and the
+  **account switcher** at the top of the main menu (it appears once your workspace has a client
+  account). Agency admins only.
+- **Who can do what:**
+  - An **admin of the agency** can create, rename and open every client account, and is an admin
+    inside each one while working there. Taking admin away from them, or disabling them in the
+    agency, ends their access to every client account at once, even mid-session.
+  - A **member of the agency** cannot open client accounts.
+  - A **client account's own people** (invited from its **Team** page) sign in to their account
+    as usual. They never see the agency, its records or any other client. A client account cannot
+    have client accounts of its own.
+- **Common actions:**
+  1. **"New client account"** → the client's name and **"Start from"** (one of your snapshots,
+     or **"A blank account"**) → **"Create account"**. The toast offers **"Open it"**.
+  2. **"Open"** on a row (or pick it in the account switcher). ClientVerse reloads inside that
+     account, and a banner says **"You are working in {client}, a client account of {agency}"**.
+     Everything you do there is done in that account. **"Back to {agency}"** in the banner (or
+     the agency's name in the switcher) returns you.
+  3. Inside the client account, invite the client's team from **Settings** → **"Team and
+     roles"**, then choose who hosts each booking page.
+  4. **"Push a snapshot"** → a snapshot and the accounts (**"Choose all"** or some) →
+     **"Preview"**. Each account shows **"Adds N · M already there"**; open one to see its full
+     list. **"Push to N accounts"** loads it into each, with the same rules as loading a snapshot
+     ([§7.24](#724-snapshots)): only what is missing is added, and nothing a client has is
+     changed. The **"Last snapshot"** column shows what was pushed last and how much it added.
+  5. **"⋯"** → **"Rename"** changes the client's name; their team sees it too.
+- **Booking pages in client accounts:** a page only takes bookings for hosts on that account's
+  team. When a snapshot is loaded into a client account, its booking pages are hosted by the
+  account's first admin; an account with no team yet gets them **paused**, and the preview says
+  **"paused until someone on this account's team hosts it"**. Invite the team, then choose the
+  host and turn the page on.
+- **Common mistakes:**
+  - Looking for a client's records from the agency. Open the client account first; the agency's
+    own lists never show a client's records.
+  - Expecting a push to overwrite a client's own changes. It adds only what is missing.
+  - Pushing before the client's team exists, then wondering why booking pages are paused.
+- **Saved when:** **"“{name}” created"**, **"Account renamed"**, **"“{snapshot}” pushed to N
+  accounts"** with how many things were added in all. On failure: **"The account was not
+  created"**, **"“{name}” could not be opened"**, **"The snapshot was not pushed"**, with the
+  reason. Opening an account, creating one and pushing to it are recorded in the audit log of
+  both the agency and the client account.
+- **Limits:** 200 client accounts per agency; a push reaches up to 100 accounts at once. Every
+  account in a push is checked first: if one is not yours, nothing is loaded anywhere.
+
 ---
 
 ## 8. Users, Roles, and Administration
@@ -1640,6 +1692,7 @@ on every request, and hiding a button is never the protection.
 | Website forms, booking pages and pipeline stages — create and change | ✓ | ✗ |
 | Apply an industry template (**Settings → Industry template**; anyone can preview one) | ✓ | ✗ |
 | Snapshots — save, share, download, load and delete (**Settings → Snapshots**) | ✓ | ✗ |
+| Client accounts — create, rename, open and work in, push a snapshot (**Settings → Agency**); an admin of the agency is an admin in every one of its client accounts | ✓ | ✗ |
 | Record conversation consent (API only) | ✓ | ✗ |
 | MCP kill switch, undo, workspace undo window | ✓ | ✗ |
 | Webhook create / enable / reveal secret / rotate secret | ✓ | ✗ |
@@ -2676,6 +2729,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.11 | 2026-10-19 | **Agency and client accounts** (§7.25, new): client accounts under an agency, the account switcher and the "working in" banner, opening a client account as an agency admin (checked on every request), creating accounts from a snapshot, and pushing a snapshot to many accounts with a preview per account. **Settings → Agency → "Client accounts"** (§4.3); roles (§8.1). Booking pages loaded into a workspace are hosted by someone on its team, or arrive paused (§7.24, §7.25). |
 | 1.10 | 2026-10-19 | **Snapshots** (§7.24, new): save this workspace's setup (pipeline stages, fields, booking pages, forms, automations, shared views — never records, people, links or secrets), share it with a code shown once, download it as a file, and load one into a workspace through a preview that only adds what is missing. **Settings → Workspace → "Snapshots"**, admin only (§4.3, §8.1). §7.23: a template's stages also stay when a stage in use would change between open, won and lost. |
 | 1.9 | 2026-10-19 | **Industry templates** (§7.23, new): six starting setups (agency, real estate, home services, health and wellness, coaching, B2B sales) that add a pipeline, booking pages, a form, fields and draft automations, only where missing. **Settings → Workspace → "Industry template"** (§4.3); the first step of **"Set up your workspace"** on Today is now **"Choose your industry template"** (§4.2); applying one is admin-only (§8.1). |
 | 1.8 | 2026-10-19 | **Automations** (§7.22, new): triggers, steps, stop rules, recipes, test runs and run receipts. The main-menu **"Automations"** entry opens it (§4.3, §4.4). Client Operations moves to **Settings → Workspace → "Client portal and playbooks"** (§4.3, §7.15). **Workflows** leaves "Coming soon". §7.21 item 3 corrected for the 1,000-person contact list. |

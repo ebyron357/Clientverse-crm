@@ -176,7 +176,8 @@ class SetupLoader:
             items.append(item)
             return item
 
-        ctx = {"tenant": tenant, "actor": actor, "apply": apply, "origin": origin, "note": note}
+        ctx = {"tenant": tenant, "actor": actor, "host": await self._host(tenant, actor), "apply": apply,
+               "origin": origin, "note": note}
         stage_keys = await self._pipeline(ctx, contents.get("pipeline"))
         key_map = await self._fields(ctx, contents.get("fields") or [])
         page_ids = await self._booking_pages(ctx, contents.get("booking_pages") or [], stage_keys)
@@ -184,6 +185,19 @@ class SetupLoader:
         await self._automations(ctx, contents.get("automations") or [], form_ids, page_ids, key_map, stage_keys)
         await self._views(ctx, contents.get("views") or [], key_map)
         return items
+
+    async def _host(self, tenant: str, actor: str) -> Optional[str]:
+        """Who hosts the booking pages that are added. A page takes bookings only for hosts
+        on this workspace's team, so: the person loading, when they are on it (an agency
+        admin working in a client account is not); else the team's first admin; else
+        nobody yet, and the pages arrive paused."""
+        rows = await self.db.memberships.find({"tenant_id": tenant, "status": "active"},
+                                              {"_id": 0, "email": 1, "role": 1, "created_at": 1}).to_list(500)
+        emails = [str(r.get("email") or "").lower() for r in rows]
+        if actor.lower() in emails:
+            return actor.lower()
+        admins = sorted((r for r in rows if r.get("role") == "admin" and r.get("email")), key=lambda r: str(r.get("created_at") or ""))
+        return str(admins[0]["email"]).lower() if admins else None
 
     # ------------------------------------------------------------------ pipeline
 
@@ -287,7 +301,7 @@ class SetupLoader:
                 continue
             requested = str(raw.get("preset") or "")
             preset = requested if requested in booking.PRESETS else "meeting"
-            doc = booking.new_event_type(preset, tenant_id=tenant, name=name, creator=ctx["actor"],
+            doc = booking.new_event_type(preset, tenant_id=tenant, name=name, creator=ctx["host"] or ctx["actor"],
                                          new_id=self.new_id, now=self.now_iso())
             for key, value in page_settings(raw).items():
                 # A setting keeps its shape: an object setting from a file must be an object.
@@ -295,6 +309,8 @@ class SetupLoader:
                     continue
                 doc[key] = value
             doc["status"] = raw.get("status") if raw.get("status") in ("active", "paused") else "active"
+            if not ctx["host"]:
+                doc["status"] = "paused"
             try:
                 if isinstance(doc.get("opportunity"), dict) and doc["opportunity"].get("stage") not in stage_keys:
                     doc["opportunity"]["stage"] = None
@@ -302,7 +318,11 @@ class SetupLoader:
             except INVALID as exc:
                 note("booking_page", name, "skip", _reason(exc))
                 continue
-            note("booking_page", name, "add", f"{doc['duration_minutes']} minutes, hosted by you")
+            if not ctx["host"]:
+                hosted = "paused until someone on this account's team hosts it"
+            else:
+                hosted = "hosted by " + ("you" if ctx["host"] == ctx["actor"].lower() else ctx["host"])
+            note("booking_page", name, "add", f"{doc['duration_minutes']} minutes, {hosted}")
             ids[ref] = doc["id"]
             if ctx["apply"]:
                 await db[booking.EVENT_TYPES].insert_one(dict(doc))

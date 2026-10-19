@@ -69,6 +69,13 @@ const SETTINGS_GROUPS = [
     ],
   },
   {
+    // An agency's client accounts. A client account does not run client accounts of its own.
+    label: "Agency",
+    adminOnly: true,
+    notInClientAccount: true,
+    items: [{ id: "agency", label: "Client accounts", to: "/settings/agency" }],
+  },
+  {
     label: "Capture",
     items: [
       { id: "forms", label: "Forms", to: "/website-forms", testid: "nav-website-forms-link" },
@@ -107,8 +114,10 @@ const ALL_SETTINGS_ITEMS = SETTINGS_GROUPS.flatMap((group) => group.items.map((i
 /** The Settings menu as this person sees it. */
 export function settingsMenuFor(user) {
   const isAdmin = user?.role === "admin";
+  const inClientAccount = user?.workspace?.kind === "client" && !user?.acting;
   return SETTINGS_GROUPS
     .filter((group) => isAdmin || !group.adminOnly)
+    .filter((group) => !(group.notInClientAccount && inClientAccount))
     .map((group) => ({ ...group, items: group.items.filter((item) => isAdmin || !item.adminOnly) }))
     .filter((group) => group.items.length);
 }
@@ -120,6 +129,7 @@ function defaultSettingsItem(pathname, tab) {
   if (pathname === "/settings/fields") return "fields";
   if (pathname === "/settings/templates") return "templates";
   if (pathname === "/settings/snapshots") return "snapshots";
+  if (pathname === "/settings/agency") return "agency";
   if (pathname === "/team") return "team";
   if (pathname === "/website-forms") return "forms";
   if (pathname === "/audit") return "audit";
