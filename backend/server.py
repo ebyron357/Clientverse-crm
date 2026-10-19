@@ -1354,6 +1354,8 @@ async def create_opp(inp: OppInput, user=Depends(get_current_user)):
         doc["owner"] = user["email"]
     await db.opportunities.insert_one(doc)
     await record_event("opportunity.created", "opportunity", doc["id"], user["tenant_id"], user["email"], payload={"name": inp.name, "value": inp.value})
+    if contact_ids and await crm_core.is_won_stage(db, user["tenant_id"], doc.get("stage")):
+        await crm_core.promote_to_customers(db, user["tenant_id"], contact_ids, user["email"])
     return {k: v for k, v in doc.items() if k != "_id"}
 
 class StageInput(BaseModel):
@@ -1398,11 +1400,7 @@ async def move_stage(opp_id: str, inp: StageInput, user=Depends(get_current_user
             await record_event("onboarding.started", "workspace", wid, user["tenant_id"], user["email"], workspace_id=wid)
             workspace_id, workspace_created = wid, True
     if outcome == crm_core.STAGE_WON and opp.get("contact_ids"):
-        # Everyone on a won deal is now a customer, unless someone already said otherwise.
-        await db.contacts.update_many(
-            {"tenant_id": user["tenant_id"], "id": {"$in": opp["contact_ids"]},
-             "lifecycle": {"$in": [None, "lead", "qualified"]}},
-            {"$set": {"lifecycle": "customer", "updated_at": now_iso()}})
+        await crm_core.promote_to_customers(db, user["tenant_id"], opp["contact_ids"], user["email"])
     return {"ok": True, "stage": inp.stage, "outcome": outcome,
             "workspace_created": workspace_created, "workspace_id": workspace_id}
 

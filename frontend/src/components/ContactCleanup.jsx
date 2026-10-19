@@ -79,14 +79,22 @@ function Fix({ icon: Icon, title, detail, action, testId }) {
   </div>;
 }
 
+const groupKey = (group) => group.contacts.map((contact) => contact.id).join("-");
+
 function MergeDialog({ groups, onClose, onMerged }) {
+  // The choice is stored per group membership, never per position: after a merge the
+  // list reloads, and the next group must not inherit the previous group's choice.
   // The oldest record is kept by default: it usually carries the most history.
-  const [keep, setKeep] = useState(() => Object.fromEntries(groups.map((group, index) => [index, group.contacts[0].id])));
+  const [keep, setKeep] = useState({});
   const [busy, setBusy] = useState(false);
+  const keptIn = (group) => {
+    const chosen = keep[groupKey(group)];
+    return group.contacts.some((contact) => contact.id === chosen) ? chosen : group.contacts[0].id;
+  };
 
   const mergeGroup = async (index) => {
     const group = groups[index];
-    const into = keep[index];
+    const into = keptIn(group);
     setBusy(true);
     try {
       for (const contact of group.contacts.filter((c) => c.id !== into)) {
@@ -107,11 +115,11 @@ function MergeDialog({ groups, onClose, onMerged }) {
         <DialogDescription>Choose the record to keep. Deals, tasks, notes, enquiries and appointments move to it, empty fields are filled from the other, and the other is archived.</DialogDescription>
       </DialogHeader>
       <div className="max-h-[50vh] space-y-3 overflow-y-auto">
-        {groups.map((group, index) => <fieldset key={group.contacts.map((c) => c.id).join("-")} className="rounded-lg border border-border p-3">
+        {groups.map((group, index) => <fieldset key={groupKey(group)} className="rounded-lg border border-border p-3">
           <legend className="px-1 text-xs font-medium text-muted-foreground">{group.reason === "same email" ? "Same email" : "Same name"}</legend>
           <div className="space-y-1.5">
             {group.contacts.map((contact) => <label key={contact.id} className="flex cursor-pointer items-center gap-2.5 text-[13px]">
-              <input type="radio" name={`keep-${index}`} checked={keep[index] === contact.id} onChange={() => setKeep((current) => ({ ...current, [index]: contact.id }))} />
+              <input type="radio" name={`keep-${groupKey(group)}`} checked={keptIn(group) === contact.id} onChange={() => setKeep((current) => ({ ...current, [groupKey(group)]: contact.id }))} />
               <span className="font-medium">{contact.name}</span>
               <span className="text-muted-foreground">{contact.email || "no email"}</span>
               {contact.company_id && <span className="text-xs text-muted-foreground">· has a company</span>}

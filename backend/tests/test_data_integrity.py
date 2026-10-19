@@ -162,6 +162,52 @@ def test_a_form_may_keep_each_submission_as_its_own_deal(client):
     assert len(find_all(client, "opportunities", {"tenant_id": owner["tenant_id"]})) == 2
 
 
+def test_an_opted_out_form_keeps_every_submission_as_its_own_deal(client):
+    owner = register(client)
+    form = contact_form(client, owner, opportunity={"reuse_open_deal": False})
+    first = submit(client, form, message="First project.")
+    second = submit(client, form, message="A separate second project.")
+    assert first["opportunity_id"] != second["opportunity_id"]
+    assert len(find_all(client, "opportunities", {"tenant_id": owner["tenant_id"]})) == 2
+
+
+def test_a_reused_deal_keeps_its_currency_and_gains_a_company_named_later(client):
+    owner = register(client)
+    euro = contact_form(client, owner, opportunity={"currency": "EUR"})
+    dollar = contact_form(client, owner, opportunity={"currency": "USD"})
+    first = submit(client, euro, company="")
+    deal = find_one(client, "opportunities", {"id": first["opportunity_id"]})
+    assert deal["currency"] == "EUR" and deal["company_id"] is None
+    later = submit(client, dollar, company="Brightline Dental")
+    assert later["opportunity_id"] == deal["id"]
+    # The enquiry reports the deal it joined in that deal's currency, not the second form's.
+    assert later["currency"] == "EUR"
+    reused = find_one(client, "opportunities", {"id": deal["id"]})
+    contact = find_one(client, "contacts", {"id": later["contact_id"]})
+    assert contact["company_id"] and reused["company_id"] == contact["company_id"]
+
+
+def test_everyone_who_ends_up_on_a_won_deal_becomes_a_customer(client):
+    owner = register(client)
+    headers = owner["headers"]
+    ana = client.post("/api/contacts", headers=headers, json={"name": "Ana", "lifecycle": "lead"}).json()
+    ben = client.post("/api/contacts", headers=headers, json={"name": "Ben", "lifecycle": "qualified"}).json()
+    pat = client.post("/api/contacts", headers=headers, json={"name": "Pat", "lifecycle": "partner"}).json()
+    won = client.post("/api/opportunities", headers=headers,
+                      json={"name": "Signed already", "value": 10, "stage": "closed_won", "contact_ids": [ana["id"]]})
+    assert won.status_code == 200, won.text
+    assert find_one(client, "contacts", {"id": ana["id"]})["lifecycle"] == "customer"
+    response = client.patch(f"/api/opportunities/{won.json()['id']}", headers=headers,
+                            json={"contact_ids": [ana["id"], ben["id"], pat["id"]]})
+    assert response.status_code == 200, response.text
+    assert find_one(client, "contacts", {"id": ben["id"]})["lifecycle"] == "customer"
+    assert find_one(client, "contacts", {"id": pat["id"]})["lifecycle"] == "partner"
+    # An open deal does not make anyone a customer.
+    carl = client.post("/api/contacts", headers=headers, json={"name": "Carl", "lifecycle": "lead"}).json()
+    client.post("/api/opportunities", headers=headers, json={"name": "Open", "value": 1, "contact_ids": [carl["id"]]})
+    assert find_one(client, "contacts", {"id": carl["id"]})["lifecycle"] == "lead"
+
+
 def test_the_reuse_setting_must_be_true_or_false(client):
     owner = register(client)
     response = client.post("/api/website-forms", headers=owner["headers"],

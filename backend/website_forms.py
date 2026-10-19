@@ -1343,7 +1343,8 @@ class LeadPipeline:
                   "task_id": (task or {}).get("id"),
                   "created_contact": created_contact,
                   "estimated_value": value or None,
-                  "currency": settings["opportunity"]["currency"]}
+                  # A reused deal keeps its own currency; the form's is for a new one.
+                  "currency": (opportunity or {}).get("currency") or settings["opportunity"]["currency"]}
         await self.db[detectors.WEB_ENQUIRIES].update_one(
             {"id": enquiry["id"], "tenant_id": tenant_id}, {"$set": update})
         enquiry = {**enquiry, **update}
@@ -1500,18 +1501,25 @@ class LeadPipeline:
         # One open deal per person: a booking made after a form fill, or a second form,
         # is the same opportunity moving forward. A form can opt out with
         # `reuse_open_deal: false` when each submission is genuinely separate business.
-        query = {"tenant_id": tenant_id, "archived_at": None, "contact_ids": contact["id"],
-                 "stage": {"$in": open_keys}, "created_at": {"$gte": cutoff}}
-        if cfg.get("reuse_open_deal", True) is False:
-            query["source.form_id"] = form["id"]
-        existing = await self.db.opportunities.find_one(query, {"_id": 0},
-                                                        sort=[("created_at", -1)])
+        # Opted out, every submission is its own deal; a retried submission is caught
+        # earlier by its `_sid`, not here.
+        existing = None
+        if cfg.get("reuse_open_deal", True) is not False:
+            existing = await self.db.opportunities.find_one(
+                {"tenant_id": tenant_id, "archived_at": None, "contact_ids": contact["id"],
+                 "stage": {"$in": open_keys}, "created_at": {"$gte": cutoff}},
+                {"_id": 0}, sort=[("created_at", -1)])
         if existing:
+            changes: dict[str, Any] = {"updated_at": self.now_iso()}
+            # A company named only on the later request still reaches the deal, so winning
+            # it opens the client workspace. A company the deal already has is kept.
+            if not existing.get("company_id") and contact.get("company_id"):
+                changes["company_id"] = existing["company_id"] = contact["company_id"]
             await self.db.opportunities.update_one(
                 {"id": existing["id"], "tenant_id": tenant_id},
                 {"$push": {"history": crm_core._history_entry(
                     "website_inquiry", SYSTEM_ACTOR, {"enquiry_id": enquiry["id"]})},
-                 "$set": {"updated_at": self.now_iso()}})
+                 "$set": changes})
             return existing, False
 
         stage = cfg.get("stage") if cfg.get("stage") in open_keys else (open_keys[0] if open_keys else "lead")

@@ -5,7 +5,6 @@ import { api, formatErr } from "@/lib/api";
 import { formatFieldValue, useFieldDefs } from "@/lib/recordFields";
 import { PropertyList } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -18,7 +17,11 @@ const INPUT = "h-8 text-[13px] md:text-[13px]";
 /** One input for one field, shaped by its type. `value` is what the record stores. */
 export function FieldInput({ def, value, onChange, id }) {
   if (def.type === "checkbox") {
-    return <div className="flex h-8 items-center gap-2"><Checkbox id={id} checked={Boolean(value)} onCheckedChange={(checked) => onChange(checked === true)} /><Label htmlFor={id} className="text-[13px] font-normal">{value ? "Yes" : "No"}</Label></div>;
+    const current = value === true ? "yes" : value === false ? "no" : NONE;
+    return <Select value={current} onValueChange={(next) => onChange(next === "yes" ? true : next === "no" ? false : null)}>
+      <SelectTrigger id={id} className="h-8 text-[13px]"><SelectValue /></SelectTrigger>
+      <SelectContent><SelectItem value={NONE}>Not set</SelectItem><SelectItem value="yes">Yes</SelectItem><SelectItem value="no">No</SelectItem></SelectContent>
+    </Select>;
   }
   if (def.type === "select") {
     return <Select value={value || NONE} onValueChange={(next) => onChange(next === NONE ? null : next)}>
@@ -57,10 +60,12 @@ export function CustomFieldsSection({ object, endpoint, values = {}, onSaved, is
     </p> : null;
   }
 
-  const start = () => { setDraft(Object.fromEntries(defs.map((def) => [def.key, values?.[def.key] ?? (def.type === "checkbox" ? false : "")]))); setEditing(true); };
+  // Missing, null and "" all mean "not set"; false is a real answer (No) and is kept apart.
+  const stored = (def) => values?.[def.key] ?? (def.type === "checkbox" ? null : "");
+  const start = () => { setDraft(Object.fromEntries(defs.map((def) => [def.key, stored(def)]))); setEditing(true); };
   const save = async () => {
     const changed = Object.fromEntries(defs
-      .filter((def) => (draft[def.key] ?? "") !== (values?.[def.key] ?? (def.type === "checkbox" ? false : "")))
+      .filter((def) => (draft[def.key] ?? (def.type === "checkbox" ? null : "")) !== stored(def))
       .map((def) => [def.key, draft[def.key] === "" ? null : draft[def.key]]));
     if (!Object.keys(changed).length) { setEditing(false); return; }
     setSaving(true);
