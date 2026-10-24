@@ -48,7 +48,10 @@ through the public HTTP door with the headers a browser sends.
    doubled.
 7. **Speed-to-lead task** "Call new lead now", due in 5 minutes (configurable), high priority,
    with the whole request in its notes.
-8. **Agent alerted** in-app, and by email when email delivery is configured.
+8. **Agent alerted** in-app, and by email when email delivery is configured. The form's own
+   **"In-app alert"** and **"Email alert"** switches (**Automation** tab → **Speed to lead**) each turn their channel
+   off for this alert (enforced since 2026-10-24; before that the email switch was ignored).
+   The no-response escalation after the escalation time is a safety alert and is always sent.
 9. **`lead.received` webhook event** with the full lead. Point a webhook at Zapier, Slack or an
    SMS tool for text alerts.
 10. **Automatic reply** to the lead (optional). See *Approval* below.
@@ -119,9 +122,47 @@ being briefly down. This is stronger than GoHighLevel's usual fire-and-forget we
 - A nested `payload`, whose entries are lifted to the top level. Examples: `priceRange` such as
   "$400k–$500k" becomes `price_min` and `price_max`; `preapproval`; `condition`; `goal`;
   `firstName` and `lastName`.
-- `idempotencyKey`: a retry with the same key is filed once.
+- `idempotencyKey`: a retry with the same key is filed once, however long after.
 - `leadType` / `goal` wording is mapped to Buying / Selling / Buying and selling / Renting /
   Investing, and the original wording is kept.
+
+**Which value wins when a website sends two (since 2026-10-24):**
+- A field's own name always beats an alias for it, whatever order they arrive in: `phone`
+  beats `mobile`, `property_address` beats `address`, `price_max` beats `budget`, `message`
+  beats `comments`. A top-level value always beats the same field inside `payload`. The losing
+  answer is never thrown away: it is kept on the lead under its own name (in `extra`).
+- A request kind such as `leadType: "consultation"` is not a buying or selling answer, so a
+  `goal` in `payload` still supplies the intent.
+
+**Budgets:**
+
+| What the site sends | Stored as |
+|---|---|
+| `$400k–$500k`, `400–500k`, `400,000 to 500,000` | `price_min` 400000 and `price_max` 500000 |
+| `$500,000+`, `$500k or more`, `500k and up`, `over 500k`, `at least 500k` | `price_min` 500000 only. **A minimum is never a ceiling.** |
+| `under 300k`, `up to 300k`, `$300k or less`, `below 300k` | `price_max` 300000 only |
+| `450000`, `$450k` | `price_max` 450000 |
+| Contradictory or not a budget (`under 500k or more`, `Not sure`) | No price; the text is kept |
+
+The same rules apply whether the budget comes as `priceRange`, `price_range` or `budget`. A
+`budget` (or `price_min` / `price_max`) that is neither a number nor a range, such as `lots`, is
+refused with `422` and an "Enter a number" message. The original text is always kept on the
+lead. A deal in commission mode is priced from `price_max`, or from `price_min` when only a
+minimum was given.
+
+**Repeat submissions:**
+- **Same answers within 10 minutes** (`FORM_DUPLICATE_WINDOW_MINUTES`), for example a
+  double-click with a fresh id or a changed tracking address: collapsed into the first
+  enquiry, answer `outcome: "duplicate"` with the first enquiry's id. A regenerated consent
+  timestamp (`consentAt`) does not count as a change.
+- **A changed answer** (time, intent, budget, pre-approval, any custom answer, consent choice
+  or wording): a new enquiry on the **same contact** and the **same open deal**. The contact
+  takes the new answers. A new budget replaces both bounds, so an old ceiling never sits beside
+  a new minimum. If the deal's value is still the one the form calculated, it is re-priced
+  from the new budget and the deal history records `value_updated`. A value someone typed is
+  never changed.
+- Duplicate checks and idempotency keys are per organization: the same key or the same answers
+  in another organization never match.
 
 **How these requests are treated:**
 - They skip browser-only checks: allowed websites, CAPTCHA, and the per-visitor limit (every
@@ -160,7 +201,7 @@ shows the reply as **blocked** with the reason; the lead itself is unaffected.
 
 | # | Action | Why |
 |---|---|---|
-| 1 | Merge this branch and let Railway redeploy | Nothing above is live until then |
+| 1 | Done 2026-10-17: deployed to Railway | — |
 | 2 | Check **Settings → Email delivery** shows *Configured* (`EMERGENT_EMAIL_KEY`) | Email alerts to agents. In-app alerts work regardless |
 | 3 | Keep `FRONTEND_URL` set to the public `https://` address agents' sites will use (ideally the custom domain) | Embed codes, hosted links and email buttons are built from it |
 | 4 | For automatic replies: connect Gmail with send permission, then approve the template | Without it, replies show as *blocked*; leads still flow |
