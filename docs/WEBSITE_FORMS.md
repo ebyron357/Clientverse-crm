@@ -130,7 +130,8 @@ being briefly down. This is stronger than GoHighLevel's usual fire-and-forget we
 - A field's own name always beats an alias for it, whatever order they arrive in: `phone`
   beats `mobile`, `property_address` beats `address`, `price_max` beats `budget`, `message`
   beats `comments`. A top-level value always beats the same field inside `payload`. The losing
-  answer is never thrown away: it is kept on the lead under its own name (in `extra`).
+  answer is never thrown away: it is kept on the lead under its own name (in `extra`); a
+  `payload` answer a top-level field outranks is kept as `payload.<name>`.
 - A request kind such as `leadType: "consultation"` is not a buying or selling answer, so a
   `goal` in `payload` still supplies the intent.
 
@@ -144,7 +145,12 @@ being briefly down. This is stronger than GoHighLevel's usual fire-and-forget we
 | `450000`, `$450k` | `price_max` 450000 |
 | Contradictory or not a budget (`under 500k or more`, `Not sure`) | No price; the text is kept |
 
-The same rules apply whether the budget comes as `priceRange`, `price_range` or `budget`. A
+The same rules apply whether the budget comes as `priceRange`, `price_range` or `budget`.
+**A budget is one answer:** the first one that names a price is filed whole, and any later
+one (a second budget field, or a bound sent separately) is kept as text but adds no bound.
+`price_min` and `price_max` sent as two plain numbers together are one budget, given field
+by field. A top-level budget outranks one inside `payload`. So a lead never ends up with an
+inverted range such as minimum 800,000 and maximum 600,000. A
 `budget` (or `price_min` / `price_max`) that is neither a number nor a range, such as `lots`, is
 refused with `422` and an "Enter a number" message. The original text is always kept on the
 lead. A deal in commission mode is priced from `price_max`, or from `price_min` when only a
@@ -160,7 +166,8 @@ minimum was given.
   takes the new answers. A new budget replaces both bounds, so an old ceiling never sits beside
   a new minimum. If the deal's value is still the one the form calculated, it is re-priced
   from the new budget and the deal history records `value_updated`. A value someone typed is
-  never changed.
+  never changed, including one saved while the request is being filed, and a deal in another
+  currency than the form's is never re-priced.
 - Duplicate checks and idempotency keys are per organization: the same key or the same answers
   in another organization never match.
 

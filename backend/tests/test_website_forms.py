@@ -1311,3 +1311,59 @@ def test_a_forms_own_alert_switches_decide_the_new_lead_alert(client, monkeypatc
     assert sent == ([owner["email"]] if email else [])
     delivery = find_one(client, "notification_deliveries", {"tenant_id": owner["tenant_id"]})
     assert delivery["status"] == ("delivered" if email else "skipped")
+
+
+@pytest.mark.parametrize(("raw", "expected", "kept"), [
+    # A top-level budget outranks a bound lifted from `payload`, which is kept, not used.
+    ({"budget": "$500k+", "payload": {"price_min": "800000"}}, {"price_min": 500000}, "price_min"),
+    ({"budget": "$500k+", "payload": {"price_max": "400000"}}, {"price_min": 500000}, "payload.price_max"),
+    # A losing budget answer adds no bound: no inverted range, no stray second ceiling.
+    ({"price_max": "600000", "budget": "$800k+"}, {"price_max": 600000}, "budget"),
+    ({"price_max": "$500,000+", "budget": "400000"}, {"price_min": 500000}, "budget"),
+    ({"price_min": "300000", "payload": {"priceRange": "$1m+"}}, {"price_min": 300000}, "price_range"),
+    # Two explicit bounds are one budget given field by field.
+    ({"pricemin": "300000", "pricemax": "400000"}, {"price_min": 300000, "price_max": 400000}, None),
+])
+def test_a_budget_is_one_answer_and_never_becomes_an_inverted_range(raw, expected, kept):
+    normalised = wf.normalise_submission({"email": "jane@example.com", **raw}, {"fields": []})
+    prices = {k: v for k, v in normalised["fields"].items() if k in ("price_min", "price_max")}
+    assert prices == expected
+    if kept:
+        assert kept in normalised["extra"]
+
+
+def test_a_deal_value_saved_while_the_request_is_filed_is_not_overwritten(client, monkeypatch):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5}})
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    first = server_post(client, form, server_body(payload={"priceRange": "$400k"}), key).json()
+    deal_id = find_one(client, detectors.WEB_ENQUIRIES, {"id": first["id"]})["opportunity_id"]
+    original = wf.LeadPipeline.revalue.__func__
+
+    def stale_snapshot(cls, cfg, deal, fields):
+        result = original(cls, cfg, deal, fields)
+        deal["value"] = 7777  # what this request read is no longer what the deal holds
+        return result
+
+    monkeypatch.setattr(wf.LeadPipeline, "revalue", classmethod(stale_snapshot))
+    second = server_post(client, form, server_body(payload={"priceRange": "$800k"}), key).json()
+    deal = find_one(client, "opportunities", {"id": deal_id})
+    assert deal["value"] == 10000  # untouched: the compare-and-set saw the value move
+    assert not [h for h in deal["history"] if h.get("action") == "value_updated"]
+    assert find_one(client, detectors.WEB_ENQUIRIES, {"id": second["id"]})["opportunity_id"] == deal_id
+
+
+def test_a_reused_deal_in_another_currency_is_not_repriced(client):
+    owner = register(client)
+    euro = create_form(client, owner, preset="contact", name="Euro form", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5, "currency": "EUR"}})
+    dollar = create_form(client, owner, preset="contact", name="Dollar form", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5, "currency": "USD"}})
+    keys = [client.post(f"/api/website-forms/{f['id']}/server-key", headers=owner["headers"]).json()["key"]
+            for f in (euro, dollar)]
+    first = server_post(client, euro, server_body(payload={"priceRange": "$400k"}), keys[0]).json()
+    deal_id = find_one(client, detectors.WEB_ENQUIRIES, {"id": first["id"]})["opportunity_id"]
+    server_post(client, dollar, server_body(payload={"priceRange": "$800k"}), keys[1])
+    deal = find_one(client, "opportunities", {"id": deal_id})
+    assert deal["currency"] == "EUR" and deal["value"] == 10000

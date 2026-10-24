@@ -558,11 +558,16 @@ def normalise_submission(raw: dict, form: dict) -> dict:
     for raw_key, value in (raw or {}).items():
         if raw_key != "payload" or not isinstance(nested, dict):
             flat[raw_key] = value
+    lifted: set[str] = set()
+    shadowed: dict[str, Any] = {}  # nested answers a top-level field outranks; kept, not used
     if isinstance(nested, dict):
         top_level_keys = {canonical_key(key, value) for key, value in flat.items()}
         for raw_key, value in list(nested.items())[:MAX_EXTRA_KEYS]:
-            if canonical_key(raw_key, value) not in top_level_keys:
-                flat.setdefault(raw_key, value)
+            if canonical_key(raw_key, value) not in top_level_keys and raw_key not in flat:
+                flat[raw_key] = value
+                lifted.add(raw_key)
+            elif not canonical_key(raw_key, value).startswith("_"):
+                shadowed[f"payload.{raw_key}"] = value
 
     def authoritative(raw_key: Any) -> bool:
         lowered = str(raw_key).strip().lower()
@@ -581,8 +586,25 @@ def normalise_submission(raw: dict, form: dict) -> dict:
         else:
             fields[key] = value
 
-    # Stable: the order a website sent is kept within each group.
-    for raw_key, value in sorted(flat.items(), key=lambda item: not authoritative(item[0])):
+    budget_answer: list[Any] = []  # the raw key whose whole budget answer was filed
+
+    def apply_budget(raw_key: Any, low: Optional[float], high: Optional[float]) -> None:
+        # A budget is one answer. The first answer that names a price wins whole; a later
+        # one is kept on the record but adds no bound, so `$800k+` beside a 600000 maximum
+        # can never make an inverted range, nor a stray figure a second ceiling.
+        if "price_min" in fields or "price_max" in fields:
+            keep_as_extra(raw_key, flat.get(raw_key))
+            return
+        budget_answer.append(raw_key)
+        if high is not None:
+            fields["price_max"] = high
+        if low is not None and low != high:
+            fields["price_min"] = low
+
+    # Top-level answers before anything lifted from `payload`, and within each, a field's
+    # own name before an alias. Stable: the order a website sent is kept within a group.
+    for raw_key, value in sorted(flat.items(),
+                                 key=lambda item: (item[0] in lifted, not authoritative(item[0]))):
         key = str(raw_key).strip()
         lowered = key.lower()
         lowered = control_aliases.get(lowered, lowered)
@@ -591,11 +613,8 @@ def normalise_submission(raw: dict, form: dict) -> dict:
             control[lowered] = value
             continue
         if lowered in ("pricerange", "price_range"):
-            low, high = parse_price_range(value)
-            if high is not None:
-                fields.setdefault("price_max", high)
-            if low is not None and low != high:
-                fields.setdefault("price_min", low)
+            if not ("price_min" in fields or "price_max" in fields):
+                apply_budget(raw_key, *parse_price_range(value))
             if len(extra) < MAX_EXTRA_KEYS:
                 extra["price_range"] = _clip(value, MAX_EXTRA_VALUE) or ""
             continue
@@ -610,21 +629,22 @@ def normalise_submission(raw: dict, form: dict) -> dict:
             set_field(raw_key, key, _truthy(value))
         elif key in NUMBER_FIELDS:
             amount = parse_amount(value)
-            low, high = (None, None)
-            if amount is None and key in ("price_min", "price_max"):
-                # A budget picked from a website's list (`$500,000+`, `$400k-$500k`)
-                # is a range, not a typo: file its bounds instead of refusing the lead.
-                low, high = parse_price_range(value)
-            if amount is not None:
-                set_field(raw_key, key, amount)
-            elif low is not None or high is not None:
-                if high is not None:
-                    set_field(raw_key, "price_max", high)
-                if low is not None and low != high:
-                    set_field(raw_key, "price_min", low)
-                keep_as_extra(raw_key, value)
-            else:
+            if key in ("price_min", "price_max") and (amount is None or lowered == "budget"):
+                # A `budget`, or a price picked from a website's list (`$500,000+`,
+                # `$400k-$500k`), is a whole budget answer, not one bound and not a typo.
+                low, high = (None, amount) if amount is not None else parse_price_range(value)
+                if low is None and high is None:
+                    errors[key] = "Enter a number (for example 450000 or 450k)"
+                else:
+                    apply_budget(raw_key, low, high)
+                    if amount is None:
+                        keep_as_extra(raw_key, value)
+            elif amount is None:
                 errors[key] = "Enter a number (for example 450000 or 450k)"
+            elif key in ("price_min", "price_max") and budget_answer:
+                keep_as_extra(raw_key, value)  # a filed budget is not topped up by a bound
+            else:
+                set_field(raw_key, key, amount)
         elif key == "lead_type":
             if "lead_type" in fields:
                 if len(extra) < MAX_EXTRA_KEYS:
@@ -658,6 +678,10 @@ def normalise_submission(raw: dict, form: dict) -> dict:
             extra[str(raw_key).strip()[:60]] = (_clip(value if not isinstance(value, (dict, list))
                                      else json.dumps(value)[:MAX_EXTRA_VALUE],
                                      MAX_EXTRA_VALUE) or "")
+
+    for raw_key, value in shadowed.items():
+        if value is not None and not (isinstance(value, str) and not value.strip()):
+            keep_as_extra(raw_key, value if not isinstance(value, (dict, list)) else json.dumps(value))
 
     if fields.get("email"):
         fields["email"] = str(fields["email"]).strip().lower()
@@ -1606,12 +1630,19 @@ class LeadPipeline:
                 "website_inquiry", SYSTEM_ACTOR, {"enquiry_id": enquiry["id"]})]
             revalued = self.revalue(cfg, existing, enquiry.get("fields") or {})
             if revalued:
-                changes.update(revalued)
-                history.append(crm_core._history_entry(
-                    "value_updated", SYSTEM_ACTOR,
-                    {"from": existing.get("value"), "to": revalued["value"],
-                     "enquiry_id": enquiry["id"]}))
-                existing = {**existing, **revalued}
+                # Compare-and-set on the value just read: a figure an agent saves in the
+                # meantime is theirs, and this request leaves it alone.
+                moved = await self.db.opportunities.update_one(
+                    {"id": existing["id"], "tenant_id": tenant_id, "value": existing.get("value")},
+                    {"$push": {"history": {"$each": [*history, crm_core._history_entry(
+                        "value_updated", SYSTEM_ACTOR,
+                        {"from": existing.get("value"), "to": revalued["value"],
+                         "enquiry_id": enquiry["id"]})]}},
+                     "$set": {**changes, **revalued}})
+                if moved.matched_count:
+                    return {**existing, **revalued}, False
+                existing = await self.db.opportunities.find_one(
+                    {"id": existing["id"], "tenant_id": tenant_id}, {"_id": 0}) or existing
             await self.db.opportunities.update_one(
                 {"id": existing["id"], "tenant_id": tenant_id},
                 {"$push": {"history": {"$each": history}}, "$set": changes})
@@ -1679,6 +1710,10 @@ class LeadPipeline:
         else:
             return None
         if round(float(deal.get("value") or 0), 2) != automatic:
+            return None
+        # A deal opened by another form may be in another currency; a commission worked out
+        # in this form's currency is not that deal's value.
+        if (deal.get("currency") or "USD") != (cfg.get("currency") or "USD"):
             return None
         new_basis = cls.value_basis(cfg, fields)
         if new_basis.get("method") != "commission" or new_basis == basis:
