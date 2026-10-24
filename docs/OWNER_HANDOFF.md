@@ -1,5 +1,9 @@
 # ClientVerse — Owner Handoff
 
+> **Superseded 2026-10-24 by the [Production Closeout Handoff](closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md)**
+> together with the [Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md). This file is kept
+> as the 2026-09-21/28 historical record; where it disagrees with those two, they win.
+
 > **Owner/admin instructions — see the [ClientVerse CRM Owner/Admin Manual](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md)** (2026-09-30), the official owner/admin source of truth. In this document, §2 (application access and password handoff), §5 (Google reconnect — the controls are on **Registries → Integrations**, not inside Settings), §8 (owner actions) and §10 (health checks) are superseded by the manual.
 
 **Prepared:** 2026-09-21 · **Release state updated:** 2026-09-28
@@ -113,7 +117,7 @@ email, or a ticket**, because those are not approved stores.
 | Service | `clientverse-crm-production` (`5e2ea598-91f0-4f95-a67b-067585b80aa9`) |
 | Environment | `production` (`12d1d2d7-3fdf-44a9-b6b6-f1d992642188`) |
 | Deployment branch | `main` (auto-deploy) |
-| Builder | RAILPACK, build environment V3 |
+| Builder | DOCKERFILE (`railway.json` pins it; corrected 2026-10-24 — an earlier read said RAILPACK) |
 | Region | `sfo`, 1 replica |
 | Healthcheck path | `/api/health` — **verified against the service configuration**, matches the route the application serves |
 | Healthcheck status | Deployment reports SUCCESS; the endpoint itself could not be probed from this session |
@@ -399,7 +403,7 @@ nothing else.
 
 ## 10. How to check the system is alive, from now on
 
-Three questions, three endpoints, all admin-authenticated:
+Three questions, three endpoints. `/api/health` needs no sign-in; the other two need an admin session (since 2026-10-24, `/api/cron/health` only for the owner's organization):
 
 | Question | Endpoint | Healthy answer |
 |---|---|---|

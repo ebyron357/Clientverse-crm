@@ -89,7 +89,7 @@ The shortest path from nothing to a working, checked CRM. About ten minutes.
 
 ### 1.2 Sign in
 
-1. Open **https://crm.clientverse.io/login** in a current
+1. Open **[https://crm.clientverse.io/login](https://crm.clientverse.io/login)** in a current
    Chrome, Edge, Firefox or Safari.
 2. Under the heading **"Sign in to ClientVerse"**, type your owner email in **"Work email"** and
    your password in **"Password"**. The eye button beside the password shows or hides what you typed.
@@ -145,7 +145,7 @@ weekly until it is published.
 
 | Environment | Address | Use it? |
 |---|---|---|
-| **Production** | **https://crm.clientverse.io** | **Yes — use this address.** |
+| **Production** | **[https://crm.clientverse.io](https://crm.clientverse.io)** | **Yes — use this address.** |
 | Production, Railway address | https://clientverse-crm-production-production.up.railway.app | Same CRM, same data. It keeps working, so older links and the Stripe webhook still reach production. Signing in on one address does not sign you in on the other. |
 | Custom domain status | Verified (live, 2026-10-19): Railway reports `crm.clientverse.io` verified, certificate valid, CNAME `crm` → `br0g4oob.up.railway.app` propagated. Railway sets `FRONTEND_URL` and `GOOGLE_REDIRECT_URI` to this address, and `CORS_ORIGINS` lists both addresses ([§10.2](#102-google--gmail-and-google-calendar)). | — |
 | Staging | None. No staging environment is configured or documented. The only deployment path is Railway `production`. | — |

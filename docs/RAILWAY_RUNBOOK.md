@@ -80,11 +80,14 @@ Startup failure map (all are configuration, not code):
 
 ## 5. Provider callbacks (after the domain exists)
 
-- Google OAuth authorized redirect URI:
-  `https://<service>.up.railway.app/api/integrations/google/callback`
-  (auto-derived; set `GOOGLE_REDIRECT_URI` only when overriding)
+Production uses the custom domain `https://crm.clientverse.io` (since 2026-10-19).
+
+- Google OAuth authorized redirect URI: the value of Railway `GOOGLE_REDIRECT_URI`, which is
+  `https://crm.clientverse.io/api/integrations/google/callback`. Without the variable it is
+  derived from `PUBLIC_BACKEND_URL`, or else `FRONTEND_URL`. Changing it breaks an OAuth
+  attempt already in progress, and it must match the Google Cloud OAuth client exactly.
 - Stripe webhook endpoint (test mode):
-  `https://<service>.up.railway.app/api/integrations/stripe/webhook`
+  `https://crm.clientverse.io/api/integrations/stripe/webhook`
 
 **Two-pilot-company deployments**: `STRIPE_API_KEY` is a single, shared Stripe account
 for the whole deployment. If two tenants both need Stripe and must not share one
@@ -113,6 +116,7 @@ sent, the durable work queue had no worker and no recovery sweep ever ran.
 | Commitment risk | `POST /api/cron/commitment-risk` | every 15 minutes |
 | Work-queue worker | `POST /api/cron/work-queue` | every 5 minutes — recovers leases abandoned by crashed workers, then claims and processes due durable jobs |
 | Recovery runner | `POST /api/cron/recovery-runner` | every 5 minutes — queues every approved Recovery Case for execution |
+| Booking reminders | `POST /api/cron/booking-reminders` | every 5 minutes — sends due booking reminders exactly once, then admin-approved booking emails |
 | Integration sync | `POST /api/cron/integration-sync` | every 30 minutes (:00, :30) |
 | Next best actions | `POST /api/cron/next-best-actions` | every 30 minutes (:00, :30) — recomputes the ranked recommendation queue |
 | Inbound email | `POST /api/cron/inbound-email` | every 30 minutes (:10, :40) — pulls replies back into the CRM |
