@@ -84,7 +84,7 @@ The shortest path from nothing to a working, checked CRM. About ten minutes.
 | Is the automation running? (sign in as admin first) | https://clientverse-crm-production-production.up.railway.app/api/cron/health |
 | Hosting dashboard | Railway → project `welcoming-vibrancy` → service `clientverse-crm-production` (https://railway.com/project/bbcb2596-d6f9-45c5-9c03-59cb97f373ea) |
 | Optional second scheduler (GitHub) | https://github.com/ebyron357/Clientverse-crm/actions/workflows/scheduled-jobs.yml |
-| Sign-in method | Email address + password. **Not** "Continue with Google" ([§3.1](#31-supported-sign-in-methods)) |
+| Sign-in method | Email address + password, the only sign-in method ([§3.1](#31-supported-sign-in-methods)) |
 | Your account | The address in the Railway variable `ADMIN_EMAIL`, with the password in the Railway variable `ADMIN_PASSWORD` ([§3.3](#33-which-account-the-owner-uses)) |
 
 ### 1.2 Sign in
@@ -97,9 +97,8 @@ The shortest path from nothing to a working, checked CRM. About ten minutes.
 4. **Check:** the page changes to **Today** (`/dashboard`, headed **"Good morning, {your name}"**). At the
    bottom of the dark menu on the left you see your name and **"Workspace admin"**.
 
-**Warning:** Do not click **"Continue with Google"** (the first button on the page) or
-**"Create a workspace"** at the bottom. Both can create a *separate, empty* organization that is
-not your CRM ([§3.1](#31-supported-sign-in-methods)).
+**Warning:** Do not click **"Create a workspace"** at the bottom. It creates a *separate, empty*
+organization that is not your CRM ([§3.1](#31-supported-sign-in-methods)).
 
 ### 1.3 Find Settings and Integrations
 
@@ -223,7 +222,7 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
 | Method | Status | Should the owner use it? |
 |---|---|---|
 | **Email + password** | Verified (code). Last proven live in production on 2026-09-01 (`scripts/proof_of_life.mjs` against `ca30587`). | **Yes — this is the owner's method.** |
-| **"Continue with Google"** button (first on the sign-in page) | Sends you to a third-party sign-in service (`auth.emergentagent.com`) left over from the platform the CRM was prototyped on. It is **not** the owner's Google Cloud app and **not** the Gmail connection. Whether it works in production is UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED. | **No.** If the Google address has no ClientVerse account, it silently creates a new, empty organization in which that person is admin. It also ignores invitation links. |
+| **"Continue with Google"** (removed 2026-10-24) | **Removed.** The button sent people to a third-party sign-in service (`auth.emergentagent.com`) left over from the platform the CRM was prototyped on, which the owner does not control. The server trusted that service to say who a visitor was, so whoever controls the service could sign in as any user, the owner included. It also created stray organizations and ignored invitations. The server now refuses it (`410`); it was never the Gmail connection, which is unaffected ([§5](#5-google--gmail-setup)). | Not available. |
 | **"Create a workspace"** (self-registration, at the bottom of the sign-in page) | Verified (code). It works, but always creates a **new, separate organization** with the new person as its admin. It gives no access to your data. | **No** for the owner. Team members join through invitations, which create their account directly inside your team ([§8.3](#83-what-to-tell-the-invitee-accepting-an-invitation)). |
 
 ### 3.2 Sign in with email and password
@@ -1699,7 +1698,7 @@ on every request, and hiding a button is never the protection.
 | Webhook create / enable / reveal secret / rotate secret | ✓ | ✗ |
 | Portal links, estimates, invoices, review requests, safe automations, playbooks | ✓ | ✗ |
 | Team notification defaults; **"Send digest"**; rename the business | ✓ | ✗ |
-| Read the scheduler ledger (`/api/cron/health`, `/api/cron/runs`) | ✓ | ✗ |
+| Read the scheduler ledger (`/api/cron/health`, `/api/cron/runs`) — admins of the owner's own organization only (the one seeded from `ADMIN_EMAIL`); the ledger covers the whole platform | ✓ | ✗ |
 
 A member who tries an admin action sees **"You do not have permission to perform this action"**.
 
@@ -1740,8 +1739,7 @@ Possible refusals:
    **"Accept and join {organization}"**.
 4. If it says *"You're signed in as X, but this invitation is for Y"*, click **"Sign out and
    continue"**.
-5. **Do not use "Continue with Google"** for this: it ignores the invitation and can create a
-   separate organization.
+5. Accept with email and password; that is the only sign-in method.
 
 Other pages the link can show: **"This invitation has expired"**, **"This invitation was
 cancelled"**, **"You've already joined"**, **"This invitation has already been used"**, **"This
@@ -1934,15 +1932,12 @@ An admin disabled your membership. Ask an admin to **"Enable access"** for you
 ([§8.9](#89-offboard-a-user-disable)). If you are the only admin, you cannot be disabled — the
 server prevents it.
 
-### 9.6 "Continue with Google" failed
+### 9.6 Someone asks about "Continue with Google"
 
-That button is not a supported owner sign-in method ([§3.1](#31-supported-sign-in-methods)). Use
-email and password.
-
-- If it took you to a strange empty CRM, it created a separate organization. Sign out, and sign in
-  with email and password.
-- If someone else signed in this way by mistake, have them tell an admin. Engineering can clean up
-  the stray organization.
+That button was removed on 2026-10-24 ([§3.1](#31-supported-sign-in-methods)). Sign in with email
+and password. A person who used it earlier and landed in a strange empty CRM had a separate
+organization created for them; they sign in with email and password through an invitation
+instead, and engineering can remove the stray organization.
 
 ### 9.7 Email and password rejected, but you are sure the password is right
 
@@ -2006,7 +2001,7 @@ DEFERRED, DEPRECATED.
 | **Security-gate scanners** | Yes (**Operations** → **"Security gate"**) | **CONFIGURATION REQUIRED** (O-13, O-14) |
 | **Scheduler — built into the CRM** | Yes | **LIVE** since 2026-10-18; Verified (live, 2026-10-19) from the boot log ([§11](#11-scheduler--automations)) |
 | **Scheduler — GitHub Actions workflow** | Yes | **LIVE**, optional second driver; its calls answered `200` on 2026-10-19 |
-| **"Continue with Google" sign-in** | Button present | UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED. Do not use ([§3.1](#31-supported-sign-in-methods)). |
+| **"Continue with Google" sign-in** | No (removed 2026-10-24) | **REMOVED** — third-party prototype sign-in; the server answers `410` ([§3.1](#31-supported-sign-in-methods)) |
 | **Recovery intake** (call logs, web enquiries, external CRM events) | Server API only, no screen | **AVAILABLE BUT NOT CERTIFIED** — for engineering integrations |
 | **n8n, Slack, ClickUp** | No working CRM integration. Catalogue entries may appear in **Registries** as contracts only. | **NOT IMPLEMENTED** (O-08, O-09) |
 | **SMS, Calling / telephony** | Placeholder modules only | **NOT IMPLEMENTED** (O-06) |
@@ -2280,7 +2275,7 @@ adding jobs, or any failure that is not explained in §11.5.
 | **Account locked** — the right password is still refused | 5 failures → 15-minute lock | Wait 15 minutes, then try **once** (§9.3). A member: an admin's reset clears it. | The owner needs access sooner |
 | **"Choose your own password"** appears after sign-in | You signed in with a temporary password | Type it again under **"Temporary password"**, choose your own, **"Save my password"** (§8.8) | It reappears after saving |
 | **"Your password was changed. Please sign in again."** | Your password was changed elsewhere, or reset by an admin | Sign in with the new password (§9.4) | You did not change it and no admin reset it — treat as a security problem (§13.6) |
-| **Google sign-in fails** ("Continue with Google") | Unsupported third-party sign-in | Use email + password (§3.1, §9.6) | Someone ended up in a stray organization |
+| **"Continue with Google" missing** | Removed on 2026-10-24 | Use email + password (§3.1, §9.6) | Someone ended up in a stray organization before the removal |
 | **Google connection fails** — "Google authorization failed" | Consent cancelled or refused, redirect URI mismatch, not a test user | Full reset (§5.7), then connect within 10 minutes and tick every box (§5.5) | It fails twice after a full reset |
 | **Google reconnect loop** — stuck "Connecting…" or back to "Error" | Abandoned consent; secret or redirect mismatch | Disconnect **both** rows, remove app access in the Google account, connect again (§5.7, §5.9) | `token_exchange_failed` or `redirect_uri_mismatch` persists |
 | **Google token refresh 400** — "Needs auth", `token_refresh_failed:400` | Permission revoked or expired; consent screen in Testing (7-day expiry); client secret rotated | **"Re-authorize"** (§5.6) | It recurs within a week (Testing mode), or the reconnect itself ends in "Error" / `token_exchange_failed` (secret or redirect mismatch) |
