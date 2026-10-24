@@ -219,7 +219,7 @@ export default function Dashboard() {
               <span className={cn("tabular inline-flex items-center gap-1 text-[13px] font-semibold", lead.overdue ? "text-red-600" : "text-muted-foreground")} title={lead.goal_minutes ? `Goal: a reply within ${lead.goal_minutes} minutes` : undefined}>
                 <Clock className="size-3.5" aria-hidden="true" />{waited(lead.waiting_minutes)}
               </span>
-              {lead.phone && <Button asChild size="sm" className="h-8 bg-emerald-600 text-white hover:bg-emerald-700"><a href={`tel:${lead.phone}`} aria-label={`Call ${lead.name}`}><Phone className="size-3.5" />Call</a></Button>}
+              {lead.phone && <Button asChild size="sm" className="h-8 bg-emerald-700 text-white hover:bg-emerald-800"><a href={`tel:${lead.phone}`} aria-label={`Call ${lead.name}`}><Phone className="size-3.5" />Call</a></Button>}
               {lead.phone && <Button asChild size="sm" variant="outline" className="size-8 p-0"><a href={`sms:${lead.phone}`} aria-label={`Text ${lead.name}`}><MessageSquare className="size-3.5" /></a></Button>}
               {lead.email && <Button asChild size="sm" variant="outline" className="size-8 p-0"><a href={`mailto:${lead.email}`} aria-label={`Email ${lead.name}`}><Mail className="size-3.5" /></a></Button>}
             </div>
@@ -276,7 +276,7 @@ export default function Dashboard() {
           {leadsToCall > 0 && <div className="flex items-center gap-2 border-b border-border/70 bg-red-50/70 px-4 py-2 dark:bg-red-500/10">
             <Phone className="size-4 shrink-0 text-red-600" aria-hidden="true" />
             <span className="min-w-0 flex-1 text-[13px] font-semibold text-red-700 dark:text-red-300">Call {leadsToCall} new lead{leadsToCall === 1 ? "" : "s"} now</span>
-            <Button asChild size="sm" className="h-7 bg-emerald-600 text-white hover:bg-emerald-700"><Link to="/leads">Start</Link></Button>
+            <Button asChild size="sm" className="h-7 bg-emerald-700 text-white hover:bg-emerald-800"><Link to="/leads">Start</Link></Button>
           </div>}
           {day.tasks.length ? <ul className="divide-y divide-border/70">{day.tasks.map((task) => <li key={task.id} className="flex items-center gap-3 px-4 py-2">
             <Checkbox checked={closing === task.id} disabled={Boolean(closing)} onCheckedChange={() => completeTask(task)} aria-label={`Mark “${task.title}” done`} data-testid={`today-task-done-${task.id}`} />

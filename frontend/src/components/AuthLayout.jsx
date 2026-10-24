@@ -7,14 +7,16 @@ import { CalendarCheck2, CircleCheck, Globe, PhoneCall } from "lucide-react";
 export default function AuthLayout({ children, footer }) {
   return <div className="min-h-screen bg-background lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1.08fr)]">
     <div className="flex min-h-screen flex-col px-5 py-6 sm:px-10">
-      <a href="/login" className="inline-flex w-fit items-center gap-2.5 rounded-md" aria-label="ClientVerse">
-        <BrandMark className="size-8" />
-        <span className="text-[15px] font-semibold tracking-tight text-foreground">ClientVerse</span>
-      </a>
+      <header>
+        <a href="/login" className="inline-flex w-fit items-center gap-2.5 rounded-md" aria-label="ClientVerse">
+          <BrandMark className="size-8" />
+          <span className="text-[15px] font-semibold tracking-tight text-foreground">ClientVerse</span>
+        </a>
+      </header>
       <main className="flex flex-1 items-center justify-center py-10">
         <div className="w-full max-w-[380px]">{children}</div>
       </main>
-      {footer && <div className="text-center text-xs text-muted-foreground">{footer}</div>}
+      {footer && <footer className="text-center text-xs text-muted-foreground">{footer}</footer>}
     </div>
     <aside className="relative hidden p-3 lg:block" aria-hidden="true">
       <div className="relative flex h-full flex-col justify-center overflow-hidden rounded-2xl bg-canvas px-12 py-14 xl:px-16">

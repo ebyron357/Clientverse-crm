@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { api, formatErr, money } from "@/lib/api";
 import { toast } from "sonner";
+import { copyText } from "@/lib/utils";
 import { Avatar, PageHeader, Section, StatStrip, StatusDot } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { CalendarClock, ChevronRight, CircleDollarSign, Handshake, Info, Link2, Loader2, ShieldCheck } from "lucide-react";
 
 const defaultData = { workspaces: [], summary: null, documents: [], estimates: [], invoices: [], referrals: [], appointments: [], rules: [], templates: [], reviews: [], capacity: [], playbooks: [], applications: [], portalLinks: [] };
@@ -29,6 +31,8 @@ export default function ClientOps() {
   const [busy, setBusy] = useState(false);
   const [workspaceId, setWorkspaceId] = useState("");
   const [portalClient, setPortalClient] = useState("");
+  const [newPortal, setNewPortal] = useState(null);
+  const [revoking, setRevoking] = useState(null);
   const [documentForm, setDocumentForm] = useState({ title: "", external_url: "", client_visible: true, requires_approval: true });
   const [estimateForm, setEstimateForm] = useState({ title: "", line: "Service package", amount: "" });
   const [referralForm, setReferralForm] = useState({ name: "", source_type: "partner" });
@@ -69,9 +73,17 @@ export default function ClientOps() {
   const createPortal = () => run(async () => {
     const { data: result } = await api.post("/portal-links", { workspace_id: workspaceId, client_label: portalClient || workspace?.name || "Client" });
     const url = `${window.location.origin}${result.portal_path}`;
-    try { await navigator.clipboard.writeText(url); toast.success("Secure portal URL copied"); } catch { toast.message("Portal URL generated", { description: "Copy it from the new portal link card." }); }
+    // The token is never shown again, so the link stays on screen until it is dismissed,
+    // whether or not the browser let us copy it.
+    setNewPortal({ url, label: result.portal_link?.client_label || portalClient || workspace?.name || "Client" });
+    await copyText(url, "Portal link");
     setPortalClient("");
   }, "Client portal link created");
+  const revokePortal = () => {
+    const link = revoking;
+    setRevoking(null);
+    return run(() => api.patch(`/portal-links/${link.id}`, { status: "revoked" }), "Portal link revoked");
+  };
   const createDocument = () => run(async () => {
     await api.post("/documents", { workspace_id: workspaceId, title: documentForm.title, external_url: documentForm.external_url || null, client_visible: documentForm.client_visible, requires_approval: documentForm.requires_approval });
     setDocumentForm({ title: "", external_url: "", client_visible: true, requires_approval: true });
@@ -143,10 +155,20 @@ export default function ClientOps() {
             {isAdmin ? <>
               <div className="p-4"><Field label="Client-facing label" id="portal-client-label"><Input id="portal-client-label" value={portalClient} onChange={(event) => setPortalClient(event.target.value)} placeholder={workspace?.name || "Choose a workspace"} /></Field></div>
               <FormFooter><Button size="sm" disabled={busy || !workspaceId} onClick={createPortal}><Link2 className="size-3.5" />Create secure portal link</Button></FormFooter>
+              {newPortal && <div className="border-t border-border p-4" data-testid="new-portal-link">
+                <Field label={`Link for ${newPortal.label}: shown only now`} id="portal-new-url">
+                  <div className="flex gap-2">
+                    <Input id="portal-new-url" readOnly value={newPortal.url} onFocus={(event) => event.target.select()} className="font-mono text-xs" />
+                    <Button size="sm" variant="outline" onClick={() => copyText(newPortal.url, "Portal link")}>Copy</Button>
+                  </div>
+                </Field>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">Send it to your client now. It can't be shown again; if it's lost, revoke it and create a new one.</p>
+                <Button size="sm" variant="ghost" className="mt-1 px-0" onClick={() => setNewPortal(null)}>Done, I've saved it</Button>
+              </div>}
             </> : <p className="p-4 text-[13px] text-muted-foreground">Only workspace administrators can issue or revoke client portal links.</p>}
           </Section>
           <Section card className="overflow-hidden" title="Active links" description="Tokens are never shown again after creation.">
-            {workspaceLinks.map((item) => <Row key={item.id} title={item.client_label} meta={`Created ${dateLabel(item.created_at)}${item.expires_at ? ` · expires ${dateLabel(item.expires_at)}` : ""}`} right={<StatusDot tone={item.status === "active" ? "success" : "neutral"} className="capitalize">{item.status}</StatusDot>} />)}
+            {workspaceLinks.map((item) => <Row key={item.id} title={item.client_label} meta={`Created ${dateLabel(item.created_at)}${item.expires_at ? ` · expires ${dateLabel(item.expires_at)}` : ""}`} right={<div className="flex items-center gap-2"><StatusDot tone={item.status === "active" ? "success" : "neutral"} className="capitalize">{item.status}</StatusDot>{isAdmin && item.status === "active" && <Button size="sm" variant="outline" disabled={busy} onClick={() => setRevoking(item)} data-testid="portal-link-revoke">Revoke</Button>}</div>} />)}
             {!workspaceLinks.length && <Empty label="No portal links have been created for this workspace." />}
           </Section>
         </div>
@@ -229,6 +251,15 @@ export default function ClientOps() {
         </div>
       </TabsContent>
     </Tabs>
+    <AlertDialog open={Boolean(revoking)} onOpenChange={(open) => !open && setRevoking(null)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Revoke the portal link for “{revoking?.client_label}”?</AlertDialogTitle>
+          <AlertDialogDescription>The link stops working at once for anyone who has it. Nothing in the workspace changes, and you can create a new link afterwards.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={revokePortal} data-testid="portal-link-revoke-confirm">Revoke link</AlertDialogAction></AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>;
 }
 

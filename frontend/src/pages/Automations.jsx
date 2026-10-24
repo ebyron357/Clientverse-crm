@@ -159,7 +159,7 @@ export default function Automations() {
             {isAdmin && dirty && <Button size="sm" className="cv-action-primary" disabled={saving} onClick={save} data-testid="automation-save">{saving ? "Saving…" : "Save changes"}</Button>}
             {isAdmin && !dirty && (doc.status === "on"
               ? <Button size="sm" variant="outline" onClick={() => setStatus("off")} data-testid="automation-off">Turn off</Button>
-              : <Button size="sm" className="bg-emerald-600 text-white hover:bg-emerald-700" onClick={() => setStatus("on")} disabled={!doc.steps.length} data-testid="automation-on">Turn on</Button>)}
+              : <Button size="sm" className="bg-emerald-700 text-white hover:bg-emerald-800" onClick={() => setStatus("on")} disabled={!doc.steps.length} data-testid="automation-on">Turn on</Button>)}
             {isAdmin && <Button size="sm" variant="ghost" className="size-8 p-0 text-muted-foreground" onClick={archive} aria-label={`Delete ${doc.name}`} data-testid="automation-delete"><Trash2 className="size-4" /></Button>}
           </div>
         </div>

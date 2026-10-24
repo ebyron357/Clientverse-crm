@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
+import { copyText } from "@/lib/utils";
 import { api, formatErr } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -103,9 +104,8 @@ function CardNote({ children }) {
 /** Code in a quiet block with a copy icon button. */
 function CodeBlock({ title, code, className }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard?.writeText(code);
-    toast.success(`${title} copied`);
+  const copy = async () => {
+    if (!(await copyText(code, title))) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -794,7 +794,7 @@ function FormRow({ form, presetLabel, isAdmin, onOpen }) {
   const waiting = form.lead_counts?.new || 0;
   const live = form.status === "active";
   const last = stats.last_submission_at;
-  const copyEmbed = () => { navigator.clipboard?.writeText(form.embed.inline); toast.success("Embed code copied"); };
+  const copyEmbed = () => copyText(form.embed.inline, "Embed code");
   return (
     <tr className="relative border-b border-border/70 transition-colors last:border-0 hover:bg-muted/50" data-testid={`website-form-row-${form.id}`}>
       <td className="px-4 py-2.5">
