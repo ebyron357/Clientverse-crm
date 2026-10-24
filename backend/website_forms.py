@@ -1755,12 +1755,14 @@ class LeadPipeline:
 
     async def _notify(self, tenant_id: str, *, recipients: list[str], title: str, body: str,
                       deep_link: str, severity: str, ntype: str, dedupe_key: str,
-                      email_subject: str, email_html: str) -> None:
-        """In-app to each recipient (or the whole team when there is none), then email."""
+                      email_subject: str, email_html: str, in_app: bool = True,
+                      email: bool = True) -> None:
+        """In-app to each recipient (or the whole team when there is none), then email.
+        A form's own alert switches turn either channel off for its new-lead alert."""
         if await self.db.notification_deliveries.find_one(
                 {"tenant_id": tenant_id, "dedupe_key": dedupe_key}, {"_id": 1}):
             return
-        targets: list[Optional[str]] = list(recipients) or [None]
+        targets: list[Optional[str]] = (list(recipients) or [None]) if in_app else []
         for recipient in targets:
             await self.db.notifications.insert_one({
                 "id": self.new_id("ntf"), "tenant_id": tenant_id,
@@ -1774,7 +1776,9 @@ class LeadPipeline:
                     "status": "skipped", "recipient": None, "attempted_at": self.now_iso(),
                     "failure_reason": None}
         email_to = recipients or await self._admins(tenant_id)
-        if not self.send_email or not self.email_configured():
+        if not email:
+            delivery.update(status="skipped", failure_reason="email_alert_off_for_form")
+        elif not self.send_email or not self.email_configured():
             delivery.update(status="not_configured", failure_reason="email_not_configured")
         elif email_to:
             delivered, failures = 0, []
@@ -1809,8 +1813,8 @@ class LeadPipeline:
 
     async def _notify_new_lead(self, form: dict, enquiry: dict, contact: dict,
                                assignee: Optional[str]) -> None:
-        if not form["settings"]["notify"].get("in_app", True) \
-                and not form["settings"]["notify"].get("email", True):
+        notify = form["settings"]["notify"]
+        if not notify.get("in_app", True) and not notify.get("email", True):
             return
         who = enquiry.get("name") or enquiry.get("email") or enquiry.get("phone") or "a visitor"
         due = form["settings"]["speed_to_lead"]["due_minutes"]
@@ -1823,7 +1827,8 @@ class LeadPipeline:
             severity="warning", ntype="lead.new", dedupe_key=f"lead:{enquiry['id']}:new",
             email_subject=f"{prefix}New lead from your website: {who}",
             email_html=self._email_html(f"New lead — call within {due} minutes", enquiry,
-                                        f"Received {enquiry['received_at']} via {form['name']}."))
+                                        f"Received {enquiry['received_at']} via {form['name']}."),
+            in_app=notify.get("in_app", True), email=notify.get("email", True))
 
     # ------------------------------------------------------------ auto-reply
 

@@ -1289,3 +1289,25 @@ def test_duplicate_suppression_and_idempotency_never_cross_tenants(client):
         stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": receipt["id"]})
         assert stored["tenant_id"] == owner["tenant_id"]
         assert find_one(client, "contacts", {"id": receipt["contact_id"]})["tenant_id"] == owner["tenant_id"]
+
+
+@pytest.mark.parametrize(("in_app", "email"), [(True, False), (False, True), (True, True)])
+def test_a_forms_own_alert_switches_decide_the_new_lead_alert(client, monkeypatch, in_app, email):
+    sent = []
+
+    async def fake_send(address, subject, html):
+        sent.append(address)
+
+    monkeypatch.setattr(server.lead_pipeline, "send_email", fake_send)
+    monkeypatch.setattr(server.lead_pipeline, "email_configured", lambda: True)
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "assignment": {"mode": "specific", "users": [owner["email"]]},
+        "notify": {"in_app": in_app, "email": email}})
+    receipt = browser_submit(client, form, lead()).json()
+    assert receipt.get("id"), receipt
+    alerts = find_all(client, "notifications", {"tenant_id": owner["tenant_id"], "type": "lead.new"})
+    assert bool(alerts) is in_app
+    assert sent == ([owner["email"]] if email else [])
+    delivery = find_one(client, "notification_deliveries", {"tenant_id": owner["tenant_id"]})
+    assert delivery["status"] == ("delivered" if email else "skipped")

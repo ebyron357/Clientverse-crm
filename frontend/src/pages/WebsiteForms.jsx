@@ -911,7 +911,7 @@ export default function WebsiteForms() {
           {isAdmin && <Button size="sm" className="mt-4" onClick={() => setCreating(true)}><Plus />Create a form</Button>}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
+        <div className="relative overflow-x-auto rounded-xl border border-border bg-card">
           <table className="w-full table-fixed text-[13px] sm:table-auto">
             <thead>
               <tr className="h-9 whitespace-nowrap border-b border-border bg-muted/40 text-xs text-muted-foreground">
