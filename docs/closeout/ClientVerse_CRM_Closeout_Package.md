@@ -698,13 +698,21 @@ The fastest way back is Railway's own rollback:
 
 1. **Railway → Deployments**: pick the last good **SUCCESS** deployment.
 2. Open its **"⋮"** menu and choose **"Rollback"**. Railway runs that exact build again.
-3. Check `/api/health` → `git_sha` shows the older commit, then run **Production acceptance**.
+3. Check `/api/health` → `git_sha` shows the older commit. Then run **Production acceptance** with
+   **`expected_sha`** set to that older commit. Left blank, it waits for the newest `main` commit
+   and fails.
 4. Revert the bad change on GitHub too (**"Revert"** on its pull request), or the next merge
    brings it back.
 
 **Database note:** a rollback changes the code, not the data. No release in this closeout
-changed the data format, so rolling back to `394f095` is safe. A rollback is not a substitute
-for a database restore.
+changed the data format, so the database works with the earlier code. A rollback is not a
+substitute for a database restore.
+
+**Security note:** a rollback to a commit before `6d0d4c6` (for example `394f095`) **brings back
+the two security exposures this release closed**: the prototype "Continue with Google" sign-in
+and the job ledger readable by any organization's admin. Use such a rollback only as a
+short emergency measure. Ask engineering for a fix on top of `main` (or a revert of only the
+faulty change) that keeps those fixes, and move to it as soon as possible.
 
 **Tested?**
 - Railway redeploys are routine (every merge).
@@ -734,11 +742,18 @@ for a database restore.
 Restore into a **new** database first, never over production:
 
 1. `mongorestore --uri "<MONGO_URL value>" --archive=clientverse-YYYYMMDD.archive.gz --gzip --nsFrom "<DB_NAME>.*" --nsTo "<DB_NAME>_restore.*"`
-2. Check it:
-   - point a copy of the service, or a local run, at `DB_NAME=<DB_NAME>_restore`;
-   - confirm `/api/health` shows `"database":"up"`;
-   - sign in;
-   - open a known lead, deal and contact.
+2. Check it **without letting it act**. The restored database holds real contacts, pending work
+   and encrypted Google tokens, and a running copy of the CRM would act on them:
+   - run the check locally (or in a throwaway service), never as a second copy beside
+     production;
+   - set `IN_PROCESS_SCHEDULER=0`, `LEAD_SLA_WATCHER=0` and `AUTOMATION_WATCHER=0`, so no
+     scheduled job, escalation or automation runs;
+   - leave `EMERGENT_EMAIL_KEY`, `STRIPE_*` and `GOOGLE_*` unset, and use a **new**
+     `INTEGRATION_ENC_KEY`, so stored provider tokens cannot be used and nothing can be sent;
+   - give it no `WEBHOOK_CRON_SECRET` the scheduler knows, so no external cron traffic reaches it;
+   - point it at `DB_NAME=<DB_NAME>_restore`, confirm `/api/health` shows `"database":"up"`,
+     sign in, and open a known lead, deal and contact;
+   - **stop it** before going further.
 3. To make the restore live:
    - set Railway `DB_NAME` to the restored database (Railway redeploys);
    - run **Production acceptance**;

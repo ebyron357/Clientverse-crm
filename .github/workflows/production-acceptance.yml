@@ -98,6 +98,12 @@ jobs:
           CLIENTVERSE_OWNER_PASSWORD: ${{ secrets.CLIENTVERSE_OWNER_PASSWORD }}
           CLIENTVERSE_EVIDENCE_PATH: evidence/owner-access.json
         run: |
+          # The owner's credentials go only to the production origin over HTTPS, never to an
+          # address typed into base_url.
+          case "${CLIENTVERSE_API_BASE%/}" in
+            https://crm.clientverse.io|https://clientverse-crm-production-production.up.railway.app) ;;
+            *) echo "::error::The owner check runs only against https://crm.clientverse.io (or the Railway address)."; exit 1;;
+          esac
           if [ -z "${CLIENTVERSE_OWNER_EMAIL}" ] || [ -z "${CLIENTVERSE_OWNER_PASSWORD}" ]; then
             echo "::error::Add the CLIENTVERSE_OWNER_EMAIL and CLIENTVERSE_OWNER_PASSWORD repository secrets first."
             exit 1
