@@ -350,19 +350,48 @@ def parse_amount(value: Any) -> Optional[float]:
 
 # Hyphen, en dash, em dash, or "to": websites write ranges every one of these ways.
 _RANGE_SPLIT = re.compile(r"\s*(?:-|\u2013|\u2014|to)\s*", re.IGNORECASE)
+_UPPER_PREFIX = re.compile(r"^(?:under|up\s+to|below|less\s+than|no\s+more\s+than|max(?:imum)?)\s*")
+_UPPER_SUFFIX = re.compile(r"\s*(?:or\s+less|or\s+below|or\s+under|and\s+under|and\s+below)$")
+_LOWER_PREFIX = re.compile(r"^(?:over|above|more\s+than|at\s+least|min(?:imum)?)\s*")
+_LOWER_SUFFIX = re.compile(r"\s*(?:\+|or\s+more|or\s+above|or\s+higher|and\s+up|and\s+above|plus)$")
 
 
 def parse_price_range(value: Any) -> tuple[Optional[float], Optional[float]]:
-    """`$400k-$500k` (any dash), `400,000 to 500,000`, `under 300k`, `500k+` -> (low, high)."""
+    """Return bounds without turning a minimum such as `500k+` into a ceiling.
+
+    A bare budget keeps the historic (amount, amount) result; normalization records
+    it as price_max only. A suffix shared by a range (`400-500k`) applies to both ends.
+    """
     text = str(value or "").strip().lower()
     if not text:
         return None, None
-    text = text.replace("under", "").replace("up to", "").replace("+", "").replace("over", "")
-    parts = [p for p in _RANGE_SPLIT.split(text) if p.strip()]
-    amounts: list[float] = [a for a in (parse_amount(p) for p in parts[:2]) if a]
-    if not amounts:
+    # Websites word an open-ended budget many ways: `$500k+`, `$500,000 or more`,
+    # `over 500k`, `under 300k`, `$300k or less`. Each names one bound only.
+    upper = (re.match(_UPPER_PREFIX, text), re.search(_UPPER_SUFFIX, text))
+    lower = (re.match(_LOWER_PREFIX, text), re.search(_LOWER_SUFFIX, text))
+    if any(upper) and any(lower):
         return None, None
-    return min(amounts), max(amounts)
+    if any(upper) or any(lower):
+        prefix, suffix = upper if any(upper) else lower
+        amount_text = text[prefix.end() if prefix else 0:suffix.start() if suffix else len(text)]
+        amount = parse_amount(amount_text)
+        return (None, amount) if any(upper) else (amount, None)
+
+    parts = [p.strip() for p in _RANGE_SPLIT.split(text)]
+    if len(parts) == 1:
+        amount = parse_amount(parts[0])
+        return amount, amount
+    if len(parts) != 2:
+        return None, None
+    low, high = parse_amount(parts[0]), parse_amount(parts[1])
+    if low is None or high is None:
+        return None, None
+    # Infer only a shorthand end, never multiply an already full dollar amount.
+    if not parts[0].endswith(("k", "m")) and low < 1000:
+        low *= 1000 if parts[1].endswith("k") else 1_000_000 if parts[1].endswith("m") else 1
+    if not parts[1].endswith(("k", "m")) and high < 1000:
+        high *= 1000 if parts[0].endswith("k") else 1_000_000 if parts[0].endswith("m") else 1
+    return min(low, high), max(low, high)
 
 
 def normalise_lead_type(value: Any) -> Optional[str]:
@@ -509,19 +538,73 @@ def normalise_submission(raw: dict, form: dict) -> dict:
                "estimated_home_value", "pricemin": "price_min", "pricemax": "price_max"}
     control_aliases = {"idempotencykey": "_sid", "idempotency_key": "_sid"}
 
+    def canonical_key(raw_key: Any, value: Any) -> str:
+        lowered = str(raw_key).strip().lower()
+        key = aliases.get(lowered, control_aliases.get(lowered, lowered))
+        if key == "external_id":
+            return "_sid"
+        if key in ("pricerange", "price_range"):
+            return "price_range"
+        if key == "lead_type" and not normalise_lead_type(value):
+            # A request kind such as "consultation" is not a buying/selling answer.
+            # Keep allowing the nested goal to supply that separate intent.
+            return f"site_{lowered}"
+        return key
+
     # A server integration nests its own extras under `payload`. Lift them to the top
-    # level -- without letting them override a top-level field -- so they are typed,
-    # aliased and kept like any other field.
+    # level without letting aliases or case variants override a top-level field.
     flat: dict[str, Any] = {}
     nested = (raw or {}).get("payload")
     for raw_key, value in (raw or {}).items():
         if raw_key != "payload" or not isinstance(nested, dict):
             flat[raw_key] = value
+    lifted: set[str] = set()
+    shadowed: dict[str, Any] = {}  # nested answers a top-level field outranks; kept, not used
     if isinstance(nested, dict):
+        top_level_keys = {canonical_key(key, value) for key, value in flat.items()}
         for raw_key, value in list(nested.items())[:MAX_EXTRA_KEYS]:
-            flat.setdefault(raw_key, value)
+            if canonical_key(raw_key, value) not in top_level_keys and raw_key not in flat:
+                flat[raw_key] = value
+                lifted.add(raw_key)
+            elif not canonical_key(raw_key, value).startswith("_"):
+                shadowed[f"payload.{raw_key}"] = value
 
-    for raw_key, value in flat.items():
+    def authoritative(raw_key: Any) -> bool:
+        lowered = str(raw_key).strip().lower()
+        return lowered not in aliases and (lowered in FIELD_CATALOG or lowered in custom_defs)
+
+    def keep_as_extra(raw_key: Any, value: Any) -> None:
+        if len(extra) < MAX_EXTRA_KEYS:
+            extra.setdefault(str(raw_key).strip()[:60], _clip(value, MAX_EXTRA_VALUE) or "")
+
+    def set_field(raw_key: Any, key: str, value: Any) -> None:
+        # The first answer for a field wins, and the field's own name is read before any
+        # alias, so `mobile` cannot replace `phone` nor `address` a `property_address`.
+        # A second answer is still kept on the record, never silently dropped.
+        if key in fields:
+            keep_as_extra(raw_key, flat.get(raw_key, value))
+        else:
+            fields[key] = value
+
+    budget_answer: list[Any] = []  # the raw key whose whole budget answer was filed
+
+    def apply_budget(raw_key: Any, low: Optional[float], high: Optional[float]) -> None:
+        # A budget is one answer. The first answer that names a price wins whole; a later
+        # one is kept on the record but adds no bound, so `$800k+` beside a 600000 maximum
+        # can never make an inverted range, nor a stray figure a second ceiling.
+        if "price_min" in fields or "price_max" in fields:
+            keep_as_extra(raw_key, flat.get(raw_key))
+            return
+        budget_answer.append(raw_key)
+        if high is not None:
+            fields["price_max"] = high
+        if low is not None and low != high:
+            fields["price_min"] = low
+
+    # Top-level answers before anything lifted from `payload`, and within each, a field's
+    # own name before an alias. Stable: the order a website sent is kept within a group.
+    for raw_key, value in sorted(flat.items(),
+                                 key=lambda item: (item[0] in lifted, not authoritative(item[0]))):
         key = str(raw_key).strip()
         lowered = key.lower()
         lowered = control_aliases.get(lowered, lowered)
@@ -530,11 +613,8 @@ def normalise_submission(raw: dict, form: dict) -> dict:
             control[lowered] = value
             continue
         if lowered in ("pricerange", "price_range"):
-            low, high = parse_price_range(value)
-            if high is not None:
-                fields.setdefault("price_max", high)
-                if low is not None and low != high:
-                    fields.setdefault("price_min", low)
+            if not ("price_min" in fields or "price_max" in fields):
+                apply_budget(raw_key, *parse_price_range(value))
             if len(extra) < MAX_EXTRA_KEYS:
                 extra["price_range"] = _clip(value, MAX_EXTRA_VALUE) or ""
             continue
@@ -546,13 +626,25 @@ def normalise_submission(raw: dict, form: dict) -> dict:
         if key in TRACKING_FIELDS:
             attribution[key] = _clip(value, 1000) or ""
         elif key in CHECKBOX_FIELDS:
-            fields[key] = _truthy(value)
+            set_field(raw_key, key, _truthy(value))
         elif key in NUMBER_FIELDS:
             amount = parse_amount(value)
-            if amount is None:
+            if key in ("price_min", "price_max") and (amount is None or lowered == "budget"):
+                # A `budget`, or a price picked from a website's list (`$500,000+`,
+                # `$400k-$500k`), is a whole budget answer, not one bound and not a typo.
+                low, high = (None, amount) if amount is not None else parse_price_range(value)
+                if low is None and high is None:
+                    errors[key] = "Enter a number (for example 450000 or 450k)"
+                else:
+                    apply_budget(raw_key, low, high)
+                    if amount is None:
+                        keep_as_extra(raw_key, value)
+            elif amount is None:
                 errors[key] = "Enter a number (for example 450000 or 450k)"
+            elif key in ("price_min", "price_max") and budget_answer:
+                keep_as_extra(raw_key, value)  # a filed budget is not topped up by a bound
             else:
-                fields[key] = amount
+                set_field(raw_key, key, amount)
         elif key == "lead_type":
             if "lead_type" in fields:
                 if len(extra) < MAX_EXTRA_KEYS:
@@ -567,25 +659,29 @@ def normalise_submission(raw: dict, form: dict) -> dict:
                 # "consultation", "contact": a kind of request, not a buy/sell intent.
                 extra[f"site_{lowered}"] = _clip(value, MAX_EXTRA_VALUE) or ""
         elif key in FIELD_CATALOG:
-            fields[key] = _clip(value, MAX_LONG_TEXT if key in LONG_TEXT_FIELDS else MAX_TEXT)
+            set_field(raw_key, key, _clip(value, MAX_LONG_TEXT if key in LONG_TEXT_FIELDS else MAX_TEXT))
         elif key in custom_defs:
             ctype = custom_defs[key].get("type")
             if ctype == "checkbox":
-                fields[key] = _truthy(value)
+                set_field(raw_key, key, _truthy(value))
             elif ctype == "number":
                 amount = parse_amount(value)
                 if amount is None:
                     errors[key] = "Enter a number"
                 else:
-                    fields[key] = amount
+                    set_field(raw_key, key, amount)
             else:
-                fields[key] = _clip(value, MAX_LONG_TEXT if ctype == "textarea" else MAX_TEXT)
+                set_field(raw_key, key, _clip(value, MAX_LONG_TEXT if ctype == "textarea" else MAX_TEXT))
         elif len(extra) < MAX_EXTRA_KEYS:
             # Includes a visitor-supplied `estimated_value`: kept as what they said, never
             # trusted as money. A lead's value comes from the form's own configuration.
             extra[str(raw_key).strip()[:60]] = (_clip(value if not isinstance(value, (dict, list))
                                      else json.dumps(value)[:MAX_EXTRA_VALUE],
                                      MAX_EXTRA_VALUE) or "")
+
+    for raw_key, value in shadowed.items():
+        if value is not None and not (isinstance(value, str) and not value.strip()):
+            keep_as_extra(raw_key, value if not isinstance(value, (dict, list)) else json.dumps(value))
 
     if fields.get("email"):
         fields["email"] = str(fields["email"]).strip().lower()
@@ -1211,9 +1307,15 @@ class LeadPipeline:
             return {"id": self.new_id("enq"), "outcome": "spam_blocked"}
 
         external_id = _clip(control.get("external_id") or control.get("_sid"), 200)
-        fingerprint = _sha("|".join(str(fields.get(k) or "") for k in (
-            "email", "phone", "message", "listing_id", "property_address", "preferred_date")
-        ) + f"|{form['id']}")
+        # Collapse repeated answers, not a new request whose time, intent, budget or
+        # custom answer changed. Transport controls and attribution are deliberately
+        # excluded, so a double-click with a fresh submission id still files once.
+        # Consent timestamps remain stored evidence, but are not changed answers.
+        fingerprint_extra = {key: value for key, value in normalised["extra"].items()
+                             if key.lower() not in ("consentat", "consent_at")}
+        fingerprint = _sha(json.dumps({"form_id": form["id"], "fields": fields,
+                                       "extra": fingerprint_extra},
+                                      sort_keys=True, separators=(",", ":")))
         if fields.get("email") or fields.get("phone"):
             recent = await self.db[detectors.WEB_ENQUIRIES].find_one(
                 {"tenant_id": tenant_id, "form_id": form["id"], "fingerprint": fingerprint,
@@ -1427,11 +1529,20 @@ class LeadPipeline:
                 sets["phone_digits"] = phone_digits(enquiry["phone"])
             for key, value in custom.items():
                 sets[f"custom_fields.{key}"] = value
+            # A budget is one answer: a new `$500k+` replaces an old `$300k-$400k` whole,
+            # so the old ceiling must not linger beside the new minimum.
+            unsets = {}
+            if "price_min" in custom or "price_max" in custom:
+                unsets = {f"custom_fields.{key}": "" for key in ("price_min", "price_max")
+                          if key not in custom}
             if enquiry.get("consent"):
                 sets["consent"] = enquiry["consent"]
+            update: dict[str, Any] = {"$set": sets, "$addToSet": {"tags": {"$each": tags}}}
+            if unsets:
+                update["$unset"] = unsets
             await self.db.contacts.update_one(
                 {"id": existing["id"], "tenant_id": tenant_id},
-                {"$set": sets, "$addToSet": {"tags": {"$each": tags}},
+                {**update,
                  "$push": {"inquiries": {"$each": [source], "$slice": -50},
                            "history": crm_core._history_entry(
                                "website_inquiry", SYSTEM_ACTOR,
@@ -1515,11 +1626,26 @@ class LeadPipeline:
             # it opens the client workspace. A company the deal already has is kept.
             if not existing.get("company_id") and contact.get("company_id"):
                 changes["company_id"] = existing["company_id"] = contact["company_id"]
+            history = [crm_core._history_entry(
+                "website_inquiry", SYSTEM_ACTOR, {"enquiry_id": enquiry["id"]})]
+            revalued = self.revalue(cfg, existing, enquiry.get("fields") or {})
+            if revalued:
+                # Compare-and-set on the value just read: a figure an agent saves in the
+                # meantime is theirs, and this request leaves it alone.
+                moved = await self.db.opportunities.update_one(
+                    {"id": existing["id"], "tenant_id": tenant_id, "value": existing.get("value")},
+                    {"$push": {"history": {"$each": [*history, crm_core._history_entry(
+                        "value_updated", SYSTEM_ACTOR,
+                        {"from": existing.get("value"), "to": revalued["value"],
+                         "enquiry_id": enquiry["id"]})]}},
+                     "$set": {**changes, **revalued}})
+                if moved.matched_count:
+                    return {**existing, **revalued}, False
+                existing = await self.db.opportunities.find_one(
+                    {"id": existing["id"], "tenant_id": tenant_id}, {"_id": 0}) or existing
             await self.db.opportunities.update_one(
                 {"id": existing["id"], "tenant_id": tenant_id},
-                {"$push": {"history": crm_core._history_entry(
-                    "website_inquiry", SYSTEM_ACTOR, {"enquiry_id": enquiry["id"]})},
-                 "$set": changes})
+                {"$push": {"history": {"$each": history}}, "$set": changes})
             return existing, False
 
         stage = cfg.get("stage") if cfg.get("stage") in open_keys else (open_keys[0] if open_keys else "lead")
@@ -1570,6 +1696,29 @@ class LeadPipeline:
             if basis:
                 return round(basis * float(cfg.get("commission_rate") or 0) / 100.0, 2)
         return round(float(cfg.get("fixed_value") or 0), 2)
+
+    @classmethod
+    def revalue(cls, cfg: dict, deal: dict, fields: dict) -> Optional[dict]:
+        """A later request's new budget re-prices a reused deal, but only while the deal
+        still carries the value this form computed: a figure someone typed is theirs."""
+        basis = deal.get("value_basis") or {}
+        if basis.get("method") == "commission":
+            automatic = round(float(basis.get("price") or 0)
+                              * float(basis.get("commission_rate") or 0) / 100.0, 2)
+        elif basis.get("method") == "fixed":
+            automatic = round(float(basis.get("value") or 0), 2)
+        else:
+            return None
+        if round(float(deal.get("value") or 0), 2) != automatic:
+            return None
+        # A deal opened by another form may be in another currency; a commission worked out
+        # in this form's currency is not that deal's value.
+        if (deal.get("currency") or "USD") != (cfg.get("currency") or "USD"):
+            return None
+        new_basis = cls.value_basis(cfg, fields)
+        if new_basis.get("method") != "commission" or new_basis == basis:
+            return None
+        return {"value": cls.expected_value(cfg, fields), "value_basis": new_basis}
 
     @classmethod
     def value_basis(cls, cfg: dict, fields: dict) -> dict:
@@ -1641,12 +1790,14 @@ class LeadPipeline:
 
     async def _notify(self, tenant_id: str, *, recipients: list[str], title: str, body: str,
                       deep_link: str, severity: str, ntype: str, dedupe_key: str,
-                      email_subject: str, email_html: str) -> None:
-        """In-app to each recipient (or the whole team when there is none), then email."""
+                      email_subject: str, email_html: str, in_app: bool = True,
+                      email: bool = True) -> None:
+        """In-app to each recipient (or the whole team when there is none), then email.
+        A form's own alert switches turn either channel off for its new-lead alert."""
         if await self.db.notification_deliveries.find_one(
                 {"tenant_id": tenant_id, "dedupe_key": dedupe_key}, {"_id": 1}):
             return
-        targets: list[Optional[str]] = list(recipients) or [None]
+        targets: list[Optional[str]] = (list(recipients) or [None]) if in_app else []
         for recipient in targets:
             await self.db.notifications.insert_one({
                 "id": self.new_id("ntf"), "tenant_id": tenant_id,
@@ -1660,7 +1811,9 @@ class LeadPipeline:
                     "status": "skipped", "recipient": None, "attempted_at": self.now_iso(),
                     "failure_reason": None}
         email_to = recipients or await self._admins(tenant_id)
-        if not self.send_email or not self.email_configured():
+        if not email:
+            delivery.update(status="skipped", failure_reason="email_alert_off_for_form")
+        elif not self.send_email or not self.email_configured():
             delivery.update(status="not_configured", failure_reason="email_not_configured")
         elif email_to:
             delivered, failures = 0, []
@@ -1695,8 +1848,8 @@ class LeadPipeline:
 
     async def _notify_new_lead(self, form: dict, enquiry: dict, contact: dict,
                                assignee: Optional[str]) -> None:
-        if not form["settings"]["notify"].get("in_app", True) \
-                and not form["settings"]["notify"].get("email", True):
+        notify = form["settings"]["notify"]
+        if not notify.get("in_app", True) and not notify.get("email", True):
             return
         who = enquiry.get("name") or enquiry.get("email") or enquiry.get("phone") or "a visitor"
         due = form["settings"]["speed_to_lead"]["due_minutes"]
@@ -1709,7 +1862,8 @@ class LeadPipeline:
             severity="warning", ntype="lead.new", dedupe_key=f"lead:{enquiry['id']}:new",
             email_subject=f"{prefix}New lead from your website: {who}",
             email_html=self._email_html(f"New lead — call within {due} minutes", enquiry,
-                                        f"Received {enquiry['received_at']} via {form['name']}."))
+                                        f"Received {enquiry['received_at']} via {form['name']}."),
+            in_app=notify.get("in_app", True), email=notify.get("email", True))
 
     # ------------------------------------------------------------ auto-reply
 

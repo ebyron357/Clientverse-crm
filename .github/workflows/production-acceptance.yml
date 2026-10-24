@@ -1,0 +1,98 @@
+# Production acceptance: run on demand after a release reaches Railway.
+#
+# Railway deploys every push to `main`. This workflow then proves, from outside, that
+# production runs the expected revision and that the authenticated lead journey works:
+# scripts/production_acceptance.mjs (API journey, ~40 checks) and
+# scripts/production_browser.mjs (real Chromium, every main page at four widths).
+# Both register their own clearly named test organizations on reserved example.com
+# addresses, turn email alerts off, and close and archive what they create. Nothing is
+# sent to a customer and no owner credential is needed.
+#
+# The optional owner check (scripts/owner_access_check.mjs) signs in as the owner and
+# writes nothing. It runs only when `owner_check` is ticked AND the repository secrets
+# CLIENTVERSE_OWNER_EMAIL and CLIENTVERSE_OWNER_PASSWORD exist.
+#
+# Run it: Actions -> Production acceptance -> Run workflow.
+name: Production acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Commit production must be running (blank = the head of the branch you run from)
+        required: false
+        default: ''
+      deploy_wait_seconds:
+        description: How long to wait for Railway to finish deploying that commit
+        required: false
+        default: '900'
+      owner_check:
+        description: Also sign in as the owner (needs the CLIENTVERSE_OWNER_* secrets)
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CLIENTVERSE_API_BASE: ${{ secrets.CLIENTVERSE_PRODUCTION_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Require the production address
+        run: |
+          if [ -z "${CLIENTVERSE_API_BASE}" ]; then
+            echo "::error::The CLIENTVERSE_PRODUCTION_URL secret is not set."
+            exit 1
+          fi
+      - name: Authenticated lead journey (API)
+        env:
+          CLIENTVERSE_EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
+          CLIENTVERSE_DEPLOY_WAIT_SECONDS: ${{ inputs.deploy_wait_seconds }}
+          CLIENTVERSE_EVIDENCE_PATH: evidence/production-acceptance.json
+        run: |
+          mkdir -p evidence
+          node scripts/production_acceptance.mjs
+      - name: Install Chromium for the browser pass
+        run: |
+          mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright@1.63.0
+          npx playwright install --with-deps chromium
+      - name: Browser pass (phone, tablet, laptop, desktop)
+        env:
+          NODE_PATH: /tmp/pw/node_modules
+          CLIENTVERSE_SCREENSHOT_DIR: evidence/screens
+          CLIENTVERSE_EVIDENCE_PATH: evidence/production-browser.json
+        run: |
+          cp scripts/production_browser.mjs /tmp/pw/production_browser.mjs
+          node /tmp/pw/production_browser.mjs
+      - name: Owner access check (read-only)
+        if: ${{ inputs.owner_check }}
+        env:
+          CLIENTVERSE_OWNER_EMAIL: ${{ secrets.CLIENTVERSE_OWNER_EMAIL }}
+          CLIENTVERSE_OWNER_PASSWORD: ${{ secrets.CLIENTVERSE_OWNER_PASSWORD }}
+          CLIENTVERSE_EVIDENCE_PATH: evidence/owner-access.json
+        run: |
+          if [ -z "${CLIENTVERSE_OWNER_EMAIL}" ] || [ -z "${CLIENTVERSE_OWNER_PASSWORD}" ]; then
+            echo "::error::Add the CLIENTVERSE_OWNER_EMAIL and CLIENTVERSE_OWNER_PASSWORD repository secrets first."
+            exit 1
+          fi
+          node scripts/owner_access_check.mjs
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-acceptance-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: ignore

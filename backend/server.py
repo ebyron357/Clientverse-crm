@@ -591,45 +591,14 @@ async def login(inp: LoginInput, response: Response):
 
 @api.post("/auth/google/session")
 async def google_session(request: Request, response: Response):
-    body = await request.json()
-    session_id = body.get("session_id")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="Missing session_id")
-    r = requests.get("https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-                     headers={"X-Session-ID": session_id}, timeout=15)
-    if r.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid session_id")
-    data = r.json()
-    email = data["email"].lower()
-    user = await db.users.find_one({"email": email}, {"_id": 0})
-    if not user:
-        tenant_id = new_id("ten")
-        await db.tenants.insert_one({"tenant_id": tenant_id, "name": f"{data.get('name','')}'s Org", "created_at": now_iso()})
-        uid = new_id("user")
-        await db.users.insert_one({
-            "user_id": uid, "email": email, "name": data.get("name", email),
-            "role": "admin", "tenant_id": tenant_id, "picture": data.get("picture"),
-            "created_at": now_iso(), "auth": "google",
-        })
-        user = await db.users.find_one({"user_id": uid}, {"_id": 0})
-    session_token = data["session_token"]
-    await db.user_sessions.insert_one({
-        "user_id": user["user_id"], "session_token": session_token,
-        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
-        "created_at": now_iso(),
-    })
-    set_auth_cookie(response, session_token)
-    user.pop("password_hash", None)
-    # Ensure Google-auth users also get a membership row and effective role
-    if not await db.memberships.find_one({"tenant_id": user["tenant_id"], "user_id": user["user_id"]}):
-        await db.memberships.insert_one({
-            "id": new_id("mem"), "tenant_id": user["tenant_id"], "user_id": user["user_id"],
-            "email": user.get("email"), "role": user.get("role", "admin"), "status": "active",
-            "invited_by": None, "invited_at": None, "accepted_at": now_iso(),
-            "disabled_at": None, "created_at": now_iso(),
-        })
-    user = await resolve_membership(user)
-    return {"user": await session_user(user), "token": session_token}
+    """Retired. This trusted a prototype platform's demo sign-in service
+    (`demobackend.emergentagent.com`) to say who a visitor was, then signed them in as
+    the matching ClientVerse user -- the owner included -- or opened a new organization
+    with them as admin, ignoring invitations. The owner does not control that service, so
+    it could vouch for anyone. Email and password is the supported sign-in. Sessions it
+    already issued keep their normal expiry and password rules (see get_current_user)."""
+    raise HTTPException(status_code=410, detail="Google sign-in is not available. "
+                                                "Sign in with your email and password.")
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
@@ -3746,6 +3715,13 @@ async def _authorize_cron_observer(request: Request) -> str:
         return "scheduler"
     user = await get_current_user(request)
     if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
+    # The ledger is one log for the whole platform, not per organization. Anyone can
+    # register an organization and be its admin, so only the platform owner's
+    # organization (the one seeded from ADMIN_EMAIL) may read it.
+    owner = await db.users.find_one({"email": os.environ["ADMIN_EMAIL"].lower()},
+                                    {"_id": 0, "tenant_id": 1})
+    if not owner or owner.get("tenant_id") != user.get("tenant_id"):
         raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
     return user["email"]
 

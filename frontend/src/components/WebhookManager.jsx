@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
+import { copyText } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,7 +75,7 @@ export default function WebhookManager() {
     toast.success("Webhook created"); setOpen(false); setForm({ name: "", url: "", events: [] }); load();
   };
   const toggleEvent = (ev) => setForm((f) => ({ ...f, events: f.events.includes(ev) ? f.events.filter((x) => x !== ev) : [...f.events, ev] }));
-  const copy = (text, label) => { navigator.clipboard?.writeText(text); toast.success(`${label} copied`); };
+  const copy = (text, label) => copyText(text, label);
 
   const newEndpoint = isAdmin && (
     <Dialog open={open} onOpenChange={setOpen}>

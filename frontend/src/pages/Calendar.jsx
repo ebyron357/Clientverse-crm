@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
+import { copyText } from "@/lib/utils";
 import { api, formatErr } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -160,7 +161,7 @@ function Segmented({ label, options, value, onChange }) {
 }
 
 function CodeBlock({ title, description, code, testid }) {
-  const copy = () => { navigator.clipboard?.writeText(code); toast.success(`${title} copied`); };
+  const copy = () => copyText(code, title);
   return (
     <div className="px-4 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -684,7 +685,7 @@ function EmbedDialog({ eventType, onClose }) {
 }
 
 function BookingPageRow({ page, catalog, isAdmin, onEdit, onEmbed, onToggle, toggling }) {
-  const copy = (text, what) => { navigator.clipboard?.writeText(text); toast.success(`${what} copied`); };
+  const copy = (text, what) => copyText(text, what);
   const hostNames = Object.values(page.host_names || {}).join(", ");
   const live = page.status === "active";
   const LocationIcon = LOCATION_ICON[page.location?.kind] || MapPin;
@@ -915,7 +916,7 @@ export default function Calendar() {
       <PageHeader icon={CalendarDays} title="Calendar" description="Showings, consultations and calls people booked themselves."
         actions={(myPage || (tab === "pages" && isAdmin && pages.length > 0)) && <>
           {myPage && <Button size="sm" variant="outline" asChild><a href={myPage.links.page} target="_blank" rel="noreferrer" data-testid="calendar-open-my-page"><ExternalLink />Open my booking page</a></Button>}
-          {myPage && <Button size="sm" variant={tab === "pages" && isAdmin ? "outline" : "default"} onClick={() => { navigator.clipboard?.writeText(myPage.links.page); toast.success("Booking link copied"); }} data-testid="calendar-copy-my-link"><Copy />Copy my link</Button>}
+          {myPage && <Button size="sm" variant={tab === "pages" && isAdmin ? "outline" : "default"} onClick={() => copyText(myPage.links.page, "Booking link")} data-testid="calendar-copy-my-link"><Copy />Copy my link</Button>}
           {tab === "pages" && isAdmin && pages.length > 0 && <Button size="sm" onClick={() => setCreating(true)} data-testid="booking-page-new"><Plus />New booking page</Button>}
         </>} />
       <ViewTabs label="Calendar views" value={tab} onChange={setTab} items={[

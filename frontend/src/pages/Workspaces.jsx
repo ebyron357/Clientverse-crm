@@ -39,7 +39,7 @@ export default function Workspaces() {
       </div>
       {!loading && (query || stage !== "all") && <span className="tabular text-xs text-muted-foreground">{filtered.length} of {rows.length}</span>}
     </Toolbar>
-    <div className="overflow-hidden rounded-xl border border-border bg-card">
+    <div className="relative overflow-x-auto rounded-xl border border-border bg-card">
       {loading ? <WorkspaceSkeleton /> : filtered.length ? <table className="w-full text-[13px]">
         <thead><tr className="h-9 border-b border-border bg-muted/40 text-left text-xs font-medium text-muted-foreground">
           <th scope="col" className="w-full px-4 font-medium sm:w-[36%] lg:w-[28%]">Client</th>

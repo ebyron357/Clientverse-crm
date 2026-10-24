@@ -1,7 +1,6 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { useLayoutEffect } from "react";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import "@/App.css";
-import { api, setStoredToken } from "@/lib/api";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
@@ -41,28 +40,6 @@ import ManageBooking from "@/pages/ManageBooking";
 import { CLIENTVERSE_MODULES, MODULE_STATES } from "@/platform/modules";
 import { ChooseOwnPassword } from "@/components/ChangePassword";
 
-function AuthCallback() {
-  const navigate = useNavigate();
-  const done = useRef(false);
-  useEffect(() => {
-    if (done.current) return;
-    done.current = true;
-    const hash = window.location.hash;
-    const sid = new URLSearchParams(hash.replace("#", "")).get("session_id");
-    (async () => {
-      try {
-        const { data } = await api.post("/auth/google/session", { session_id: sid });
-        if (data?.token) setStoredToken(data.token);
-        window.history.replaceState(null, "", "/");
-        window.location.href = "/dashboard";
-      } catch {
-        navigate("/login");
-      }
-    })();
-  }, [navigate]);
-  return <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">Signing you in…</div>;
-}
-
 function Protected({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex min-h-screen items-center justify-center bg-canvas p-6"><div className="cv-card w-full max-w-sm p-7"><div className="h-2 w-20 animate-pulse rounded-full bg-brand-soft" /><div className="mt-5 h-7 w-44 animate-pulse rounded-lg bg-muted" /><div className="mt-3 h-4 w-full animate-pulse rounded-lg bg-muted" /><div className="mt-2 h-4 w-4/5 animate-pulse rounded-lg bg-muted" /></div></div>;
@@ -72,12 +49,6 @@ function Protected({ children }) {
 }
 
 function AppRouter() {
-  const location = useLocation();
-  // Google sign-in returns to /dashboard (see Login), which no other site may frame. Only
-  // there, and only in the browser's own window: /book/:key can sit in another site's frame,
-  // and a frame must never be able to sign this app into a session someone else picked.
-  const signInReturn = location.pathname === "/dashboard" && location.hash?.includes("session_id=") && window.top === window.self;
-  if (signInReturn) return <AuthCallback />;
   return (
     <Routes>
       <Route path="/login" element={<Login />} />

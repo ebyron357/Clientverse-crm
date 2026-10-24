@@ -172,7 +172,7 @@ export default function Mcp() {
               </StatusDot>
             </div>
             <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-              <Switch id="mcp-kill-switch" checked={server.kill_switch} onCheckedChange={toggleKill} data-testid="mcp-kill-switch" />
+              <Switch id="mcp-kill-switch" checked={server.kill_switch} onCheckedChange={toggleKill} disabled={user?.role !== "admin"} title={user?.role !== "admin" ? "Only an admin can use the kill switch" : undefined} data-testid="mcp-kill-switch" />
               <Label htmlFor="mcp-kill-switch" className="text-xs font-normal text-muted-foreground">Kill switch</Label>
             </div>
           </div>

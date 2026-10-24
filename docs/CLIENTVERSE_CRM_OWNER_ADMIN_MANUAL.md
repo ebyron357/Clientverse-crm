@@ -78,18 +78,18 @@ The shortest path from nothing to a working, checked CRM. About ten minutes.
 
 | What | Where |
 |---|---|
-| Production CRM | https://clientverse-crm-production-production.up.railway.app |
-| Sign in | https://clientverse-crm-production-production.up.railway.app/login |
-| Is the service up? (no sign-in needed) | https://clientverse-crm-production-production.up.railway.app/api/health |
-| Is the automation running? (sign in as admin first) | https://clientverse-crm-production-production.up.railway.app/api/cron/health |
+| Production CRM | https://crm.clientverse.io |
+| Sign in | https://crm.clientverse.io/login |
+| Is the service up? (no sign-in needed) | https://crm.clientverse.io/api/health |
+| Is the automation running? (sign in as admin first) | https://crm.clientverse.io/api/cron/health |
 | Hosting dashboard | Railway → project `welcoming-vibrancy` → service `clientverse-crm-production` (https://railway.com/project/bbcb2596-d6f9-45c5-9c03-59cb97f373ea) |
 | Optional second scheduler (GitHub) | https://github.com/ebyron357/Clientverse-crm/actions/workflows/scheduled-jobs.yml |
-| Sign-in method | Email address + password. **Not** "Continue with Google" ([§3.1](#31-supported-sign-in-methods)) |
+| Sign-in method | Email address + password, the only sign-in method ([§3.1](#31-supported-sign-in-methods)) |
 | Your account | The address in the Railway variable `ADMIN_EMAIL`, with the password in the Railway variable `ADMIN_PASSWORD` ([§3.3](#33-which-account-the-owner-uses)) |
 
 ### 1.2 Sign in
 
-1. Open **https://clientverse-crm-production-production.up.railway.app/login** in a current
+1. Open **[https://crm.clientverse.io/login](https://crm.clientverse.io/login)** in a current
    Chrome, Edge, Firefox or Safari.
 2. Under the heading **"Sign in to ClientVerse"**, type your owner email in **"Work email"** and
    your password in **"Password"**. The eye button beside the password shows or hides what you typed.
@@ -97,9 +97,8 @@ The shortest path from nothing to a working, checked CRM. About ten minutes.
 4. **Check:** the page changes to **Today** (`/dashboard`, headed **"Good morning, {your name}"**). At the
    bottom of the dark menu on the left you see your name and **"Workspace admin"**.
 
-**Warning:** Do not click **"Continue with Google"** (the first button on the page) or
-**"Create a workspace"** at the bottom. Both can create a *separate, empty* organization that is
-not your CRM ([§3.1](#31-supported-sign-in-methods)).
+**Warning:** Do not click **"Create a workspace"** at the bottom. It creates a *separate, empty*
+organization that is not your CRM ([§3.1](#31-supported-sign-in-methods)).
 
 ### 1.3 Find Settings and Integrations
 
@@ -123,14 +122,14 @@ Do these five checks after every first sign-in, and whenever something seems wro
 | 4 | Automation is running | Open `/api/cron/health` while signed in as admin | `"scheduled_jobs_running": true` ([§11.4](#114-verify-that-automation-is-healthy)) |
 | 5 | No critical alerts | **Action Center** (the bell → **"View all in Action Center"**) | Nothing unexpected under **"Needs action"** |
 
-**Check 3 is expected to fail until you reconnect Google once.** Google refused to refresh the
-saved Google permission on 2026-09-30 (Verified (live, 2026-09-30): Railway log
-`POST https://oauth2.googleapis.com/token` → `400 Bad Request`), and on 2026-10-19 production's
-log showed no Google sync at all — consistent with no working Google connection. Since
-2026-10-19 the CRM also records exactly which permissions Google granted, so a connection made
-before that date must be renewed anyway. Reconnect: [§5.6](#56-re-authorize-google) or
-[§5.7](#57-disconnect-safely-and-when-it-is-required). What the Gmail row shows today is
-UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
+**Check 3: what is known.** Google refused to refresh the saved permission on 2026-09-30
+(Railway log `POST https://oauth2.googleapis.com/token` → `400 Bad Request`). The owner then
+reconnected Google on 2026-10-19 at 02:02 UTC, and the Railway log shows Google granting
+`gmail.readonly`, `gmail.send` and `calendar.readonly` ([§6.1](#61-read-this-first--current-status)).
+Engineering cannot see the Gmail row itself; only an admin session can. If the row says
+**"Needs auth"** or shows a red line, reconnect ([§5.6](#56-re-authorize-google)). While the Google
+consent screen is in **Testing**, Google ends the permission after 7 days, so expect to reconnect
+weekly until it is published.
 
 ### 1.5 If something is broken
 
@@ -146,7 +145,7 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
 
 | Environment | Address | Use it? |
 |---|---|---|
-| **Production** | **https://crm.clientverse.io** | **Yes — use this address.** |
+| **Production** | **[https://crm.clientverse.io](https://crm.clientverse.io)** | **Yes — use this address.** |
 | Production, Railway address | https://clientverse-crm-production-production.up.railway.app | Same CRM, same data. It keeps working, so older links and the Stripe webhook still reach production. Signing in on one address does not sign you in on the other. |
 | Custom domain status | Verified (live, 2026-10-19): Railway reports `crm.clientverse.io` verified, certificate valid, CNAME `crm` → `br0g4oob.up.railway.app` propagated. Railway sets `FRONTEND_URL` and `GOOGLE_REDIRECT_URI` to this address, and `CORS_ORIGINS` lists both addresses ([§10.2](#102-google--gmail-and-google-calendar)). | — |
 | Staging | None. No staging environment is configured or documented. The only deployment path is Railway `production`. | — |
@@ -177,7 +176,7 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
 ### 2.3 If the site does not load
 
 1. Check your own connection by opening any other website.
-2. Open https://clientverse-crm-production-production.up.railway.app/api/health and read the result:
+2. Open https://crm.clientverse.io/api/health and read the result:
 
    | What you see | Meaning | Next step |
    |---|---|---|
@@ -223,7 +222,7 @@ UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
 | Method | Status | Should the owner use it? |
 |---|---|---|
 | **Email + password** | Verified (code). Last proven live in production on 2026-09-01 (`scripts/proof_of_life.mjs` against `ca30587`). | **Yes — this is the owner's method.** |
-| **"Continue with Google"** button (first on the sign-in page) | Sends you to a third-party sign-in service (`auth.emergentagent.com`) left over from the platform the CRM was prototyped on. It is **not** the owner's Google Cloud app and **not** the Gmail connection. Whether it works in production is UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED. | **No.** If the Google address has no ClientVerse account, it silently creates a new, empty organization in which that person is admin. It also ignores invitation links. |
+| **"Continue with Google"** (removed 2026-10-24) | **Removed.** The button sent people to a third-party sign-in service (`auth.emergentagent.com`) left over from the platform the CRM was prototyped on, which the owner does not control. The server trusted that service to say who a visitor was, so whoever controls the service could sign in as any user, the owner included. It also created stray organizations and ignored invitations. The server now refuses it (`410`); it was never the Gmail connection, which is unaffected ([§5](#5-google--gmail-setup)). | Not available. |
 | **"Create a workspace"** (self-registration, at the bottom of the sign-in page) | Verified (code). It works, but always creates a **new, separate organization** with the new person as its admin. It gives no access to your data. | **No** for the owner. Team members join through invitations, which create their account directly inside your team ([§8.3](#83-what-to-tell-the-invitee-accepting-an-invitation)). |
 
 ### 3.2 Sign in with email and password
@@ -577,8 +576,10 @@ Other parts of the row:
 - **Recorded done:** `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set in Railway. The boot log
   line `Registered outbound channel provider: gmail` (Verified (live, 2026-10-19)) confirms the
   server sees them.
-- The OAuth client's **authorized redirect URI** must be exactly
-  `https://clientverse-crm-production-production.up.railway.app/api/integrations/google/callback`.
+- The OAuth client's **authorized redirect URI** must be exactly the Railway variable
+  `GOOGLE_REDIRECT_URI`, which since 2026-10-19 is
+  `https://crm.clientverse.io/api/integrations/google/callback`. The owner's reconnection at
+  02:02Z that day succeeded through it, which shows Google accepts it.
 - The **Gmail API** and the **Google Calendar API** must be enabled.
 - The **OAuth consent screen** must list the scopes in [§5.2](#52-exact-google-permissions-scopes-the-crm-requests).
   If its publishing status is **Testing**, the Google account you connect must be listed as a test
@@ -1353,20 +1354,27 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
     **"Capacity & playbooks"**.
 - **Common actions:**
   1. Admin: **"Client portal"** → **"Client-facing label"** → **"Create secure portal link"**.
-     - The link is copied to your clipboard (**"Secure portal URL copied"**).
-     - **Paste it somewhere safe immediately — it is never shown again.**
+     - The link appears under the button as **"Link for {label}: shown only now"**, with a
+       **"Copy"** button, and is also copied to your clipboard (**"Portal link copied"**). If the
+       browser refuses the copy you see **"Couldn't copy the portal link"**: select the text in
+       the box and copy it by hand.
+     - **Send it to your client or save it now — it is never shown again.** Click **"Done, I've
+       saved it"** to hide it.
+  2. Admin, to end a link: **"Active links"** → **"Revoke"** on the link → **"Revoke link"**. It
+     stops working at once (the client sees **"This portal link is unavailable"**). Create a new
+     link if the client still needs access.
      - The client opens it without signing in. They see commitments, approved documents and
        issued invoices, and can submit a request.
-  2. **"Commercial"** → **"Add document"**, **"Create estimate"** (admin).
-  3. **"Appointments"** → **"Schedule"**; **"Prepare reminder"** creates an *internal* task only.
+  3. **"Commercial"** → **"Add document"**, **"Create estimate"** (admin).
+  4. **"Appointments"** → **"Schedule"**; **"Prepare reminder"** creates an *internal* task only.
      (Online booking is the separate **Calendar** module.)
-  4. **"Growth"** → **"Add referral source"**; **"Prepare for approval"** (review request, admin).
-  5. **"Safe automation"** (admin) → **"Enable safe workflow"**, **"Run safely"**. These only
+  5. **"Growth"** → **"Add referral source"**; **"Prepare for approval"** (review request, admin).
+  6. **"Safe automation"** (admin) → **"Enable safe workflow"**, **"Run safely"**. These only
      create internal tasks.
-  6. **"Capacity & playbooks"** (admin) → **"Apply"** a playbook's task sequence.
+  7. **"Capacity & playbooks"** (admin) → **"Apply"** a playbook's task sequence.
 - **Common mistakes:**
-  - Losing a portal link. There is no revoke button and no way to show it again; ask engineering
-    to revoke a leaked link.
+  - Losing a portal link. It cannot be shown again: revoke it and create a new one. Revoke a
+    leaked link at once.
   - Members clicking **"Create estimate"** or **"Prepare for approval"** get a permission refusal.
   - **"Create invoice"** appears only for sent or approved estimates, and the screens cannot mark an
     estimate sent. Treat invoicing here as a record, not billing. Stripe is not configured.
@@ -1409,8 +1417,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
     **Operations** → **"Approvals"**.
   - Admin: the **"Kill switch"** disables all tools at once.
   - Admin: **"Undo"** in **"Execution history"**.
-- **Common mistakes:** flipping the kill switch as a test. Everyone sees the toggle, but only admins
-  can change it.
+- **Common mistakes:** flipping the kill switch as a test. Members see the toggle greyed out
+  (**"Only an admin can use the kill switch"**); only admins can change it.
 - **Saved when:** **"{tool} → {status}"**; **"Kill switch ON — tools disabled"** /
   **"Kill switch OFF — tools live"**.
 
@@ -1699,7 +1707,7 @@ on every request, and hiding a button is never the protection.
 | Webhook create / enable / reveal secret / rotate secret | ✓ | ✗ |
 | Portal links, estimates, invoices, review requests, safe automations, playbooks | ✓ | ✗ |
 | Team notification defaults; **"Send digest"**; rename the business | ✓ | ✗ |
-| Read the scheduler ledger (`/api/cron/health`, `/api/cron/runs`) | ✓ | ✗ |
+| Read the scheduler ledger (`/api/cron/health`, `/api/cron/runs`) — admins of the owner's own organization only (the one seeded from `ADMIN_EMAIL`); the ledger covers the whole platform | ✓ | ✗ |
 
 A member who tries an admin action sees **"You do not have permission to perform this action"**.
 
@@ -1740,8 +1748,7 @@ Possible refusals:
    **"Accept and join {organization}"**.
 4. If it says *"You're signed in as X, but this invitation is for Y"*, click **"Sign out and
    continue"**.
-5. **Do not use "Continue with Google"** for this: it ignores the invitation and can create a
-   separate organization.
+5. Accept with email and password; that is the only sign-in method.
 
 Other pages the link can show: **"This invitation has expired"**, **"This invitation was
 cancelled"**, **"You've already joined"**, **"This invitation has already been used"**, **"This
@@ -1854,7 +1861,6 @@ For a teammate who forgot their password, or is locked out.
 | Delete a user, or change a user's email address | No screen or API |
 | Change `ADMIN_EMAIL` | It would create a new, empty organization |
 | Edit or archive companies; import data; export anything but leads | API only, no screen. Deleting records, and editing workspaces, are not possible even through the API. |
-| Revoke a client portal link | No revoke button |
 | Clear a lockout on the owner account early | Database change ([§9.3](#93-account-locked-out)) |
 
 ---
@@ -1934,15 +1940,12 @@ An admin disabled your membership. Ask an admin to **"Enable access"** for you
 ([§8.9](#89-offboard-a-user-disable)). If you are the only admin, you cannot be disabled — the
 server prevents it.
 
-### 9.6 "Continue with Google" failed
+### 9.6 Someone asks about "Continue with Google"
 
-That button is not a supported owner sign-in method ([§3.1](#31-supported-sign-in-methods)). Use
-email and password.
-
-- If it took you to a strange empty CRM, it created a separate organization. Sign out, and sign in
-  with email and password.
-- If someone else signed in this way by mistake, have them tell an admin. Engineering can clean up
-  the stray organization.
+That button was removed on 2026-10-24 ([§3.1](#31-supported-sign-in-methods)). Sign in with email
+and password. A person who used it earlier and landed in a strange empty CRM had a separate
+organization created for them; they sign in with email and password through an invitation
+instead, and engineering can remove the stray organization.
 
 ### 9.7 Email and password rejected, but you are sure the password is right
 
@@ -1992,7 +1995,7 @@ DEFERRED, DEPRECATED.
 
 | Integration | Exists in the product | Status |
 |---|---|---|
-| **Google — Gmail and Google Calendar connection** | Yes (**Registries**) | **DEGRADED** — Google refused the permission refresh on 2026-09-30, and no Google sync appears in production's log on 2026-10-19. Reconnect once ([§5.6](#56-re-authorize-google), [§5.7](#57-disconnect-safely-and-when-it-is-required)). The flows have never been live-certified. |
+| **Google — Gmail and Google Calendar connection** | Yes (**Registries**) | **RECONNECTED 2026-10-19 02:02 UTC** (Railway log: `gmail.send`, `gmail.readonly`, `calendar.readonly` granted). The row's current state needs an admin session to read; reconnect if it shows **"Needs auth"** ([§5.6](#56-re-authorize-google)). While the consent screen is in Testing, the permission lapses after 7 days. The flows have never been live-certified. |
 | **Gmail — outbound email** | Yes (server, approvals, booking emails, form auto-reply) | **OFF UNTIL AN ADMIN TURNS IT ON** — **"Send test & turn on"** on the Gmail row ([§5.10](#510-turn-email-sending-on-or-off)); no screen to write your own email ([§6.1](#61-read-this-first--current-status)) |
 | **Gmail — reply capture** | Yes (scheduler) | **AVAILABLE BUT NOT CERTIFIED** — never tested live ([§6.6](#66-procedure-c--capture-the-reply)) |
 | **Google Calendar — meeting sync and booking busy times** | Yes | **AVAILABLE BUT NOT CERTIFIED** |
@@ -2006,7 +2009,7 @@ DEFERRED, DEPRECATED.
 | **Security-gate scanners** | Yes (**Operations** → **"Security gate"**) | **CONFIGURATION REQUIRED** (O-13, O-14) |
 | **Scheduler — built into the CRM** | Yes | **LIVE** since 2026-10-18; Verified (live, 2026-10-19) from the boot log ([§11](#11-scheduler--automations)) |
 | **Scheduler — GitHub Actions workflow** | Yes | **LIVE**, optional second driver; its calls answered `200` on 2026-10-19 |
-| **"Continue with Google" sign-in** | Button present | UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED. Do not use ([§3.1](#31-supported-sign-in-methods)). |
+| **"Continue with Google" sign-in** | No (removed 2026-10-24) | **REMOVED** — third-party prototype sign-in; the server answers `410` ([§3.1](#31-supported-sign-in-methods)) |
 | **Recovery intake** (call logs, web enquiries, external CRM events) | Server API only, no screen | **AVAILABLE BUT NOT CERTIFIED** — for engineering integrations |
 | **n8n, Slack, ClickUp** | No working CRM integration. Catalogue entries may appear in **Registries** as contracts only. | **NOT IMPLEMENTED** (O-08, O-09) |
 | **SMS, Calling / telephony** | Placeholder modules only | **NOT IMPLEMENTED** (O-06) |
@@ -2049,7 +2052,7 @@ claiming work is complete. It is **not** a CRM feature, and it never touches CRM
 - **Required owner action** (governing document O-02):
   1. Decide whether Stripe is in scope.
   2. If it is, create a **test-mode** restricted key, and a webhook endpoint at
-     `https://clientverse-crm-production-production.up.railway.app/api/integrations/stripe/webhook`.
+     `https://crm.clientverse.io/api/integrations/stripe/webhook`.
   3. Have `STRIPE_API_KEY` and `STRIPE_WEBHOOK_SECRET` set in Railway.
 - **Connect:** **Registries** → Stripe → **"Connect"**. It uses the Railway key. The screen has no
   field for a per-organization key.
@@ -2165,7 +2168,7 @@ the same call is recognized and ignored.
 
 **A. Production (owner, signed in as admin in the same browser)**
 
-1. Open https://clientverse-crm-production-production.up.railway.app/api/cron/health. It covers
+1. Open https://crm.clientverse.io/api/cron/health. It covers
    the last 120 minutes.
 2. **Healthy:**
    - `"scheduled_jobs_running": true`
@@ -2280,7 +2283,7 @@ adding jobs, or any failure that is not explained in §11.5.
 | **Account locked** — the right password is still refused | 5 failures → 15-minute lock | Wait 15 minutes, then try **once** (§9.3). A member: an admin's reset clears it. | The owner needs access sooner |
 | **"Choose your own password"** appears after sign-in | You signed in with a temporary password | Type it again under **"Temporary password"**, choose your own, **"Save my password"** (§8.8) | It reappears after saving |
 | **"Your password was changed. Please sign in again."** | Your password was changed elsewhere, or reset by an admin | Sign in with the new password (§9.4) | You did not change it and no admin reset it — treat as a security problem (§13.6) |
-| **Google sign-in fails** ("Continue with Google") | Unsupported third-party sign-in | Use email + password (§3.1, §9.6) | Someone ended up in a stray organization |
+| **"Continue with Google" missing** | Removed on 2026-10-24 | Use email + password (§3.1, §9.6) | Someone ended up in a stray organization before the removal |
 | **Google connection fails** — "Google authorization failed" | Consent cancelled or refused, redirect URI mismatch, not a test user | Full reset (§5.7), then connect within 10 minutes and tick every box (§5.5) | It fails twice after a full reset |
 | **Google reconnect loop** — stuck "Connecting…" or back to "Error" | Abandoned consent; secret or redirect mismatch | Disconnect **both** rows, remove app access in the Google account, connect again (§5.7, §5.9) | `token_exchange_failed` or `redirect_uri_mismatch` persists |
 | **Google token refresh 400** — "Needs auth", `token_refresh_failed:400` | Permission revoked or expired; consent screen in Testing (7-day expiry); client secret rotated | **"Re-authorize"** (§5.6) | It recurs within a week (Testing mode), or the reconnect itself ends in "Error" / `token_exchange_failed` (secret or redirect mismatch) |
@@ -2309,7 +2312,7 @@ adding jobs, or any failure that is not explained in §11.5.
 | **CRM unavailable** — site will not load | Railway down, a failed deploy, the database | Follow §2.3 | Railway shows FAILED or CRASHED, or the database is down |
 | **Railway deployment failed** — FAILED or CRASHED | Build or boot error in a new commit | Screenshot the deployment and logs. Restart the last SUCCESS deployment once (§2.3). | Always — engineering decides on rollback |
 | **Invitation link does not work** | Expired (7 days), revoked, already used, or replaced by **"Resend"** | Create a new invitation (§8.2) | The new link also fails |
-| **Portal link lost or leaked** | It is shown only once; there is no revoke button | Create a new link and share it privately | A leaked link must be revoked |
+| **Portal link lost or leaked** | It is shown only once | **"Revoke"** it (Client Operations → Client portal → Active links) and create a new link; share it privately | Revoking fails |
 
 ---
 
@@ -2358,7 +2361,7 @@ compromised and **rotate it** (§13.4), even if you deleted the message.
 | Safe for the owner | Needs engineering review first |
 |---|---|
 | **In the CRM:** notification preferences, team invites, roles, disable/enable, password resets, your own password (not the owner's — §3.3), business name, Google connect/re-authorize/disconnect, webhook endpoints you own | **Railway:** any variable other than `ADMIN_PASSWORD` and `WEBHOOK_CRON_SECRET` — including `IN_PROCESS_SCHEDULER` |
-| **Railway:** `ADMIN_PASSWORD` (§9.2); `WEBHOOK_CRON_SECRET` together with GitHub (§11.8); **Restart** of the latest SUCCESS deployment | **Railway:** Rollback / Redeploy of an older commit; switching to the custom domain (set `PUBLIC_BACKEND_URL` and `GOOGLE_REDIRECT_URI` first) |
+| **Railway:** `ADMIN_PASSWORD` (§9.2); `WEBHOOK_CRON_SECRET` together with GitHub (§11.8); **Restart** of the latest SUCCESS deployment | **Railway:** Rollback / Redeploy of an older commit; changing the production address (done once, 2026-10-19: `FRONTEND_URL`, `GOOGLE_REDIRECT_URI` and `CORS_ORIGINS` change together, and an OAuth attempt in progress fails) |
 | **GitHub:** Actions secrets; enabling or disabling the workflow; manual runs | **Never:** `ADMIN_EMAIL`, `MONGO_URL`, `DB_NAME`, `INTEGRATION_ENC_KEY` (changing it makes every stored integration permission unreadable), `JWT_SECRET` (changing it signs everyone out), `APP_ENV`, `SEED_DEMO_DATA` (must stay false) |
 | **Google Cloud:** consent-screen test users | **Google Cloud:** redirect URIs, client secret rotation (Railway must be updated at the same moment) |
 | **DNS:** the records Railway shows for the custom domain (O-12) | **MongoDB Atlas:** network access, users, backups |
@@ -2438,7 +2441,7 @@ the owner account.
 | 9 | Create record works | Create company `ZZ Test Co` and contact `ZZ Test Person` | **"Company created"**, **"Contact created"**; both appear after a reload | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 10 | Edit record works | Open `ZZ Test Person` → **"Edit"** → add a phone → **"Save changes"**; move a test deal **Lead → Qualified**; reload | **"Contact saved"**, **"Moved to Qualified"**; both persist after the reload | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 11 | Archive / restore | **"Archive contact"** on `ZZ Test Person`; **"Show archived"**; **"Restore"** | **"Contact archived"**, **"Contact restored"** | Not observed | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
-| 12 | Google connected | Registries → Gmail | **"Connected"**, no red line, connected on or after 2026-10-19 | No Google sync in the 2026-10-19 log; reconnect needed (§1.4) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
+| 12 | Google connected | Registries → Gmail | **"Connected"**, no red line, connected on or after 2026-10-19 | Reconnected 2026-10-19 02:02 UTC; row state needs an admin session (§1.4) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 13 | gmail.send verified | §5.8 checks 1–3, §5.10 | Google lists send permission; **"Email sending on"**; Email not listed as unauthorised | Google granted `gmail.send` on 2026-10-19 02:02 UTC; sending not yet turned on | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 14 | Outbound email works | §6.4 | **"Sent"**; in Gmail Sent; received | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
 | 15 | Duplicate-send protection | §6.5 | Refused; one copy only | BLOCKED (§6.1) | ☐ PASS ☐ FAIL ☐ BLOCKED ☐ NOT TESTED |
@@ -2532,7 +2535,7 @@ A first-time owner must be able to answer each question from this manual alone.
 
 | Question | Answer in one line | Where |
 |---|---|---|
-| What URL do I open? | https://clientverse-crm-production-production.up.railway.app/login | [§1.1](#11-quick-reference-card), [§2.1](#21-addresses) |
+| What URL do I open? | https://crm.clientverse.io/login | [§1.1](#11-quick-reference-card), [§2.1](#21-addresses) |
 | How do I log in? | Email + password → **"Sign in"**. Not Google. | [§3.2](#32-sign-in-with-email-and-password) |
 | What account type am I using? | The **admin** account whose email is Railway `ADMIN_EMAIL`, in your organization (first named "ClientVerse HQ") | [§3.3](#33-which-account-the-owner-uses) |
 | What do I see after login? | Today — four figures, your plan with reasons, new leads, appointments, tasks, pipeline, clients | [§4.2](#42-what-you-see-after-sign-in-today) |
@@ -2593,7 +2596,7 @@ prompt, never on a command line. The session token is held only in the shell, an
 shell history or output. Nothing below prints the password or the token.
 
 ```bash
-BASE=https://clientverse-crm-production-production.up.railway.app
+BASE=https://crm.clientverse.io
 
 # 1. Admin session: hidden password prompt; the token stays in this shell only.
 read -r  -p "Admin email: " CV_EMAIL
