@@ -350,6 +350,10 @@ def parse_amount(value: Any) -> Optional[float]:
 
 # Hyphen, en dash, em dash, or "to": websites write ranges every one of these ways.
 _RANGE_SPLIT = re.compile(r"\s*(?:-|\u2013|\u2014|to)\s*", re.IGNORECASE)
+_UPPER_PREFIX = re.compile(r"^(?:under|up\s+to|below|less\s+than|no\s+more\s+than|max(?:imum)?)\s*")
+_UPPER_SUFFIX = re.compile(r"\s*(?:or\s+less|or\s+below|or\s+under|and\s+under|and\s+below)$")
+_LOWER_PREFIX = re.compile(r"^(?:over|above|more\s+than|at\s+least|min(?:imum)?)\s*")
+_LOWER_SUFFIX = re.compile(r"\s*(?:\+|or\s+more|or\s+above|or\s+higher|and\s+up|and\s+above|plus)$")
 
 
 def parse_price_range(value: Any) -> tuple[Optional[float], Optional[float]]:
@@ -361,16 +365,17 @@ def parse_price_range(value: Any) -> tuple[Optional[float], Optional[float]]:
     text = str(value or "").strip().lower()
     if not text:
         return None, None
-    upper = re.match(r"^(?:under|up\s+to)\s*", text)
-    lower = re.match(r"^over\s*", text)
-    plus = text.endswith("+")
-    if upper and (lower or plus):
+    # Websites word an open-ended budget many ways: `$500k+`, `$500,000 or more`,
+    # `over 500k`, `under 300k`, `$300k or less`. Each names one bound only.
+    upper = (re.match(_UPPER_PREFIX, text), re.search(_UPPER_SUFFIX, text))
+    lower = (re.match(_LOWER_PREFIX, text), re.search(_LOWER_SUFFIX, text))
+    if any(upper) and any(lower):
         return None, None
-    if upper or lower or plus:
-        prefix = upper or lower
-        amount_text = text[prefix.end():] if prefix else text
-        amount = parse_amount(amount_text[:-1] if plus else amount_text)
-        return (None, amount) if upper else (amount, None)
+    if any(upper) or any(lower):
+        prefix, suffix = upper if any(upper) else lower
+        amount_text = text[prefix.end() if prefix else 0:suffix.start() if suffix else len(text)]
+        amount = parse_amount(amount_text)
+        return (None, amount) if any(upper) else (amount, None)
 
     parts = [p.strip() for p in _RANGE_SPLIT.split(text)]
     if len(parts) == 1:
@@ -559,7 +564,25 @@ def normalise_submission(raw: dict, form: dict) -> dict:
             if canonical_key(raw_key, value) not in top_level_keys:
                 flat.setdefault(raw_key, value)
 
-    for raw_key, value in flat.items():
+    def authoritative(raw_key: Any) -> bool:
+        lowered = str(raw_key).strip().lower()
+        return lowered not in aliases and (lowered in FIELD_CATALOG or lowered in custom_defs)
+
+    def keep_as_extra(raw_key: Any, value: Any) -> None:
+        if len(extra) < MAX_EXTRA_KEYS:
+            extra.setdefault(str(raw_key).strip()[:60], _clip(value, MAX_EXTRA_VALUE) or "")
+
+    def set_field(raw_key: Any, key: str, value: Any) -> None:
+        # The first answer for a field wins, and the field's own name is read before any
+        # alias, so `mobile` cannot replace `phone` nor `address` a `property_address`.
+        # A second answer is still kept on the record, never silently dropped.
+        if key in fields:
+            keep_as_extra(raw_key, flat.get(raw_key, value))
+        else:
+            fields[key] = value
+
+    # Stable: the order a website sent is kept within each group.
+    for raw_key, value in sorted(flat.items(), key=lambda item: not authoritative(item[0])):
         key = str(raw_key).strip()
         lowered = key.lower()
         lowered = control_aliases.get(lowered, lowered)
@@ -584,13 +607,24 @@ def normalise_submission(raw: dict, form: dict) -> dict:
         if key in TRACKING_FIELDS:
             attribution[key] = _clip(value, 1000) or ""
         elif key in CHECKBOX_FIELDS:
-            fields[key] = _truthy(value)
+            set_field(raw_key, key, _truthy(value))
         elif key in NUMBER_FIELDS:
             amount = parse_amount(value)
-            if amount is None:
-                errors[key] = "Enter a number (for example 450000 or 450k)"
+            low, high = (None, None)
+            if amount is None and key in ("price_min", "price_max"):
+                # A budget picked from a website's list (`$500,000+`, `$400k-$500k`)
+                # is a range, not a typo: file its bounds instead of refusing the lead.
+                low, high = parse_price_range(value)
+            if amount is not None:
+                set_field(raw_key, key, amount)
+            elif low is not None or high is not None:
+                if high is not None:
+                    set_field(raw_key, "price_max", high)
+                if low is not None and low != high:
+                    set_field(raw_key, "price_min", low)
+                keep_as_extra(raw_key, value)
             else:
-                fields[key] = amount
+                errors[key] = "Enter a number (for example 450000 or 450k)"
         elif key == "lead_type":
             if "lead_type" in fields:
                 if len(extra) < MAX_EXTRA_KEYS:
@@ -605,19 +639,19 @@ def normalise_submission(raw: dict, form: dict) -> dict:
                 # "consultation", "contact": a kind of request, not a buy/sell intent.
                 extra[f"site_{lowered}"] = _clip(value, MAX_EXTRA_VALUE) or ""
         elif key in FIELD_CATALOG:
-            fields[key] = _clip(value, MAX_LONG_TEXT if key in LONG_TEXT_FIELDS else MAX_TEXT)
+            set_field(raw_key, key, _clip(value, MAX_LONG_TEXT if key in LONG_TEXT_FIELDS else MAX_TEXT))
         elif key in custom_defs:
             ctype = custom_defs[key].get("type")
             if ctype == "checkbox":
-                fields[key] = _truthy(value)
+                set_field(raw_key, key, _truthy(value))
             elif ctype == "number":
                 amount = parse_amount(value)
                 if amount is None:
                     errors[key] = "Enter a number"
                 else:
-                    fields[key] = amount
+                    set_field(raw_key, key, amount)
             else:
-                fields[key] = _clip(value, MAX_LONG_TEXT if ctype == "textarea" else MAX_TEXT)
+                set_field(raw_key, key, _clip(value, MAX_LONG_TEXT if ctype == "textarea" else MAX_TEXT))
         elif len(extra) < MAX_EXTRA_KEYS:
             # Includes a visitor-supplied `estimated_value`: kept as what they said, never
             # trusted as money. A lead's value comes from the form's own configuration.
@@ -1471,11 +1505,20 @@ class LeadPipeline:
                 sets["phone_digits"] = phone_digits(enquiry["phone"])
             for key, value in custom.items():
                 sets[f"custom_fields.{key}"] = value
+            # A budget is one answer: a new `$500k+` replaces an old `$300k-$400k` whole,
+            # so the old ceiling must not linger beside the new minimum.
+            unsets = {}
+            if "price_min" in custom or "price_max" in custom:
+                unsets = {f"custom_fields.{key}": "" for key in ("price_min", "price_max")
+                          if key not in custom}
             if enquiry.get("consent"):
                 sets["consent"] = enquiry["consent"]
+            update: dict[str, Any] = {"$set": sets, "$addToSet": {"tags": {"$each": tags}}}
+            if unsets:
+                update["$unset"] = unsets
             await self.db.contacts.update_one(
                 {"id": existing["id"], "tenant_id": tenant_id},
-                {"$set": sets, "$addToSet": {"tags": {"$each": tags}},
+                {**update,
                  "$push": {"inquiries": {"$each": [source], "$slice": -50},
                            "history": crm_core._history_entry(
                                "website_inquiry", SYSTEM_ACTOR,
@@ -1559,11 +1602,19 @@ class LeadPipeline:
             # it opens the client workspace. A company the deal already has is kept.
             if not existing.get("company_id") and contact.get("company_id"):
                 changes["company_id"] = existing["company_id"] = contact["company_id"]
+            history = [crm_core._history_entry(
+                "website_inquiry", SYSTEM_ACTOR, {"enquiry_id": enquiry["id"]})]
+            revalued = self.revalue(cfg, existing, enquiry.get("fields") or {})
+            if revalued:
+                changes.update(revalued)
+                history.append(crm_core._history_entry(
+                    "value_updated", SYSTEM_ACTOR,
+                    {"from": existing.get("value"), "to": revalued["value"],
+                     "enquiry_id": enquiry["id"]}))
+                existing = {**existing, **revalued}
             await self.db.opportunities.update_one(
                 {"id": existing["id"], "tenant_id": tenant_id},
-                {"$push": {"history": crm_core._history_entry(
-                    "website_inquiry", SYSTEM_ACTOR, {"enquiry_id": enquiry["id"]})},
-                 "$set": changes})
+                {"$push": {"history": {"$each": history}}, "$set": changes})
             return existing, False
 
         stage = cfg.get("stage") if cfg.get("stage") in open_keys else (open_keys[0] if open_keys else "lead")
@@ -1614,6 +1665,25 @@ class LeadPipeline:
             if basis:
                 return round(basis * float(cfg.get("commission_rate") or 0) / 100.0, 2)
         return round(float(cfg.get("fixed_value") or 0), 2)
+
+    @classmethod
+    def revalue(cls, cfg: dict, deal: dict, fields: dict) -> Optional[dict]:
+        """A later request's new budget re-prices a reused deal, but only while the deal
+        still carries the value this form computed: a figure someone typed is theirs."""
+        basis = deal.get("value_basis") or {}
+        if basis.get("method") == "commission":
+            automatic = round(float(basis.get("price") or 0)
+                              * float(basis.get("commission_rate") or 0) / 100.0, 2)
+        elif basis.get("method") == "fixed":
+            automatic = round(float(basis.get("value") or 0), 2)
+        else:
+            return None
+        if round(float(deal.get("value") or 0), 2) != automatic:
+            return None
+        new_basis = cls.value_basis(cfg, fields)
+        if new_basis.get("method") != "commission" or new_basis == basis:
+            return None
+        return {"value": cls.expected_value(cfg, fields), "value_basis": new_basis}
 
     @classmethod
     def value_basis(cls, cfg: dict, fields: dict) -> dict:

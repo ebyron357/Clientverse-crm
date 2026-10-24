@@ -1177,3 +1177,115 @@ def test_consent_timestamp_is_stored_but_does_not_defeat_repeat_suppression(clie
         different = server_post(client, form, {**body, "idempotencyKey": f"changed-consent-{number}",
                                                "payload": {**payload, **change}}, key).json()
         assert different["outcome"] == "accepted" and different["id"] != first["id"]
+
+
+# ------------------------------------------- intake closeout: precedence and budgets
+
+@pytest.mark.parametrize(("authoritative", "alias", "field"), [
+    (("phone", "704-555-0100"), ("mobile", "704-555-0199"), "phone"),
+    (("property_address", "1 Real St"), ("address", "2 Other St"), "property_address"),
+    (("price_max", "600000"), ("budget", "400000"), "price_max"),
+    (("message", "The real question"), ("comments", "A side note"), "message"),
+    (("listing_id", "MLS-1"), ("mls", "MLS-2"), "listing_id"),
+])
+@pytest.mark.parametrize("alias_first", [True, False])
+def test_a_top_level_alias_never_replaces_the_field_itself(authoritative, alias, field, alias_first):
+    pairs = [alias, authoritative] if alias_first else [authoritative, alias]
+    raw = {"email": "jane@example.com", **dict(pairs)}
+    normalised = wf.normalise_submission(raw, {"fields": []})
+    expected = wf.parse_amount(authoritative[1]) if field == "price_max" else authoritative[1]
+    assert normalised["fields"][field] == expected
+    # The losing answer is still on the record, verbatim.
+    assert normalised["extra"][alias[0]] == alias[1]
+
+
+@pytest.mark.parametrize(("budget", "expected"), [
+    ("$500,000+", {"price_min": 500000}),
+    ("$500,000 or more", {"price_min": 500000}),
+    ("$400k-$500k", {"price_min": 400000, "price_max": 500000}),
+    ("$300k or less", {"price_max": 300000}),
+    ("450000", {"price_max": 450000}),
+])
+def test_a_budget_picked_from_a_list_files_the_lead_with_its_true_bounds(client, budget, expected):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5}})
+    response = browser_submit(client, form, lead(budget=budget))
+    assert response.status_code == 200, response.text
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"tenant_id": owner["tenant_id"]})
+    prices = {k: v for k, v in stored["fields"].items() if k in ("price_min", "price_max")}
+    assert prices == expected
+    if wf.parse_amount(budget) is None:
+        assert stored["extra"]["budget"] == budget
+    # A minimum is never relabelled as a ceiling, and the deal is still priced from it.
+    assert stored["estimated_value"] == (expected.get("price_max") or expected["price_min"]) * 0.025
+
+
+def test_a_budget_that_is_not_a_number_or_range_is_still_refused(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact")
+    response = browser_submit(client, form, lead(budget="lots"))
+    assert response.status_code == 422
+    assert "price_max" in response.json()["errors"]
+
+
+@pytest.mark.parametrize(("value", "bounds"), [
+    ("$500,000 and up", (500000, None)), ("500k plus", (500000, None)),
+    ("At least 1m", (1_000_000, None)), ("Below $250,000", (None, 250000)),
+    ("no more than 300k", (None, 300000)), ("$300k or less", (None, 300000)),
+    ("under 500k or more", (None, None)),
+])
+def test_open_ended_budget_wording(value, bounds):
+    assert wf.parse_price_range(value) == bounds
+
+
+def test_a_changed_budget_updates_the_contact_and_reprices_the_untouched_deal(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5}})
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    first = server_post(client, form, server_body(
+        leadType="buyer", payload={"priceRange": "$300k\u2013$400k"}), key).json()
+    second = server_post(client, form, server_body(
+        leadType="buyer", payload={"priceRange": "$500,000+"}), key).json()
+    assert first["outcome"] == second["outcome"] == "accepted" and first["id"] != second["id"]
+    deal_id = find_one(client, detectors.WEB_ENQUIRIES, {"id": first["id"]})["opportunity_id"]
+    stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": second["id"]})
+    assert stored["opportunity_id"] == deal_id
+    contact = find_one(client, "contacts", {"id": second["contact_id"]})
+    assert contact["custom_fields"]["price_min"] == 500000
+    assert "price_max" not in contact["custom_fields"]  # the old ceiling does not linger
+    deal = find_one(client, "opportunities", {"id": deal_id})
+    assert deal["value"] == 12500 and deal["value_basis"]["price"] == 500000
+    assert [h for h in deal["history"] if h.get("action") == "value_updated"]
+    assert stored["estimated_value"] == 12500
+
+
+def test_a_deal_value_someone_typed_is_never_repriced_by_a_later_request(client):
+    owner = register(client)
+    form = create_form(client, owner, preset="contact", settings={
+        "opportunity": {"value_mode": "commission", "commission_rate": 2.5}})
+    key = client.post(f"/api/website-forms/{form['id']}/server-key", headers=owner["headers"]).json()["key"]
+    first = server_post(client, form, server_body(payload={"priceRange": "$400k"}), key).json()
+    deal_id = find_one(client, detectors.WEB_ENQUIRIES, {"id": first["id"]})["opportunity_id"]
+    edited = client.patch(f"/api/opportunities/{deal_id}",
+                          headers=owner["headers"], json={"value": 9999})
+    assert edited.status_code == 200, edited.text
+    server_post(client, form, server_body(payload={"priceRange": "$800k"}), key)
+    assert find_one(client, "opportunities", {"id": deal_id})["value"] == 9999
+
+
+def test_duplicate_suppression_and_idempotency_never_cross_tenants(client):
+    one, two = register(client), register(client)
+    receipts = []
+    for owner in (one, two):
+        form = create_form(client, owner, preset="contact")
+        key = client.post(f"/api/website-forms/{form['id']}/server-key",
+                          headers=owner["headers"]).json()["key"]
+        receipts.append(server_post(client, form, server_body(idempotencyKey="shared-key"), key).json())
+    assert [r["outcome"] for r in receipts] == ["accepted", "accepted"]
+    assert receipts[0]["id"] != receipts[1]["id"]
+    for owner, receipt in zip((one, two), receipts, strict=True):
+        stored = find_one(client, detectors.WEB_ENQUIRIES, {"id": receipt["id"]})
+        assert stored["tenant_id"] == owner["tenant_id"]
+        assert find_one(client, "contacts", {"id": receipt["contact_id"]})["tenant_id"] == owner["tenant_id"]
