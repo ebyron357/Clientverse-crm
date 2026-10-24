@@ -83,19 +83,28 @@ jobs:
       - name: Create known records
         run: node scripts/restore_drill.mjs seed
       - name: Back up (mongodump)
+        env:
+          MONGO_CONTAINER: ${{ job.services.mongo.id }}
         run: |
-          docker run --rm --network host -v /tmp/drill:/backup mongo:7 \
-            mongodump --uri "$MONGO_URL" --db "$DB_NAME" --archive=/backup/backup.archive.gz --gzip
+          set -o pipefail
+          run() { "$@" > /tmp/drill/step.log 2>&1 || { echo "::error title=$1 failed::$(tail -n 5 /tmp/drill/step.log | tr '\n' ' ')"; cat /tmp/drill/step.log; exit 1; }; cat /tmp/drill/step.log; }
+          run docker exec "$MONGO_CONTAINER" mongodump --db "$DB_NAME" --archive=/tmp/backup.archive.gz --gzip
+          run docker cp "$MONGO_CONTAINER:/tmp/backup.archive.gz" /tmp/drill/backup.archive.gz
           ls -l /tmp/drill/backup.archive.gz
       - name: Stop the API and drop the database
+        env:
+          MONGO_CONTAINER: ${{ job.services.mongo.id }}
         run: |
           kill "$(cat /tmp/drill/api.pid)"; sleep 2
-          docker run --rm --network host mongo:7 \
-            mongosh --quiet "$MONGO_URL/$DB_NAME" --eval 'db.dropDatabase(); print("collections left: " + db.getCollectionNames().length)'
+          docker exec "$MONGO_CONTAINER" mongosh --quiet "$DB_NAME" --eval 'db.dropDatabase(); print("collections left: " + db.getCollectionNames().length)'
+          docker exec "$MONGO_CONTAINER" rm -f /tmp/backup.archive.gz
       - name: Restore (mongorestore)
+        env:
+          MONGO_CONTAINER: ${{ job.services.mongo.id }}
         run: |
-          docker run --rm --network host -v /tmp/drill:/backup mongo:7 \
-            mongorestore --uri "$MONGO_URL" --archive=/backup/backup.archive.gz --gzip --drop
+          run() { "$@" > /tmp/drill/step.log 2>&1 || { echo "::error title=$1 failed::$(tail -n 5 /tmp/drill/step.log | tr '\n' ' ')"; cat /tmp/drill/step.log; exit 1; }; cat /tmp/drill/step.log; }
+          run docker cp /tmp/drill/backup.archive.gz "$MONGO_CONTAINER:/tmp/restore.archive.gz"
+          run docker exec "$MONGO_CONTAINER" mongorestore --archive=/tmp/restore.archive.gz --gzip --drop
       - name: Start API on the restored database
         working-directory: backend
         run: |
@@ -103,7 +112,11 @@ jobs:
           for i in $(seq 1 60); do curl -fsS "$CLIENTVERSE_API_BASE/api/health" >/dev/null && exit 0; sleep 2; done
           cat /tmp/drill/api-2.log; exit 1
       - name: Verify the restore
-        run: node scripts/restore_drill.mjs verify
+        run: |
+          node scripts/restore_drill.mjs verify 2>&1 | tee /tmp/drill/verify.log
+          status=${PIPESTATUS[0]}
+          [ "$status" -eq 0 ] || echo "::error title=Restore verification failed::$(grep FAIL /tmp/drill/verify.log | head -3 | tr '\n' ' ')"
+          exit "$status"
       - name: API logs
         if: failure()
         run: tail -n 100 /tmp/drill/api-1.log /tmp/drill/api-2.log || true
