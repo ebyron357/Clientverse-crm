@@ -95,7 +95,16 @@ async function main() {
       const context = await browser.newContext({ viewport: { width, height } })
       const page = await context.newPage()
       const errors = []
+      const failedCalls = []
       page.on('pageerror', (error) => errors.push(String(error).slice(0, 200)))
+      const consoleErrors = []
+      page.on('console', (msg) => { if (msg.type() === 'error') consoleErrors.push(msg.text().slice(0, 200)) })
+      page.on('response', (response) => {
+        if (response.url().includes('/api/') && response.status() >= 400) {
+          failedCalls.push(`${response.request().method()} ${new URL(response.url()).pathname} ${response.status()}`)
+        }
+      })
+      page.on('requestfailed', (request) => failedCalls.push(`${request.method()} ${request.url().slice(0, 120)} ${request.failure()?.errorText}`))
 
       await page.goto(`${base}/login`, { waitUntil: 'networkidle' })
       await page.getByRole('heading', { name: 'Sign in to ClientVerse' }).waitFor()
@@ -113,7 +122,16 @@ async function main() {
       await page.getByTestId('email-input').fill(account.email)
       await page.getByTestId('password-input').fill(account.password)
       await page.getByTestId('submit-auth-button').click()
-      await page.waitForURL(/\/dashboard/, { timeout: 30000 })
+      const signedIn = await page.waitForURL(/\/dashboard/, { timeout: 30000 }).then(() => true, () => false)
+      if (!signedIn) {
+        await page.screenshot({ path: `${shots}/${label}-sign-in-failed.png`, fullPage: true })
+        const shown = await page.getByTestId('auth-error').innerText().catch(() => '')
+        record(false, `${label}: signed in through the sign-in page`, {
+          url: page.url(), error_shown: shown, failed_calls: failedCalls.slice(0, 10),
+          page_errors: errors.slice(0, 5), console_errors: consoleErrors.slice(0, 5) })
+        await context.close()
+        continue
+      }
       record(true, `${label}: signed in through the sign-in page`)
 
       for (const path of PAGES) {

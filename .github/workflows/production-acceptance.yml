@@ -4,6 +4,7 @@
 # production runs the expected revision and that the authenticated lead journey works:
 # scripts/production_acceptance.mjs (API journey, ~40 checks) and
 # scripts/production_browser.mjs (real Chromium, every main page at four widths).
+# It tests https://crm.clientverse.io unless another address is given.
 # Both register their own clearly named test organizations on reserved example.com
 # addresses, turn email alerts off, and close and archive what they create. Nothing is
 # sent to a customer and no owner credential is needed.
@@ -18,6 +19,10 @@ name: Production acceptance
 on:
   workflow_dispatch:
     inputs:
+      base_url:
+        description: Production address to test
+        required: false
+        default: 'https://crm.clientverse.io'
       expected_sha:
         description: Commit production must be running (blank = the head of the branch you run from)
         required: false
@@ -44,18 +49,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      CLIENTVERSE_API_BASE: ${{ secrets.CLIENTVERSE_PRODUCTION_URL }}
+      # The real production address, not the scheduler's secret: that secret may name
+      # another front door, and the screens must be proven where people use them.
+      CLIENTVERSE_API_BASE: ${{ inputs.base_url || 'https://crm.clientverse.io' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Require the production address
+      - name: Which address the scheduler secret points at
+        env:
+          SCHEDULER_URL: ${{ secrets.CLIENTVERSE_PRODUCTION_URL }}
         run: |
-          if [ -z "${CLIENTVERSE_API_BASE}" ]; then
-            echo "::error::The CLIENTVERSE_PRODUCTION_URL secret is not set."
-            exit 1
-          fi
+          # Prints only which known address it is, never the value.
+          host=$(printf '%s' "$SCHEDULER_URL" | sed -E 's#^[a-z]+://##; s#/.*$##')
+          case "$host" in
+            crm.clientverse.io) echo "Scheduler secret -> the custom domain (crm.clientverse.io)";;
+            clientverse-crm-production-production.up.railway.app) echo "Scheduler secret -> the Railway address";;
+            *.vercel.app) echo "::warning title=Scheduler goes through Vercel::CLIENTVERSE_PRODUCTION_URL points at a vercel.app address, which forwards /api to Railway. Point it at https://crm.clientverse.io.";;
+            "") echo "::warning::CLIENTVERSE_PRODUCTION_URL is not set";;
+            *) echo "Scheduler secret -> another address (not the custom domain, Railway or Vercel)";;
+          esac
       - name: Authenticated lead journey (API)
         env:
           CLIENTVERSE_EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
@@ -84,6 +98,12 @@ jobs:
           CLIENTVERSE_OWNER_PASSWORD: ${{ secrets.CLIENTVERSE_OWNER_PASSWORD }}
           CLIENTVERSE_EVIDENCE_PATH: evidence/owner-access.json
         run: |
+          # The owner's credentials go only to the production origin over HTTPS, never to an
+          # address typed into base_url.
+          case "${CLIENTVERSE_API_BASE%/}" in
+            https://crm.clientverse.io|https://clientverse-crm-production-production.up.railway.app) ;;
+            *) echo "::error::The owner check runs only against https://crm.clientverse.io (or the Railway address)."; exit 1;;
+          esac
           if [ -z "${CLIENTVERSE_OWNER_EMAIL}" ] || [ -z "${CLIENTVERSE_OWNER_PASSWORD}" ]; then
             echo "::error::Add the CLIENTVERSE_OWNER_EMAIL and CLIENTVERSE_OWNER_PASSWORD repository secrets first."
             exit 1

@@ -3,10 +3,10 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.12 |
-| **Date** | 2026-10-19 |
+| **Version** | 1.13 |
+| **Date** | 2026-10-24 |
 | **Repository** | `ebyron357/Clientverse-crm` |
-| **Branch documented** | `main` — written against `main@838f00d` (PR #42), which production runs |
+| **Branch documented** | `main` after the closeout release (PR #48, 2026-10-24). Read the running commit from `/api/health` → `git_sha` ([§2.2](#22-confirm-you-are-on-the-correct-deployment)) |
 | **Production environment** | Railway project `welcoming-vibrancy` → environment `production` → service `clientverse-crm-production` |
 | **Production URL** | https://crm.clientverse.io (the Railway address https://clientverse-crm-production-production.up.railway.app reaches the same CRM) |
 | **Sign-in page** | https://crm.clientverse.io/login |
@@ -2558,6 +2558,11 @@ A first-time owner must be able to answer each question from this manual alone.
 
 ## Appendix B. System state on 2026-10-19
 
+> **Newer state (2026-10-24):** the closeout release `main@6d0d4c6` is running and was verified
+> from outside: lead journey 40/40, browser pass 76/76, restore drill passed. See
+> [the closeout handoff §13.3](closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md#133-production-acceptance-results).
+> The table below is kept as the 2026-10-19 record.
+
 | Fact | Evidence |
 |---|---|
 | Production serves `main@838f00d` (PR #42) | Railway deployment `e7790295-5af4-4977-8d58-ff600b1a2633`, redeployed 2026-10-19 01:47 UTC to apply the custom-domain variables. The first deployment of this commit, `406f320e-…` (SUCCESS 01:16 UTC), is REMOVED. |
@@ -2733,6 +2738,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.13 | 2026-10-24 | Production closeout (PR #48). The manual is now Part 2 of the closeout package; Part 1 is [the closeout handoff](closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md). Changes: **"Continue with Google" removed**, so email and password is the only sign-in (§1.1, §1.2, §3.1, §8.3, §9.6, §10.1, §12). The job ledger is limited to the owner's organization (§8.1). Client portal links stay on screen with **"Copy"** and can be **"Revoke"**d (§7.15, §8.12, §12). The MCP kill switch is greyed out for members (§7.18). All procedures use `https://crm.clientverse.io` (§1.1, §1.2, §2.2, §11.4, Appendices A and C); the Google redirect address is the custom domain (§5.5). Google status is consistent with the 2026-10-19 reconnection (§1.4, §10.1, §14 row 12). The custom-domain switch is recorded as done (§13.3). |
 | 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |
 | 1.11 | 2026-10-19 | **Agency and client accounts** (§7.25, new): client accounts under an agency, the account switcher and the "working in" banner, opening a client account as an agency admin (checked on every request), creating accounts from a snapshot, and pushing a snapshot to many accounts with a preview per account. **Settings → Agency → "Client accounts"** (§4.3); roles (§8.1). Booking pages loaded into a workspace are hosted by someone on its team, or arrive paused (§7.24, §7.25). |
 | 1.10 | 2026-10-19 | **Snapshots** (§7.24, new): save this workspace's setup (pipeline stages, fields, booking pages, forms, automations, shared views — never records, people, links or secrets), share it with a code shown once, download it as a file, and load one into a workspace through a preview that only adds what is missing. **Settings → Workspace → "Snapshots"**, admin only (§4.3, §8.1). §7.23: a template's stages also stay when a stage in use would change between open, won and lost. |

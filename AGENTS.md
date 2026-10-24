@@ -1,6 +1,37 @@
 # ClientVerse CRM — Agent Memory
 
-## Session state (2026-10-19)
+## Session state (2026-10-24, production closeout)
+
+- **Closeout release: PR #48**, merged into `main`. It contains PR #47's intake repair and its
+  review fixes, the retired prototype Google sign-in, the owner-only job ledger, UI fixes from
+  an end-to-end browser pass, and three new workflows. The production revision and the
+  acceptance result are recorded in `docs/closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md` §13.3.
+  That file is Part 1 of the owner package. Part 2 is the owner manual. Rebuild the generated
+  Word and Markdown package with `python scripts/build_closeout_docs.py`.
+- **Production is reachable from GitHub runners, not from agent sessions.** This session's
+  egress refuses `crm.clientverse.io`, the Railway address, MongoDB downloads and the
+  Actions log host. Verify production with **Actions → Production acceptance**
+  (`workflow_dispatch`; `scripts/production_acceptance.mjs` and
+  `scripts/production_browser.mjs`). It needs only the existing `CLIENTVERSE_PRODUCTION_URL`
+  secret. It registers its own test organizations on `example.com` addresses, with email
+  alerts off, and archives what it creates.
+- **Restore is tested.** **Actions → Backup and restore drill** (monthly and on demand) runs
+  mongodump → drop → mongorestore on MongoDB 7 and verifies the records through the API.
+  Atlas's own backups are still unverified (owner action).
+- **No `$Railway` token and no Jev QC variables** were present in this session, so the Jev gate
+  could not run. Nothing here is recorded as Jev `VERIFIED_COMPLETE`.
+- **Sign-in:** email and password only. `POST /api/auth/google/session` answers `410`.
+  `/api/cron/health` and `/api/cron/runs` need the cron secret or an admin of the
+  `ADMIN_EMAIL` organization.
+- PR #36 is superseded: its backend fixes are on `main`. PR #47 is merged through #48.
+- **Verified 2026-10-24:** *Production acceptance* run `40134314474` against
+  `https://crm.clientverse.io` at `main@6d0d4c6`: API journey 40/40, browser 76/76.
+- **The `CLIENTVERSE_PRODUCTION_URL` secret points at a Vercel copy**
+  (`clientverse-crm.vercel.app`, project `clientverse-crm`, team `tradeiq`). That copy forwards
+  `/api` to Railway, and its own sign-in fails across origins. Do not test production through
+  that secret. Owner actions O-17 and O-18 are in the governing document.
+
+## Session state (2026-10-19) — superseded where the 2026-10-24 section above differs
 
 - **Running application code is `main@1a39fa4`** (PR #41, interior redesign + dark mode),
   Railway deployment `d4d2e07f-b201-44f9-90fe-a06c59dabad5`, live 2026-10-19T00:16Z. Boot
@@ -64,7 +95,7 @@
 - **Jev QC gate is live and verified** — `docs/evidence/jev-qc-live-20260928/`
   (`VERIFIED_COMPLETE`, `n8n_execution_id` 146). The gate section at the end of this
   file is mandatory.
-- Password change/recovery (Issue #10, 2026-09-27 update, local commit `b8b8b4c`) is
+- *(Stale: password change and admin reset are on `main` since 2026-10-17.)* Password change/recovery (Issue #10, 2026-09-27 update, local commit `b8b8b4c`) is
   **not on GitHub and not in `main`**. On 2026-10-17 the owner directed that agents be able
   to change a temporary password, so `claude/inspiring-edison-myhdzx` adds the minimum:
   `POST /api/auth/change-password` (Settings → Change password) and an admin
