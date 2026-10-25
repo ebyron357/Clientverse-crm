@@ -1103,8 +1103,8 @@ Tick each item, write the date, and keep this page with the closeout record.
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.13 |
-| **Date** | 2026-10-24 |
+| **Version** | 1.14 |
+| **Date** | 2026-10-25 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` after the closeout release (PR #48, 2026-10-24). Read the running commit from `/api/health` → `git_sha` ([§2.2](#p2-22-confirm-you-are-on-the-correct-deployment)) |
 | **Production environment** | Railway project `welcoming-vibrancy` → environment `production` → service `clientverse-crm-production` |
@@ -2365,6 +2365,135 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 - **Common mistakes:** approving reply wording you have not read; forgetting that test leads land
   in **Leads**, tagged **"Test lead"**.
 - **Saved when:** **"Test lead processed end to end"**; the header shows **"Saved"**.
+
+<a id="p2-761-connect-the-allure-realty-group-website-alluremovesyoucom"></a>
+
+#### 7.6.1 Connect the Allure Realty Group website (alluremovesyou.com)
+
+**Status on 2026-10-25: NOT LIVE.** No website lead reaches this CRM yet.
+
+The website side is documented in
+[`docs/CLIENTVERSE_CONNECTION.md`](https://github.com/ebyron357/charlotte-real-estate-system/blob/claude/hopeful-clarke-om1t0v/docs/CLIENTVERSE_CONNECTION.md) (branch `claude/hopeful-clarke-om1t0v` until merged)
+in `ebyron357/charlotte-real-estate-system`.
+
+This section uses three evidence labels:
+
+- **Verified (code)** — proven by the CRM's automated tests. Website facts are proven by the
+  website's own tests.
+- **Verified (live, read-only)** — observed in production without writing or sending anything.
+- **UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED** — do not rely on it.
+
+**How a website lead becomes CRM records** (Verified (code), `main@d65c89e`; the intake suite
+`backend/tests/test_website_forms.py` passed 132/132 on 2026-10-25):
+
+1. **The website saves the lead first.** It then sends it to
+   `POST https://crm.clientverse.io/api/intake/leads` with `Authorization: Bearer <server key>`.
+2. **The key alone decides the workspace and the form.** Each key belongs to one website form;
+   the lead lands in that form's organization.
+   - A wrong key, a revoked key, or a key for a paused or archived form gets **401**.
+   - More than 120 requests a minute for one form gets **429**.
+   - A lead with neither an email nor a phone number gets **422**.
+3. **The CRM records the enquiry and builds the records.**
+   - It matches the contact by email, then phone, or creates it.
+   - It assigns an owner by the form's **"Assignment"** setting.
+   - It opens a deal, or reuses the person's open deal if that deal is under 30 days old.
+   - It creates the task **"Call new lead now: …"** and sends the new-lead alert.
+4. **The CRM always replies 200** with
+   `{"accepted": true, "id": "<enquiry id>", "outcome": "accepted" | "duplicate" | "spam_blocked", "contact_id": …}`.
+   - `spam_blocked` means nothing was saved.
+   - The website must treat only `accepted` and `duplicate` as delivered. That website change is
+     [charlotte-real-estate-system PR #66](https://github.com/ebyron357/charlotte-real-estate-system/pull/66),
+     branch `codex/allure-crm-receipt-proof-20261019` at `c7abdb4`.
+   - **PR #66 was closed without merging on 2026-10-24.** Until it lands, the website counts any
+     200 reply as delivered.
+
+**Field mapping** (Verified (code)):
+
+| Website sends | CRM stores |
+|---|---|
+| `name`, `email`, `phone` | Enquiry and contact. The email is lower-cased; the phone must have 7–15 digits. |
+| `propertyAddress` | `property_address`, on the enquiry and the contact |
+| `message` | Enquiry message |
+| `timeframe` | Timeline |
+| `consultationDate`, `consultationTime` | Preferred date, preferred time |
+| `leadType` | `buyer` becomes **"Buying"**. `seller` and `home_value` become **"Selling"**. Any other value is kept as `site_leadtype`. |
+| `source` | Extra field `source` |
+| `idempotencyKey` | `external_id`, unique per organization |
+| `payload.priceRange` / `payload.budget` | A minimum and/or a maximum price. "$400k–$500k" sets both. "$500k+" sets a minimum only. "under $500k" sets a maximum only. A changed budget clears the old bound that no longer applies. |
+| Any other `payload` value | Extra fields. A top-level value always wins over a nested one. |
+
+**Duplicates** (Verified (code)):
+
+- **The same idempotency key, at any time:** the reply is `duplicate` with the original id. No
+  second contact, deal or task is made.
+- **The same answers within 10 minutes under a new key:** the reply is `duplicate`.
+- **Changed answers** (time, timeframe, budget, intent or source): a new enquiry on the same
+  contact.
+
+**Consent — gap, owner decision needed** (Verified (code)):
+
+- The CRM keeps a structured consent record only for the fields `consent_sms` and
+  `consent_email`. That record holds the form's wording, the time, the IP address and the page.
+- The Allure website does not send those fields:
+  - The consultation, home-value and buyer-guide forms send **no** consent field.
+  - The relocation form sends `consent` and `consentAt`. The CRM keeps these only as extra
+    fields.
+- **No Allure lead currently arrives with a consent record.** Before anyone texts or
+  emails these leads from the CRM, the owner must decide the consent wording for each form.
+  The website must then send `consent_sms` / `consent_email`.
+
+**Set up the Allure form.** These steps are UNVERIFIED in production. Do them only with the owner's
+approval, signed in as an **admin** of the Allure organization.
+
+1. **Settings** → **Capture** → **"Forms"** → **"New form"**. Choose **Contact** and name it
+   **"Allure website"**.
+2. Set **"Assignment"** to **"A specific agent"** and tick Jasmine.
+   **Warning:** the default is **"Unassigned — alert every admin"**. With that default, the
+   contact and the task have no owner.
+3. Keep the call-back task. Set the deal value (commission %).
+4. **"Embed & test"** → server connection → **"Create server key"**.
+   - The key is shown once.
+   - The owner enters it directly in the website's Vercel production settings as
+     `CLIENTVERSE_API_KEY`.
+   - Never paste it into chat, an issue or a document.
+   - **"Replace key"** stops the old key at once. **"Revoke"** stops delivery.
+5. **For a contained test**, use a separate test form with these settings:
+   - **"In-app alert"** off and **"Email alert"** off. With only email off, the alert still goes
+     in-app.
+   - **"Escalate after (minutes)"** set very high (10080). Escalation ignores the alert switches.
+
+   **Warning:** **"Send a test lead"** runs the real chain and can alert the team.
+
+**Jasmine's sign-in and role:** UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED.
+
+- The CRM has two roles, **admin** and **member** ([§8.1](#p2-81-roles-and-permissions)). Sign-in
+  is by email and password only.
+- This repository has no record of an Allure organization or a Jasmine account. "Jasmine Parker"
+  in the code is sample data.
+- The 2026-10-24 production acceptance run (§13.3 of the closeout handoff) used test
+  organizations, not Allure.
+- **To verify:** an admin opens **Settings → Team & Access** in the Allure organization and
+  confirms that Jasmine is listed as **active**, with role **member** (works leads) or
+  **admin** (also manages forms and keys). Jasmine then signs in at
+  `https://crm.clientverse.io/login` herself.
+
+**"Live" means all of these, read back in both systems:**
+
+- The website lead shows `crm_status = crm_synced`, `crm_record_id` and
+  `crm_receipt_outcome = accepted`.
+- The enquiry with that id is in the Allure organization, on the "Allure website" form,
+  assigned to Jasmine, with its contact, deal and task.
+- A same-key retry returns `duplicate` with the same id.
+- Jasmine sees the lead under **Leads**.
+
+**None of these has been met as of 2026-10-25.**
+
+**Website-side blockers on 2026-10-25** (Verified (live, read-only)):
+
+- The website's database is over its Neon quota, so it cannot save new leads.
+- No ClientVerse settings are set on the website's production project.
+- The website's 5-minute retry job is still scheduled. **Warning:** once the key is set, any
+  stored pending lead would be forwarded and would alert the team.
 
 <a id="p2-77-calendar-and-online-booking"></a>
 
@@ -4108,6 +4237,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.14 | 2026-10-25 | **Connect the Allure Realty Group website** (§7.6.1, new): how a website lead becomes CRM records, the field mapping, duplicate and budget rules, the consent gap (only `consent_sms` / `consent_email` are recorded; the Allure forms send neither), form set-up with **"A specific agent"** (the default **"Unassigned"** leaves no owner), contained-test settings, Jasmine's sign-in and role marked UNVERIFIED, the definition of "live", and the website-side blockers observed read-only on 2026-10-25. Verified against `main@d65c89e` (`test_website_forms.py` 132/132). |
 | 1.13 | 2026-10-24 | Production closeout (PR #48). The manual is now Part 2 of the closeout package; Part 1 is [the closeout handoff](#part-1). Changes: **"Continue with Google" removed**, so email and password is the only sign-in (§1.1, §1.2, §3.1, §8.3, §9.6, §10.1, §12). The job ledger is limited to the owner's organization (§8.1). Client portal links stay on screen with **"Copy"** and can be **"Revoke"**d (§7.15, §8.12, §12). The MCP kill switch is greyed out for members (§7.18). All procedures use `https://crm.clientverse.io` (§1.1, §1.2, §2.2, §11.4, Appendices A and C); the Google redirect address is the custom domain (§5.5). Google status is consistent with the 2026-10-19 reconnection (§1.4, §10.1, §14 row 12). The custom-domain switch is recorded as done (§13.3). |
 | 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |
 | 1.11 | 2026-10-19 | **Agency and client accounts** (§7.25, new): client accounts under an agency, the account switcher and the "working in" banner, opening a client account as an agency admin (checked on every request), creating accounts from a snapshot, and pushing a snapshot to many accounts with a preview per account. **Settings → Agency → "Client accounts"** (§4.3); roles (§8.1). Booking pages loaded into a workspace are hosted by someone on its team, or arrive paused (§7.24, §7.25). |
