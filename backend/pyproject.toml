@@ -120,6 +120,6 @@ ignore_missing_imports = true
 module = ["attribution", "automations", "cron_ledger", "detectors", "email_inbound",
           "gmail_provider", "recovery_lifecycle", "recovery_proof",
           "industry_templates", "recovery_reconcile", "scheduler", "setup_loader", "snapshots", "agency",
-          "today"]
+          "today", "data_transfer"]
 disallow_incomplete_defs = true
 warn_return_any = true
