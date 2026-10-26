@@ -59,6 +59,7 @@ const SETTINGS_GROUPS = [
       { id: "templates", label: "Industry template", to: "/settings/templates" },
       { id: "snapshots", label: "Snapshots", to: "/settings/snapshots", adminOnly: true },
       { id: "fields", label: "Fields", to: "/settings/fields" },
+      { id: "import", label: "Import and export", to: "/settings/import" },
       { id: "team", label: "Team and roles", to: "/team", adminOnly: true, testid: "nav-team-link" },
       // TODO: a lead routing page of its own. Until then each form's "Assign the lead"
       // section is where routing is set, so this opens Forms.
@@ -129,6 +130,7 @@ function defaultSettingsItem(pathname, tab) {
   if (pathname === "/settings/fields") return "fields";
   if (pathname === "/settings/templates") return "templates";
   if (pathname === "/settings/snapshots") return "snapshots";
+  if (pathname === "/settings/import") return "import";
   if (pathname === "/settings/agency") return "agency";
   if (pathname === "/team") return "team";
   if (pathname === "/website-forms") return "forms";

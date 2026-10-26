@@ -24,6 +24,7 @@ import Settings from "@/pages/Settings";
 import CustomFieldsSettings from "@/pages/CustomFieldsSettings";
 import IndustryTemplates from "@/pages/IndustryTemplates";
 import Snapshots from "@/pages/Snapshots";
+import ImportExport from "@/pages/ImportExport";
 import AgencyAccounts from "@/pages/AgencyAccounts";
 import ClientOps from "@/pages/ClientOps";
 import Automations from "@/pages/Automations";
@@ -84,6 +85,7 @@ function AppRouter() {
           <Route path="/settings/fields" element={<CustomFieldsSettings />} />
           <Route path="/settings/templates" element={<IndustryTemplates />} />
           <Route path="/settings/snapshots" element={<Snapshots />} />
+          <Route path="/settings/import" element={<ImportExport />} />
           <Route path="/settings/agency" element={<AgencyAccounts />} />
           <Route path="/team" element={<Team />} />
           <Route path="/website-forms" element={<WebsiteForms />} />

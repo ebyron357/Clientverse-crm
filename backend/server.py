@@ -41,6 +41,7 @@ import booking
 import conversations as conversation_service
 import crm_core
 import cron_ledger
+import data_transfer
 import detectors
 import email_inbound
 import gmail_provider
@@ -163,6 +164,7 @@ async def lifespan(_: FastAPI):
         ("cron_runs", lambda: db.cron_runs.create_index("run_id", unique=True)),
         ("cron_ledger", lambda: cron_ledger.ensure_indexes(db)),
         ("crm_core", lambda: crm_core.ensure_indexes(db)),
+        ("data_imports", lambda: db[data_transfer.IMPORTS].create_index([("tenant_id", 1), ("created_at", -1)])),
         ("email_inbound", lambda: email_inbound.ensure_indexes(db)),
         ("attribution", lambda: attribution_service.ensure_indexes(db)),
         ("detectors", lambda: detectors.ensure_indexes(db)),
@@ -4839,6 +4841,8 @@ agency_service.register_agency_routes(api, db, setup_loader_service, new_id=new_
 crm_core.register_crm_core_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role,
                                   on_activity_logged=_after_activity_logged,
                                   on_task_status_changed=_lead_task_status_changed)
+data_transfer.register_data_transfer_routes(api, db, new_id=new_id, now_iso=now_iso, record_event=record_event,
+                                            get_current_user=get_current_user, require_role=require_role)
 # Website forms: the public door an agent's website posts leads through, and the
 # automation that turns each lead into a contact, an owner, a deal, a call-back task and
 # an alert within seconds. The legacy intake-token door runs through the same pipeline.

@@ -153,6 +153,26 @@ def test_archiving_hides_a_contact_from_lists_without_destroying_it(tenant):
     assert any(c["id"] == contact_id for c in tenant.get("/contacts"))
 
 
+def test_a_company_is_edited_archived_and_restored_from_its_record(tenant):
+    company = tenant.post("/companies", {"name": f"Editable-{tenant.tag}", "website": "https://old.example"})
+    edited = tenant.patch(f"/companies/{company['id']}", {
+        "name": f"Edited-{tenant.tag}", "industry": "Logistics", "website": "https://www.new-site.example/about",
+        "tier": "growth"})
+    assert (edited["name"], edited["industry"], edited["tier"]) == (f"Edited-{tenant.tag}", "Logistics", "growth")
+    # Contacts and website leads are matched by domain, so the new website brings its own.
+    assert edited["domain"] == "new-site.example"
+    assert tenant.patch(f"/companies/{company['id']}", {"website": None})["domain"] is None
+    archived = tenant.post(f"/companies/{company['id']}/archive", {})
+    assert archived["archived_at"]
+    assert all(c["id"] != company["id"] for c in tenant.get("/companies"))
+    assert any(c["id"] == company["id"] for c in tenant.get("/companies?include_archived=true"))
+    restored = tenant.post(f"/companies/{company['id']}/restore", {})
+    assert restored["archived_at"] is None
+    assert any(c["id"] == company["id"] for c in tenant.get("/companies"))
+    actions = [entry["action"] for entry in restored["history"]]
+    assert actions[-2:] == ["archived", "restored"]
+
+
 def test_a_company_reports_open_pipeline_and_won_revenue_separately(tenant):
     detail = tenant.get(f"/companies/{tenant.company_id}")
     commercial = detail["commercial"]

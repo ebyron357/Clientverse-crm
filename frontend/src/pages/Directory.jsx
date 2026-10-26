@@ -18,11 +18,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { ArrowUpDown, Building2, BriefcaseBusiness, CircleAlert, GitBranch, Phone, Plus, RefreshCw, Search, UserRound, Users } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUpDown, Building2, BriefcaseBusiness, CircleAlert, GitBranch, Pencil, Phone, Plus, RefreshCw, Search, Upload, UserRound, Users } from "lucide-react";
 
 const TIER = { enterprise: { label: "Enterprise", tone: "violet" }, growth: { label: "Growth", tone: "brand" }, standard: { label: "Standard", tone: "neutral" } };
 const RELATIONSHIP = { positive: { label: "Good", tone: "success" }, neutral: { label: "Neutral", tone: "neutral" }, negative: { label: "At risk", tone: "danger" } };
 const EMPTY_CONTACT = { name: "", phone: "", email: "", role: "", company_id: "", influence: "medium", sentiment: "neutral" };
+// The record panel's compact form, as on a contact.
+const RECORD_INPUT = "h-8 text-[13px] md:text-[13px]";
+const RECORD_LABEL = "text-xs font-medium text-muted-foreground";
 const ARCHIVED_FLAG = "shrink-0 rounded border border-amber-200 bg-amber-50 px-1.5 py-px text-[11px] font-medium leading-4 text-amber-700";
 const ALL = "all";
 const NO_COMPANY = "none";
@@ -44,6 +47,12 @@ const sortFromView = (sort) => Object.entries(SORT_TO_VIEW).find(([, value]) => 
 const sameList = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** "Oct 18" this year, "Oct 18, 2025" before it. */
+/** Of two copies of one record, the one changed last (the list may lag a save). */
+function newer(listed, held) {
+  if (!listed) return held;
+  return (held?.updated_at || "") > (listed.updated_at || "") ? held : listed;
+}
+
 function shortDate(iso) {
   const date = new Date(iso);
   if (!iso || Number.isNaN(date.getTime())) return "—";
@@ -73,7 +82,7 @@ export default function Directory({ initialTab = "companies" }) {
   const [companies, setCompanies] = useState([]); const [contacts, setContacts] = useState([]); const [opportunities, setOpportunities] = useState([]); const [workspaces, setWorkspaces] = useState([]);
   const [activeTab, setActiveTab] = useState(initialTab); const [query, setQuery] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [companyDialog, setCompanyDialog] = useState(false); const [contactDialog, setContactDialog] = useState(false); const [selected, setSelected] = useState(null); const [saving, setSaving] = useState(false);
-  const [companyForm, setCompanyForm] = useState({ name: "", industry: "", website: "", tier: "standard" }); const [contactForm, setContactForm] = useState(EMPTY_CONTACT); const [showArchived, setShowArchived] = useState(false);
+  const [companyForm, setCompanyForm] = useState({ name: "", industry: "", website: "", tier: "standard" }); const [contactForm, setContactForm] = useState(EMPTY_CONTACT); const [showArchived, setShowArchived] = useState(false); const [showArchivedCompanies, setShowArchivedCompanies] = useState(false);
   // List-only view controls: which company or tier to show and in what order. They never change what is stored.
   const [companyFilter, setCompanyFilter] = useState(ALL); const [tierFilter, setTierFilter] = useState(ALL); const [sort, setSort] = useState("recent");
   // Saved views of the contact list. Filters run on the server, so a view finds every match, not just the loaded page.
@@ -98,8 +107,15 @@ export default function Directory({ initialTab = "companies" }) {
     if (ticket === contactTicket.current) setContacts(data);
   }, [showArchived, whereJson]);
   const fetchContactsRef = useRef(fetchContacts); fetchContactsRef.current = fetchContacts;
+  const companyTicket = useRef(0);
+  const fetchCompanies = useCallback(async () => {
+    const ticket = ++companyTicket.current;
+    const { data } = await api.get("/companies", { params: showArchivedCompanies ? { include_archived: true } : {} });
+    if (ticket === companyTicket.current) setCompanies(data);
+  }, [showArchivedCompanies]);
+  const fetchCompaniesRef = useRef(fetchCompanies); fetchCompaniesRef.current = fetchCompanies;
   // A quiet reload refreshes the lists behind an open record without flashing the page back to its loading state.
-  const load = useCallback(async ({ quiet = false } = {}) => { if (!quiet) { setLoading(true); setError(""); } try { const [companyResponse, , opportunityResponse, workspaceResponse] = await Promise.all([api.get("/companies"), fetchContactsRef.current(), api.get("/opportunities"), api.get("/workspaces")]); setCompanies(companyResponse.data); setOpportunities(opportunityResponse.data); setWorkspaces(workspaceResponse.data); } catch { if (!quiet) setError("We could not load the directory. The relationship data has not changed — please try again."); } finally { if (!quiet) setLoading(false); } }, []);
+  const load = useCallback(async ({ quiet = false } = {}) => { if (!quiet) { setLoading(true); setError(""); } try { const [, , opportunityResponse, workspaceResponse] = await Promise.all([fetchCompaniesRef.current(), fetchContactsRef.current(), api.get("/opportunities"), api.get("/workspaces")]); setOpportunities(opportunityResponse.data); setWorkspaces(workspaceResponse.data); } catch { if (!quiet) setError("We could not load the directory. The relationship data has not changed — please try again."); } finally { if (!quiet) setLoading(false); } }, []);
   useEffect(() => { load(); }, [load]);
   const firstContactLoad = useRef(true);
   useEffect(() => {
@@ -107,9 +123,16 @@ export default function Directory({ initialTab = "companies" }) {
     setContactsBusy(true);
     fetchContacts().catch((requestError) => toast.error("That filter could not be applied", { description: formatErr(requestError.response?.data?.detail) })).finally(() => setContactsBusy(false));
   }, [fetchContacts]);
+  const firstCompanyLoad = useRef(true);
+  useEffect(() => {
+    if (firstCompanyLoad.current) { firstCompanyLoad.current = false; return; }
+    fetchCompanies().catch(() => toast.error("Companies could not be loaded"));
+  }, [fetchCompanies]);
   const loadViews = useCallback(async () => { try { const { data } = await api.get("/views", { params: { object: "contacts" } }); setSavedViews(data.items || []); } catch { setSavedViews([]); } }, []);
   useEffect(() => { loadViews(); }, [loadViews]);
   const companyName = useCallback((id) => companies.find((company) => company.id === id)?.name || "", [companies]);
+  // Archived companies show in the list when asked for, but nobody can be linked to one.
+  const liveCompanies = useMemo(() => companies.filter((company) => !company.archived_at), [companies]);
   const filteredCompanies = useMemo(() => companies.filter((company) => `${company.name} ${company.industry || ""}`.toLowerCase().includes(query.toLowerCase())), [companies, query]);
   const filteredContacts = useMemo(() => { const term = query.toLowerCase(); const digits = query.replace(/\D/g, ""); return contacts.filter((contact) => `${contact.name} ${contact.email || ""} ${contact.phone || ""} ${companyName(contact.company_id)}`.toLowerCase().includes(term) || (digits.length >= 3 && String(contact.phone || "").replace(/\D/g, "").includes(digits))); }, [contacts, query, companyName]);
   const createCompany = async () => { if (!companyForm.name.trim()) { toast.error("Company name is required."); return; } setSaving(true); try { await api.post("/companies", { ...companyForm, name: companyForm.name.trim() }); toast.success("Company created"); setCompanyDialog(false); setCompanyForm({ name: "", industry: "", website: "", tier: "standard" }); await load(); } catch (requestError) { toast.error("Could not create company", { description: formatErr(requestError.response?.data?.detail) }); } finally { setSaving(false); } };
@@ -186,12 +209,13 @@ export default function Directory({ initialTab = "companies" }) {
   const filtered = Boolean(query.trim()) || (isContacts ? companyFilter !== ALL || filters.length > 0 : tierFilter !== ALL);
   const clearFilters = () => { setQuery(""); setCompanyFilter(ALL); setTierFilter(ALL); setFilters([]); };
   const sorts = isContacts ? CONTACT_SORTS : COMPANY_SORTS;
-  const contactButton = <CreateContactDialog key="contact" primary={isContacts} open={contactDialog} onOpenChange={setContactDialog} form={contactForm} setForm={setContactForm} companies={companies} saving={saving} onSubmit={createContact} />;
+  const contactButton = <CreateContactDialog key="contact" primary={isContacts} open={contactDialog} onOpenChange={setContactDialog} form={contactForm} setForm={setContactForm} companies={liveCompanies} saving={saving} onSubmit={createContact} />;
+  const importButton = user?.role === "admin" && <Button key="import" size="sm" variant="outline" asChild><Link to={`/settings/import?type=${isContacts ? "contacts" : "companies"}`} data-testid="directory-import"><Upload className="size-3.5" />Import</Link></Button>;
   const companyButton = <CreateCompanyDialog key="company" primary={!isContacts} open={companyDialog} onOpenChange={setCompanyDialog} form={companyForm} setForm={setCompanyForm} saving={saving} onSubmit={createCompany} />;
 
   return <div className="cv-page">
     <PageHeader icon={isContacts ? UserRound : Building2} title={isContacts ? "Contacts" : "Companies"} count={loading ? undefined : total}
-      actions={isContacts ? [companyButton, contactButton] : [contactButton, companyButton]} />
+      actions={[importButton, ...(isContacts ? [companyButton, contactButton] : [contactButton, companyButton])]} />
     <ViewTabs label="Directory" value={activeTab} onChange={setActiveTab}
       items={[
         { value: "companies", label: "Companies", icon: Building2, count: loading ? undefined : companies.length },
@@ -231,15 +255,16 @@ export default function Directory({ initialTab = "companies" }) {
       {isContacts && <ColumnsMenu columns={columns} available={columnOptions} onChange={setColumns} manageHref="/settings/fields" />}
       <div className="ml-auto flex items-center gap-4">
         {filtered && !loading && <span className="tabular text-xs text-muted-foreground">{shown} {isContacts && filters.length ? (shown === 1 ? "match" : "matches") : `of ${total}`}</span>}
-        {isContacts && <div className="flex items-center gap-2"><Switch id="contacts-show-archived" checked={showArchived} onCheckedChange={setShowArchived} data-testid="contacts-show-archived" /><Label htmlFor="contacts-show-archived" className="text-[13px] font-normal text-muted-foreground">Show archived</Label></div>}
+        {isContacts ? <div className="flex items-center gap-2"><Switch id="contacts-show-archived" checked={showArchived} onCheckedChange={setShowArchived} data-testid="contacts-show-archived" /><Label htmlFor="contacts-show-archived" className="text-[13px] font-normal text-muted-foreground">Show archived</Label></div>
+          : <div className="flex items-center gap-2"><Switch id="companies-show-archived" checked={showArchivedCompanies} onCheckedChange={setShowArchivedCompanies} data-testid="companies-show-archived" /><Label htmlFor="companies-show-archived" className="text-[13px] font-normal text-muted-foreground">Show archived</Label></div>}
       </div>
     </Toolbar>
     {isContacts && <FilterChips filters={filters} fields={contactFields} onRemove={(index) => setFilters((current) => current.filter((_, i) => i !== index))} onClear={() => setFilters([])} />}
     {loading ? <DirectorySkeleton /> : isContacts
       ? <ContactsTable contacts={visibleContacts} companies={companies} ownerName={ownerName} busy={contactsBusy} columns={columns.filter((key) => columnOptions.some((column) => column.key === key))} columnOptions={columnOptions} defs={contactDefs} onSelect={(contact) => openContact(contact.id)} empty={<EmptyDirectory type="contact" filtered={filtered} onClear={clearFilters} onCreate={() => setContactDialog(true)} />} />
       : <CompaniesTable companies={visibleCompanies} contacts={contacts} opportunities={opportunities} workspaces={workspaces} onSelect={(company) => setSelected({ type: "company", record: company })} empty={<EmptyDirectory type="company" filtered={filtered} onClear={clearFilters} onCreate={() => setCompanyDialog(true)} />} />}
-    {selected?.type === "company" && <CompanyRecord company={companies.find((item) => item.id === selected.record.id) || selected.record} contacts={contacts} opportunities={opportunities} workspaces={workspaces} isAdmin={user?.role === "admin"} onChanged={() => load({ quiet: true })} open onOpenChange={(value) => !value && closeCompany()} onOpenContact={(contact) => { closeCompany(); openContact(contact.id); }} />}
-    {contactId && <ContactRecord contactId={contactId} open onOpenChange={(value) => !value && closeContact()} companies={companies} workspaces={workspaces} onChanged={() => load({ quiet: true })} />}
+    {selected?.type === "company" && <CompanyRecord company={newer(companies.find((item) => item.id === selected.record.id), selected.record)} contacts={contacts} opportunities={opportunities} workspaces={workspaces} isAdmin={user?.role === "admin"} onChanged={(record) => { if (record) setSelected({ type: "company", record }); load({ quiet: true }); }} open onOpenChange={(value) => !value && closeCompany()} onOpenContact={(contact) => { closeCompany(); openContact(contact.id); }} />}
+    {contactId && <ContactRecord contactId={contactId} open onOpenChange={(value) => !value && closeContact()} companies={liveCompanies} workspaces={workspaces} onChanged={() => load({ quiet: true })} />}
   </div>;
 }
 
@@ -339,7 +364,7 @@ function CompaniesTable({ companies, contacts, opportunities, workspaces, onSele
                 <button type="button" onClick={() => onSelect(company)} className="flex min-h-8 min-w-[200px] items-center gap-2.5 rounded-md text-left">
                   <CompanyMark name={company.name} size="sm" />
                   <span className="min-w-0">
-                    <span className="block truncate font-medium text-foreground">{company.name}</span>
+                    <span className="flex items-center gap-1.5"><span className="truncate font-medium text-foreground">{company.name}</span>{company.archived_at && <span className={ARCHIVED_FLAG}>Archived</span>}</span>
                     {company.website && <span className="block truncate text-xs text-muted-foreground">{company.website.replace(/^https?:\/\//, "")}</span>}
                   </span>
                 </button>
@@ -362,7 +387,7 @@ function CompaniesTable({ companies, contacts, opportunities, workspaces, onSele
         <button type="button" onClick={() => onSelect(company)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50">
           <CompanyMark name={company.name} size="md" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[13px] font-medium text-foreground">{company.name}</span>
+            <span className="flex items-center gap-1.5"><span className="truncate text-[13px] font-medium text-foreground">{company.name}</span>{company.archived_at && <span className={ARCHIVED_FLAG}>Archived</span>}</span>
             <span className="mt-0.5 block truncate text-xs text-muted-foreground">{company.industry || "No industry"} · {people} contact{people === 1 ? "" : "s"}</span>
           </span>
           <MiniStatus tone={tier.tone} className="shrink-0">{tier.label}</MiniStatus>
@@ -451,10 +476,32 @@ function CompanyRecord({ company, contacts, opportunities, workspaces, isAdmin, 
   const tier = TIER[company.tier] || TIER.standard;
   const wide = useWideLayout();
   const [tab, setTab] = useState("contacts");
-  useEffect(() => { setTab("contacts"); }, [company.id]);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setTab("contacts"); setEditing(false); }, [company.id]);
   const website = company.website?.replace(/^https?:\/\//, "");
 
-  const details = <section aria-labelledby="company-details-title">
+  const save = async (payload) => {
+    setSaving(true);
+    try {
+      const { data } = await api.patch(`/companies/${company.id}`, payload);
+      toast.success("Company saved");
+      setEditing(false);
+      onChanged(data);
+    } catch (requestError) { toast.error("Could not save the company", { description: formatErr(requestError.response?.data?.detail) }); } finally { setSaving(false); }
+  };
+  const setArchived = async (archived) => {
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/companies/${company.id}/${archived ? "archive" : "restore"}`);
+      onChanged(data);
+      if (archived) toast.success("Company archived", { description: "It's hidden from your company list. Its contacts and deals stay as they are, and nothing was deleted.", action: { label: "Undo", onClick: () => setArchived(false) } });
+      else toast.success("Company restored");
+    } catch (requestError) { toast.error(archived ? "Could not archive the company" : "Could not restore the company", { description: formatErr(requestError.response?.data?.detail) }); } finally { setSaving(false); }
+  };
+  const startEditing = () => { setEditing(true); if (!wide) setTab("details"); };
+
+  const details = editing ? <CompanyEditForm company={company} saving={saving} onSave={save} onCancel={() => setEditing(false)} /> : <section aria-labelledby="company-details-title">
     <h3 id="company-details-title" className="sr-only">Details</h3>
     <PropertyList items={[
       { label: "Industry", value: company.industry || <span className="text-muted-foreground">Not set</span> },
@@ -465,7 +512,11 @@ function CompanyRecord({ company, contacts, opportunities, workspaces, isAdmin, 
       { label: "Client workspace", value: workspace ? <Link className="font-medium text-brand-strong hover:underline" to={`/workspaces/${workspace.id}`}>{workspace.name}</Link> : <span className="text-muted-foreground">Not created</span> },
       { label: "Added", value: fullDateLabel(company.created_at) || "—" },
     ]} />
-    <CustomFieldsSection object="companies" endpoint={`/companies/${company.id}`} values={company.custom_fields} isAdmin={isAdmin} disabled={Boolean(company.archived_at)} onSaved={onChanged} testid="company-fields" />
+    <CustomFieldsSection object="companies" endpoint={`/companies/${company.id}`} values={company.custom_fields} isAdmin={isAdmin} disabled={Boolean(company.archived_at)} onSaved={() => onChanged()} testid="company-fields" />
+    {!company.archived_at && <section className="mt-6 border-t border-border pt-4">
+      <Button variant="outline" size="sm" className="text-red-700" disabled={saving} onClick={() => setArchived(true)} data-testid="company-archive"><Archive className="size-3.5" />Archive company</Button>
+      <p className="mt-1.5 text-xs leading-5 text-muted-foreground">Hides it from your company list. Its contacts and deals stay as they are. Nothing is deleted, and you can restore it any time.</p>
+    </section>}
   </section>;
 
   return <Sheet open={open} onOpenChange={onOpenChange}>
@@ -475,7 +526,15 @@ function CompanyRecord({ company, contacts, opportunities, workspaces, isAdmin, 
         avatar={<CompanyMark name={company.name} size="lg" />}
         title={company.name}
         meta={[company.industry, website].filter(Boolean).join(" · ") || "Company relationship record"}
-        flag={<MiniStatus tone={tier.tone} className="shrink-0">{tier.label}</MiniStatus>}
+        flag={company.archived_at ? <span className="shrink-0 rounded border border-amber-200 bg-amber-50 px-1.5 py-px text-[11px] font-medium text-amber-700">Archived</span> : <MiniStatus tone={tier.tone} className="shrink-0">{tier.label}</MiniStatus>}
+        actions={!editing && !company.archived_at && <Button size="sm" variant="outline" onClick={startEditing} data-testid="company-edit"><Pencil className="size-3.5" />Edit</Button>}
+        banner={company.archived_at && (
+          <div className="mx-5 mb-2 mt-4 flex flex-col gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-700 sm:mx-6 sm:flex-row sm:items-center sm:justify-between" data-testid="company-archived-banner">
+            <span className="flex items-center gap-2"><Archive className="size-4 shrink-0" aria-hidden="true" />This company is archived, so it's hidden from your company list.</span>
+            <Button size="sm" variant="outline" className="h-7 shrink-0 self-start sm:self-auto" disabled={saving} onClick={() => setArchived(false)} data-testid="company-restore"><ArchiveRestore className="size-3.5" />Restore</Button>
+          </div>
+        )}
+        detailsTitle={editing ? "Edit details" : "Details"}
         value={tab}
         onValueChange={setTab}
         details={details}
@@ -513,4 +572,33 @@ function CompanyRecord({ company, contacts, opportunities, workspaces, isAdmin, 
       />
     </SheetContent>
   </Sheet>;
+}
+
+function CompanyEditForm({ company, saving, onSave, onCancel }) {
+  const [form, setForm] = useState(() => ({ name: company.name || "", industry: company.industry || "", website: company.website || "", tier: company.tier || "standard" }));
+  // The Edit button disappears while editing, so move focus into the form rather than losing it.
+  const nameRef = useRef(null);
+  useEffect(() => { nameRef.current?.focus(); }, []);
+  const setField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = () => {
+    if (!form.name.trim()) { toast.error("Add a company name first."); return; }
+    onSave({ name: form.name.trim(), industry: form.industry.trim() || null, website: form.website.trim() || null, tier: form.tier });
+  };
+  return <section className="space-y-3" data-testid="company-edit-form" aria-labelledby="company-edit-title">
+    <h3 id="company-edit-title" className="sr-only">Edit details</h3>
+    <div className="grid gap-1.5"><Label htmlFor="company-edit-name" className={RECORD_LABEL}>Company name <span className="text-red-600">*</span></Label><Input ref={nameRef} id="company-edit-name" className={RECORD_INPUT} value={form.name} maxLength={200} onChange={(event) => setField("name", event.target.value)} data-testid="company-edit-name" /></div>
+    <div className="grid gap-1.5"><Label htmlFor="company-edit-industry" className={RECORD_LABEL}>Industry</Label><Input id="company-edit-industry" className={RECORD_INPUT} value={form.industry} maxLength={160} onChange={(event) => setField("industry", event.target.value)} placeholder="e.g. Professional services" data-testid="company-edit-industry" /></div>
+    <div className="grid gap-1.5"><Label htmlFor="company-edit-website" className={RECORD_LABEL}>Website</Label><Input id="company-edit-website" className={RECORD_INPUT} type="url" inputMode="url" value={form.website} maxLength={300} onChange={(event) => setField("website", event.target.value)} placeholder="https://example.com" data-testid="company-edit-website" /></div>
+    <div className="grid gap-1.5">
+      <Label htmlFor="company-edit-tier" className={RECORD_LABEL}>Client tier</Label>
+      <Select value={form.tier} onValueChange={(value) => setField("tier", value)}>
+        <SelectTrigger id="company-edit-tier" className="h-8 text-[13px]" data-testid="company-edit-tier"><SelectValue /></SelectTrigger>
+        <SelectContent>{Object.entries(TIER).map(([value, { label }]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
+      </Select>
+    </div>
+    <div className="flex justify-end gap-2 border-t border-border pt-3">
+      <Button size="sm" variant="outline" disabled={saving} onClick={onCancel} data-testid="company-edit-cancel">Cancel</Button>
+      <Button size="sm" className="cv-action-primary" disabled={saving} onClick={submit} data-testid="company-save">{saving ? "Saving…" : "Save changes"}</Button>
+    </div>
+  </section>;
 }

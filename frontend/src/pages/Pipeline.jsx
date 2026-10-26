@@ -7,7 +7,7 @@
    becomes a stage picker over one vertical list instead of a wide board that scrolls
    sideways. `?deal=<id>` opens a deal's record. */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr, formatMoney } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -23,7 +23,7 @@ import { Switch } from "@/components/ui/switch";
 import DealRecord from "@/components/pipeline/DealRecord";
 import NewDealDialog from "@/components/pipeline/NewDealDialog";
 import StageEditor from "@/components/pipeline/StageEditor";
-import { ArrowRight, CalendarDays, Check, GitBranch, Globe, MoreHorizontal, Plus, RefreshCw, Search, Settings2, Sparkles, Users, X } from "lucide-react";
+import { ArrowRight, CalendarDays, Check, GitBranch, Globe, MoreHorizontal, Plus, RefreshCw, Search, Settings2, Sparkles, Upload, Users, X } from "lucide-react";
 
 const PHONE_QUERY = "(max-width: 767px)";
 // Deals whose stage the pipeline no longer has. They get a column of their own so they
@@ -197,6 +197,7 @@ export default function Pipeline() {
       <PageHeader icon={GitBranch} title="Pipeline" count={loading ? undefined : live.length}
         description={isPhone ? "Tap a deal to update it, or use its menu to move it to another stage." : "Drag a card between stages, or open it to update the details and log what happened."}
         actions={<>
+          {isAdmin && <Button variant="outline" size="sm" asChild><Link to="/settings/import?type=deals" data-testid="pipeline-import"><Upload />Import</Link></Button>}
           {isAdmin && <Button variant="outline" size="sm" onClick={() => setStagesOpen(true)} data-testid="customize-stages"><Settings2 />Customize stages</Button>}
           <Button size="sm" onClick={() => setNewOpen(true)} disabled={!groups.open.length} data-testid="new-deal"><Plus />New deal</Button>
         </>} />

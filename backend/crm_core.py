@@ -27,16 +27,13 @@ Three rules hold throughout, and they are the same rules the rest of the system 
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
-import math
 import re
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import Depends, HTTPException, Query, Response
+from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 import record_fields
@@ -601,13 +598,6 @@ class PipelineInput(BaseModel):
     stages: list[StageConfig] = Field(min_length=2, max_length=20)
 
 
-class ImportInput(BaseModel):
-    csv: str = Field(min_length=1)
-    # Importing is the one place a caller can create many records at once, so it is
-    # explicit about what it will do with a row that already looks familiar.
-    on_duplicate: str = "skip"  # skip | update | create
-
-
 # ------------------------------------------------------------------------ registration
 
 def register_crm_core_routes(router, db, new_id, now_iso, record_event,
@@ -1092,6 +1082,10 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
     async def update_company(company_id: str, inp: CompanyPatch,
                              user=Depends(get_current_user)):
         changes = inp.model_dump(exclude_unset=True)
+        if "website" in changes and "domain" not in changes:
+            # Contacts and website leads are matched to a company by its domain, so a new
+            # website brings its domain along rather than leaving the old one matching.
+            changes["domain"] = website_domain(changes["website"])
         return await patch_with_custom(COMPANIES, "companies", company_id, user, changes,
                                        "company.updated", "company")
 
@@ -1698,173 +1692,6 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         results["query"] = q
         return results
 
-    # -------------------------------------------------------------------- import/export
-
-    EXPORTABLE = {
-        "contacts": (CONTACTS, ["id", "name", "email", "phone", "title", "role",
-                                "company_id", "owner", "created_at", "archived_at"]),
-        "companies": (COMPANIES, ["id", "name", "industry", "website", "domain", "tier",
-                                  "owner", "annual_value", "created_at", "archived_at"]),
-        "deals": (DEALS, ["id", "name", "company_id", "value", "currency", "stage",
-                          "owner", "expected_close_date", "created_at", "archived_at"]),
-        "tasks": (TASKS, ["id", "title", "assignee", "due_date", "status", "priority",
-                          "related_type", "related_id", "created_at"]),
-    }
-
-    @router.get("/export/{entity}")
-    async def export_entity(entity: str, include_archived: bool = False,
-                            user=Depends(get_current_user)):
-        """Export one record type as CSV.
-
-        A CRM you cannot get your data out of is a CRM you cannot trust, so this is a
-        plain, complete, tenant-scoped dump rather than a sampled report.
-        """
-        if entity not in EXPORTABLE:
-            raise HTTPException(status_code=404, detail="Unknown export")
-        collection, columns = EXPORTABLE[entity]
-        query = {"tenant_id": tenant_of(user), **archive_filter(include_archived)}
-        rows = await db[collection].find(query, {"_id": 0}).sort(
-            "created_at", -1).to_list(50000)
-        buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({column: csv_safe(row.get(column, "")) for column in columns})
-        await record_event("data.exported", entity, entity, tenant_of(user),
-                           user["email"], payload={"rows": len(rows)})
-        return Response(
-            content=buffer.getvalue(), media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{entity}.csv"'})
-
-    IMPORTABLE = {
-        "contacts": (CONTACTS, "ct", ("name",),
-                     ("name", "email", "phone", "title", "role", "company_id", "owner")),
-        "companies": (COMPANIES, "co", ("name",),
-                      ("name", "industry", "website", "domain", "tier", "owner")),
-        "deals": (DEALS, "opp", ("name",),
-                  ("name", "company_id", "value", "currency", "stage", "owner",
-                   "expected_close_date")),
-    }
-    # What makes two rows "the same record" for import purposes.
-    IMPORT_IDENTITY = {"contacts": "email", "companies": "name", "deals": "name"}
-
-    @router.post("/import/{entity}")
-    async def import_entity(entity: str, inp: ImportInput,
-                            user=Depends(require_role("admin"))):
-        """Import records from CSV.
-
-        Deliberately strict: an unknown column, a row that fails validation, or a
-        reference to a record in another tenant is reported per row rather than
-        silently dropped. A half-finished import you cannot see is worse than a
-        refused one.
-        """
-        if entity not in IMPORTABLE:
-            raise HTTPException(status_code=404, detail="Unknown import")
-        if inp.on_duplicate not in ("skip", "update", "create"):
-            raise HTTPException(status_code=422,
-                                detail="on_duplicate must be skip, update or create")
-        collection, prefix, required, allowed = IMPORTABLE[entity]
-        identity = IMPORT_IDENTITY[entity]
-        tenant = tenant_of(user)
-
-        try:
-            reader = csv.DictReader(io.StringIO(inp.csv))
-            rows = list(reader)
-        except csv.Error as exc:
-            raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}")
-        if not rows:
-            raise HTTPException(status_code=422, detail="CSV contained no data rows")
-        if len(rows) > MAX_IMPORT_ROWS:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Import is limited to {MAX_IMPORT_ROWS} rows per request")
-        unknown_columns = [c for c in (reader.fieldnames or [])
-                           if c and c.strip() not in allowed]
-        if unknown_columns:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Unknown column(s): {', '.join(sorted(set(unknown_columns))[:10])}")
-
-        valid_stages = await stage_keys(db, tenant)
-        created, updated, skipped, errors = 0, 0, 0, []
-
-        for index, raw in enumerate(rows, start=2):  # row 1 is the header
-            row = {k.strip(): (v.strip() if isinstance(v, str) else v)
-                   for k, v in raw.items() if k and k.strip() in allowed}
-            row = {k: v for k, v in row.items() if v not in (None, "")}
-            missing = [field for field in required if not row.get(field)]
-            if missing:
-                errors.append({"row": index, "error": f"missing {', '.join(missing)}"})
-                continue
-            if entity == "deals":
-                if row.get("stage") and row["stage"] not in valid_stages:
-                    errors.append({"row": index,
-                                   "error": f"unknown stage '{row['stage']}'"})
-                    continue
-                row.setdefault("stage", valid_stages[0])
-                if row.get("value"):
-                    try:
-                        amount = float(row["value"])
-                    except ValueError:
-                        errors.append({"row": index, "error": "value must be a number"})
-                        continue
-                    row["value"] = amount
-                    if not math.isfinite(amount) or not 0 <= amount <= MAX_DEAL_VALUE:
-                        errors.append({"row": index, "error": (
-                            "value must be a finite amount from 0 to "
-                            f"{MAX_DEAL_VALUE:,.0f}")})
-                        continue
-                if row.get("currency"):
-                    row["currency"] = str(row["currency"]).strip().upper()
-                    if not re.match(CURRENCY_PATTERN, row["currency"]):
-                        errors.append({"row": index, "error": (
-                            "currency must be a 3-letter ISO 4217 code")})
-                        continue
-                if row.get("expected_close_date"):
-                    try:
-                        row["expected_close_date"] = _parse_date(
-                            row["expected_close_date"], "expected_close_date")
-                    except HTTPException:
-                        errors.append({"row": index,
-                                       "error": "expected_close_date must be ISO 8601"})
-                        continue
-            if row.get("company_id"):
-                exists = await db[COMPANIES].find_one(
-                    {"id": row["company_id"], "tenant_id": tenant}, {"_id": 1})
-                if not exists:
-                    errors.append({"row": index,
-                                   "error": f"unknown company_id '{row['company_id']}'"})
-                    continue
-
-            existing = None
-            if row.get(identity):
-                existing = await db[collection].find_one(
-                    {"tenant_id": tenant, identity: row[identity]}, {"_id": 0})
-            if existing and inp.on_duplicate == "skip":
-                skipped += 1
-                continue
-            if existing and inp.on_duplicate == "update":
-                await db[collection].update_one(
-                    {"id": existing["id"], "tenant_id": tenant},
-                    {"$set": {**row, "updated_at": now_iso()},
-                     "$push": {"history": _history_entry("imported", user["email"],
-                                                         {"row": index})}})
-                updated += 1
-                continue
-            doc = {"id": new_id(prefix), "tenant_id": tenant, "created_at": now_iso(),
-                   "updated_at": now_iso(), "archived_at": None,
-                   "history": [_history_entry("imported", user["email"], {"row": index})],
-                   **row}
-            await db[collection].insert_one(doc)
-            created += 1
-
-        await record_event("data.imported", entity, entity, tenant, user["email"],
-                           payload={"created": created, "updated": updated,
-                                    "skipped": skipped, "rejected": len(errors)})
-        return {"entity": entity, "created": created, "updated": updated,
-                "skipped": skipped, "rejected": len(errors),
-                # Capped so one bad file cannot return a megabyte of errors, but the
-                # count above is always the true total.
-                "errors": errors[:100]}
+    # Import and export: data_transfer.py.
 
     return {"resolve_stages": resolve_stages, "stage_keys": stage_keys}
