@@ -53,7 +53,7 @@ replacement engines. Work proceeds in gated phases 0–5.
   (the website's rule: customers never see HighLevel). The ClientVerse CRM keeps being built
   under this blueprint and is sold once it is ready for the market; customers then move
   from HighLevel one capability at a time. ClientVerse's own sales (website leads), the
-  website, AI Agent Studio, AI Workforce and LifeOS connect to the ClientVerse CRM, not to
+  website, AI Agent Studio and AI Workforce connect to the ClientVerse CRM, not to
   HighLevel. Consequence for this program: Phase 2 ("GHL parity") is also the migration
   path, so each parity feature needs an import from HighLevel before customers can move.
 
