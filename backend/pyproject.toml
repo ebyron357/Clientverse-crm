@@ -68,7 +68,7 @@ ignore = [
 "server.py" = ["E402"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["approval_queue", "attribution", "client_value", "conversations",
+known-first-party = ["agent_gateway", "approval_queue", "attribution", "client_value", "conversations",
                      "crm_core", "cron_ledger", "detectors", "email_inbound",
                      "gmail_provider", "next_best_action", "operations_routes",
                      "recovery_case", "recovery_intake", "recovery_lifecycle", "recovery_proof",
@@ -120,6 +120,6 @@ ignore_missing_imports = true
 module = ["attribution", "automations", "cron_ledger", "detectors", "email_inbound",
           "gmail_provider", "recovery_lifecycle", "recovery_proof",
           "industry_templates", "recovery_reconcile", "scheduler", "setup_loader", "snapshots", "agency",
-          "today", "data_transfer"]
+          "today", "data_transfer", "agent_gateway"]
 disallow_incomplete_defs = true
 warn_return_any = true

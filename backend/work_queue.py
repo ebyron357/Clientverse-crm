@@ -21,6 +21,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import agent_gateway
+
 QUEUED = "queued"
 CLAIMED = "claimed"
 PROCESSING = "processing"
@@ -308,6 +310,8 @@ class WorkQueue:
         claimed: list[dict] = []
 
         if tenant_id:
+            if await agent_gateway.is_stopped(self.db, tenant_id):
+                return claimed
             for _ in range(limit):
                 doc = await self._claim_one(worker_id=worker_id, queue=queue,
                                             tenant_id=tenant_id, lease_seconds=lease_seconds)
@@ -317,6 +321,8 @@ class WorkQueue:
             return claimed
 
         tenants = await self._tenants_with_due_work(queue)
+        # A tenant under an agent emergency stop gets no new work until it is released.
+        tenants = [t for t in tenants if not await agent_gateway.is_stopped(self.db, t)]
         if not tenants:
             return claimed
         exhausted: set[str] = set()

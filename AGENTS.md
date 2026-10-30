@@ -1,5 +1,19 @@
 # ClientVerse CRM — Agent Memory
 
+## Session state (2026-10-30, blueprint program)
+
+- **The owner adopted the *ClientVerse Competitive CRM & AI Security Blueprint*** (28 October
+  2026) and directed that it be built **on a separate branch** so production is unaffected.
+  Record: `docs/blueprint/README.md`; governing document v1.30 §0.6. Build every capability
+  behind a flag that is off by default; merge to `main` only with the owner's approval.
+- **Production runs `main@735d168`** (PR #54, PyMongo 4.18.3 for CVE-2026-106435). *Production
+  acceptance* run `40776931126`: API 40/40, browser 76/76. `main@ce1affe` adds docs only.
+- **First P0 slice on the program branch:** `backend/agent_gateway.py` (E-24), flag
+  `AGENT_GATEWAY_V2`, 8 tests in `backend/tests/test_agent_gateway.py`.
+- **Local suite baseline (mongomock, no live server):** 87 failed / 169 errors are the
+  tests that need a running API or a real mongod; compare failure lists against `main`, not
+  totals. pytest lives at `/tmp/claude-0/venv/bin/python` in this container.
+
 ## Session state (2026-10-24, production closeout)
 
 - **Closeout release: PR #48**, merged into `main`. It contains PR #47's intake repair and its

@@ -34,6 +34,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
 import agency as agency_service
+import agent_gateway
 import approval_queue as approval_service
 import attribution as attribution_service
 import automations
@@ -2121,6 +2122,15 @@ async def execute_pending_mcp(pending_id, user):
         return {"status": "skipped"}
     inv_id = p["invocation_id"]
     tool = MCP_TOOLS.get(p["tool"])
+    try:
+        await agent_gateway.assert_may_execute(db, tenant_id=user["tenant_id"], tool=p["tool"],
+                                               server=await get_mcp_server(user["tenant_id"]))
+    except agent_gateway.GatewayRefusal as refusal:
+        await db.mcp_pending_actions.update_one({"id": pending_id}, {"$set": {"status": "refused"}})
+        await db.mcp_tool_invocations.update_one({"id": inv_id}, {"$set": {"status": "refused", "error": refusal.reason}})
+        await record_event("mcp.tool_failed", "mcp_tool", p["tool"], user["tenant_id"], user["email"],
+                           workspace_id=p.get("workspace_id"), payload={"invocation_id": inv_id, "error": refusal.reason})
+        return {"status": "refused", "error": refusal.reason}
     start = time.perf_counter()
     try:
         result = await asyncio.wait_for(TOOL_IMPL_L2[p["tool"]](user, p["args"]), timeout=tool["timeout_seconds"])
@@ -2168,6 +2178,49 @@ async def mcp_kill(inp: KillInput, user=Depends(require_role("admin"))):
                        user["tenant_id"], user["email"], payload={"kill_switch": inp.enabled})
     return {"ok": True, "kill_switch": inp.enabled}
 
+def _mcp_write_action(tool: str, pending_id: str, args: dict) -> dict:
+    """The action a level-2 approval authorises. With the agent gateway on it also names
+    the SHA-256 of the exact arguments, so the approval covers what will be written."""
+    action = {"type": "mcp_write", "tool": tool, "pending_action_id": pending_id}
+    if agent_gateway.enabled():
+        action["args_sha256"] = agent_gateway.args_digest(args)
+    return action
+
+
+class EmergencyStopInput(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@api.post("/agents/emergency-stop")
+async def agents_emergency_stop(inp: EmergencyStopInput, user=Depends(require_role("admin"))):
+    """Stop every agent action in this workspace and return a receipt (AGENT_GATEWAY_V2)."""
+    if not agent_gateway.enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    receipt = await agent_gateway.emergency_stop(db, tenant_id=user["tenant_id"],
+                                                 actor=user["email"], reason=inp.reason)
+    await record_event("agent.emergency_stop", "mcp_server", MCP_SERVER_ID, user["tenant_id"],
+                       user["email"], payload=receipt)
+    return receipt
+
+
+@api.get("/agents/emergency-stop")
+async def agents_emergency_stop_state(user=Depends(require_role("admin"))):
+    if not agent_gateway.enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    state = await agent_gateway.stop_state(db, user["tenant_id"])
+    return {"active": state is not None, "stop": state}
+
+
+@api.post("/agents/emergency-stop/release")
+async def agents_emergency_stop_release(user=Depends(require_role("admin"))):
+    if not agent_gateway.enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    result = await agent_gateway.release(db, tenant_id=user["tenant_id"], actor=user["email"])
+    await record_event("agent.emergency_stop_released", "mcp_server", MCP_SERVER_ID,
+                       user["tenant_id"], user["email"], payload=result)
+    return result
+
+
 class InvokeInput(BaseModel):
     tool: str
     args: dict = {}
@@ -2196,6 +2249,8 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
         await fail(403, "Level 3+ tools are not enabled for execution", tool["level"])
 
     server = await get_mcp_server(tenant)
+    if await agent_gateway.is_stopped(db, tenant):
+        await fail(423, "Agent actions are stopped for this workspace (emergency stop)", tool["level"])
     if server.get("kill_switch"):
         await fail(423, "MCP server is disabled by kill switch", tool["level"])
     if inp.tool not in server.get("allowlist", []):
@@ -2245,7 +2300,7 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
             actor=user["email"], requester_kind=approval_service.REQUESTER_HUMAN,
             summary=f"Reversible internal write via MCP tool '{inp.tool}'.",
             risk=approval_service.RISK_MEDIUM,
-            action={"type": "mcp_write", "tool": inp.tool, "pending_action_id": pending_id},
+            action=_mcp_write_action(inp.tool, pending_id, inp.args),
             subject_type="mcp_pending_action", subject_id=pending_id, workspace_id=ws_id)
         approval_id = approval_doc["id"]
         await db.mcp_pending_actions.insert_one({
@@ -4891,12 +4946,22 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
             # the operator surface reported it as approved-but-unexecuted forever.
             # Approvals written before the queue existed carry no execution binding; those
             # raise, and executing them anyway preserves the historical behaviour.
+            expected = {"type": "mcp_write", "pending_action_id": pending_action_id}
+            if agent_gateway.enabled():
+                # The claim must match the digest of the arguments as they are stored now.
+                # An approval recorded without a digest, or arguments changed after the
+                # request, no longer match, so the write does not run.
+                pending = await db.mcp_pending_actions.find_one(
+                    {"id": pending_action_id, "tenant_id": tenant_id}, {"_id": 0, "args": 1})
+                expected["args_sha256"] = agent_gateway.args_digest((pending or {}).get("args"))
             try:
                 await approval_service.consume(
                     db, tenant_id=tenant_id, approval_id=approval["id"], actor=actor,
-                    expected_action={"type": "mcp_write", "pending_action_id": pending_action_id})
+                    expected_action=expected)
             except approval_service.InvalidApprovalTransition as exc:
-                if (approval.get("execution") or {}).get("state"):
+                # With the gateway on, an approval that cannot be claimed never executes,
+                # including legacy records that carry no execution binding.
+                if (approval.get("execution") or {}).get("state") or agent_gateway.enabled():
                     raise HTTPException(status_code=409, detail=str(exc))
             result["execution"] = await execute_pending_mcp(pending_action_id, user)
         else:
