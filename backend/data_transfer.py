@@ -758,7 +758,9 @@ async def export_csv(db: Any, entity: str, tenant: str, *, include_archived: boo
             contact_emails[contact["id"]] = contact.get("email") or ""
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(columns + [header for header, _ in custom_headers])
+    # Custom-field labels are admin-written text, so they get the same formula guard as
+    # cell values: a label like =HYPERLINK(...) must not run in a member's spreadsheet.
+    writer.writerow(columns + [crm_core.csv_safe(header) for header, _ in custom_headers])
     for row in rows:
         derived = {
             "company": company_names.get(row.get("company_id") or "", ""),
