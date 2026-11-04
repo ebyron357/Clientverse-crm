@@ -155,20 +155,20 @@ This is an audit-coverage index. Create a full required audit record for each in
 | Baseline inventory | VERIFIED PASS | `main@e75bb71`; architecture, routes, APIs, integrations and roles inventoried in [the 2026-11-04 audit record](evidence/ai-quality-audit-20261104.md). Production not reachable from the agent sandbox. |
 | 1. Visual and design integrity | VERIFIED FAIL | C-28 open (raw palette classes, dark-mode overrides). |
 | 2. Code hygiene and architecture | VERIFIED FAIL | C-27 open (unused components and packages, dev tools in the image). |
-| 3. Genuine functional UI | VERIFIED FAIL | No fabricated content found. C-13 fix in PR #59; C-29 open. |
+| 3. Genuine functional UI | VERIFIED FAIL | No fabricated content found. C-13 fixed in PR #59; C-29 open. |
 | 4. Responsive and cross-browser | NOT INSPECTED | 390px layout verified in Chromium; Safari, Firefox and Edge not run. |
 | 5. Accessibility | VERIFIED FAIL | C-09 to C-12 fixed in PR #58; axe 0 violations on 31 pages except C-24 (open). Manual screen-reader review not done. |
 | 6. Application security | VERIFIED FAIL | No cross-tenant path. C-01 (P1), C-02, C-03, C-20 to C-22 fixed in PR #57; C-04, C-05, C-30 to C-32 and C-40 open. Independent security review still required. |
 | 7. Backend and data integrity | VERIFIED FAIL | Tenant scoping verified; C-25 fixed in PR #57; C-26 open. |
 | 8. Integrations and automation | NOT INSPECTED | Stripe webhook verification and cron secret checked in code; live Gmail, Calendar and Stripe flows not exercised. |
 | 9. AI agent and workforce governance | NOT INSPECTED | Not in the 2026-11-04 pass. |
-| 10. Performance, SEO, GEO and AEO | VERIFIED FAIL | C-07, C-08 fix in PR #59; C-23 fixed in PR #58. Lighthouse and field Core Web Vitals not measured. |
+| 10. Performance, SEO, GEO and AEO | VERIFIED FAIL | C-07, C-08 fixed in PR #59; C-23 fixed in PR #58. Lighthouse and field Core Web Vitals not measured. |
 | 11. Business and user journeys | NOT INSPECTED | CI release smoke covers one journey; not re-verified in this pass. |
 | 12. Privacy and regulatory readiness | NOT INSPECTED | Not in the 2026-11-04 pass. |
 | 13. Testing, deployment and recovery | VERIFIED FAIL | C-06 fixed in PR #57; C-14 and C-33 open. Restore drill workflow exists. |
 | 14. Documentation and maintenance | NOT INSPECTED | This record added; governing documents not re-reviewed. |
 
-The first agent audit pass is recorded in [the 2026-11-04 audit record](evidence/ai-quality-audit-20261104.md) (findings C-01 to C-40, commands run, verified-OK list and what was not inspected). Statuses above say VERIFIED FAIL wherever a finding in that category remains open, including ones whose fix PR is still awaiting merge.
+The first agent audit pass is recorded in [the 2026-11-04 audit record](evidence/ai-quality-audit-20261104.md) (findings C-01 to C-40, commands run, verified-OK list and what was not inspected). Statuses above say VERIFIED FAIL wherever a finding in that category remains open.
 
 Documentation-only validation evidence is recorded in [the PR #55 review record](evidence/ai-quality-pr55-validation-20261101.md). That record assesses these documents; it does not change the CRM audit results above.
 

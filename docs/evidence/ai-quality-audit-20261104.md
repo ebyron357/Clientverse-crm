@@ -8,7 +8,7 @@
 | Inspected scope | Backend (`server.py` and routers), frontend (`frontend/src`), CI workflows, scripts, dependencies. Three parallel code reviews: security and data; UI honesty and hygiene; accessibility, performance and testing. Each finding below was re-checked against the code before recording. |
 | Standard | Canonical Version 1.0 (see `docs/AI_SOFTWARE_QUALITY_ADOPTION.md`) |
 | Performed by | Claude Code agent session, on the owner's instruction. **This is not the independent QA/security review or the Jev QC gate**; both remain required and unrecorded. |
-| Owner approval | Fix PRs #57 and #58 merged on the owner's instruction (2026-11-04). #59 open. |
+| Owner approval | Fix PRs #57, #58 and #59 merged on the owner's instruction (2026-11-04). |
 
 ## Commands run (results)
 
@@ -35,13 +35,13 @@ Severity: P0 exploitable or data loss now · P1 fix before more customers · P2 
 | C-04 | P2 | 6 Security | Google OAuth `state` not bound to the browser that started it | `server.py` OAuth start/callback | **Open**, owner decision (changes Connect Google) |
 | C-05 | P2 | 6 Security | Bearer token in localStorage; CSP allows inline script | `lib/api.js`; `server.py` CSP | **Open**, owner decision (changes sign-in) |
 | C-06 | P2 | 13 Testing | Type-check gate passed when mypy was missing or crashed | `scripts/typecheck.py` ignored return code | **Fixed, PR #57** |
-| C-07 | P2 | 10 Performance | One 505.6 kB gzip bundle, no code splitting | build output; no `React.lazy` | **Fix in PR #59**: 206.6 kB main bundle, a chunk per page |
-| C-08 | P2 | 10 Performance | Static files served uncompressed and uncached | no GZip, no `Cache-Control` | **Fix in PR #59**: static-only gzip, immutable cache for hashed files, `no-cache` for the shell; API not compressed (BREACH) |
+| C-07 | P2 | 10 Performance | One 505.6 kB gzip bundle, no code splitting | build output; no `React.lazy` | **Fixed, PR #59 (merged)**: 206.6 kB main bundle, a chunk per page |
+| C-08 | P2 | 10 Performance | Static files served uncompressed and uncached | no GZip, no `Cache-Control` | **Fixed, PR #59 (merged)**: static-only gzip, immutable cache for hashed files, `no-cache` for the shell; API not compressed (BREACH) |
 | C-09 | P2 | 5 Accessibility | Closed phone menu reachable by Tab, off screen | `AppShell.jsx` aside `-translate-x-full` | **Fixed, PR #58 (merged)** |
 | C-10 | P2 | 5 Accessibility | Phone menu: no Escape, no focus move or return | `AppShell.jsx` | **Fixed, PR #58** |
 | C-11 | P2 | 5 Accessibility | Focus lost to `<body>` when Search and Create dialogs close | state-controlled dialogs | **Fixed, PR #58** |
 | C-12 | P2 | 5 Accessibility | Every signed-in page had the same title; no focus move on navigation | 31 pages, one title | **Fixed, PR #58** |
-| C-13 | P2 | 3 Functional UI | Several saves failed silently on a server error | `WorkspaceDetail.jsx`, `OutcomeGraph.jsx`, `WebhookManager.jsx` | **Fix in PR #59**: `attempt()` shows the server's reason; secret rotation confirms first |
+| C-13 | P2 | 3 Functional UI | Several saves failed silently on a server error | `WorkspaceDetail.jsx`, `OutcomeGraph.jsx`, `WebhookManager.jsx` | **Fixed, PR #59 (merged)**: `attempt()` shows the server's reason; secret rotation confirms first |
 | C-14 | P2 | 13 Testing | Accessibility evidence dated 2026-08-17 and run by nothing; no frontend tests or pre-merge browser checks | `frontend/scripts/axe-release-audit.mjs` unreferenced; no `*.test.*` | **Open**, needs a CI job (owner decision on scope) |
 | C-20 | P3 | 6 Security | HSTS never sent behind Railway (uvicorn sees http) | `server.py` scheme check | **Fixed, PR #57**: sent whenever production |
 | C-21 | P3 | 6 Security | Custom-field labels reached CSV headers without the formula guard | `data_transfer.py` header row | **Fixed, PR #57** |
