@@ -62,6 +62,13 @@ export default function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const menuToggleRef = useRef(null);
+  const asideRef = useRef(null);
+  const mainRef = useRef(null);
+  // The control that opened a dialog, so focus can go back to it when the dialog closes.
+  // These dialogs are opened from state, not from a Radix trigger, so Radix cannot.
+  const returnFocusRef = useRef(null);
+  const firstRoute = useRef(true);
   // The drawer on a narrow screen always shows labels; only a wide screen shrinks to icons.
   const collapsed = collapsedPreference && wide;
   const activeEntry = useMemo(() => menuEntryFor(location), [location]);
@@ -78,16 +85,76 @@ export default function AppShell() {
     return () => query.removeEventListener?.("change", update);
   }, []);
   useEffect(() => { setMobileOpen(false); }, [location.pathname, location.search]);
+
+  // Phone menu: focus moves into it when it opens, Escape closes it, and focus returns to
+  // the button that opened it. While closed it is inert (below), so Tab cannot reach links
+  // that are slid off screen.
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    asideRef.current?.querySelector("button, a")?.focus();
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setMobileOpen(false);
+      menuToggleRef.current?.focus();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mobileOpen]);
+
+  // Each page gets its own browser title, and after navigating, focus moves to the page
+  // (its heading when there is one) so screen readers announce where the visitor landed
+  // instead of staying on the menu link.
+  const pageTitle = [...crumbs].reverse().filter((crumb) => crumb && crumb !== "ClientVerse").join(" · ");
+  useEffect(() => {
+    document.title = pageTitle ? `${pageTitle} · ClientVerse` : "ClientVerse — Client Operations Platform";
+  }, [pageTitle]);
+  useEffect(() => {
+    if (firstRoute.current) { firstRoute.current = false; return undefined; }
+    const focusPage = () => {
+      const heading = mainRef.current?.querySelector("h1");
+      const target = heading || mainRef.current;
+      if (!target) return false;
+      if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+      return Boolean(heading);
+    };
+    if (focusPage()) return undefined;
+    // A page opened for the first time may still be downloading its chunk; move focus to
+    // its heading once it renders, unless the visitor has already moved on.
+    const retry = window.setTimeout(() => {
+      if (document.activeElement === mainRef.current) focusPage();
+    }, 600);
+    return () => window.clearTimeout(retry);
+  }, [location.pathname]);
+
+  const openDialog = (setter) => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setter(true);
+  };
+  const dialogChange = (setter) => (value) => {
+    setter(value);
+    if (value) return;
+    // After the dialog unmounts its own focus scope, put focus back where it came from,
+    // unless the action that closed it moved focus somewhere on purpose (a navigation).
+    const target = returnFocusRef.current;
+    returnFocusRef.current = null;
+    const restore = () => {
+      if (target && target.isConnected && (document.activeElement === document.body || !document.activeElement)) target.focus();
+    };
+    // Once now, and once after the close animation, when the dialog has fully unmounted.
+    window.setTimeout(restore, 0);
+    window.setTimeout(restore, 350);
+  };
   const setCollapsed = (value) => {
     setCollapsedPreference(value);
     try { window.localStorage.setItem(COLLAPSED_KEY, value ? "1" : "0"); } catch { /* storage unavailable */ }
   };
   const doLogout = async () => { await logout(); navigate("/login"); };
-  const triggerQuickCreate = () => setQuickCreateOpen(true);
+  const triggerQuickCreate = () => openDialog(setQuickCreateOpen);
 
   return <div className="min-h-screen bg-canvas text-foreground">
     {mobileOpen && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-sidebar/60 backdrop-blur-[1px] lg:hidden" onClick={() => setMobileOpen(false)} />}
-    <aside className={`fixed inset-y-0 left-0 z-40 flex w-[260px] flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width,transform] duration-200 lg:translate-x-0 ${collapsed ? "lg:w-[68px]" : "lg:w-[228px]"} ${mobileOpen ? "translate-x-0 max-lg:shadow-2xl" : "-translate-x-full"}`} data-testid="app-sidebar">
+    <aside ref={asideRef} inert={!wide && !mobileOpen} className={`fixed inset-y-0 left-0 z-40 flex w-[260px] flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width,transform] duration-200 lg:translate-x-0 ${collapsed ? "lg:w-[68px]" : "lg:w-[228px]"} ${mobileOpen ? "translate-x-0 max-lg:shadow-2xl" : "-translate-x-full"}`} data-testid="app-sidebar">
       <div className={`flex h-[60px] shrink-0 items-center ${collapsed ? "justify-center" : "justify-between pl-4 pr-2"}`}>
         <button className="flex min-w-0 items-center gap-2.5 rounded-lg text-left" onClick={() => navigate("/dashboard")} aria-label="Go to Today">
           <BrandMark className="size-[30px]" />
@@ -130,29 +197,29 @@ export default function AppShell() {
     <div className={`flex min-h-screen flex-col transition-[margin] duration-200 ${collapsed ? "lg:ml-[68px]" : "lg:ml-[228px]"}`}>
       <header className="sticky top-0 z-20 border-b border-border bg-card/95 backdrop-blur-xl">
         <div className="flex h-[60px] items-center gap-2 px-4 sm:gap-3 sm:px-6">
-          <button onClick={() => setMobileOpen(true)} className="-ml-1 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Open navigation" aria-expanded={mobileOpen}><Menu className="size-5" /></button>
+          <button ref={menuToggleRef} onClick={() => setMobileOpen(true)} className="-ml-1 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Open navigation" aria-expanded={mobileOpen}><Menu className="size-5" /></button>
           <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
             {crumbs.map((crumb, index) => <span key={`${index}-${crumb}`} className="flex min-w-0 items-center gap-1.5">
               {index > 0 && <ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground/70 sm:block" aria-hidden="true" />}
               <span className={`truncate ${index === crumbs.length - 1 ? "text-[15px] font-bold tracking-tight text-foreground" : "hidden font-medium text-muted-foreground sm:inline"}`} aria-current={index === crumbs.length - 1 ? "page" : undefined}>{crumb}</span>
             </span>)}
           </nav>
-          <button onClick={() => setCommandOpen(true)} className="hidden h-9 w-60 items-center gap-2 rounded-lg border border-border bg-canvas px-3 text-[13px] text-muted-foreground transition-colors hover:border-input hover:text-foreground md:flex lg:w-72 xl:w-[400px]" aria-label="Search or jump to a page" data-testid="global-search-button">
+          <button onClick={() => openDialog(setCommandOpen)} className="hidden h-9 w-60 items-center gap-2 rounded-lg border border-border bg-canvas px-3 text-[13px] text-muted-foreground transition-colors hover:border-input hover:text-foreground md:flex lg:w-72 xl:w-[400px]" aria-label="Search or jump to a page" data-testid="global-search-button">
             <Search className="size-4 shrink-0" aria-hidden="true" />
             <span className="flex-1 truncate text-left">Search or jump to…</span>
             <kbd className="cv-kbd">{SHORTCUT}</kbd>
           </button>
-          <button onClick={() => setCommandOpen(true)} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground md:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
+          <button onClick={() => openDialog(setCommandOpen)} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground md:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
           {/* The dark theme's brand blue is light, so the label turns dark on it (as Calendar's today does). */}
           <button onClick={triggerQuickCreate} className="hidden h-9 items-center gap-1.5 rounded-lg bg-brand px-3.5 text-[13px] font-semibold text-brand-foreground shadow-xs transition-colors hover:bg-brand/90 dark:text-background sm:flex" data-testid="quick-create-button"><Plus className="size-4" aria-hidden="true" />Create</button>
           <button onClick={triggerQuickCreate} className="inline-flex rounded-lg bg-brand p-2 text-brand-foreground dark:text-background sm:hidden" aria-label="Quick create"><Plus className="size-4" /></button>
           <NotificationBell />
         </div>
       </header>
-      <main className="flex-1 py-5 sm:py-6"><ActingBanner user={user} /><Suspense fallback={<PageLoading />}><Outlet /></Suspense></main>
+      <main ref={mainRef} className="flex-1 py-5 outline-none sm:py-6"><ActingBanner user={user} /><Suspense fallback={<PageLoading />}><Outlet /></Suspense></main>
     </div>
-    <GlobalCommandDialog open={commandOpen} onOpenChange={setCommandOpen} onQuickCreate={triggerQuickCreate} />
-    <QuickCreateDialog open={quickCreateOpen} onOpenChange={setQuickCreateOpen} onCreated={(type, data) => { if (type === "workspace" && data?.id) navigate(`/workspaces/${data.id}`); else if (type === "opportunity") navigate("/pipeline"); else if (type === "company" || type === "contact") navigate("/directory"); }} />
+    <GlobalCommandDialog open={commandOpen} onOpenChange={dialogChange(setCommandOpen)} onQuickCreate={triggerQuickCreate} />
+    <QuickCreateDialog open={quickCreateOpen} onOpenChange={dialogChange(setQuickCreateOpen)} onCreated={(type, data) => { if (type === "workspace" && data?.id) navigate(`/workspaces/${data.id}`); else if (type === "opportunity") navigate("/pipeline"); else if (type === "company" || type === "contact") navigate("/directory"); }} />
   </div>;
 }
 
