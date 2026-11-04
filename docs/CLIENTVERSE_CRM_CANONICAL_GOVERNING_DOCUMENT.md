@@ -1,12 +1,12 @@
 # ClientVerse CRM — Canonical Governing Document
 
-**Version:** 1.29 — complete replacement
-**Effective:** 2026-10-26
+**Version:** 1.30 — complete replacement
+**Effective:** 2026-11-04
 **Owner/admin handoff guide:** [`docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md`](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) — the official owner/admin source of truth for operating production (§0.5)
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
 **Repository:** `ebyron357/Clientverse-crm`
 **Baseline commit at issue:** `main@3f14347610e5ca6cd8521c74f4420d3b2c08a9e8` (PR #24 merged 2026-09-15T18:19Z)
-**Running application code at this revision:** `main@6d0d4c6` (PR #48, the closeout release; production reported this `git_sha` on 2026-10-24 — §3.2). Earlier heads: `394f095` (PR #46), `4873f67` (PR #45), `de1277e` (PR #44), `838f00d` (PR #42), `1a39fa4` (PR #41), `b854059` (PR #38), `9bd9723` (PR #37), `c9f5a6e` (recovery-engine activation merge, 2026-09-28), `730b1b3` (PR #28), `e8d5678` (PR #27), `3150530` (PR #26)
+**Running application code at this revision:** `main@e75bb71145b197c298991098c8ab0ca9a349b362` (direct production health read and Railway records, 2026-11-04). Password recovery is on an isolated branch and is not deployed. Prior closeout release: `6d0d4c6` (PR #48, verified 2026-10-24); older release evidence remains in §3.2.
 
 ---
 
@@ -60,7 +60,7 @@ Nothing in §4 was invented. Where the directive named a capability that the aud
 
 ### 0.5 Owner/admin handoff guide (2026-09-30, re-verified 2026-10-19)
 
-[`docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md`](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) (v1.13, Issue #33) is the **official owner/admin handoff source of truth**. Since 2026-10-24 it is Part 2 of the closeout package; Part 1 is [`docs/closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md`](closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md) (environment, configuration, operations, tests, owner actions). `python scripts/build_closeout_docs.py` generates the Word and Markdown package from the two. It is the one place a non-technical owner is sent for:
+[`docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md`](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) (v1.15, Issue #33) is the **official owner/admin handoff source of truth**. Since 2026-10-24 it is Part 2 of the closeout package; Part 1 is [`docs/closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md`](closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md) (environment, configuration, operations, tests, owner actions). `python scripts/build_closeout_docs.py` generates the Word and Markdown package from the two. It is the one place a non-technical owner is sent for:
 
 - production and sign-in addresses
 - the supported sign-in method, lockout and recovery
@@ -199,6 +199,14 @@ The module registry is the **contract of record** for which surfaces exist and w
 
 ### 3.1 Engineering truth
 
+- **2026-11-04 recovery repair:** branch `codex/secure-password-recovery`, based on
+  `main@e75bb71145b197c298991098c8ab0ca9a349b362`, implements C-40. The owner's request
+  explicitly includes signed-out recovery for the locked-out existing account. It does not
+  authorize a new tenant or an authentication bypass. Scoped verification is recorded in
+  `docs/evidence/password-recovery-20261104.md`. Deployment, live mailbox receipt and Jev QC
+  are separate evidence requirements. The current master quality standard was read from
+  `AI-Operating-Standards`; its approved v1.0 blob remains `d60123e9524adc7af51e1e84d1baee69c5efe3d5`.
+
 - `main@7d2235f` — exact-head CI run **#34999894464 passed**: backend **192 passed, 4 skipped, 4 warnings**; frontend warnings-as-errors production build compiled. Exact-head commit statuses successful for Railway (`welcoming-vibrancy / clientverse-crm-production`) and Vercel. (Issue #10, 2026-09-15.)
 - `main@3f14347` (head at the time of this revision) — verified directly in a clean local environment against MongoDB 7.0.34 on 2026-09-15:
   - backend suite **196 passed, 4 skipped**;
@@ -211,6 +219,16 @@ The module registry is the **contract of record** for which surfaces exist and w
 - `main@c9f5a6e` (head as of 2026-09-28) — the owner merged `claude/trusting-brahmagupta-lj26xf` (scheduler falsifiability, CRM baseline completion, Gmail send/receive, the attribution ledger, the eight declared detector families, backend lint/type/dependency/config CI gates, and the proof surface). Its capability-level findings (`docs/ACTIVATION_REPORT.md`) are reconciled into §4 as of v1.10: C-27…C-29 and E-23 added; M-01, M-08, M-10, E-01, E-02 and E-09 updated. **Exact-head CI could not run:** since 2026-09-27T22:35Z every GitHub Actions job on every branch fails in 2–4 s with no runner assigned (§10.2 O-16). The same gates were run locally on this tree on 2026-09-28: `ruff` clean, `scripts/typecheck.py` blocking modules clean, `pip-audit` no known vulnerabilities, `scripts/validate_config.py` passed, `yarn lint --max-warnings=0` passed, `CI=true yarn build` passed, `scripts/crm_release_smoke.mjs` 82/82, backend 675 passed / 16 failed / 4 skipped on `mongomock` — the documented driver-fidelity baseline; the 16 need a real mongod, which the session cannot reach.
 
 ### 3.2 Production truth
+
+- **Current deployment inventory (2026-11-04):** Railway reports SUCCESS for deployment
+  `98967475-8f35-47dc-9519-499e0a6b0a79`, `main@e75bb71145b197c298991098c8ab0ca9a349b362`,
+  created 2026-11-02T03:43:59.769Z. Password recovery is **not in that release**. Names-only
+  configuration inspection found neither `PASSWORD_RECOVERY_RESEND_API_KEY` nor
+  `PASSWORD_RECOVERY_FROM`. Direct GET `/api/health` returned 200, database up, and the same
+  full SHA. Production OpenAPI contains neither recovery endpoint. The new public deployment
+  probe fails on the old release's recovery-page headers, as expected. No production email,
+  valid reset request, password change, or authenticated owner check was attempted.
+  Historical observations below retain their dates and do not certify the recovery branch.
 
 - Railway deployment `d9af2985-30e4-4fb8-b030-ac8b1446db89` running `ca30587` was **LIVE VERIFIED** on 2026-09-01: `/api/health` 200 `{"status":"ok","database":"up"}`, `scripts/proof_of_life.mjs` exit 0 including cross-tenant 404, smoke records fully purged. Evidence: `docs/evidence/production-smoke-20260901.json`.
 - A fresh Railway health probe returned HTTP 200 `status=ok`, `database=up` on 2026-09-15 (recorded in Issue #10), but **the runtime SHA is not exposed by the current production deployment**. `git_sha` on `/api/health` is merged in code at `3706c7a`; production has not been redeployed onto a head containing it.
@@ -289,6 +307,7 @@ The module registry is the **contract of record** for which surfaces exist and w
 
 | ID | Capability | Status | Evidence / note | Provenance |
 |---|---|---|---|---|
+| C-40 | Signed-out password recovery for owners and members | IN IMPLEMENTATION | Public forgot/reset screens and APIs, expiring hashed tokens, atomic single-use password replacement, encrypted durable email queue, database rate limits, audit trail, session revocation and bootstrap-only owner seed. Not deployed; provider setup O-19. Scoped evidence: `docs/evidence/password-recovery-20261104.md`. | Owner directive 2026-11-04; C-01 extension |
 | C-01 | Authentication, sessions, login lockout, session revocation | DEPLOYED | PR #17; backend suite | RECOVERED (PR #17, Issue #6) |
 | C-02 | Multi-tenant isolation (direct-ID, exports, webhooks, background jobs) | DEPLOYED | PR #17 isolation tests; cross-tenant 404 in production smoke | RECOVERED (Command Brief §Security) |
 | C-03 | Contacts, Companies | DEPLOYED | `/api/contacts`, `/api/companies` | RECOVERED (module registry) |
@@ -654,7 +673,7 @@ Fold pattern improvements into whichever wave touches the relevant surface. Neve
 | O-01 | Google OAuth not configured | Google Cloud: enable Gmail + Calendar APIs, consent screen, OAuth web client with callback `https://<production-origin>/api/integrations/google/callback`; set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` in Railway; authorize a least-privilege test account. **2026-09-30:** the client is configured (boot log registers the Gmail provider), but the stored grant fails to refresh (Google token endpoint 400 at 16:08Z). Re-authorize from **Registries** → **Integrations**, ticking the send permission. If it recurs about weekly, the consent screen is in Testing mode (7-day refresh-token expiry). **2026-10-19:** no Google sync in the production log; since PR #42 the connection records the granted scopes, so a connection made before 838f00d's deployment must be renewed once. **2026-10-19 02:02Z:** the owner reconnected on `crm.clientverse.io`; the callback's grant includes `gmail.readonly`, `gmail.send` and `calendar.readonly` (Railway log). Manual §5.6–§5.10 | C-17, E-16 |
 | O-02 | Stripe test credentials absent | Stripe: test-mode restricted key + webhook endpoint `https://<production-origin>/api/integrations/stripe/webhook` for `payment_intent.succeeded\|payment_failed\|canceled`; set `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET` | C-18, M-08 |
 | O-03 | No external scheduler | **Resolved (observed 2026-10-18):** the workflow calls production with HTTP 200 (§3.2, C-25), so both secrets are set; the in-process scheduler (C-31) would run every job even without them. The workflow first reached production on 2026-09-30 (runs #3551–#3555, after #3544–#3550 failed on a `401` secret mismatch). It **fails loudly** when a secret is missing, when no request reaches production, or when production has no ledger entry for the run (§3.3). Owner check: manual §11.4. Previously: **reduced to two repository secrets.** `.github/workflows/scheduled-jobs.yml` now drives every cron endpoint on the documented cadences; the owner only adds `CLIENTVERSE_PRODUCTION_URL` and `WEBHOOK_CRON_SECRET` under repository secrets. With either missing the workflow exits cleanly without calling anything. A dedicated scheduler may replace it; disable the workflow if so. **Until the secrets exist the durable queue has no worker in production and recovery candidates are only produced on demand.** | C-08, C-16, E-03, E-04, E-05, E-06, NBA-1 |
-| O-04 | Admin credential rotation outstanding | Rotate `ADMIN_PASSWORD` in Railway after first login (`seed()` re-syncs the hash each boot) | Security hygiene |
+| O-04 | Admin credential rotation outstanding | After the recovery release, change the owner password in Settings or through email recovery (manual §9.2); the environment password becomes bootstrap-only. No production rotation is claimed here. | Security hygiene |
 | O-05 | Legacy secret + variable cleanup | Rotate the preview Stripe webhook secret recoverable from pre-redaction git history; delete the superseded misspelled `Mongo_url` variable | Security hygiene |
 | O-06 | Telephony/consent policy undecided | Choose the telephony provider and approve the call consent, recording, and jurisdiction policy | E-08, E-02, M-04 |
 | O-07 | OSINT lawful basis undecided | Approve the lawful basis, permitted sources, retention, and provenance requirements for contact enrichment | E-13 |
@@ -669,6 +688,8 @@ Fold pattern improvements into whichever wave touches the relevant surface. Neve
 | O-16 | GitHub Actions executes nothing | **Resolved (observed 2026-10-18):** CI and `Scheduled jobs` run and pass again (PR #38's checks; scheduled runs 8174–8178). Scheduled runs had first executed again on 2026-09-30 (#3544 onward). Previously: since 2026-09-27T22:35Z every job on every branch (CI and Scheduled jobs) completes as `failure` in 2–4 s with `runner_id: 0` and no log; it began between two scheduled runs of the same unchanged commit. Restore Actions: GitHub → Settings → Billing and plans (Actions spending limit / payment), and the repository's Settings → Actions → General | CI as a merge gate; C-25 and therefore every scheduled cron endpoint (O-03) |
 | O-17 | The scheduler's address is a Vercel copy, not production (found 2026-10-24) | Set GitHub secret `CLIENTVERSE_PRODUCTION_URL` to `https://crm.clientverse.io`. Agent sessions cannot write repository secrets. | The external scheduler no longer depends on the Vercel project |
 | O-18 | Vercel project `clientverse-crm` (team `tradeiq`) publishes a second, non-working sign-in page at `clientverse-crm.vercel.app` on every push | After O-17, delete the project (recommended), or remove its `REACT_APP_BACKEND_URL` so it uses its `/api` forwarding | One front door: `crm.clientverse.io` |
+
+| O-19 | Recovery mail and release not configured | Follow owner manual §9.2.1: verified Resend sending domain, sending-only `PASSWORD_RECOVERY_RESEND_API_KEY`, `PASSWORD_RECOVERY_FROM`, canonical HTTPS `FRONTEND_URL`, existing encryption/signing keys; reviewed CI, independent security/QC evidence, owner-approved merge/release, staging and owner mailbox validation. Do not supply an owner password to engineering. | C-40 |
 
 Secrets are never to be pasted into GitHub, ClickUp, Slack, chat, logs, or evidence artifacts. Configuration is reported by name and presence only.
 
@@ -747,6 +768,8 @@ ClientVerse CRM is closed only when all of the following hold:
 ---
 
 ## 14. Change log
+
+- **v1.30 (2026-11-04):** complete replacement; C-40 signed-out recovery scope, current deployment inventory, bootstrap-only owner seed, O-19 provider/release prerequisites, owner manual v1.15. No deployed or live-verified recovery claim.
 
 | Version | Date | Change |
 |---|---|---|

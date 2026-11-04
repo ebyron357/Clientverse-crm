@@ -85,7 +85,7 @@ cp frontend/.env.example frontend/.env
 ## 3. Database requirements
 
 - MongoDB reachable at `MONGO_URL`. Collections are created on demand.
-- On first startup the backend **seeds** an admin user (`ADMIN_EMAIL`/`ADMIN_PASSWORD`) and the governed registries (integrations / MCP servers / plugins / webhooks). Sample CRM records are created only when `SEED_DEMO_DATA=true`; production defaults this setting to false and must not enable it. Seeding is idempotent, and the configured admin password is re-synchronized on boot when it changes.
+- On first startup the backend **seeds** an admin user (`ADMIN_EMAIL`/`ADMIN_PASSWORD`) and the governed registries (integrations / MCP servers / plugins / webhooks). Sample CRM records are created only when `SEED_DEMO_DATA=true`; production defaults this setting to false and must not enable it. Seeding is idempotent. `ADMIN_PASSWORD` is used only when creating the owner; existing passwords are never overwritten on boot.
 
 ## 4. Backend startup
 
@@ -134,7 +134,7 @@ building — it is baked into the bundle at build time.
 Two methods, both issue an httpOnly `access_token` cookie (7-day) with an `Authorization: Bearer` fallback; `get_current_user` accepts either:
 
 - **JWT email/password** — `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout`. Passwords hashed with bcrypt. Multi-tenant; roles: `admin` / `member`.
-- **Emergent-managed Google login** — `POST /api/auth/google/session` exchanges an Emergent `session_id` for a session token. The login page's "Continue with Google" button sends users to `auth.emergentagent.com`. That is a leftover from the prototyping platform, and not the owner's Google OAuth client (which serves only the Gmail/Calendar integration). An unknown Google address gets a new, separate tenant. Production behaviour is unverified, and owners sign in with email + password — see the [Owner/Admin Manual §3.1](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#31-supported-sign-in-methods).
+- **Retired prototype Google login** — `POST /api/auth/google/session` returns `410`. Email and password is the supported sign-in; Gmail/Calendar OAuth remains an independent integration. See the [Owner/Admin Manual §3.1](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#31-supported-sign-in-methods).
 
 Every tenant-owned record is tenant-scoped; server-side authorization is enforced on all routes (UI hiding is not authorization).
 
@@ -208,7 +208,7 @@ See `docs/PRODUCTION.md` for the full variable table. Minimum core production va
 | `JWT_SECRET` | Strong secret (`openssl rand -hex 32`); startup refuses weak/placeholder values |
 | `FRONTEND_URL` / `CORS_ORIGINS` | Browser origin allowlist (comma-separated) |
 | `PUBLIC_BACKEND_URL` | Public API URL (OAuth redirect derivation, docs) |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Initial admin seed. Rotate the password by changing `ADMIN_PASSWORD` in Railway and redeploying: it is re-applied at every boot, so a change made in Settings → Change password lasts only until the next deploy. Never change `ADMIN_EMAIL`, which would seed a new, empty tenant. |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Initial admin bootstrap only; existing passwords are never overwritten. Never change `ADMIN_EMAIL` to recover access: it would create an empty tenant. See the Owner/Admin Manual §9.2. |
 | `WEBHOOK_CRON_SECRET` | Auth for cron endpoints |
 
 Optional: `INTEGRATION_ENC_KEY`, Google OAuth, `STRIPE_API_KEY`, `EMERGENT_LLM_KEY`, `EMERGENT_EMAIL_KEY`.
@@ -246,3 +246,7 @@ in the repository settings.
 ---
 
 _Validate a release candidate with `cd backend && python -m pytest tests/ -q` against a running MongoDB-backed API, `cd frontend && yarn lint --max-warnings=0`, and `cd frontend && CI=true yarn build`._
+
+## Password recovery release
+
+Signed-out recovery is implemented on `codex/secure-password-recovery`, not yet deployed or provider-certified. `POST /api/auth/forgot-password` queues a generic request; `POST /api/auth/reset-password` requires an expiring, single-use email token. See the [Owner/Admin Manual §9.2](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#92-forgotten-password) for owner procedures and exact Resend configuration, and the [scoped evidence](docs/evidence/password-recovery-20261104.md) for security and release status. No Gmail login or owner-password secret is required.

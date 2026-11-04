@@ -1,5 +1,19 @@
 # ClientVerse CRM — Agent Memory
 
+## Session state (2026-11-04, password recovery branch)
+
+- Current Railway inventory: deployment `98967475-8f35-47dc-9519-499e0a6b0a79`, SUCCESS,
+  `main@e75bb71145b197c298991098c8ab0ca9a349b362`. Recovery is not deployed.
+- Recovery implementation and scoped tests are on `codex/secure-password-recovery`.
+  Governing document C-40 and O-19, manual v1.15 §9.2, and
+  `docs/evidence/password-recovery-20261104.md` describe the implementation and remaining gates.
+- `PASSWORD_RECOVERY_RESEND_API_KEY` and `PASSWORD_RECOVERY_FROM` were absent in a
+  names-only Railway inspection. No actual reset email or owner password change was attempted.
+- The approved master quality standard remains v1.0; owner approval is required for merge
+  and production release. Prepare a reviewable PR and preserve independent QA/Jev gates.
+- Older notes saying the owner password is overwritten at every boot describe the old
+  deployment, not the recovery branch. Do not reintroduce that behavior.
+
 ## Session state (2026-10-24, production closeout)
 
 - **Closeout release: PR #48**, merged into `main`. It contains PR #47's intake repair and its
@@ -145,7 +159,7 @@
 ## Repo/environment facts
 
 - Suite: `cd backend && python -m pytest tests/ -q` (149 passed, 4 skipped as of PR #14); frontend `yarn lint --max-warnings=0` and `CI=true yarn build` are the CI gates (`.github/workflows/ci.yml`).
-- `seed()` reads `ADMIN_EMAIL`/`ADMIN_PASSWORD` at every boot and re-syncs the admin password hash — rotating = set new value + redeploy.
+- `seed()` uses `ADMIN_PASSWORD` only to create a missing owner after the recovery release. It never overwrites an existing password. Owner procedures are in manual §9.2; branch implementation is not deployment evidence.
 - Public URL probes return 404 while no healthy deployment exists (expected; not a routing problem).
 - Do not commit/push unless the owner explicitly asks; post state to Issue #10 instead.
 

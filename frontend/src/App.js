@@ -8,6 +8,7 @@ import AppErrorBoundary from "@/components/AppErrorBoundary";
 import AppShell from "@/components/AppShell";
 import SettingsLayout from "@/components/settings/SettingsLayout";
 import Login from "@/pages/Login";
+import PasswordRecovery from "@/pages/PasswordRecovery";
 import Dashboard from "@/pages/Dashboard";
 import Pipeline from "@/pages/Pipeline";
 import Directory from "@/pages/Directory";
@@ -53,6 +54,8 @@ function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/forgot-password" element={<PasswordRecovery key="forgot" />} />
+      <Route path="/reset-password" element={<PasswordRecovery key="reset" reset />} />
       <Route path="/invite" element={<AcceptInvite />} />
       <Route path="/portal/:token" element={<ClientPortal />} />
       {/* Public booking pages: outside the signed-in app, and /book/:key may be framed. */}

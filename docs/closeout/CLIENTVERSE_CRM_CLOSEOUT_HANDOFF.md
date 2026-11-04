@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Production Closeout Handoff (Part 1 of the closeout package) |
-| **Version** | 1.0 |
-| **Date** | 2026-10-24 |
+| **Version** | 1.1 |
+| **Date** | 2026-11-04 |
 | **Released revision** | `main@6d0d4c6` (merge of PR #48), verified running in production on 2026-10-24 ([§13.3](#133-production-acceptance-results)) |
 | **Production address** | **[https://crm.clientverse.io](https://crm.clientverse.io)** (sign in at **[https://crm.clientverse.io/login](https://crm.clientverse.io/login)**) |
 | **Part 2 of the package** | [Owner/Admin Manual](../CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md): screen-by-screen procedures for every user and administrator workflow |
@@ -19,6 +19,8 @@
 ## 1. Closeout summary
 
 ### 1.1 Where things stand
+
+**Recovery revision:** the password-recovery branch is implemented but not deployed. Railway currently reports `e75bb71` (2026-11-04 inventory). Historical PR #48 acceptance below does not certify this change. The full owner manual §9.2 governs recovery and exact email setup; scoped evidence is in `docs/evidence/password-recovery-20261104.md`.
 
 ClientVerse CRM runs in production on Railway at **[https://crm.clientverse.io](https://crm.clientverse.io)**, backed by
 MongoDB Atlas. A deployment starts automatically for every change merged into `main` on GitHub.
@@ -136,10 +138,10 @@ Two other services build copies of the code but are **not** how the CRM is serve
 
 - The owner account is created by the application itself from two Railway variables:
   - **`ADMIN_EMAIL`** is the owner's sign-in email;
-  - **`ADMIN_PASSWORD`** is the owner's password.
+  - **`ADMIN_PASSWORD`** is the initial bootstrap password, not the current password after a change.
 - On first start the application created the organization **"ClientVerse HQ"** with this account
   as its admin.
-- **At every restart or deployment the owner password is reset to `ADMIN_PASSWORD`.**
+- **After the recovery release, startup never overwrites an existing owner password.**
 - **Never change `ADMIN_EMAIL`:** a new address creates a new, empty organization.
 
 The values are not in any document. Read them in **Railway → `clientverse-crm-production` →
@@ -171,27 +173,20 @@ members join by invitation ([§4.2](#42-invite-a-team-member)).
 
 ### 3.4 Change your password
 
-- **Settings → Security → Password → "Change password"**: enter your current password, then the
-  new one twice. Every other signed-in device is signed out.
-- **The owner's** change lasts only until the next deployment or restart, because
-  `ADMIN_PASSWORD` resets it.
-- To change the owner password permanently:
-  1. Set the new value in Railway variable `ADMIN_PASSWORD` (Railway redeploys, about 2–5
-     minutes).
-  2. Sign in with the new password.
-  3. If the old password may have leaked, change it in Settings first, then set Railway to the
-     same value.
+Use the [Owner/Admin Manual §3.9](../CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#39-change-your-own-password).
+After the recovery release, changes by the owner persist across restarts. `ADMIN_PASSWORD`
+becomes bootstrap-only and must not be synchronized to the chosen password.
 
 ### 3.5 Recovery
 
-| Situation | What to do |
-|---|---|
-| Owner forgot the password | Set a new `ADMIN_PASSWORD` in Railway, wait for the deployment, sign in. |
-| Owner locked out (5 failures) | Wait 15 minutes, then try once. An early unlock needs a database change by engineering. |
-| A team member forgot their password | An admin: **Team & Access → "⋯" → "Reset password"**. A temporary password is shown once. Give it to the member privately. They sign in and must choose their own password before anything else opens. |
-| A member is locked out | The same admin reset clears the lockout. |
-| "Your access to this workspace has been disabled" | An admin re-enables them: **Team & Access → "⋯" → "Enable access"**. |
-| Self-service "forgot password" email | **Not built.** The sign-in page says: *"Forgot it? Your workspace admin can reset it from Team & Access."* |
+The [Owner/Admin Manual §9.2](../CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#92-forgotten-password)
+is the sole procedure for signed-out owner/member recovery and recovery email setup. This
+release adds **"Forgot password?"**, expiring single-use links, old-session revocation and
+lockout clearing after mailbox proof. It never re-enables disabled memberships.
+
+**Not deployed or email-certified as of 2026-11-04.** Provider credentials, sender verification,
+review gates and owner-approved release are prerequisites. Do not replace mailbox verification
+with a direct database or environment-password overwrite.
 
 Full procedures: Owner/Admin Manual §3 and §9.
 
@@ -544,7 +539,7 @@ Values are never written down. Names, purpose and where each is managed:
 | `JWT_SECRET` | Signs sign-in sessions (at least 32 characters) | Yes |
 | `INTEGRATION_ENC_KEY` | Encrypts stored Google and Stripe tokens. **Changing it breaks saved connections.** | Yes |
 | `WEBHOOK_CRON_SECRET` | Secret the scheduler must present; same value as the GitHub secret | Yes |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Owner account and password ([§3.1](#31-the-owner-account)) | Yes |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Owner identity and initial bootstrap password ([§3.1](#31-the-owner-account)) | Yes |
 | `APP_ENV` | `production` turns on strict start-up checks (the image's default) | Default |
 | `FRONTEND_URL` | Public address used in links and cookies: `https://crm.clientverse.io` | Yes |
 | `CORS_ORIGINS` | Browser origins allowed: the custom domain and the Railway address | Yes |
@@ -711,7 +706,7 @@ More: Manual §12 (troubleshooting matrix) and §15 (escalation, with a report t
 | Weekly while Google is in Testing | Reconnect Google, or publish the consent screen to stop the 7-day lapse |
 | Monthly | Check that the **Backup and restore drill** is green; read Atlas backup status; review **Team & Access** for leavers; review active portal links |
 | After every release | Run **Production acceptance** |
-| Quarterly | Rotate `ADMIN_PASSWORD` (Railway); review provider costs; review Railway and Atlas access lists |
+| Quarterly | Review owner credential security (Manual §9.2); review provider costs; review Railway and Atlas access lists |
 | On a leaver | **Disable access** for them; revoke any portal links they shared |
 
 ---
@@ -842,12 +837,12 @@ Owner actions 11 and 12 in [§14.1](#141-owner-actions-exact) resolve both.
 
 | # | Action | Where | Why |
 |---|---|---|---|
-| 1 | **Confirm owner access.** Either (a) add the repository secrets `CLIENTVERSE_OWNER_EMAIL` and `CLIENTVERSE_OWNER_PASSWORD` (the `ADMIN_EMAIL` / `ADMIN_PASSWORD` values), then run **Actions → Production acceptance** with **"owner_check"** ticked; or (b) sign in at https://crm.clientverse.io/login and tick Manual §14 rows 3–5. | GitHub → Settings → Secrets → Actions | No owner credential is available to engineering, by design. The check is read-only. |
+| 1 | **Confirm owner access.** Either (a) add the repository secrets `CLIENTVERSE_OWNER_EMAIL` and `CLIENTVERSE_OWNER_PASSWORD` (the owner email and current password, entered privately; not necessarily the bootstrap values), then run **Actions → Production acceptance** with **"owner_check"** ticked; or (b) sign in at https://crm.clientverse.io/login and tick Manual §14 rows 3–5. | GitHub → Settings → Secrets → Actions | No owner credential is available to engineering, by design. The check is read-only. |
 | 2 | **Gmail:** open **Registries → Integrations → Gmail** and confirm **"Connected"**. Then decide whether to **"Send test & turn on"**. Then run Manual §6 Procedures A–C (send, duplicate protection, reply capture). | CRM (owner) | Only an admin session can see or turn on sending. Reply capture has never been certified live. |
 | 3 | **Atlas backups:** confirm backup is on; record the cluster tier and retention. Optionally narrow network access from `0.0.0.0/0`. | cloud.mongodb.com | Largest open data risk |
 | 4 | **Stripe:** decide whether it is in scope. If yes, follow [§7.5](#75-billing-and-payments-stripe). | Stripe, Railway | Not configured |
 | 5 | **Email notifications:** set `EMERGENT_EMAIL_KEY`, or accept link-only invitations and in-app alerts | Railway | Not set |
-| 6 | **Rotate `ADMIN_PASSWORD`** (open item O-04); **delete `Mongo_url`**; rotate the legacy Stripe webhook secret that is in git history (O-05) | Railway, Stripe | Hygiene |
+| 6 | **Rotate the owner password** through the approved recovery/change flow (O-04); **delete `Mongo_url`**; rotate the legacy Stripe webhook secret that is in git history (O-05) | Railway, Stripe | Hygiene |
 | 7 | **Record costs** in [§12](#12-ongoing-service-costs) | Provider billing pages | No verified figures exist |
 | 8 | **Policy:** should members be able to export leads and read the audit log? ([§4.1](#41-roles)) | Reply in Issue #10 | Current behaviour allows both |
 | 9 | **Cloudflare Worker `clientverse-crm`:** delete it, or tell engineering what it is for | dash.cloudflare.com | Fails on every push; unused |
@@ -857,7 +852,7 @@ Owner actions 11 and 12 in [§14.1](#141-owner-actions-exact) resolve both.
 
 ### 14.2 Known product limitations (current code)
 
-- No self-service "forgot password" email. No two-factor sign-in or single sign-on.
+- Self-service password recovery is implemented on branch, not deployed or email-certified. No two-factor sign-in or single sign-on.
 - No screen to write a one-off email to a contact, or to record email consent by hand (API only).
   Outbound email has never been certified live.
 - Screens cannot edit or archive companies (API only). There is no CSV import screen. The only
@@ -903,7 +898,7 @@ Tick each item, write the date, and keep this page with the closeout record.
 - [ ] The owner signs in with email and password and sees **"Workspace admin"**
 - [ ] The owner signs out; opening `/dashboard` returns to the sign-in page
 - [ ] `/api/cron/health`, signed in as the owner, shows `"scheduled_jobs_running": true`
-- [ ] `ADMIN_PASSWORD` rotated in Railway (O-04) and stored in the owner's password manager
+- [ ] Owner password changed through the approved flow (O-04), stored privately, and confirmed durable across restart
 
 **Team and clients** ([§4](#4-roles-workspaces-and-invitations))
 
