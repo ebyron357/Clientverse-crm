@@ -30,14 +30,17 @@ Atlas cluster.
 | `ADMIN_PASSWORD` | initial bootstrap | Used only to create a missing owner; never overwrites an existing password after the recovery release |
 | `APP_ENV` | yes | `production` |
 | `SEED_DEMO_DATA` | yes | `false` |
+| `FRONTEND_URL` | yes for password recovery | `https://crm.clientverse.io`, explicitly set; recovery does not use the platform-domain fallback |
+| `PASSWORD_RECOVERY_RESEND_API_KEY` | yes for password recovery | Sending-only key scoped to the CRM's verified sending domain; enter directly in Railway |
+| `PASSWORD_RECOVERY_FROM` | yes for password recovery | Sender on that verified domain; see Owner/Admin Manual §9.2.1 |
 
 Optional (safe degradation without them — connect endpoints return 400/503 until set):
 
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`
 - `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET` (test mode only)
 - `EMERGENT_LLM_KEY`, `EMERGENT_EMAIL_KEY`
-- `FRONTEND_URL`, `CORS_ORIGINS`, `PUBLIC_BACKEND_URL` — only needed to override the
-  auto-derived Railway domain (e.g. a custom domain).
+- `CORS_ORIGINS`, `PUBLIC_BACKEND_URL` — override the auto-derived Railway domain
+  when needed (e.g. a custom domain). `FRONTEND_URL` must be explicitly set for recovery.
 - `IN_PROCESS_SCHEDULER` — leave unset. The scheduled jobs run inside the API by
   default; `0` turns that off (§6). `IN_PROCESS_SCHEDULER_JOBS` optionally limits it to a
   comma-separated list of job paths.
