@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Production Closeout Handoff (Part 1 of the closeout package) |
-| **Version** | 1.0 |
-| **Date** | 2026-10-24 |
-| **Released revision** | `main@6d0d4c6` (merge of PR #48), verified running in production on 2026-10-24 ([§13.3](#133-production-acceptance-results)) |
+| **Version** | 1.1 |
+| **Date** | 2026-10-24; re-verified 2026-11-04 ([§13.4](#134-re-verification-2026-11-04)) |
+| **Released revision** | `main@6d0d4c6` (merge of PR #48), verified running in production on 2026-10-24 ([§13.3](#133-production-acceptance-results)). Production now runs `main@e75bb71` (PR #55), re-verified on 2026-11-04 ([§13.4](#134-re-verification-2026-11-04)) |
 | **Production address** | **[https://crm.clientverse.io](https://crm.clientverse.io)** (sign in at **[https://crm.clientverse.io/login](https://crm.clientverse.io/login)**) |
 | **Part 2 of the package** | [Owner/Admin Manual](../CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md): screen-by-screen procedures for every user and administrator workflow |
 | **Governing document** | [Canonical Governing Document](../CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md): product scope and capability status |
@@ -106,6 +106,8 @@ was verified on 2026-10-19.
   application code with a newer `git_sha`.
 - The previous running revision was `main@394f095` (PR #46). Its scheduled jobs answered `200`
   on 2026-10-24.
+- **On 2026-11-04 production reported `git_sha` `e75bb71`** (the merge of PR #55), the head of
+  `main`. Production acceptance passed against it ([§13.4](#134-re-verification-2026-11-04)).
 
 ### 2.3 Environment map
 
@@ -834,6 +836,38 @@ Owner actions 11 and 12 in [§14.1](#141-owner-actions-exact) resolve both.
 - The test organizations ("ClientVerse Acceptance Test A/B/Browser", `acceptance+…@example.com`)
   remain in production with their leads closed and their records archived.
 
+### 13.4 Re-verification (2026-11-04)
+
+All checks were run against **https://crm.clientverse.io** on 2026-11-04 between 06:38 and 06:43 UTC.
+Production reported `git_sha` **`e75bb71145b197c298991098c8ab0ca9a349b362`**, the merge of PR #55
+and the head of `main`.
+
+| Check | Evidence | Result |
+|---|---|---|
+| `/api/health` | Direct request | **Pass.** `status: ok`, `database: up`, `git_sha` = head of `main` |
+| Sign-in page | Rendered in Chromium | **Pass.** Shows **"Sign in to ClientVerse"** |
+| Signed-out visit to `/dashboard` | Rendered in Chromium | **Pass.** Returns to `/login` |
+| CI on `main` | Run `41384669384` at `e75bb71` | **Pass** |
+| Scheduled jobs | Runs #13597–#13601, 06:16–06:37 UTC | **Pass.** Each run green |
+| **Production acceptance: API journey** | Run `41786920217` | **40 of 40 passed.** The same 40 checks as [§13.3](#133-production-acceptance-results) |
+| **Production acceptance: browser pass** | Run `41786920217` | **76 of 76 passed** at phone, tablet, laptop and desktop widths |
+| Owner access check | Run `41786920217` | **Skipped.** The owner secrets are not set ([§14.1](#141-owner-actions-exact) item 1) |
+| **Backup and restore drill** | Run `41786923154` at `e75bb71` | **Pass.** Create → `mongodump` → drop → `mongorestore` → verify |
+
+**Warning raised by the run:** *"CLIENTVERSE_PRODUCTION_URL points at a vercel.app address, which
+forwards /api to Railway. Point it at https://crm.clientverse.io."* The scheduler still reaches
+production only through the Vercel copy. [§14.1](#141-owner-actions-exact) items 11 and 12 remain
+open.
+
+**Evidence:**
+- GitHub Actions run `41786920217`, with artifact `production-acceptance-41786920217` (artifact ID
+  `13301682508`): JSON results and screenshots.
+- *Backup and restore drill* run `41786923154`.
+
+**Still not verified:** the owner's own sign-in (item 1), live outbound email (item 2), Atlas's own
+backups (item 3) and Stripe (item 4). The Jev QC gate did not run: its variables are not set
+(item 10).
+
 ---
 
 ## 14. Remaining limitations and exact owner actions
@@ -945,7 +979,8 @@ Tick each item, write the date, and keep this page with the closeout record.
 | Released revision | `main@6d0d4c6`: merge of PR #48, which carries PR #47 |
 | Production address | https://crm.clientverse.io (Railway service `clientverse-crm-production`) |
 | Production verification | Production acceptance run `40134314474`: API 40/40, browser 76/76, revision match ([§13.3](#133-production-acceptance-results)) |
-| Restore procedure | Tested: Backup and restore drill, pass ([§10.4](#104-restore-tested-procedure)) |
+| Re-verification | 2026-11-04 at `main@e75bb71`: Production acceptance run `41786920217` (API 40/40, browser 76/76), Backup and restore drill run `41786923154` pass, CI and Scheduled jobs green ([§13.4](#134-re-verification-2026-11-04)) |
+| Restore procedure | Tested: Backup and restore drill, pass on 2026-10-24 and 2026-11-04 ([§10.4](#104-restore-tested-procedure)) |
 | Pull requests | #48 merged; #47 merged through #48; #36 closed as superseded (its fixes were already on `main`) |
 | Defects fixed in this closeout | 17. Intake: alias overwrite, refused list budgets, open-ended budgets, inverted ranges, nested precedence, stale contact ceiling, re-pricing race and currency. Security: third-party sign-in, ledger exposure. UI: alert switch ignored, clipped table actions, lost portal link and no revoke, false "copied", contrast, member MCP switch. |
 | Documentation | This handoff (Part 1); Owner/Admin Manual v1.13 (Part 2); the generated Word and Markdown package; `WEBSITE_FORMS.md`; `RAILWAY_RUNBOOK.md`; governing document v1.27; `AGENTS.md` |

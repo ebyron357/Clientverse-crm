@@ -15,9 +15,9 @@ It is generated from the two source documents in the repository (`docs/closeout/
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Production Closeout Handoff (Part 1 of the closeout package) |
-| **Version** | 1.0 |
-| **Date** | 2026-10-24 |
-| **Released revision** | `main@6d0d4c6` (merge of PR #48), verified running in production on 2026-10-24 ([§13.3](#p1-133-production-acceptance-results)) |
+| **Version** | 1.1 |
+| **Date** | 2026-10-24; re-verified 2026-11-04 ([§13.4](#p1-134-re-verification-2026-11-04)) |
+| **Released revision** | `main@6d0d4c6` (merge of PR #48), verified running in production on 2026-10-24 ([§13.3](#p1-133-production-acceptance-results)). Production now runs `main@e75bb71` (PR #55), re-verified on 2026-11-04 ([§13.4](#p1-134-re-verification-2026-11-04)) |
 | **Production address** | **[https://crm.clientverse.io](https://crm.clientverse.io)** (sign in at **[https://crm.clientverse.io/login](https://crm.clientverse.io/login)**) |
 | **Part 2 of the package** | [Owner/Admin Manual](#part-2): screen-by-screen procedures for every user and administrator workflow |
 | **Governing document** | [Canonical Governing Document](https://github.com/ebyron357/Clientverse-crm/blob/main/docs/CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md): product scope and capability status |
@@ -132,6 +132,8 @@ was verified on 2026-10-19.
   application code with a newer `git_sha`.
 - The previous running revision was `main@394f095` (PR #46). Its scheduled jobs answered `200`
   on 2026-10-24.
+- **On 2026-11-04 production reported `git_sha` `e75bb71`** (the merge of PR #55), the head of
+  `main`. Production acceptance passed against it ([§13.4](#p1-134-re-verification-2026-11-04)).
 
 <a id="p1-23-environment-map"></a>
 
@@ -960,6 +962,40 @@ Owner actions 11 and 12 in [§14.1](#p1-141-owner-actions-exact) resolve both.
 - The test organizations ("ClientVerse Acceptance Test A/B/Browser", `acceptance+…@example.com`)
   remain in production with their leads closed and their records archived.
 
+<a id="p1-134-re-verification-2026-11-04"></a>
+
+### 13.4 Re-verification (2026-11-04)
+
+All checks were run against **https://crm.clientverse.io** on 2026-11-04 between 06:38 and 06:43 UTC.
+Production reported `git_sha` **`e75bb71145b197c298991098c8ab0ca9a349b362`**, the merge of PR #55
+and the head of `main`.
+
+| Check | Evidence | Result |
+|---|---|---|
+| `/api/health` | Direct request | **Pass.** `status: ok`, `database: up`, `git_sha` = head of `main` |
+| Sign-in page | Rendered in Chromium | **Pass.** Shows **"Sign in to ClientVerse"** |
+| Signed-out visit to `/dashboard` | Rendered in Chromium | **Pass.** Returns to `/login` |
+| CI on `main` | Run `41384669384` at `e75bb71` | **Pass** |
+| Scheduled jobs | Runs #13597–#13601, 06:16–06:37 UTC | **Pass.** Each run green |
+| **Production acceptance: API journey** | Run `41786920217` | **40 of 40 passed.** The same 40 checks as [§13.3](#p1-133-production-acceptance-results) |
+| **Production acceptance: browser pass** | Run `41786920217` | **76 of 76 passed** at phone, tablet, laptop and desktop widths |
+| Owner access check | Run `41786920217` | **Skipped.** The owner secrets are not set ([§14.1](#p1-141-owner-actions-exact) item 1) |
+| **Backup and restore drill** | Run `41786923154` at `e75bb71` | **Pass.** Create → `mongodump` → drop → `mongorestore` → verify |
+
+**Warning raised by the run:** *"CLIENTVERSE_PRODUCTION_URL points at a vercel.app address, which
+forwards /api to Railway. Point it at https://crm.clientverse.io."* The scheduler still reaches
+production only through the Vercel copy. [§14.1](#p1-141-owner-actions-exact) items 11 and 12 remain
+open.
+
+**Evidence:**
+- GitHub Actions run `41786920217`, with artifact `production-acceptance-41786920217` (artifact ID
+  `13301682508`): JSON results and screenshots.
+- *Backup and restore drill* run `41786923154`.
+
+**Still not verified:** the owner's own sign-in (item 1), live outbound email (item 2), Atlas's own
+backups (item 3) and Stripe (item 4). The Jev QC gate did not run: its variables are not set
+(item 10).
+
 ---
 
 <a id="p1-14-remaining-limitations-and-exact-owner-actions"></a>
@@ -1083,7 +1119,8 @@ Tick each item, write the date, and keep this page with the closeout record.
 | Released revision | `main@6d0d4c6`: merge of PR #48, which carries PR #47 |
 | Production address | https://crm.clientverse.io (Railway service `clientverse-crm-production`) |
 | Production verification | Production acceptance run `40134314474`: API 40/40, browser 76/76, revision match ([§13.3](#p1-133-production-acceptance-results)) |
-| Restore procedure | Tested: Backup and restore drill, pass ([§10.4](#p1-104-restore-tested-procedure)) |
+| Re-verification | 2026-11-04 at `main@e75bb71`: Production acceptance run `41786920217` (API 40/40, browser 76/76), Backup and restore drill run `41786923154` pass, CI and Scheduled jobs green ([§13.4](#p1-134-re-verification-2026-11-04)) |
+| Restore procedure | Tested: Backup and restore drill, pass on 2026-10-24 and 2026-11-04 ([§10.4](#p1-104-restore-tested-procedure)) |
 | Pull requests | #48 merged; #47 merged through #48; #36 closed as superseded (its fixes were already on `main`) |
 | Defects fixed in this closeout | 17. Intake: alias overwrite, refused list budgets, open-ended budgets, inverted ranges, nested precedence, stale contact ceiling, re-pricing race and currency. Security: third-party sign-in, ledger exposure. UI: alert switch ignored, clipped table actions, lost portal link and no revoke, false "copied", contrast, member MCP switch. |
 | Documentation | This handoff (Part 1); Owner/Admin Manual v1.13 (Part 2); the generated Word and Markdown package; `WEBSITE_FORMS.md`; `RAILWAY_RUNBOOK.md`; governing document v1.27; `AGENTS.md` |
@@ -1103,10 +1140,10 @@ Tick each item, write the date, and keep this page with the closeout record.
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.13 |
-| **Date** | 2026-10-24 |
+| **Version** | 1.14 |
+| **Date** | 2026-10-26 |
 | **Repository** | `ebyron357/Clientverse-crm` |
-| **Branch documented** | `main` after the closeout release (PR #48, 2026-10-24). Read the running commit from `/api/health` → `git_sha` ([§2.2](#p2-22-confirm-you-are-on-the-correct-deployment)) |
+| **Branch documented** | `main` with self-serve import and export (2026-10-26), after the closeout release (PR #48, 2026-10-24). Read the running commit from `/api/health` → `git_sha` ([§2.2](#p2-22-confirm-you-are-on-the-correct-deployment)) |
 | **Production environment** | Railway project `welcoming-vibrancy` → environment `production` → service `clientverse-crm-production` |
 | **Production URL** | https://crm.clientverse.io (the Railway address https://clientverse-crm-production-production.up.railway.app reaches the same CRM) |
 | **Sign-in page** | https://crm.clientverse.io/login |
@@ -1573,6 +1610,7 @@ never appears here.
 | Workspace | **Snapshots** | `/settings/snapshots` — save this workspace's setup and load it into another ([§7.24](#p2-724-snapshots)) | **Yes** (hidden from members) |
 | Agency | **Client accounts** | `/settings/agency` — the client accounts your agency runs ([§7.25](#p2-725-agency-and-client-accounts)); not shown inside a client account's own workspace | **Yes** (the group is hidden from members) |
 | Workspace | **Fields** | `/settings/fields` — your own fields on contacts, companies and deals ([§7.4](#p2-74-contacts-and-companies) item 8) | Adding and changing fields: admin |
+| Workspace | **Import and export** | `/settings/import` — bring contacts, companies and deals in from a CSV file, and download them ([§7.20](#p2-720-import-and-export)) | Importing: admin |
 | Workspace | **Team and roles** | `/team` (**Team & Access**) | **Yes** (hidden from members) |
 | Workspace | **Client portal and playbooks** | `/client-ops` (**Client Operations**: safe automation rules, playbooks, the client portal and commercial records — [§7.15](#p2-715-client-operations-and-the-client-portal)) | Some buttons: admin |
 | Workspace | **Lead routing** | `/website-forms` — each form's **"Assign the lead"** section sets who gets its leads | Changing it: admin |
@@ -1587,7 +1625,7 @@ never appears here.
 | Coming soon | **Email**, **SMS** | `/communications/email`, `/communications/sms` | **Not active** — "Configuration required" |
 | Coming soon | **Calling**, **Revenue Operations**, **Support**, **Reporting**, **Relationship Intelligence**, **Migration**, **Knowledge** | `/communications/calling`, `/revenue`, `/support`, `/intelligence/reporting`, `/intelligence/relationships`, `/platform/migration`, `/platform/knowledge` | **Not active** — "Backend contract pending" |
 
-The Settings menu sits beside General, Industry template, Snapshots, Fields, Team and roles, Forms, Integrations and Registries, Audit
+The Settings menu sits beside General, Industry template, Snapshots, Fields, Import and export, Team and roles, Forms, Integrations and Registries, Audit
 log, MCP console and every Coming soon page. **Booking pages** and **Operations** open pages that
 are also reached from the main menu (Calendar; Inbox and Approvals), so those keep their own
 layout and the Settings menu is one click back. A member's address for **Operations** still
@@ -1619,7 +1657,7 @@ Full procedures are in [Chapter 7](#p2-7-crm-daily-use).
 | **Today** | The day's work in order, with reasons | Work **"Your plan"** from the top; **"Call"** a lead; tick a task done | Treat an empty plan as broken — it means nothing is waiting | **"Task done"**; lists refresh |
 | **Leads** | Website and booking leads, with the speed-to-lead clock | **"Mark contacted"**, **"Close"**, **"Spam"**, **"Export CSV"** | Mark a lead contacted before you have reached them | **"Marked as contacted"** |
 | **Tasks** | Every call-back and follow-up | **"New task"**, **"Mark done"**, **"Reopen"** | Leave **"Overdue"** unread | **"Task added"**, **"Changes saved"** |
-| **Contacts / Companies** | People and accounts | **"New contact"**, **"New company"**; open a contact to edit, log activity or archive | Expect to edit or archive a *company* — the screens cannot | **"Contact created"**, **"Contact saved"** |
+| **Contacts / Companies** | People and accounts | **"New contact"**, **"New company"**; open a contact or a company to edit or archive it; log activity on a contact | Expect to delete a record — archive it instead | **"Contact created"**, **"Contact saved"**, **"Company saved"** |
 | **Deals / Pipelines** | Revenue opportunities by stage | **"New deal"**, drag a card, the card's **"⋯"** → **"Move to stage"** | Archive a deal you only meant to mark lost | **"Deal created"**, **"Moved to {stage}"** |
 | **Website Forms** | The forms on your website and what happens to each lead | **"New form"**, **"Send a test lead"**, copy embed code | Approve auto-reply wording you have not read | **"Test lead processed end to end"** |
 | **Calendar** | Online booking: appointments, booking pages, hours | **"Attended"**, **"No-show"**, **"Reschedule"**, **"Cancel"**, **"Review and approve"** | Approve a booking email you have not read | **"Approved and sent"** |
@@ -1635,7 +1673,7 @@ Full procedures are in [Chapter 7](#p2-7-crm-daily-use).
 | **Automation & Audit** | The record of every significant change | Read and filter; admin **"Undo"** of approved AI tool writes | Undo without a reason — a reason is required | **"Reversed"** |
 | **MCP Console** | Governed AI tool operations | Invoke tools; admin **kill switch** | Flip the kill switch casually | **"Kill switch ON — tools disabled"** |
 | **Search (Ctrl/⌘ K)** | Jump to a module | Type a module name | Expect it to find a contact — it cannot | — |
-| **Import / Export** | — | Only **Leads** → **"Export CSV"** in the screens | — | A `leads.csv` download |
+| **Import / Export** | Spreadsheets in, CSV copies out | **Settings → Import and export**: choose the file, match the columns, check the preview, **"Import"** (admin); **"Download CSV"** | Import without reading the rows that can't be imported | **"N contacts imported"**; a `.csv` download |
 | **Reporting** | — | **Not active** (Recovery Proof is the live report) | — | — |
 
 ---
@@ -2255,7 +2293,14 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      - when a deal is won, everyone on it who is a **Lead**, **Qualified** or not yet staged
        becomes **Customer**. A **Partner** stays a **Partner**.
   7. **Open a company** (side panel): tabs **"Contacts"**, **"Deals"**, **"Client 360"**, and the
-     **"Details"** panel. Only **"More fields"** can be edited there.
+     **"Details"** panel.
+     - **"Edit"** → **"Company name"**, **"Industry"**, **"Website"**, **"Client tier"** →
+       **"Save changes"**. A new website also becomes the domain that contacts and website leads
+       are matched to the company by.
+     - **"More fields"** → **"Edit"** fills in your own fields.
+     - **"Archive company"** hides it from the company list; its contacts and deals stay as they
+       are. To bring it back, turn on **"Show archived"** on the **"Companies"** tab, open it, and
+       click **"Restore"**.
   8. **Your own fields** (**Settings** → **Workspace** → **"Fields"**, `/settings/fields`; also **"Columns"** →
      **"Manage fields…"**). An admin adds the details the business tracks on every contact,
      company or deal:
@@ -2290,8 +2335,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
        or with a website request → **Lead**. Anyone else is left for you to set. A stage set by
        hand is never changed.
 - **Common mistakes:**
-  - **Companies cannot be edited, archived or deleted from the screens.** Type carefully.
-    Engineering can edit or archive a company through the server. Nothing can be deleted at all.
+  - Expecting to delete a contact or company. Nothing can be deleted; archive it instead.
   - Creating the same company twice — search first. Two people already entered twice can be
     merged with **"Review and merge"**.
   - Leaving out a contact's email, which stops email and calendar matching.
@@ -2300,7 +2344,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
     any organization has reached either limit).
   - Expecting **"Customers"** to list everyone you have served before stages existed: run
     **"Set from history"** in the **"Clean up"** card first.
-- **Saved when:** **"Company created"**, **"Contact created"**, **"Contact saved"**,
+- **Saved when:** **"Company created"**, **"Company saved"**, **"Company archived"** /
+  **"Company restored"**, **"Contact created"**, **"Contact saved"**,
   **"Contact archived"** / **"Contact restored"**, **"Linked … created …"** after a clean-up, and
   **"Merged into …"** after a merge, **"Fields saved"**, **"Saved “{view}”"** /
   **"Updated “{view}”"** / **"Deleted “{view}”"**, and **"Added “{field}”"** /
@@ -2676,11 +2721,63 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 ### 7.20 Import and export
 
-- **Export:** only **Leads** → **"Export CSV"** in the screens. Contacts, companies and deals can be
-  exported as CSV by engineering through the server.
-- **Import:** no screen. The server has a CSV import (admin) that engineering can run.
-- For a full data copy (a backup, or offboarding a client), ask engineering. See also
-  [§13.5](#p2-135-backups-and-data-export).
+- **Purpose:** bring contacts, companies and deals in from a spreadsheet or another CRM's export,
+  and take a complete copy of your records out.
+- **Where:** **Settings** → **Workspace** → **"Import and export"** (`/settings/import`). The
+  **"Import"** button on **Contacts**, **Companies** and **Pipeline** (admins) opens the same page
+  with that kind of record chosen. Members see only **Export**.
+- **Import a file (admin):**
+  1. **"1. What is in the file?"** → **"Contacts"**, **"Companies"** or **"Deals"**.
+  2. **"2. Choose the file"**: a CSV file of up to 5,000 rows and 5 MB whose first row names the
+     columns. Files saved by Excel, including ones separated by semicolons, are read as they are.
+     **"Download a … template"** gives a file with the right headings.
+  3. **"3. Match each column to a field"**: columns ClientVerse recognises (for example *E-mail*,
+     *Company Name*, *First Name* and *Last Name*, or one of your own fields by its name) are
+     matched already. Choose a field, or **"Don't import"**, for the rest. A contact needs
+     **Name**, or **First name** and **Last name**; a company needs **Company name**; a deal needs
+     **Deal name**.
+  4. **"When a … is already in ClientVerse"**: **"Leave it as it is"** (the default: the row is
+     skipped), **"Update it from the file"** (filled-in cells replace what is stored; empty cells
+     change nothing) or **"Add it as a new record"**.
+  5. **"4. Check what will happen"**: how many records will be added, updated, skipped and cannot
+     be imported, the reason for every row that cannot, and each row with what happens to it.
+     Nothing is saved yet.
+  6. **"Import N …"**. The result replaces the preview, and the import is listed under
+     **"Recent imports"**.
+- **How a row is matched to a record you already have:** a contact by email (in any capitals), or
+  by phone when the row has no email; a company by name, or by website; a deal by name and company.
+  Archived records are not matched. A row that repeats an earlier row of the same file is skipped
+  as **"Same as row N in this file"**.
+- **What an import does:**
+  - A **Company** column links each contact or deal to that company, and makes the company once when
+    it does not exist yet. A contact with no company joins the company of their work email's
+    domain, as a website lead does.
+  - **Lifecycle stage** and a deal's **Stage** take the names shown on screen (for example *Former
+    customer*, *Closed won*). **Value** takes amounts as a spreadsheet writes them (*$1,250.50*).
+    Dates are written YYYY-MM-DD.
+  - **Contact email** on a deal puts the person with that email on it. When nobody has that email,
+    the deal is imported without them and a note says so.
+  - **Owner** must be someone on your team. Anyone else becomes a note, and you own the record.
+  - Your own fields are checked as an edit is: a number field takes only a number, a choice one of
+    its choices, a yes/no field *yes* or *no*.
+  - Imported contacts and deals show **Source: Import**. A deal imported as won makes its people
+    **Customers**.
+  - **An import starts no automations and sends nothing to anyone.** It is one entry in the audit
+    log, not one per record.
+- **Export:** **"Download CSV"** beside **Contacts**, **Companies**, **Deals** or **Tasks**, for
+  anyone on the team. **"Include archived records"** adds those. A file names each record's company
+  and, for a deal, the emails of its people, and has a column for each of your own fields, so it
+  imports straight back. Leads are exported from **Leads** → **"Export CSV"**.
+- **Common mistakes:**
+  - Importing without reading **"Rows that can't be imported"**.
+  - Choosing **"Add it as a new record"** for a file of people you already have: they will then be
+    in ClientVerse twice (merge them with **"Review and merge"**, §7.4).
+  - Expecting an import to be undone in one step: imported records are archived one by one, like
+    any other.
+- **Saved when:** **"N contacts imported"** (or companies, deals), with how many were added,
+  updated, skipped and not imported. On failure: **"Nothing was imported"**, with the reason.
+- For a full copy of your data (a backup, or offboarding a client), export each record type. See
+  also [§13.5](#p2-135-backups-and-data-export).
 
 <a id="p2-721-known-screen-limitations-current-code"></a>
 
@@ -2688,8 +2785,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
 These are verified behaviours of the deployed code. None loses data.
 
-1. **Companies and workspaces cannot be edited or archived** in the screens. Contacts and deals can.
-   Nothing can be deleted.
+1. **Client 360 workspaces cannot be edited or archived** in the screens. Contacts, companies and
+   deals can. Nothing can be deleted.
 2. **No screen writes your own email to a contact, records consent, or shows unmatched inbound
    mail** ([§6.1](#p2-61-read-this-first--current-status)).
 3. **The company list shows at most 200 records**; the contact list shows up to 1,000 per view
@@ -2943,7 +3040,7 @@ on every request, and hiding a button is never the protection.
 | Action | Admin | Member |
 |---|---|---|
 | Sign in; view all CRM records of your organization | ✓ | ✓ |
-| Create and edit contacts and deals; create companies, workspaces, tasks, commitments, outcomes | ✓ | ✓ |
+| Create, edit and archive contacts, companies and deals; create workspaces, tasks, commitments, outcomes | ✓ | ✓ |
 | Work leads; move deal stages; change task, commitment and deliverable status; record booking outcomes | ✓ | ✓ |
 | Acknowledge or resolve alerts and work items; next-best-action decisions | ✓ | ✓ |
 | Change your own password; personal notification preferences | ✓ | ✓ |
@@ -2953,6 +3050,8 @@ on every request, and hiding a button is never the protection.
 | Website forms, booking pages and pipeline stages — create and change | ✓ | ✗ |
 | Apply an industry template (**Settings → Industry template**; anyone can preview one) | ✓ | ✗ |
 | Snapshots — save, share, download, load and delete (**Settings → Snapshots**) | ✓ | ✗ |
+| Import contacts, companies and deals (**Settings → Import and export**) | ✓ | ✗ |
+| Export contacts, companies, deals, tasks and leads as CSV | ✓ | ✓ |
 | Client accounts — create, rename, open and work in, push a snapshot (**Settings → Agency**); an admin of the agency is an admin in every one of its client accounts | ✓ | ✗ |
 | Record conversation consent (API only) | ✓ | ✗ |
 | MCP kill switch, undo, workspace undo window | ✓ | ✗ |
@@ -3134,7 +3233,7 @@ For a teammate who forgot their password, or is locked out.
 |---|---|
 | Delete a user, or change a user's email address | No screen or API |
 | Change `ADMIN_EMAIL` | It would create a new, empty organization |
-| Edit or archive companies; import data; export anything but leads | API only, no screen. Deleting records, and editing workspaces, are not possible even through the API. |
+| Delete a record, or edit a Client 360 workspace | Not possible, even through the API. Archive the record instead. |
 | Clear a lockout on the owner account early | Database change ([§9.3](#p2-93-account-locked-out)) |
 
 ---
@@ -3739,8 +3838,8 @@ compromised and **rotate it** (§13.4), even if you deleted the message.
     data risk.
 - **Network access:** Atlas network access has been open to all addresses (`0.0.0.0/0`) since
   2026-09-01. Narrowing it is recommended (owner, with engineering).
-- **Export:** only leads can be exported from the screens (§7.20). Ask engineering for a CSV export
-  of other record types.
+- **Export:** **Settings → Import and export** downloads contacts, companies, deals and tasks as CSV,
+  and **Leads → Export CSV** the leads (§7.20). Keep a copy before a large import or clean-up.
 
 <a id="p2-136-report-a-problem-safely"></a>
 
@@ -3814,7 +3913,7 @@ the owner account.
 |---|---|
 | Anything this manual lets the owner fix (sign-in, member passwords, Google reconnect, invitations, scheduler secrets) | **Owner** — follow the chapter |
 | Site down, deployment FAILED or CRASHED, database down, automation stopped, any repeated `500` | **Engineering — urgent** |
-| Company edits, deletes, export or import | **Engineering — planned** |
+| Deleting a record, or editing a Client 360 workspace | **Engineering — planned** |
 | Leaked secret or suspicious access | **Rotate now**, then report **privately** (§13.6) |
 | Google Cloud, Stripe account, GitHub billing, DNS, MongoDB Atlas account decisions | **Owner** (engineering can advise) |
 
@@ -4108,6 +4207,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.14 | 2026-10-26 | Self-serve import and export. **Settings → Import and export** (§4.3, §7.20, §8.1): an admin imports contacts, companies or deals from a CSV file by matching its columns to fields (your own fields included) and reading a preview of every row before anything is saved; anyone exports contacts, companies, deals and tasks as CSV. **Import** buttons on Contacts, Companies and Pipeline. Companies are edited, archived and restored from their side panel, with **Show archived** on the Companies tab (§7.4, §7.21). The engineering-only rows for these are gone (§8.12, §13.5, §15). |
 | 1.13 | 2026-10-24 | Production closeout (PR #48). The manual is now Part 2 of the closeout package; Part 1 is [the closeout handoff](#part-1). Changes: **"Continue with Google" removed**, so email and password is the only sign-in (§1.1, §1.2, §3.1, §8.3, §9.6, §10.1, §12). The job ledger is limited to the owner's organization (§8.1). Client portal links stay on screen with **"Copy"** and can be **"Revoke"**d (§7.15, §8.12, §12). The MCP kill switch is greyed out for members (§7.18). All procedures use `https://crm.clientverse.io` (§1.1, §1.2, §2.2, §11.4, Appendices A and C); the Google redirect address is the custom domain (§5.5). Google status is consistent with the 2026-10-19 reconnection (§1.4, §10.1, §14 row 12). The custom-domain switch is recorded as done (§13.3). |
 | 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |
 | 1.11 | 2026-10-19 | **Agency and client accounts** (§7.25, new): client accounts under an agency, the account switcher and the "working in" banner, opening a client account as an agency admin (checked on every request), creating accounts from a snapshot, and pushing a snapshot to many accounts with a preview per account. **Settings → Agency → "Client accounts"** (§4.3); roles (§8.1). Booking pages loaded into a workspace are hosted by someone on its team, or arrive paused (§7.24, §7.25). |

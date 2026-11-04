@@ -1,6 +1,26 @@
 # ClientVerse CRM — Agent Memory
 
-## Session state (2026-10-24, production closeout)
+## Session state (2026-11-04, closeout re-verification)
+
+- **Production runs `main@e75bb71`** (PR #55). `/api/health` reported that `git_sha` with
+  `status: ok` and `database: up`.
+- **Re-verified 2026-11-04** at `main@e75bb71`. Recorded in the closeout handoff §13.4:
+  - Production acceptance run `41786920217`: API 40/40, browser 76/76. Owner check skipped,
+    because no owner secrets are set.
+  - Backup and restore drill run `41786923154`: pass.
+  - CI run `41384669384`: green. Scheduled jobs: green.
+- **This session's egress reached production.** It reached `crm.clientverse.io`, the Railway
+  address and the Jev QC host `bwa357.app.n8n.cloud`. The GitHub MCP tools also returned
+  Actions job logs. Egress depends on each session's network policy, so test it with
+  `/api/health` rather than assuming either way. Production acceptance through Actions remains
+  the recorded verification path.
+- **Still open (owner):** the scheduler secret `CLIENTVERSE_PRODUCTION_URL` still points at the
+  Vercel copy; the acceptance run warns about it (handoff §14.1 items 11–12). Items 1–10 of
+  §14.1 are also unchanged.
+- **Still absent:** no `$Railway` token and no Jev QC variables. Nothing is recorded as Jev
+  `VERIFIED_COMPLETE`.
+
+## Session state (2026-10-24, production closeout) — superseded where the 2026-11-04 section above differs
 
 - **Closeout release: PR #48**, merged into `main`. It contains PR #47's intake repair and its
   review fixes, the retired prototype Google sign-in, the owner-only job ledger, UI fixes from
@@ -8,9 +28,9 @@
   acceptance result are recorded in `docs/closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md` §13.3.
   That file is Part 1 of the owner package. Part 2 is the owner manual. Rebuild the generated
   Word and Markdown package with `python scripts/build_closeout_docs.py`.
-- **Production is reachable from GitHub runners, not from agent sessions.** This session's
-  egress refuses `crm.clientverse.io`, the Railway address, MongoDB downloads and the
-  Actions log host. Verify production with **Actions → Production acceptance**
+- **Production is verified from GitHub runners.** On 2026-10-24 that session's egress refused
+  `crm.clientverse.io`, the Railway address, MongoDB downloads and the Actions log host; the
+  2026-11-04 session could reach them (see above). Verify production with **Actions → Production acceptance**
   (`workflow_dispatch`; `scripts/production_acceptance.mjs` and
   `scripts/production_browser.mjs`). It needs only the existing `CLIENTVERSE_PRODUCTION_URL`
   secret. It registers its own test organizations on `example.com` addresses, with email
