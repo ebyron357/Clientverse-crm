@@ -206,8 +206,11 @@ class PasswordRecovery:
             raise HTTPException(422, problem)
         new_hash = await asyncio.to_thread(hash_password, password)
         await self.audit("reset_attempted", user_id=user["user_id"])
+        if grant["expires_at"].replace(tzinfo=timezone.utc) <= utcnow():
+            await self.audit("reset_rejected")
+            raise HTTPException(400, INVALID_LINK)
         changed = await self.db.users.update_one(
-            {"_id": user["_id"], "password_hash": user["password_hash"]},
+            {"_id": user["_id"], "email": user["email"], "password_hash": user["password_hash"]},
             {"$set": {"password_hash": new_hash, "password_changed_at": utcnow().isoformat(),
                       "session_version": uuid.uuid4().hex, "must_change_password": False}})
         if changed.modified_count != 1:

@@ -2,6 +2,7 @@
 
 Repository: `ebyron357/Clientverse-crm`. Base: `e75bb71145b197c298991098c8ab0ca9a349b362`.
 Branch: `codex/secure-password-recovery`. Date: 2026-11-04.
+Review: [draft PR #56](https://github.com/ebyron357/Clientverse-crm/pull/56).
 Scope: signed-out password recovery, owner bootstrap behavior, session revocation, mail,
 rate limits, audit records, tests, governing/owner documentation. This is not a whole-CRM audit.
 Implementation revision: the commit carrying this record; exact PR/CI head is recorded by GitHub.
@@ -34,7 +35,7 @@ Implementation revision: the commit carrying this record; exact PR/CI head is re
   component memory and clears the fragment without storing it in local/session storage.
   Passwords are never mailed. Recovery pages/API responses use `no-store`, `no-referrer`, and
   `noindex, nofollow`. Merely visiting a link does not consume it.
-- Reset requires an unexpired grant, the same credential fingerprint, and an active membership.
+- Reset requires an unexpired grant, the same credential and email fingerprints, and an active membership.
   A single MongoDB user-document compare-and-swap replaces the password and session version.
   This is the single-use boundary: concurrent submissions, including different valid links,
   cannot both replace the same credential. All old links become invalid even if grant cleanup
@@ -70,9 +71,9 @@ Implementation revision: the commit carrying this record; exact PR/CI head is re
 
 | Check | Result and scope |
 |---|---|
-| Focused backend tests | **PASS: 44 tests**, real MongoDB 7.0.16, Python 3.12.10; recovery, password change, login lockout and agency modules. Synthetic isolated accounts only; email transport replaced. |
-| Full backend suite | In progress; final result must replace this row before release. |
-| CRM release smoke | Pending local full-suite run; no production smoke claimed. |
+| Focused backend tests | **PASS: 45 tests** on `1075803`, real MongoDB 7.0.16, Python 3.12.10; recovery, password change, login lockout and agency modules. Final hardening adds the in-flight email-change case and expiry recheck; **25 recovery tests pass** on that revised code. Synthetic isolated accounts only; email transport replaced. |
+| Full backend suite | **PASS: 1,209 passed, 4 skipped** in GitHub CI [41809667634](https://github.com/ebyron357/Clientverse-crm/actions/runs/41809667634) on `10758036d5e0922feec0c8112d3132e41ca60f45`, MongoDB 7, Python 3.11. Final email-race/expiry hardening is locally regression-tested and requires the new head's CI gate; the linked run does not certify later commits. |
+| CRM release smoke | **PASS** in the same GitHub run. No production smoke claimed. |
 | Recovery browser checks | **PASS: 27 checks**, actual optimized build, Chromium, 390/768/1440px, form states, password mismatch, invalid/expired response, network failure, no auto-login, fragment removal, keyboard tab order, no JS page errors, and axe WCAG A/AA checks. UI API responses are intercepted; backend semantics are covered independently with real MongoDB. |
 | Visual check | Desktop recovery screen inspected and consistent with the existing AuthLayout. Manual screen-reader, Safari/Firefox/Edge and independent visual review remain unverified. |
 | Frontend | ESLint with zero warnings and CI production build passed. |
@@ -102,6 +103,9 @@ Direct production observations (2026-11-04):
 - Names-only configuration read: both `PASSWORD_RECOVERY_RESEND_API_KEY` and
   `PASSWORD_RECOVERY_FROM` absent. Existing `FRONTEND_URL`, `INTEGRATION_ENC_KEY`, `JWT_SECRET`
   and core database configuration are present. No values were printed or modified.
+- GitHub's existing Vercel integration automatically built a frontend preview for PR #56.
+  That is not the Railway production deployment and is not recovery certification. The
+  canonical application and acceptance target remain `https://crm.clientverse.io`.
 
 **Implemented is not deployed.** No merge, deployment, production email or owner password
 change has been performed. The sole owner setup and recovery procedure is the full revised

@@ -307,7 +307,7 @@ The module registry is the **contract of record** for which surfaces exist and w
 
 | ID | Capability | Status | Evidence / note | Provenance |
 |---|---|---|---|---|
-| C-40 | Signed-out password recovery for owners and members | IN IMPLEMENTATION | Public forgot/reset screens and APIs, expiring hashed tokens, atomic single-use password replacement, encrypted durable email queue, database rate limits, audit trail, session revocation and bootstrap-only owner seed. Not deployed; provider setup O-19. Scoped evidence: `docs/evidence/password-recovery-20261104.md`. | Owner directive 2026-11-04; C-01 extension |
+| C-40 | Signed-out password recovery for owners and members | TESTED | PR #56: public forgot/reset screens and APIs, expiring hashed tokens, atomic single-use password replacement, encrypted durable email queue, database rate limits, audit trail, session revocation and bootstrap-only owner seed. CI on `1075803`: 1,209 passed / 4 skipped, release smoke and 27 browser checks passed; final email-race/expiry hardening has 25 local recovery tests passing and requires the updated head's CI. Not deployed; provider setup O-19. Scoped evidence: `docs/evidence/password-recovery-20261104.md`. | Owner directive 2026-11-04; C-01 extension |
 | C-01 | Authentication, sessions, login lockout, session revocation | DEPLOYED | PR #17; backend suite | RECOVERED (PR #17, Issue #6) |
 | C-02 | Multi-tenant isolation (direct-ID, exports, webhooks, background jobs) | DEPLOYED | PR #17 isolation tests; cross-tenant 404 in production smoke | RECOVERED (Command Brief §Security) |
 | C-03 | Contacts, Companies | DEPLOYED | `/api/contacts`, `/api/companies` | RECOVERED (module registry) |

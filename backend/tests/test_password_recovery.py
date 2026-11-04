@@ -312,6 +312,17 @@ def test_old_mailbox_link_is_invalid_after_identity_email_changes(env):
     assert reset(env, token).status_code == 400
 
 
+def test_email_change_while_hashing_cannot_redeem_old_mailbox_link(env, monkeypatch):
+    email, _, user = account(env)
+    token = link(env, email)
+    async def move_email_then_hash(function, password):
+        await env[1].users.update_one({"user_id": user["user_id"]},
+                                     {"$set": {"email": "changed-during-reset@example.com"}})
+        return function(password)
+    monkeypatch.setattr(recovery.asyncio, "to_thread", move_email_then_hash)
+    assert reset(env, token).status_code == 400
+
+
 def test_resend_transport_contract_and_failure_redaction(monkeypatch):
     import httpx
     monkeypatch.setenv("FRONTEND_URL", "https://crm.clientverse.io")
