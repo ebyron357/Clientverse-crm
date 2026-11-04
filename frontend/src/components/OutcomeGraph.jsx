@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, attempt } from "@/lib/api";
 import { toast } from "sonner";
 import { Section, StatusDot } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
@@ -59,18 +59,20 @@ export default function OutcomeGraph({ workspaceId }) {
 
   const create = async () => {
     if (!form.title) return;
-    await api.post("/outcomes", {
+    const ok = await attempt(() => api.post("/outcomes", {
       workspace_id: workspaceId, title: form.title, target: form.target || null,
       target_value: form.target_value ? parseFloat(form.target_value) : null, unit: form.unit || null,
       current_value: 0, status: "on_track", linked_commitment_ids: [],
-    });
+    }), "The outcome wasn't added. Please try again.");
+    if (!ok) return;
     toast.success("Outcome added"); setOpen(false); setForm({ title: "", target: "", target_value: "", unit: "" }); load();
   };
 
   const saveProgress = async (g) => {
     const val = edits[g.id];
     if (val === undefined || val === "") return;
-    await api.patch(`/outcomes/${g.id}`, { current_value: parseFloat(val) });
+    if (!(await attempt(() => api.patch(`/outcomes/${g.id}`, { current_value: parseFloat(val) }),
+      "Progress wasn't saved. Please try again."))) return;
     toast.success("Progress updated");
     setEdits((e) => { const n = { ...e }; delete n[g.id]; return n; });
     load();

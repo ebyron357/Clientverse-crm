@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api, formatErr } from "@/lib/api";
+import { api, attempt, formatErr } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar, PropertyList, Section, StatStrip, StatusDot } from "@/components/page/Page";
@@ -247,10 +247,11 @@ export default function WorkspaceDetail() {
   };
   const submitCommitment = async () => {
     if (!cmtForm.title.trim()) { toast.error("Title is required"); return; }
-    await api.post("/commitments", {
+    const ok = await attempt(() => api.post("/commitments", {
       workspace_id: id, title: cmtForm.title.trim(), owner: cmtForm.owner || null,
       due_date: cmtForm.due_date ? new Date(cmtForm.due_date).toISOString() : null,
-    });
+    }), "The commitment wasn't added. Please try again.");
+    if (!ok) return;
     toast.success("Commitment added"); setCmtDialog(false); setCmtForm({ title: "", owner: "", due_date: "" }); load();
   };
   const runSlaCheck = async () => {
@@ -262,11 +263,15 @@ export default function WorkspaceDetail() {
     } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
     finally { setSlaBusy(false); }
   };
-  const upd = async (url, body, msg) => { await api.patch(url, body); toast.success(msg); load(); };
+  const upd = async (url, body, msg) => {
+    if (!(await attempt(() => api.patch(url, body), "That change didn't save. Please try again."))) return;
+    toast.success(msg); load();
+  };
 
   useEffect(() => { if (d?.workspace) setUndoWin(String(d.workspace.undo_window_minutes || 60)); }, [d]);
   const saveUndoWin = async () => {
-    await api.patch(`/workspaces/${id}/undo-window`, { minutes: parseInt(undoWin) || 60 });
+    if (!(await attempt(() => api.patch(`/workspaces/${id}/undo-window`, { minutes: parseInt(undoWin) || 60 }),
+      "The undo window wasn't updated. Please try again."))) return;
     toast.success("Undo window updated");
   };
 
