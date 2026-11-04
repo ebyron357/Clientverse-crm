@@ -32,6 +32,10 @@ import socket
 from typing import Optional
 from urllib.parse import urlsplit
 
+# The resolver this module uses. Tests replace this name, never `socket.getaddrinfo`
+# itself: patching the socket module would also redirect the database driver.
+_getaddrinfo = socket.getaddrinfo
+
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain", ".home.arpa")
 _BLOCKED_NAMES = {"localhost", "localhost.localdomain"}
 
@@ -87,7 +91,7 @@ def resolve_public_addresses(url: str, *, allow_private: bool = False) -> Option
     host = (parts.hostname or "").rstrip(".")
     port = parts.port or 443
     try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        infos = _getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError):
         return "dns_error"
     addresses = {info[4][0] for info in infos}

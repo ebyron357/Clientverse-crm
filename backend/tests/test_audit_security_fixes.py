@@ -110,7 +110,7 @@ def test_a_name_that_resolves_inside_is_never_contacted(monkeypatch):
     private address. The attempt is refused before any request is made."""
     _reset_motor_client()
     posts = []
-    monkeypatch.setattr(outbound_url.socket, "getaddrinfo", _fake_resolution("10.1.2.3"))
+    monkeypatch.setattr(outbound_url, "_getaddrinfo", _fake_resolution("10.1.2.3"))
     monkeypatch.setattr(server.requests, "post", lambda *a, **k: posts.append((a, k)))
     with TestClient(server.app) as client:
         token = _register(client).json()["token"]
@@ -132,7 +132,7 @@ def test_deliveries_do_not_follow_redirects_and_store_only_coarse_errors(monkeyp
         raise server.requests.exceptions.ConnectionError(
             "HTTPConnectionPool(host='10.0.0.9', port=6379): Max retries exceeded")
 
-    monkeypatch.setattr(outbound_url.socket, "getaddrinfo", _fake_resolution("93.184.216.34"))
+    monkeypatch.setattr(outbound_url, "_getaddrinfo", _fake_resolution("93.184.216.34"))
     monkeypatch.setattr(server.requests, "post", failing_post)
     with TestClient(server.app) as client:
         token = _register(client).json()["token"]
