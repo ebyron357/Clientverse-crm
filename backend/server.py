@@ -32,6 +32,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 import agency as agency_service
 import approval_queue as approval_service
@@ -133,15 +134,47 @@ def demo_seed_enabled() -> bool:
 
 
 class ClientVerseStaticFiles(StaticFiles):
-    """Serve the compiled SPA while preserving API routes and asset 404 responses."""
+    """Serve the compiled SPA while preserving API routes and asset 404 responses.
+
+    Caching: files under static/ carry a content hash in their name, so a browser may keep
+    them for a year; index.html (and every SPA deep link served from it) must be checked on
+    each visit, or a deploy would leave visitors running the old bundle.
+    """
 
     async def get_response(self, path, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404 and "." not in Path(path).name:
-                return await super().get_response("index.html", scope)
+                response = await super().get_response("index.html", scope)
+                response.headers["Cache-Control"] = "no-cache"
+                return response
             raise
+        if response.status_code == 200:
+            if path.startswith("static/"):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif path in ("", ".", "index.html") or path.endswith(".html"):
+                response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+class StaticGZipMiddleware:
+    """Gzip the frontend's files, never the API.
+
+    The 1.9 MB bundle went out uncompressed. API responses are left alone on purpose: some
+    carry session tokens next to text a user supplied, which is the mix compression-length
+    attacks (BREACH) need, and they are small enough that compression buys little.
+    """
+
+    def __init__(self, app, minimum_size: int = 1024):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not scope.get("path", "").startswith("/api"):
+            await self.gzip(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -5155,6 +5188,7 @@ app.add_middleware(
 # to CORS_ORIGINS instead would let their scripts act as a signed-in CRM user, because
 # the session cookie is SameSite=None.
 app.add_middleware(website_forms.PublicFormCORSMiddleware)
+app.add_middleware(StaticGZipMiddleware)
 
 # Production containers build the React application into this directory. Mounting
 # it last preserves explicit API routes while supporting direct SPA deep links.

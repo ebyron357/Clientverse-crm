@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
@@ -11,6 +11,7 @@ import { AccountSwitcher, ActingBanner } from "@/components/AgencySwitcher";
 import { Avatar } from "@/components/page/Page";
 import { breadcrumbFor, MAIN_MENU, menuEntryFor, SETTINGS_ENTRY } from "@/platform/navigation";
 import { ChevronRight, LogOut, Menu, Monitor, Moon, PanelLeft, Plus, Search, Sun, X } from "lucide-react";
+import PageLoading from "@/components/PageLoading";
 
 // A per-browser convenience: whether the main menu is shrunk to icons on a wide screen.
 const COLLAPSED_KEY = "cv.nav.collapsed";
@@ -148,7 +149,7 @@ export default function AppShell() {
           <NotificationBell />
         </div>
       </header>
-      <main className="flex-1 py-5 sm:py-6"><ActingBanner user={user} /><Outlet /></main>
+      <main className="flex-1 py-5 sm:py-6"><ActingBanner user={user} /><Suspense fallback={<PageLoading />}><Outlet /></Suspense></main>
     </div>
     <GlobalCommandDialog open={commandOpen} onOpenChange={setCommandOpen} onQuickCreate={triggerQuickCreate} />
     <QuickCreateDialog open={quickCreateOpen} onOpenChange={setQuickCreateOpen} onCreated={(type, data) => { if (type === "workspace" && data?.id) navigate(`/workspaces/${data.id}`); else if (type === "opportunity") navigate("/pipeline"); else if (type === "company" || type === "contact") navigate("/directory"); }} />
