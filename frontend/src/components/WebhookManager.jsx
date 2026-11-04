@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, attempt } from "@/lib/api";
 import { toast } from "sonner";
 import { copyText } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
@@ -61,17 +61,34 @@ export default function WebhookManager() {
   };
   useEffect(() => { load(); }, []);
 
-  const toggle = async (wh, enabled) => { await api.patch(`/webhooks/${wh.id}`, { enabled }); toast.success(enabled ? "Endpoint enabled" : "Endpoint disabled"); load(); };
-  const rotate = async (wh) => { await api.patch(`/webhooks/${wh.id}`, { rotate_secret: true }); toast.success("Secret rotated"); load(); };
-  const test = async (wh) => { const { data } = await api.post(`/webhooks/${wh.id}/test`); toast[data.status === "delivered" ? "success" : "error"](`Test event → ${data.status}`); load(); };
-  const replay = async (d) => { const { data } = await api.post(`/webhook-deliveries/${d.id}/replay`); toast[data.status === "delivered" ? "success" : "error"](`Replay → ${data.status}`); load(); };
+  const toggle = async (wh, enabled) => {
+    if (!(await attempt(() => api.patch(`/webhooks/${wh.id}`, { enabled })))) return;
+    toast.success(enabled ? "Endpoint enabled" : "Endpoint disabled"); load();
+  };
+  const rotate = async (wh) => {
+    // Rotation breaks the receiver until it is given the new secret, so ask first.
+    if (!window.confirm(`Rotate the signing secret for "${wh.name}"? The receiving system will reject deliveries until you give it the new secret.`)) return;
+    if (!(await attempt(() => api.patch(`/webhooks/${wh.id}`, { rotate_secret: true }), "The secret wasn't rotated. Please try again."))) return;
+    toast.success("Secret rotated"); load();
+  };
+  const test = async (wh) => {
+    let data;
+    if (!(await attempt(async () => { ({ data } = await api.post(`/webhooks/${wh.id}/test`)); }, "The test event couldn't be sent."))) return;
+    toast[data.status === "delivered" ? "success" : "error"](`Test event → ${data.status}`); load();
+  };
+  const replay = async (d) => {
+    let data;
+    if (!(await attempt(async () => { ({ data } = await api.post(`/webhook-deliveries/${d.id}/replay`)); }, "The delivery couldn't be replayed."))) return;
+    toast[data.status === "delivered" ? "success" : "error"](`Replay → ${data.status}`); load();
+  };
   const openVerify = async (wh) => {
     try { const { data } = await api.get(`/webhooks/${wh.id}/secret`); setVerify({ ...wh, secret: data.secret }); }
     catch { toast.error("Only admins can reveal signing secrets"); }
   };
   const create = async () => {
     if (!form.name || !form.url) return;
-    await api.post("/webhooks", form);
+    // The server refuses non-https and private destinations with a reason; show it.
+    if (!(await attempt(() => api.post("/webhooks", form), "The webhook wasn't created. Please try again."))) return;
     toast.success("Webhook created"); setOpen(false); setForm({ name: "", url: "", events: [] }); load();
   };
   const toggleEvent = (ev) => setForm((f) => ({ ...f, events: f.events.includes(ev) ? f.events.filter((x) => x !== ev) : [...f.events, ev] }));

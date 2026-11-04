@@ -1,4 +1,4 @@
-import { useLayoutEffect } from "react";
+import { lazy, Suspense, useLayoutEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import "@/App.css";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
@@ -8,38 +8,43 @@ import AppErrorBoundary from "@/components/AppErrorBoundary";
 import AppShell from "@/components/AppShell";
 import SettingsLayout from "@/components/settings/SettingsLayout";
 import Login from "@/pages/Login";
-import Dashboard from "@/pages/Dashboard";
-import Pipeline from "@/pages/Pipeline";
-import Directory from "@/pages/Directory";
-import Workspaces from "@/pages/Workspaces";
-import WorkspaceDetail from "@/pages/WorkspaceDetail";
-import Registries from "@/pages/Registries";
-import Mcp from "@/pages/Mcp";
-import Operations from "@/pages/Operations";
-import Audit from "@/pages/Audit";
-import Team from "@/pages/Team";
-import Notifications from "@/pages/Notifications";
-import AcceptInvite from "@/pages/AcceptInvite";
-import Settings from "@/pages/Settings";
-import CustomFieldsSettings from "@/pages/CustomFieldsSettings";
-import IndustryTemplates from "@/pages/IndustryTemplates";
-import Snapshots from "@/pages/Snapshots";
-import ImportExport from "@/pages/ImportExport";
-import AgencyAccounts from "@/pages/AgencyAccounts";
-import ClientOps from "@/pages/ClientOps";
-import Automations from "@/pages/Automations";
-import FieldOps from "@/pages/FieldOps";
-import ClientPortal from "@/pages/ClientPortal";
-import ModuleStatus from "@/pages/ModuleStatus";
-import RecoveryProof from "@/pages/RecoveryProof";
-import Leads from "@/pages/Leads";
-import Tasks, { TaskRedirect } from "@/pages/Tasks";
-import WebsiteForms from "@/pages/WebsiteForms";
-import CalendarPage from "@/pages/Calendar";
-import PublicBooking from "@/pages/PublicBooking";
-import ManageBooking from "@/pages/ManageBooking";
 import { CLIENTVERSE_MODULES, MODULE_STATES } from "@/platform/modules";
 import { ChooseOwnPassword } from "@/components/ChangePassword";
+import PageLoading from "@/components/PageLoading";
+
+// Each page is its own chunk, loaded the first time someone opens it. The app shipped all
+// 31 pages (and the charting library) in one 1.9 MB bundle before anyone could sign in.
+const Dashboard = lazy(() => import("@/pages/Dashboard"));
+const Pipeline = lazy(() => import("@/pages/Pipeline"));
+const Directory = lazy(() => import("@/pages/Directory"));
+const Workspaces = lazy(() => import("@/pages/Workspaces"));
+const WorkspaceDetail = lazy(() => import("@/pages/WorkspaceDetail"));
+const Registries = lazy(() => import("@/pages/Registries"));
+const Mcp = lazy(() => import("@/pages/Mcp"));
+const Operations = lazy(() => import("@/pages/Operations"));
+const Audit = lazy(() => import("@/pages/Audit"));
+const Team = lazy(() => import("@/pages/Team"));
+const Notifications = lazy(() => import("@/pages/Notifications"));
+const AcceptInvite = lazy(() => import("@/pages/AcceptInvite"));
+const Settings = lazy(() => import("@/pages/Settings"));
+const CustomFieldsSettings = lazy(() => import("@/pages/CustomFieldsSettings"));
+const IndustryTemplates = lazy(() => import("@/pages/IndustryTemplates"));
+const Snapshots = lazy(() => import("@/pages/Snapshots"));
+const ImportExport = lazy(() => import("@/pages/ImportExport"));
+const AgencyAccounts = lazy(() => import("@/pages/AgencyAccounts"));
+const ClientOps = lazy(() => import("@/pages/ClientOps"));
+const Automations = lazy(() => import("@/pages/Automations"));
+const FieldOps = lazy(() => import("@/pages/FieldOps"));
+const ClientPortal = lazy(() => import("@/pages/ClientPortal"));
+const ModuleStatus = lazy(() => import("@/pages/ModuleStatus"));
+const RecoveryProof = lazy(() => import("@/pages/RecoveryProof"));
+const Leads = lazy(() => import("@/pages/Leads"));
+const Tasks = lazy(() => import("@/pages/Tasks"));
+const TaskRedirect = lazy(() => import("@/pages/Tasks").then((module) => ({ default: module.TaskRedirect })));
+const WebsiteForms = lazy(() => import("@/pages/WebsiteForms"));
+const CalendarPage = lazy(() => import("@/pages/Calendar"));
+const PublicBooking = lazy(() => import("@/pages/PublicBooking"));
+const ManageBooking = lazy(() => import("@/pages/ManageBooking"));
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -51,6 +56,7 @@ function Protected({ children }) {
 
 function AppRouter() {
   return (
+    <Suspense fallback={<PageLoading />}>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/invite" element={<AcceptInvite />} />
@@ -98,6 +104,7 @@ function AppRouter() {
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
+    </Suspense>
   );
 }
 

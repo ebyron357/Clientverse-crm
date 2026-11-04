@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
@@ -11,6 +11,7 @@ import { AccountSwitcher, ActingBanner } from "@/components/AgencySwitcher";
 import { Avatar } from "@/components/page/Page";
 import { breadcrumbFor, MAIN_MENU, menuEntryFor, SETTINGS_ENTRY } from "@/platform/navigation";
 import { ChevronRight, LogOut, Menu, Monitor, Moon, PanelLeft, Plus, Search, Sun, X } from "lucide-react";
+import PageLoading from "@/components/PageLoading";
 
 // A per-browser convenience: whether the main menu is shrunk to icons on a wide screen.
 const COLLAPSED_KEY = "cv.nav.collapsed";
@@ -108,12 +109,22 @@ export default function AppShell() {
     document.title = pageTitle ? `${pageTitle} · ClientVerse` : "ClientVerse — Client Operations Platform";
   }, [pageTitle]);
   useEffect(() => {
-    if (firstRoute.current) { firstRoute.current = false; return; }
-    const heading = mainRef.current?.querySelector("h1");
-    const target = heading || mainRef.current;
-    if (!target) return;
-    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
-    target.focus({ preventScroll: true });
+    if (firstRoute.current) { firstRoute.current = false; return undefined; }
+    const focusPage = () => {
+      const heading = mainRef.current?.querySelector("h1");
+      const target = heading || mainRef.current;
+      if (!target) return false;
+      if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+      return Boolean(heading);
+    };
+    if (focusPage()) return undefined;
+    // A page opened for the first time may still be downloading its chunk; move focus to
+    // its heading once it renders, unless the visitor has already moved on.
+    const retry = window.setTimeout(() => {
+      if (document.activeElement === mainRef.current) focusPage();
+    }, 600);
+    return () => window.clearTimeout(retry);
   }, [location.pathname]);
 
   const openDialog = (setter) => {
@@ -205,7 +216,7 @@ export default function AppShell() {
           <NotificationBell />
         </div>
       </header>
-      <main ref={mainRef} className="flex-1 py-5 outline-none sm:py-6"><ActingBanner user={user} /><Outlet /></main>
+      <main ref={mainRef} className="flex-1 py-5 outline-none sm:py-6"><ActingBanner user={user} /><Suspense fallback={<PageLoading />}><Outlet /></Suspense></main>
     </div>
     <GlobalCommandDialog open={commandOpen} onOpenChange={dialogChange(setCommandOpen)} onQuickCreate={triggerQuickCreate} />
     <QuickCreateDialog open={quickCreateOpen} onOpenChange={dialogChange(setQuickCreateOpen)} onCreated={(type, data) => { if (type === "workspace" && data?.id) navigate(`/workspaces/${data.id}`); else if (type === "opportunity") navigate("/pipeline"); else if (type === "company" || type === "contact") navigate("/directory"); }} />
