@@ -25,14 +25,15 @@ public disclosure.
 - Generate a strong `JWT_SECRET` (`openssl rand -hex 32`). Startup refuses weak
   or placeholder values; never set `ALLOW_INSECURE_JWT` outside disposable local
   environments.
-- Rotate the owner password by changing `ADMIN_PASSWORD` in Railway and redeploying,
-  immediately after the first login and whenever it has left the Railway dashboard. It is
-  re-applied at every boot, so a change made in Settings → Change password lasts only until
-  the next deploy. A Railway-only change does not sign out sessions already open; if the
-  password may be known to someone else, change it in Settings (which signs out every other
-  session) and set the same value in Railway straight away. Team members' passwords are reset
-  by an admin (Team & Access). See
-  [docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) §9.2 and §13.
+- After the recovery release, `ADMIN_PASSWORD` is bootstrap-only. Existing credentials are
+  changed through Settings or signed-out email recovery, which invalidates older sessions.
+  Recovery links are 256-bit random capabilities stored as SHA-256 hashes, expire in 20 minutes,
+  and are consumed by an atomic password compare-and-swap. Queued recipients are encrypted,
+  rate limits are shared in MongoDB, and public responses do not reveal account existence.
+  No reset URL, raw token, password, provider body, or credential is written to audit records.
+  See the [Owner/Admin Manual](docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) §9.2 for procedures
+  and provider setup. This branch is not deployed or independently security-certified.
+
 - Leave `DEMO_MEMBER_EMAIL` / `DEMO_MEMBER_PASSWORD` unset in production — no
   demo account is seeded unless both are provided.
 - Set `CORS_ORIGINS` to the exact browser origins of your deployment.

@@ -38,6 +38,11 @@ jobs:
           CI: 'true'
           REACT_APP_BACKEND_URL: http://localhost:8001
         run: yarn build
+      - name: Install recovery browser test runtime
+        working-directory: frontend
+        run: yarn playwright install --with-deps chromium
+      - name: Password recovery UI, keyboard and accessibility checks
+        run: node scripts/password_recovery_browser.mjs
 
   backend-static-analysis:
     name: Backend lint and types

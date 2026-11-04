@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { formatErr } from "@/lib/api";
 import AuthLayout from "@/components/AuthLayout";
@@ -46,7 +46,7 @@ export default function Login() {
           <Input id="password" type={showPassword ? "text" : "password"} data-testid="password-input" className="h-10 pr-10" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required minLength={signingIn ? undefined : MIN_PASSWORD} autoComplete={signingIn ? "current-password" : "new-password"} aria-describedby="password-help" />
           <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-md text-muted-foreground hover:text-foreground" aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword}>{showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</button>
         </div>
-        <p id="password-help" className="text-xs leading-5 text-muted-foreground">{signingIn ? "Forgot it? Your workspace admin can reset it from Team & Access." : `At least ${MIN_PASSWORD} characters.`}</p>
+        <p id="password-help" className="text-xs leading-5 text-muted-foreground">{signingIn ? <Link to="/forgot-password" className="underline underline-offset-4">Forgot password?</Link> : `At least ${MIN_PASSWORD} characters.`}</p>
       </div>
       {error && <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm leading-5 text-red-700" data-testid="auth-error" role="alert"><AlertCircle className="mt-0.5 size-4 shrink-0" />{error}</div>}
       <Button type="submit" disabled={busy} data-testid="submit-auth-button" className="h-10 w-full cv-action-primary">{busy && <Loader2 className="size-4 animate-spin" />}{busy ? "Please wait…" : signingIn ? "Sign in" : "Create workspace"}</Button>

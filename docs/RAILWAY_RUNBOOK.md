@@ -27,17 +27,20 @@ Atlas cluster.
 | `INTEGRATION_ENC_KEY` | yes | Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `WEBHOOK_CRON_SECRET` | yes | Generate: `openssl rand -hex 32` |
 | `ADMIN_EMAIL` | yes | Owner login email for the seeded administrator |
-| `ADMIN_PASSWORD` | yes | Strong unique password for the seeded administrator |
+| `ADMIN_PASSWORD` | initial bootstrap | Used only to create a missing owner; never overwrites an existing password after the recovery release |
 | `APP_ENV` | yes | `production` |
 | `SEED_DEMO_DATA` | yes | `false` |
+| `FRONTEND_URL` | yes for password recovery | `https://crm.clientverse.io`, explicitly set; recovery does not use the platform-domain fallback |
+| `PASSWORD_RECOVERY_RESEND_API_KEY` | yes for password recovery | Sending-only key scoped to the CRM's verified sending domain; enter directly in Railway |
+| `PASSWORD_RECOVERY_FROM` | yes for password recovery | Sender on that verified domain; see Owner/Admin Manual §9.2.1 |
 
 Optional (safe degradation without them — connect endpoints return 400/503 until set):
 
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`
 - `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET` (test mode only)
 - `EMERGENT_LLM_KEY`, `EMERGENT_EMAIL_KEY`
-- `FRONTEND_URL`, `CORS_ORIGINS`, `PUBLIC_BACKEND_URL` — only needed to override the
-  auto-derived Railway domain (e.g. a custom domain).
+- `CORS_ORIGINS`, `PUBLIC_BACKEND_URL` — override the auto-derived Railway domain
+  when needed (e.g. a custom domain). `FRONTEND_URL` must be explicitly set for recovery.
 - `IN_PROCESS_SCHEDULER` — leave unset. The scheduled jobs run inside the API by
   default; `0` turns that off (§6). `IN_PROCESS_SCHEDULER_JOBS` optionally limits it to a
   comma-separated list of job paths.
@@ -62,7 +65,7 @@ curl -i https://<service>.up.railway.app/api/health      # expect HTTP 200 {"sta
 curl -I https://<service>.up.railway.app/                # expect HTTP 200 (SPA)
 CLIENTVERSE_API_BASE=https://<service>.up.railway.app \
 CLIENTVERSE_ADMIN_EMAIL=<ADMIN_EMAIL> \
-CLIENTVERSE_ADMIN_PASSWORD=<ADMIN_PASSWORD> \
+CLIENTVERSE_ADMIN_PASSWORD=<current-owner-password-from-password-manager> \
 node scripts/proof_of_life.mjs                           # expect exit 0
 ```
 
@@ -188,14 +191,13 @@ sending the header) — no ClientVerse code changes are needed for this.
   dashboard, roll the webhook endpoint's signing secret, and set the new value as
   `STRIPE_WEBHOOK_SECRET` in Railway. No code change can close this — only rotating the
   live secret does.
-- **`ADMIN_PASSWORD` rotation is not durable if done only in the app.** `seed()` re-syncs
-  the admin account's password hash from the `ADMIN_PASSWORD` environment variable on
-  every boot (see `backend/server.py`). Settings → Change password works for the owner
-  account only until the next restart or deploy, so the Railway variable is the only durable
-  way to rotate the owner password: change `ADMIN_PASSWORD` in Railway and let it redeploy
-  (Owner/Admin Manual §9.2). Other accounts change their own password in Settings, and an
-  admin can reset a member's (Team & Access). Never change
-  `ADMIN_EMAIL` — a new value seeds a new, empty tenant.
+- **Password recovery release:** `ADMIN_PASSWORD` becomes bootstrap-only. Restarts preserve
+  existing owner passwords. The owner procedure and exact email settings are maintained in
+  the [Owner/Admin Manual §9.2](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md#92-forgotten-password).
+  Never change `ADMIN_EMAIL` to recover access. Do not roll back to a build that overwrites
+  passwords at startup without an explicit incident plan: it can restore an obsolete password.
+  Prefer a forward fix or disabling recovery email configuration while retaining this seed fix.
+
 - **Google OAuth setup is owner-only.** Creating/verifying the OAuth consent screen and
   Web OAuth client in Google Cloud Console, registering the callback URL above, and
   setting `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` in Railway all require the owner's

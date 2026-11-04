@@ -22,6 +22,8 @@ import requests
 from dotenv import load_dotenv
 from fastapi.responses import RedirectResponse
 
+import password_recovery
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -146,6 +148,8 @@ class ClientVerseStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await seed()
+    recovery = password_recovery.PasswordRecovery(db)
+    await recovery.ensure_indexes()
     # Each index is built on its own. They used to share one try block, so the first
     # failure (an index that existing data violates, say) silently skipped every index
     # after it -- including uniqueness guarantees later modules depend on.
@@ -208,9 +212,15 @@ async def lifespan(_: FastAPI):
     job_scheduler.start()
     # Automation runs parked on a wait step resume from here (AUTOMATION_WATCHER=0 turns it off).
     automation_engine.start_watcher()
+    recovery_worker = asyncio.create_task(recovery.run())
     try:
         yield
     finally:
+        recovery_worker.cancel()
+        try:
+            await recovery_worker
+        except asyncio.CancelledError:
+            pass
         await job_scheduler.stop()
         await lead_pipeline.stop_watcher()
         await automation_engine.stop_watcher()
@@ -243,6 +253,10 @@ CONTENT_SECURITY_POLICY = "; ".join([
 @app.middleware("http")
 async def production_security_headers(request: Request, call_next):
     response = await call_next(request)
+    if request.url.path in {"/forgot-password", "/reset-password", "/api/auth/forgot-password", "/api/auth/reset-password"}:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     # The hosted website-form page is the one document meant to be framed by an
@@ -277,7 +291,8 @@ def verify_password(pw: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(user_id: str, email: str, acting_tenant: Optional[str] = None) -> str:
+def create_access_token(user_id: str, email: str, acting_tenant: Optional[str] = None,
+                        session_version: Optional[str] = None) -> str:
     # jti keeps two tokens issued in the same second from being byte-identical (JWT
     # exp/iat only have second granularity) -- without it, revoking one login's token
     # would also revoke a different login's token that happened to match exactly.
@@ -287,6 +302,8 @@ def create_access_token(user_id: str, email: str, acting_tenant: Optional[str] =
     payload = {"sub": user_id, "email": email, "type": "access", "jti": secrets.token_hex(16),
                "iat": int(now.timestamp()), "iat_ms": int(now.timestamp() * 1000),
                "exp": now + timedelta(days=7)}
+    if session_version:
+        payload["session_version"] = session_version
     if acting_tenant:
         # An agency admin working in one of its client accounts (agency.act_as checks it
         # again on every request).
@@ -398,6 +415,8 @@ def _issued_before_password_change(payload: dict, user: dict) -> bool:
     Sessions are dated by `iat_ms`; one issued before tokens carried it is dated from its
     7-day expiry. The session that made the change is re-issued after it, so it survives.
     """
+    if user.get("session_version") and payload.get("session_version") != user["session_version"]:
+        return True
     changed = _parse_dt(user.get("password_changed_at"))
     if not changed:
         return False
@@ -585,7 +604,7 @@ async def login(inp: LoginInput, response: Response):
         await _record_login_failure(email)
         raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     await _reset_login_failures(email)
-    token = create_access_token(user["user_id"], email)
+    token = create_access_token(user["user_id"], email, session_version=user.get("session_version"))
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
@@ -1010,6 +1029,40 @@ class PasswordChangeInput(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(max_length=256)
 
+
+class ForgotPasswordInput(BaseModel):
+    email: EmailStr = Field(max_length=254)
+
+
+class ResetPasswordInput(BaseModel):
+    token: str = Field(max_length=128)
+    new_password: str = Field(max_length=256)
+
+
+def _recovery_request_ip(request: Request):
+    # Use the ASGI peer, never parse arbitrary Forwarded/X-Forwarded-For headers.
+    # The deployment must only trust its actual reverse proxy in uvicorn.
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") not in _OWN_ORIGINS:
+        raise HTTPException(403, "Open password recovery from ClientVerse itself.")
+    return request.client.host if request.client else "unknown"
+
+
+@api.post("/auth/forgot-password", status_code=202)
+async def forgot_password(inp: ForgotPasswordInput, request: Request):
+    await password_recovery.PasswordRecovery(db).request(inp.email.lower(), _recovery_request_ip(request))
+    return {"message": password_recovery.GENERIC_MESSAGE}
+
+
+@api.post("/auth/reset-password")
+async def recover_password(inp: ResetPasswordInput, request: Request, response: Response):
+    user = await password_recovery.PasswordRecovery(db).reset(
+        inp.token, inp.new_password, _recovery_request_ip(request), hash_password, _new_password_problem)
+    response.delete_cookie("access_token", path="/")
+    await record_event("auth.password_recovered", "user", user["user_id"], user["tenant_id"],
+                       "password-recovery", payload={"sessions_revoked": True})
+    return {"message": "Your password has been reset. Sign in with your new password."}
+
 @api.post("/auth/change-password")
 async def change_password(inp: PasswordChangeInput, request: Request, response: Response,
                           user=Depends(get_current_user)):
@@ -1033,10 +1086,13 @@ async def change_password(inp: PasswordChangeInput, request: Request, response: 
         raise HTTPException(status_code=422, detail=problem)
     if inp.new_password == inp.current_password:
         raise HTTPException(status_code=422, detail="Choose a password different from your current one.")
-    await db.users.update_one(
-        {"user_id": user["user_id"]},
+    session_version = uuid.uuid4().hex
+    changed = await db.users.update_one(
+        {"user_id": user["user_id"], "password_hash": record["password_hash"]},
         {"$set": {"password_hash": hash_password(inp.new_password), "password_changed_at": now_iso(),
-                  "must_change_password": False}})
+                  "session_version": session_version, "must_change_password": False}})
+    if changed.modified_count != 1:
+        raise HTTPException(409, "Your password changed during this request. Please sign in again.")
     await _reset_login_failures(email)
     old_token = _extract_token(request)
     if old_token:
@@ -1045,7 +1101,7 @@ async def change_password(inp: PasswordChangeInput, request: Request, response: 
     # still in the client account it was working in, if any.
     await db.user_sessions.delete_many({"user_id": user["user_id"]})
     acting = (user.get("acting") or {}).get("tenant_id")
-    token = create_access_token(user["user_id"], email, acting_tenant=acting)
+    token = create_access_token(user["user_id"], email, acting_tenant=acting, session_version=session_version)
     set_auth_cookie(response, token)
     await record_event("auth.password_changed", "user", user["user_id"], user.get("home_tenant_id") or user["tenant_id"],
                        email, payload={"temporary_cleared": bool(user.get("must_change_password"))})
@@ -1080,7 +1136,7 @@ async def reset_member_password(target_user_id: str, user=Depends(require_role("
     await db.users.update_one(
         {"user_id": target_user_id, "tenant_id": user["tenant_id"]},
         {"$set": {"password_hash": hash_password(temporary), "password_changed_at": now_iso(),
-                  "must_change_password": True}})
+                  "session_version": uuid.uuid4().hex, "must_change_password": True}})
     await db.user_sessions.delete_many({"user_id": target_user_id})
     await _reset_login_failures(target["email"].lower())
     await record_event("team.password_reset", "membership", target_user_id, user["tenant_id"], user["email"],
@@ -1855,9 +1911,9 @@ async def ai_generate(inp: AIInput, user=Depends(get_current_user)):
 
 async def seed():
     admin_email = os.environ["ADMIN_EMAIL"].lower()
-    admin_pw = os.environ["ADMIN_PASSWORD"]
     existing = await db.users.find_one({"email": admin_email})
     if existing is None:
+        admin_pw = os.environ["ADMIN_PASSWORD"]
         tenant_id = new_id("ten")
         await db.tenants.insert_one({"tenant_id": tenant_id, "name": "ClientVerse HQ", "created_at": now_iso()})
         uid = new_id("user")
@@ -1869,9 +1925,8 @@ async def seed():
             logger.info("Seeded initial administrator and explicit demo data")
         else:
             logger.info("Seeded initial administrator without fictional demo data")
-    else:
-        if existing.get("password_hash") and not verify_password(admin_pw, existing["password_hash"]):
-            await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pw)}})
+    # ADMIN_PASSWORD is bootstrap-only. Never replace an existing owner's chosen
+    # password on a deploy, including after signed-out recovery.
     # registries seed (idempotent by name)
     await seed_registries()
     await seed_team()
