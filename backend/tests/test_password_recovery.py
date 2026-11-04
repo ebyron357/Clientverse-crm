@@ -235,6 +235,34 @@ def test_invalid_reset_is_rate_limited_without_locking_accounts(env):
     assert reset(env, "invalid").status_code == 429
 
 
+def test_throttled_email_requests_cannot_exhaust_other_users_recovery(env):
+    email, _, _ = account(env)
+    async def flood_then_request():
+        service = recovery.PasswordRecovery(env[1])
+        for _ in range(110):
+            await service.request("attacker@example.com", "attacker-peer")
+        await service.request(email, "owner-peer")
+    env[0].portal.call(flood_then_request)
+    owner_job = env[0].portal.call(env[1].password_recovery_jobs.find_one,
+                                 {"subject": recovery.private_key("email", email)})
+    assert owner_job is not None
+
+
+def test_throttled_invalid_resets_cannot_block_another_users_valid_link(env):
+    email, _, _ = account(env)
+    token = link(env, email)
+    async def flood_then_reset():
+        service = recovery.PasswordRecovery(env[1])
+        for _ in range(310):
+            with pytest.raises(server.HTTPException) as error:
+                await service.reset("invalid", NEW, "attacker-peer", server.hash_password,
+                                    server._new_password_problem)
+            assert error.value.status_code in (400, 429)
+        return await service.reset(token, NEW, "owner-peer", server.hash_password,
+                                   server._new_password_problem)
+    assert env[0].portal.call(flood_then_reset)["email"] == email
+
+
 def test_missing_config_is_generic_and_audited(env, monkeypatch):
     monkeypatch.delenv("PASSWORD_RECOVERY_RESEND_API_KEY")
     assert request(env, os.environ["ADMIN_EMAIL"]).json() == {"message": recovery.GENERIC_MESSAGE}

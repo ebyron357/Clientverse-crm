@@ -15,6 +15,7 @@ Implementation revision: the commit carrying this record; exact PR/CI head is re
 | REC-02: startup restores environment password | P1 | Base `backend/server.py::seed` overwrites existing owner hash from `ADMIN_PASSWORD` on every boot | A new chosen password is lost after restart; obsolete credentials can return | Bootstrap-only seed; regression covers reset then seed then login with new/old passwords | Implemented and locally tested; not deployed |
 | REC-03: timestamp-only session invalidation has a login race | P1 | A login that read an old hash can issue its token after recovery; millisecond timestamps alone cannot distinguish it | A late token can survive credential replacement | Random `session_version` changes with password; login and agency switching carry the version observed. In-flight password changes use compare-and-swap. Regression rejects a token issued after reset with the old version | Implemented and locally tested; not deployed |
 | REC-04: transactional recovery mail unavailable in production | P1 release blocker | Railway names-only inspection lacks both recovery provider variables | No provider credential or verified sender configured | Exact configuration and private owner procedure in manual §9.2.1. Provider transport is tested locally; real inbox acceptance remains required | Owner/provider setup; BLOCKED |
+| REC-05: locally throttled attempts consume shared recovery capacity | Medium; two independently reachable endpoints | Independent source review of `b1ae0a3` found global counters charged before local limits in both request and reset paths; isolated MongoDB regressions reproduced denial to an unrelated user | A blocked caller could exhaust recovery capacity for other accounts | Apply IP/email admission before shared mail capacity and IP admission before shared reset capacity. Both regressions fail before the fix and pass afterward; independent source re-review confirms the correction | Fixed on the recovery branch; not deployed |
 
 ## Architecture and security contract
 
@@ -80,12 +81,20 @@ Implementation revision: the commit carrying this record; exact PR/CI head is re
 | Backend static checks | Ruff clean; configuration validator passed; 17 blocking mypy modules clean, including new recovery module. 123 findings remain in 8 non-blocking legacy modules; not silently waived or fixed by this task. |
 | Dependencies | `pip-audit -r backend/requirements.txt`: no known vulnerabilities reported. No new production dependency added. |
 | Jev QC | **QC GATE ERROR — FAIL CLOSED**: submitter ran, `JEV_QC_WEBHOOK_URL` absent; no gate request or `n8n_execution_id`. Token also absent. No verified-complete claim. |
-| Independent security review | Pending; implementation tests are not independent certification. |
+| Independent security review | Independent agent architecture/backend source review completed on `b1ae0a3`; two medium quota-poisoning findings reproduced and fixed. A separate source re-review confirmed both fixes and found no further concrete issue in that correction. Parent reviewed all other changed source files. This scoped automated review is not human certification, deployment approval, or Jev QC. |
 
 Test commands: `python -m pytest tests/test_password_recovery.py tests/test_password_change.py
 tests/test_login_lockout.py tests/test_agency.py -q` in backend; `node
 scripts/password_recovery_browser.mjs` after frontend build; normal repository lint, types,
 configuration and dependency gates. CI includes the new browser check and the recovery tests.
+
+Follow-up validation on 2026-11-04: the two new quota-isolation regressions first failed
+against the reviewed code, then the complete recovery/password-change/login-lockout/agency
+selection passed **48 tests** on real MongoDB 7.0.16 after the fix. Ruff and the 17 blocking
+type-check modules pass. The docs-only follow-up `25b48b9` also passed all CI jobs in run
+`41819930325` (1,210 backend tests); the subsequent code-fix CI is recorded on the PR.
+The review concerns application code and source controls; actual provider setup, inbox
+delivery, production proxy attribution, manual screen-reader review and Jev remain unverified.
 Windows build invocation used `NODE_ENV=production` in the environment before invoking CRACO;
 the repository's existing `yarn build` shell syntax targets Linux CI.
 

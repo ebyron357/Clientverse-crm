@@ -105,13 +105,15 @@ class PasswordRecovery:
     async def request(self, email: str, ip: str) -> None:
         subject = private_key("email", email)
         # Same counters, queue write and response for existing/unknown/disabled accounts.
-        if await self.limited("request_global", "all", 100, 3600):
-            return
+        # Reject locally throttled callers before charging shared capacity. Otherwise
+        # one blocked peer can consume the entire service's hourly mail allowance.
         if await self.limited("request_ip", ip, 20, 900):
             await self.audit("request_throttled", subject=subject)
             return
         if await self.limited("request_email", email, 3, 3600):
             await self.audit("request_throttled", subject=subject)
+            return
+        if await self.limited("request_global", "all", 100, 3600):
             return
         try:
             _, _, _, cipher = configuration()
@@ -186,8 +188,8 @@ class PasswordRecovery:
 
     async def reset(self, token: str, password: str, ip: str, hash_password: Callable[[str], str],
                     password_problem: Callable[[str], Optional[str]]) -> dict:
-        if (await self.limited("reset_global", "all", 300, 900)
-                or await self.limited("reset_ip", ip, 30, 900)):
+        if (await self.limited("reset_ip", ip, 30, 900)
+                or await self.limited("reset_global", "all", 300, 900)):
             await self.audit("reset_throttled")
             raise HTTPException(429, "Too many attempts. Please wait 15 minutes and try again.")
         if not TOKEN_PATTERN.fullmatch(token):
