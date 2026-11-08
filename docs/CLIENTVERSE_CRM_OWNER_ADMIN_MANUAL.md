@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.14 |
-| **Date** | 2026-10-26 |
+| **Version** | 1.15 |
+| **Date** | 2026-11-08 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` with self-serve import and export (2026-10-26), after the closeout release (PR #48, 2026-10-24). Read the running commit from `/api/health` → `git_sha` ([§2.2](#22-confirm-you-are-on-the-correct-deployment)) |
 | **Production environment** | Railway project `welcoming-vibrancy` → environment `production` → service `clientverse-crm-production` |
@@ -149,6 +149,7 @@ weekly until it is published.
 | Production, Railway address | https://clientverse-crm-production-production.up.railway.app | Same CRM, same data. It keeps working, so older links and the Stripe webhook still reach production. Signing in on one address does not sign you in on the other. |
 | Custom domain status | Verified (live, 2026-10-19): Railway reports `crm.clientverse.io` verified, certificate valid, CNAME `crm` → `br0g4oob.up.railway.app` propagated. Railway sets `FRONTEND_URL` and `GOOGLE_REDIRECT_URI` to this address, and `CORS_ORIGINS` lists both addresses ([§10.2](#102-google--gmail-and-google-calendar)). | — |
 | Staging | None. No staging environment is configured or documented. The only deployment path is Railway `production`. | — |
+| **Vercel copy** — https://clientverse-crm.vercel.app (Vercel team `tradeiq`, project `clientverse-crm`) | **Not production.** Vercel rebuilds a second copy of the screens from this repository on every push (it reads `frontend/vercel.json`) and forwards `/api` to the Railway address. Signing in there fails (found 2026-10-24, governing document O-17/O-18). Nothing in the CRM needs it. | **No.** Owner: delete the project in Vercel after the scheduler secret points at `crm.clientverse.io` ([§2.5](#25-the-duplicate-vercel-project)). |
 | Old preview and hosting addresses (Render, Manus, OpenHands, Emergent previews) | Historical only. | **No.** They are not production. Never run a second copy against the production database. |
 
 ### 2.2 Confirm you are on the correct deployment
@@ -212,6 +213,38 @@ weekly until it is published.
   choice is kept in this browser only.
 - In the browser developer console, one `401` from `/api/auth/me` on the sign-in page is normal.
   That is the app checking whether you are already signed in.
+
+### 2.5 The duplicate Vercel project
+
+There is exactly **one** real ClientVerse CRM: the Railway service `clientverse-crm-production`
+(project `welcoming-vibrancy`), reached at **https://crm.clientverse.io**. A Vercel project, also
+named `clientverse-crm`, publishes a broken second copy of the screens. Verified (code):
+`frontend/vercel.json` is that project's only configuration; it forwards `/api` to the Railway
+address. Verified (records, 2026-10-24): the project is in Vercel team `tradeiq`.
+
+**How to tell which one you are looking at**
+
+| Check | The real CRM (Railway) | The Vercel copy |
+|---|---|---|
+| Address bar | `crm.clientverse.io` (or `…up.railway.app`) | anything ending `.vercel.app` |
+| Sign in | Works | Fails |
+| Hosting dashboard | Railway → `welcoming-vibrancy` → `clientverse-crm-production` → **Deployments** shows the commit from `/api/health` → `git_sha` | Vercel → team `tradeiq` → project `clientverse-crm` |
+| Holds data? | Yes — it is the only thing connected to the MongoDB Atlas database | No — it has no database; its `/api` is forwarded to Railway |
+
+**Owner steps (in this order)**
+
+1. GitHub → repository **Settings** → **Secrets and variables** → **Actions** →
+   `CLIENTVERSE_PRODUCTION_URL` → **Update** → `https://crm.clientverse.io` (no trailing slash).
+   The *Scheduled jobs* workflow now refuses any other address ([§11.3](#113-configuration-names-only)),
+   so until this is done its runs are red with **"Scheduler address refused"**. The built-in
+   scheduler keeps every job running meanwhile.
+2. **Check:** the next *Scheduled jobs* run is green ([§11.4](#114-verify-that-automation-is-healthy) C).
+3. Vercel → team `tradeiq` → project `clientverse-crm` → **Settings** → **General** → **Delete
+   Project**. This removes only the copy: no data lives there, and `crm.clientverse.io` is on
+   Railway, not Vercel. **Check:** https://clientverse-crm.vercel.app stops loading and
+   https://crm.clientverse.io/api/health still answers `"status":"ok"`.
+4. Optional, needs engineering: once the project is gone, remove `frontend/vercel.json` so a
+   re-imported Vercel project cannot recreate the copy.
 
 ---
 
@@ -741,6 +774,7 @@ to **"Error"**.
 |---|---|---|
 | **"Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."** | Railway variables missing | Owner in Railway, with engineering |
 | **"Google OAuth redirect is not configured. Set GOOGLE_REDIRECT_URI or PUBLIC_BACKEND_URL."** | No usable redirect address | Engineering |
+| **"Google OAuth redirect is misconfigured: …"** | The callback address is local, not https, on a preview host, or not `…/api/integrations/google/callback`. The CRM refuses to start the connection rather than send you to Google with a callback that cannot reach production. | Owner in Railway, with engineering: set `GOOGLE_REDIRECT_URI` to `https://crm.clientverse.io/api/integrations/google/callback` |
 | "Access blocked" (at Google) | Your account is not a test user, or the app is restricted | Owner in Google Cloud |
 | **"Integration center unavailable"** | The Registries page could not load connections | Reload; if it repeats, escalate |
 | "Sync failed: rate_limited" | Google throttled requests | Wait 15 minutes and retry |
@@ -2223,7 +2257,7 @@ the same call is recognized and ignored.
 | Railway → service → **Variables** | `IN_PROCESS_SCHEDULER` | Leave unset. `0` turns the built-in scheduler **off** — an engineering decision |
 | Same | `IN_PROCESS_SCHEDULER_JOBS` | Leave unset. Engineering can limit the built-in scheduler to listed jobs |
 | Same | `WEBHOOK_CRON_SECRET` | The shared secret for calls from outside (the workflow, or an engineer running a job by hand) |
-| GitHub → repository **Settings** → **Secrets and variables** → **Actions** | `CLIENTVERSE_PRODUCTION_URL` | The production address in [§2.1](#21-addresses) — workflow only |
+| GitHub → repository **Settings** → **Secrets and variables** → **Actions** | `CLIENTVERSE_PRODUCTION_URL` | `https://crm.clientverse.io` — workflow only. Verified (code, `backend/public_url.py`): before any call the workflow refuses an address that is not https, is localhost or private, is a preview or copy host (for example `*.vercel.app`), or is not one of the two production hosts in [§2.1](#21-addresses). A refusal makes no request, so the cron secret is never sent anywhere else. |
 | Same | `WEBHOOK_CRON_SECRET` | **The same value** as the Railway variable — workflow only |
 
 ### 11.4 Verify that automation is healthy
@@ -2245,7 +2279,12 @@ the same call is recognized and ignored.
    raised an error, and which scheduler ran it.
 5. `"last_rejected_call_at"` — the last outside call refused because of a wrong secret. It should be
    older than the last authenticated call.
-6. More detail: `/api/cron/runs` lists individual runs. Built-in runs show `origin: in_process` and
+6. `"public_urls"` — the address links and the Google callback are built from, by host only.
+   Each row should read `"ok": true`. A row with `"ok": false` names the problem (for example a
+   preview host); escalate with that text. Verified (code): in production the CRM refuses to start
+   on a local or non-https `FRONTEND_URL`, and refuses **"Connect Google"** while the Google
+   callback address has a problem.
+7. More detail: `/api/cron/runs` lists individual runs. Built-in runs show `origin: in_process` and
    an id like `inprocess-<job>-<time>`.
 
 **B. Railway (owner)**
@@ -2277,6 +2316,7 @@ Railway → service → **Deployments** → the active deployment → **View log
 | GitHub **red run** | Something in the chain failed. Open the run to see which step. | See the rows below |
 | **401 Unauthorized** (workflow) | The shared secret is missing or different at one end (GitHub vs Railway). Production records the refusal. | Make both `WEBHOOK_CRON_SECRET` values identical ([§11.8](#118-rotate-or-fix-the-scheduler-secret)) |
 | *"Scheduler not configured"* — *Missing repository secret(s)* | A GitHub secret is not set | Add it (§11.3), or disable the workflow if you rely on the built-in scheduler |
+| *"Scheduler address refused"* | `CLIENTVERSE_PRODUCTION_URL` is not a production address — the error names the host and the reason (for example *"points at a preview or copy host (clientverse-crm.vercel.app)"*). No request was made. | Set it to `https://crm.clientverse.io` ([§2.5](#25-the-duplicate-vercel-project) step 1) |
 | *"No request reached production"* | None of the calls returned 200 | Read the **HTTP** column of the run summary: `000` = production unreachable (check `/api/health` and Railway, [§2.3](#23-if-the-site-does-not-load)); `401` = secret mismatch ([§11.8](#118-rotate-or-fix-the-scheduler-secret)); `404` = wrong `CLIENTVERSE_PRODUCTION_URL` |
 | *"Run not recorded"* / *"Ledger unreadable"* | Calls were accepted, but the ledger check failed | Escalate |
 | Every workflow job fails in 2–4 seconds with no log | A GitHub account-level Actions problem (billing, spending limit, Actions disabled) — as from 2026-09-27 22:35 until 2026-09-30 | Owner: GitHub → **Settings** → **Billing and plans**; repository **Settings** → **Actions** → **General**. The built-in scheduler keeps running meanwhile. |
@@ -2800,6 +2840,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.15 | 2026-11-08 | Public address safety: the *Scheduled jobs* workflow refuses any `CLIENTVERSE_PRODUCTION_URL` that is not a production host (§11.3, §11.5); `/api/cron/health` reports `public_urls` (§11.4); a misconfigured Google callback is refused (§5.9). The duplicate Vercel project and how to tell it from production (§2.1, §2.5, new). |
 | 1.14 | 2026-10-26 | Self-serve import and export. **Settings → Import and export** (§4.3, §7.20, §8.1): an admin imports contacts, companies or deals from a CSV file by matching its columns to fields (your own fields included) and reading a preview of every row before anything is saved; anyone exports contacts, companies, deals and tasks as CSV. **Import** buttons on Contacts, Companies and Pipeline. Companies are edited, archived and restored from their side panel, with **Show archived** on the Companies tab (§7.4, §7.21). The engineering-only rows for these are gone (§8.12, §13.5, §15). |
 | 1.13 | 2026-10-24 | Production closeout (PR #48). The manual is now Part 2 of the closeout package; Part 1 is [the closeout handoff](closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md). Changes: **"Continue with Google" removed**, so email and password is the only sign-in (§1.1, §1.2, §3.1, §8.3, §9.6, §10.1, §12). The job ledger is limited to the owner's organization (§8.1). Client portal links stay on screen with **"Copy"** and can be **"Revoke"**d (§7.15, §8.12, §12). The MCP kill switch is greyed out for members (§7.18). All procedures use `https://crm.clientverse.io` (§1.1, §1.2, §2.2, §11.4, Appendices A and C); the Google redirect address is the custom domain (§5.5). Google status is consistent with the 2026-10-19 reconnection (§1.4, §10.1, §14 row 12). The custom-domain switch is recorded as done (§13.3). |
 | 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |

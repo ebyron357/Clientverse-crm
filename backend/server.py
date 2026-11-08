@@ -49,6 +49,7 @@ import gmail_provider
 import industry_templates
 import next_best_action as nba_service
 import outbound_url
+import public_url
 import record_fields
 import recovery_case as recovery_case_service
 import recovery_intake
@@ -112,6 +113,15 @@ IS_PRODUCTION = APP_ENV in {"production", "prod"}
 if IS_PRODUCTION:
     if not FRONTEND_URL.startswith("https://"):
         raise RuntimeError("FRONTEND_URL must use HTTPS in production")
+    # Every link the CRM sends (invitations, booking, website forms, the Google return
+    # page) starts with FRONTEND_URL. A local or malformed one cannot work for anyone, so
+    # it stops the boot; a preview/copy host still works today, so it is logged loudly
+    # and shown on /api/cron/health instead of taking production down.
+    _frontend_findings = public_url.check(FRONTEND_URL, production=True, name="FRONTEND_URL")
+    if public_url.fatal(_frontend_findings):
+        raise RuntimeError(" ".join(f.message for f in public_url.fatal(_frontend_findings)))
+    for _finding in _frontend_findings:
+        logger.error("Public URL check: %s", _finding.message)
     if not CORS_ORIGINS or any(origin == "*" or not origin.startswith("https://") for origin in CORS_ORIGINS):
         raise RuntimeError("CORS_ORIGINS must contain explicit HTTPS origins in production")
     missing_production_secrets = [
@@ -2945,6 +2955,24 @@ _PUBLIC_BACKEND = (os.environ.get("PUBLIC_BACKEND_URL") or FRONTEND_URL).rstrip(
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or (
     f"{_PUBLIC_BACKEND}/api/integrations/google/callback" if _PUBLIC_BACKEND else None
 )
+# Google calls this address with the OAuth code. In production it must be a public,
+# https, non-preview address ending in the callback path; otherwise starting a connection
+# is refused with the reason (see `google_connect`) rather than sending the owner to
+# Google with a callback that cannot reach production.
+GOOGLE_REDIRECT_FINDINGS = (public_url.check_google_redirect(GOOGLE_REDIRECT_URI, production=True)
+                            if IS_PRODUCTION and GOOGLE_REDIRECT_URI else [])
+for _finding in GOOGLE_REDIRECT_FINDINGS:
+    logger.error("Public URL check: %s Google connections are refused until it is fixed.",
+                 _finding.message)
+
+
+def public_url_report() -> list[dict]:
+    """Host and findings for each outward-facing address. Never includes a full value."""
+    frontend = public_url.check(FRONTEND_URL, production=IS_PRODUCTION, name="FRONTEND_URL")
+    redirect = (public_url.check_google_redirect(GOOGLE_REDIRECT_URI, production=IS_PRODUCTION)
+                if GOOGLE_REDIRECT_URI else [])
+    return [public_url.report("FRONTEND_URL", FRONTEND_URL, frontend),
+            public_url.report("GOOGLE_REDIRECT_URI", GOOGLE_REDIRECT_URI, redirect)]
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     # Sending is a separate, narrower grant than full mailbox access: `gmail.send` can
@@ -3508,6 +3536,12 @@ async def google_connect(user=Depends(require_role("admin"))):
             status_code=400,
             detail="Google OAuth redirect is not configured. Set GOOGLE_REDIRECT_URI or PUBLIC_BACKEND_URL.",
         )
+    if GOOGLE_REDIRECT_FINDINGS:
+        raise HTTPException(
+            status_code=400,
+            detail="Google OAuth redirect is misconfigured: "
+                   + " ".join(f.message for f in GOOGLE_REDIRECT_FINDINGS),
+        )
     await ensure_connections(user["tenant_id"])
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
@@ -3844,7 +3878,10 @@ async def cron_health(request: Request, window_minutes: int = 120):
     never making a request. A scheduler is expected to fail its own run on this.
     """
     await _authorize_cron_observer(request)
-    return await cron_ledger.health(db, window_minutes=window_minutes)
+    health = await cron_ledger.health(db, window_minutes=window_minutes)
+    # The addresses links and callbacks are built from, by host only, so a wrong
+    # FRONTEND_URL or Google callback is visible here and not just in the boot log.
+    return {**health, "public_urls": public_url_report()}
 
 
 
