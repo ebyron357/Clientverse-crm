@@ -132,7 +132,7 @@ def _draft_body(case: dict, step: dict) -> str:
     looked finished.
     """
     lines = [
-        f"[DRAFT — prepared by ClientVerse for {step['action'].replace('_', ' ')}]",
+        f"{conversations.PLACEHOLDER_MARKER} for {step['action'].replace('_', ' ')}]",
         "",
         f"Recovery reason: {case.get('reason')}",
     ]
@@ -141,8 +141,9 @@ def _draft_body(case: dict, step: dict) -> str:
             f"Opportunity value on record: {case['potential_value']} "
             f"{case.get('currency') or ''} (estimated, not recovered)")
     lines += ["", f"Intended next step: {step['detail']}", "",
-              "This text has not been sent. It requires approval, an authorised channel, "
-              "and a registered delivery provider before it can leave the CRM."]
+              "This text has not been sent and cannot be: it is an internal note. Write the "
+              "message to the client as a new draft in this conversation and request its "
+              "approval."]
     return "\n".join(lines)
 
 

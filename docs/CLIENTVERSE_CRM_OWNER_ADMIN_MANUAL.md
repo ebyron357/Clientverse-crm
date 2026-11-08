@@ -926,6 +926,69 @@ proves the guarantee you can see.
   `communication_message.received` audit event, and the contact's **"Activity"** history.
 - **Redact** personal email addresses before sharing screenshots outside the company.
 
+### 6.9 First live Second Chance run (runbook)
+
+**What Second Chance is.** It looks for deals with no activity for 14 days and for tasks or
+commitments more than 24 hours overdue. Each one becomes a **Recovery Case** with a proposed
+plan (a "recovery strategy") that waits in **Approvals**. Verified (code): it already runs by
+itself every hour at :05 ([§11.2](#112-scheduled-jobs)), so cases may already be waiting.
+
+**Will it email a customer by itself? No.** Verified (code, 2026-11-08). An email reaches a
+client only after **all** of these, each done by a person:
+
+1. An admin approves the recovery strategy.
+2. A person writes the message to the client. The text the CRM drafts for a recovery step is an
+   internal note (it starts *"[DRAFT — prepared by ClientVerse"* and names the deal value); the
+   CRM refuses to send it even if someone approves it.
+3. The contact's consent is recorded on the conversation (today only an engineer can, through
+   the API — [Appendix C](#appendix-c-engineer-assisted-email-verification)).
+4. An admin approves that exact text.
+5. Email sending is on ([§5.10](#510-turn-email-sending-on-or-off)).
+6. Someone presses send (today an API call; no screen has a send button for these messages).
+
+**Step 1 — dry run (nothing is saved, nobody is contacted).** Signed in as an admin, open
+https://crm.clientverse.io/api/second-chance/preview
+
+- `"would_open_cases"` — new cases the next sweep would open. `"already_open_cases"` — ones that
+  exist. `"detections"` lists each one with its `"title"` and `"reason"`. Read them: is each one
+  really a deal or task that went quiet?
+- `"email"` — whether email could leave at all:
+  `"channel_authorized"`, `"gmail_status"` (should be `"active"`),
+  `"gmail_send_permission_recorded"` (should be `true`), `"provider_registered"` (should be
+  `true`), and `"still_required_per_message"` (the steps above that are still per message).
+
+**Step 2 — check Gmail (owner).** Do these in order; each links to the full procedure.
+
+1. **Registries** → **"Integrations"**: the Gmail row reads **"Connected"** ([§5.4](#54-read-the-connection-status)).
+2. `gmail.send` was granted ([§5.8](#58-verify-that-gmailsend-was-actually-granted)).
+3. The strip under Gmail reads **"Email sending on"**. If it reads **"Email sending off"**,
+   decide whether email may leave the CRM at all; only then click **"Send test & turn on"**
+   ([§5.10](#510-turn-email-sending-on-or-off)). The test goes to the connected mailbox itself.
+4. The dry run's `"email"` now shows `"channel_authorized": true`.
+
+You can do the rest of this runbook with sending **off**: nothing in steps 3–4 sends email.
+
+**Step 3 — the first live run (internal only).**
+
+1. **Approvals**: open one request titled **"Recovery strategy: …"**, read its summary, click
+   **"Approve"**. Pick one you recognise; leave the rest.
+2. Within about 5 minutes the work queue runs it. **Check:**
+   - **Tasks** shows the plan's internal steps as new tasks (for example
+     *"Brief owner: …"*).
+   - **Approvals** shows a new request **"Send email message: Recovery: …"**. Its amber line reads
+     *"Approving this will not unblock it — … This is ClientVerse's internal placeholder text,
+     not a message to a client…"*.
+     That is expected. **Reject** it (or leave it); it cannot be sent either way.
+3. Open the dry run again: the case is now counted under `"already_open_cases"`.
+
+**Step 4 — the first real email (optional, engineering-assisted).** Send it to **your own**
+address first, never a customer, by the procedure in [§6.4](#64-procedure-a--send-one-real-outbound-email)
+and [Appendix C](#appendix-c-engineer-assisted-email-verification): a contact with your address,
+consent recorded, a message you write, your approval, then the send.
+
+**To stop everything at once:** reject the strategy approvals, and click **"Turn off sending"**
+([§5.10](#510-turn-email-sending-on-or-off)). Email already approved is then refused.
+
 ---
 
 ## 7. CRM Daily Use

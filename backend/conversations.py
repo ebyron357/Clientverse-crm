@@ -132,6 +132,20 @@ REFUSAL_CONSENT = "consent_not_granted"
 REFUSAL_APPROVAL = "approval_missing_or_unusable"
 REFUSAL_PROVIDER = "no_provider_registered"
 REFUSAL_PROVIDER_ERROR = "provider_error"
+REFUSAL_PLACEHOLDER = "placeholder_body"
+
+# Text ClientVerse writes into a draft as an internal statement of intent -- the recovery
+# runner's drafts start with it. It names the recovery reason and the estimated deal value,
+# which are notes for the operator and must never reach a client, even if someone approves
+# the draft as it stands. A person writes the client message; then it can be approved.
+PLACEHOLDER_MARKER = "[DRAFT — prepared by ClientVerse"
+PLACEHOLDER_BLOCK = ("This is ClientVerse's internal placeholder text, not a message to a "
+                     "client. Write the client message as a new draft, then request its "
+                     "approval; this draft can never be sent.")
+
+
+def is_placeholder_body(body: Optional[str]) -> bool:
+    return str(body or "").lstrip().startswith(PLACEHOLDER_MARKER)
 
 
 class ConversationError(Exception):
@@ -685,6 +699,8 @@ async def _preflight_blocks(db, tenant_id: str, message: dict, conversation: dic
             blocks.append(f"Consent for this conversation is '{consent}', not 'granted'.")
         if registry.get(channel) is None:
             blocks.append(f"No delivery provider is registered for {channel}.")
+        if is_placeholder_body(message.get("body")):
+            blocks.append(PLACEHOLDER_BLOCK)
     return blocks
 
 
@@ -768,6 +784,11 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
         if registry.get(channel) is None:
             await refuse(REFUSAL_PROVIDER,
                          f"No delivery provider is registered for {channel}.")
+
+        # Checked live, before the approval is touched: an approved placeholder is refused
+        # and its approval is not spent.
+        if is_placeholder_body(message.get("body")):
+            await refuse(REFUSAL_PLACEHOLDER, PLACEHOLDER_BLOCK)
 
     approval_id = message.get("approval_id")
     if not approval_id:
