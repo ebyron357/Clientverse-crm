@@ -10,8 +10,16 @@ name: Scheduled jobs
 # this workflow.
 #
 # Required repository secrets:
-#   CLIENTVERSE_PRODUCTION_URL — e.g. https://clientverse-crm-production-production.up.railway.app
+#   CLIENTVERSE_PRODUCTION_URL — https://crm.clientverse.io (the Railway address
+#                                https://clientverse-crm-production-production.up.railway.app
+#                                is also accepted; nothing else is)
 #   WEBHOOK_CRON_SECRET        — the same value configured on the service
+#
+# The address is checked before anything is sent (`backend/public_url.py scheduler`): it
+# must be https, must not be localhost/private, must not be a preview or copy host such as
+# *.vercel.app, and must be one of the known production hosts. The cron secret is sent as
+# a bearer token, so it must never be presented to any other host. A refused address fails
+# the run with "Scheduler address refused" and makes no request.
 #
 # A NOTE ON WHY THIS WORKFLOW FAILS LOUDLY
 #
@@ -51,6 +59,11 @@ jobs:
     name: Call scheduled endpoints
     runs-on: ubuntu-latest
     steps:
+      # Only the address check is needed from the repository.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: backend/public_url.py
+          sparse-checkout-cone-mode: false
       - name: Require the scheduler to be configured
         env:
           BASE_URL: ${{ secrets.CLIENTVERSE_PRODUCTION_URL }}
@@ -70,6 +83,16 @@ jobs:
               echo "recovery automation does not run at all."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error title=Scheduler not configured::Missing repository secret(s):${missing}. No production request was made."
+            exit 1
+          fi
+          # Prints a GitHub error annotation naming the host and the reason when refused.
+          if ! python3 backend/public_url.py scheduler "$BASE_URL" > /dev/null; then
+            {
+              echo "### Scheduler address refused"
+              echo
+              echo "CLIENTVERSE_PRODUCTION_URL is not a production address this workflow may"
+              echo "call. Set it to https://crm.clientverse.io. No production request was made."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
