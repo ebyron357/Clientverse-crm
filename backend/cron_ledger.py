@@ -69,6 +69,10 @@ def _iso(value: datetime) -> str:
 
 
 async def ensure_indexes(db: Any) -> None:
+    # An unfiltered read (`/api/cron/runs` with no `job` or `status`, which is what the
+    # scheduler's read-back sends) sorts on `received_at` alone. Neither compound index
+    # below can serve that sort, so without this one the server sorts the whole ledger.
+    await db[COLLECTION].create_index([("received_at", -1)])
     await db[COLLECTION].create_index([("job", 1), ("received_at", -1)])
     await db[COLLECTION].create_index([("status", 1), ("received_at", -1)])
     await db[COLLECTION].create_index("run_id")
@@ -178,7 +182,12 @@ async def list_runs(db: Any, *, job: Optional[str] = None, status: Optional[str]
     if status:
         query["status"] = status
     limit = max(1, min(int(limit or 50), 500))
-    cursor = db[COLLECTION].find(query, {"_id": 0, "expires_at": 0}).sort("received_at", -1)
+    # The limit must reach the server. `to_list(limit)` alone stops reading after `limit`
+    # rows, but by then the server has sorted every matching entry in memory, and an
+    # unfiltered read grows with the whole ledger (RETENTION_DAYS of entries) until it
+    # passes the server's in-memory sort limit and every read fails.
+    cursor = (db[COLLECTION].find(query, {"_id": 0, "expires_at": 0})
+              .sort("received_at", -1).limit(limit))
     rows: list[dict] = await cursor.to_list(limit)
     return rows
 
