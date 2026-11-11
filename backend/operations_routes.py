@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 import approval_queue
 import conversations
+import gmail_provider
 import next_best_action as nba
 import recovery_case
 import recovery_lifecycle
@@ -218,6 +219,41 @@ def register_operations_routes(router, db, record_event, get_current_user, requi
         await record_event("second_chance.detection_run", "second_chance", user["tenant_id"],
                            user["tenant_id"], user["email"], payload=summary)
         return summary
+
+    @router.get("/second-chance/preview")
+    async def preview_second_chance(limit: int = Query(default=100, ge=1, le=500),
+                                    user=Depends(require_role("admin"))):
+        """Dry run of the Second Chance sweep, plus whether email could leave at all.
+
+        Writes nothing and contacts nobody. `email` restates the live send preconditions
+        (`conversations.attempt_delivery` re-checks each one at dispatch), so an owner can
+        see before a first live run what is still missing. Even with all of them met, a
+        recovery message leaves only after a person approves its exact words and an
+        explicit send.
+        """
+        result = await second_chance.preview(db, user["tenant_id"], limit=limit)
+        authority = (await recovery_strategy.authorized_channels(db, user["tenant_id"])).get(
+            conversations.CHANNEL_EMAIL, {"authorized": False, "reason": "Unknown channel."})
+        gmail = await db.integration_connections.find_one(
+            {"tenant_id": user["tenant_id"], "provider": "gmail"},
+            {"_id": 0, "status": 1, "scopes": 1}) or {}
+        result["email"] = {
+            "channel_authorized": bool(authority.get("authorized")),
+            "channel_reason": authority.get("reason"),
+            "gmail_status": gmail.get("status") or "disconnected",
+            "gmail_send_permission_recorded": gmail_provider.GMAIL_SEND_SCOPE in (
+                gmail.get("scopes") or []),
+            "provider_registered": conversations.REGISTRY.get(
+                conversations.CHANNEL_EMAIL) is not None,
+            "still_required_per_message": [
+                "the contact's consent recorded on the conversation",
+                "a person writes the client message (recovery drafts are internal notes "
+                "and are refused at send)",
+                "a person approves that exact text",
+                "an explicit send",
+            ],
+        }
+        return result
 
     @router.get("/second-chance/candidates")
     async def second_chance_candidates(limit: int = Query(default=100, ge=1, le=500),
