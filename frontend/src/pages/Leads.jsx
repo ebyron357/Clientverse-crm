@@ -12,7 +12,7 @@ import { Avatar, PageHeader, PropertyList, StatStrip, StatusDot, Toolbar, ViewTa
 import { SurfaceEmpty, SurfaceError } from "@/components/SurfaceState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { LeadStatusUpdate } from "@/components/LeadStatusUpdate";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -145,7 +145,6 @@ function Timeline({ events }) {
 }
 
 function LeadPanel({ lead, onStatus, busy, refreshKey }) {
-  const [note, setNote] = useState("");
   // The contact this lead became: its name, its deals and what has been logged on it.
   // Read again after every update so a note saved below appears straight away.
   const [loaded, setLoaded] = useState(null);
@@ -168,7 +167,6 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
   const dealValue = formatMoney(deal ? deal.value : lead.estimated_value, (deal && deal.currency) || lead.currency);
   const notes = useMemo(() => activityEntries(contact?.timeline, contactName), [contact, contactName]);
   const history = useMemo(() => leadHistory(lead), [lead]);
-  const setStatus = async (status) => { await onStatus(lead, status, note); setNote(""); };
 
   const details = present([
     { label: "Form", value: lead.form_name },
@@ -237,19 +235,7 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
             </section>
           )}
 
-          <section>
-            <PanelHeading>Update</PanelHeading>
-            <div className="overflow-hidden rounded-xl border border-border bg-card transition-colors focus-within:border-ring">
-              <Textarea value={note} onChange={(event) => setNote(event.target.value)} aria-label="Note" placeholder="Optional note — saved to the contact's history" rows={3}
-                className="min-h-[76px] resize-none rounded-none border-0 bg-transparent text-[13px] shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" data-testid="lead-note" />
-              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-muted/30 px-2.5 py-2">
-                {lead.status !== "new" && <Button size="sm" variant="ghost" disabled={busy} onClick={() => setStatus("new")}>Reopen</Button>}
-                {lead.status !== "spam" && <Button size="sm" variant="outline" className="text-red-700" disabled={busy} onClick={() => setStatus("spam")}>Spam</Button>}
-                {lead.status !== "closed" && <Button size="sm" variant="outline" disabled={busy} onClick={() => setStatus("closed")}>Close</Button>}
-                {lead.status !== "responded" && <Button size="sm" disabled={busy} onClick={() => setStatus("responded")}><CheckCircle2 aria-hidden="true" />Mark contacted</Button>}
-              </div>
-            </div>
-          </section>
+          <LeadStatusUpdate key={lead.id} lead={lead} onStatus={onStatus} busy={busy} />
 
           {lead.contact_id && (
             <section>
@@ -370,11 +356,11 @@ export default function Leads() {
     setBusy(true);
     try {
       const { data } = await api.patch(`/leads/${lead.id}`, { status: next, note: note || undefined });
-      setSelected(data);
+      setSelected((current) => current?.id === lead.id ? data : current);
       setRefreshKey((value) => value + 1);
       toast.success(next === "responded" ? "Marked as contacted" : `Lead marked ${STATUS_LABEL[next].toLowerCase()}`);
-    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
-    finally { setBusy(false); }
+      return true;
+    } finally { setBusy(false); }
   };
 
   const exportCsv = async () => {
