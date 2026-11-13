@@ -304,6 +304,26 @@
   .dark .text-yellow-600, .dark .text-yellow-700, .dark .text-yellow-800, .dark .text-yellow-900 { color: rgb(250 204 21) !important; }
 }
 
+.cv-task-save-bar { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+.cv-task-panel > button:first-child {
+  top: 0.125rem;
+  right: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+@media (max-width: 639px) {
+  .cv-task-surface :is(button, a, [role="option"]) { min-height: 2.75rem; min-width: 2.75rem; }
+  .cv-task-surface :is(input, textarea, [role="combobox"]) { min-height: 2.75rem; font-size: 1rem; }
+  .cv-task-surface [aria-label="Whose tasks to show"] { height: auto; }
+  .cv-task-surface [data-testid^="task-open-"] { font-size: 0.875rem; }
+  .cv-task-surface [data-testid^="task-about-"] { max-width: 100%; }
+  .cv-task-surface [data-testid^="task-row-"] .whitespace-nowrap { white-space: normal; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

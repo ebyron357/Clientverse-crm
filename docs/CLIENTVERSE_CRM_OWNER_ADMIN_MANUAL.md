@@ -334,7 +334,7 @@ See [Chapter 13](#13-security-and-owner-safety).
 | Landmark | Where | What it does |
 |---|---|---|
 | **Main menu** (the dark sidebar) | Left edge | The eleven everyday pages — **Today**, **Leads**, **Inbox**, **Contacts**, **Pipeline**, **Calendar**, **Tasks**, **Approvals**, **Clients**, **Automations**, **Reports** — with **"Settings"** pinned at the bottom ([§4.3](#43-main-menu-and-settings-map--every-item-and-whether-it-is-active)). The **"Collapse navigation"** button shrinks it to icons (the browser remembers). On a phone it opens from the menu button. |
-| **Counts** beside menu items | Main menu | **Leads**: new leads nobody has contacted. **Inbox**: open conversations. **Tasks**: your overdue tasks, plus overdue tasks nobody owns. **Approvals**: requests waiting for a decision. Red means act now; grey is a count to get to today. No badge means zero, or the count could not be read. |
+| **Counts** beside menu items | Main menu | **Leads**: new leads nobody has contacted. **Inbox**: open conversations. **Tasks**: your overdue tasks, plus overdue tasks nobody owns. **Approvals**: requests waiting for a decision. Red means act now; grey is a count to get to today. No badge means zero, or no count has been read yet. Counts share a session-only cache with Leads, Inbox and Approvals, refresh every 30 seconds while visible, and refresh after relevant successful saves (including task completion and Undo). Navigation reuses recent reads rather than requesting every count again. Last-known content stays visible during background refreshes; page refresh errors are shown beside cached content. Use the page's Refresh control to retry. Signing out or switching accounts discards the cache. |
 | **Search** | Top bar: **"Search or jump to…"** (Ctrl/⌘ K) | Jumps to a *page or action*. It does **not** search your records ([§7.19](#719-search)). |
 | **Menu footer** | Bottom of the main menu | Your initials, name and role (**"Workspace admin"** / **"Team member"**), the theme button (light → dark → match device) and the sign-out icon. |
 | **Breadcrumb** | Top bar, left | Where the page sits, for example *Contacts*, *Pipeline › Deals* or *Settings › Audit log*. |
@@ -377,8 +377,9 @@ things are on your plan, and **"Refresh"**. From top to bottom:
    and email buttons. **"All leads"** opens **Leads**.
 5. **"Pipeline"** — deals and value per stage. **"Clients"** — client health and commitments at
    risk.
-6. **"Next best actions"** — ranked recommendations across all clients, with **"Accept"**,
-   **"Done"**, **"Snooze"** and **"Not relevant"**.
+6. **"Next best actions"** — ranked recommendations across all clients, with record-specific
+     review links, **"Accept"**, **"Snooze"**, **"Mark reviewed"** and **"Dismiss"**. Expand
+     **"Why this is recommended"** to inspect evidence and source references.
 7. On the right (below, on a narrow screen): **"Appointments"** (**"Today"** / **"Week"**),
    **"Tasks"** (tick one to mark it done; **"Call N new leads now"** → **"Start"** opens Leads),
    **"Operational alerts"** (with **"Scan now"**) and **"Connection health"** (admins only).
@@ -944,8 +945,14 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      from your phone or computer. Then log the call on their record, or mark the lead in **Leads**:
      calling from here records nothing by itself.
   3. In **"Tasks"**, tick a task to mark it done.
-  4. In **"Next best actions"**, choose **"Accept"**, **"Done"**, **"Snooze"** (a day) or
-     **"Not relevant"**.
+  4. In **"Next best actions"**, use the record-specific link (for example **"Review approval"**
+     or **"Open task"**) to do the work. **"Accept"** keeps the recommendation in your queue.
+     **"Snooze"** offers **1 hour**, **4 hours**, **1 day**, **3 days**, or **1 week**.
+     **"Mark reviewed"** asks for confirmation before removing the recommendation; choose
+     **"Keep in queue"** to cancel. **"Dismiss"** hides a recommendation as not relevant.
+     Neither action changes the linked task, commitment, approval, integration, or client.
+     Use **"Undo"** in the success message within 10 seconds to restore the previous open
+     state (an expired snooze returns as new). Feedback and undo are saved on the server.
   5. Under **"Operational alerts"**, click **"Scan now"** for a fresh alert check. Use the ✓ and ✕
      icons to acknowledge or resolve.
 - **Common mistakes:**
@@ -953,9 +960,12 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   - Expecting **"Connection health"**, or approval items on the plan, to show for members — they are
     admin-only.
   - Expecting **"Call"** to mark the lead contacted. It only dials.
-- **Saved when:** **"Task done"**, **"Alert scan complete (N new)"**; recommendation buttons change
-  the list, and only failures show a message (the server's reason, **"The task was not updated"** or
-  **"Could not record that decision"**).
+- **Saved when:** **"Task done"**, **"Alert scan complete (N new)"**; recommendation feedback
+  shows a success message with **"Undo"** and refreshes the recommendation queues. Reviewed
+  and dismissed messages explicitly say **"linked records unchanged"**. Failed feedback
+  keeps the recommendation available and shows the server's reason or **"Could not record
+  that decision"**. A failed queue refresh shows **"Next best actions unavailable"** with
+  **"Retry"** instead of claiming there is nothing to do.
 
 ### 7.2 Leads
 
@@ -970,8 +980,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   2. Click a lead to open it. Use **"Call …"** / **"Text"** to reach the person from your phone,
      then **"Mark contacted"**. Or open the contact (**"Open contact to log a call"**) and log what
      happened.
-  3. **"Close"** a lead that is finished, **"Spam"** junk, **"Reopen"** a closed one.
+  3. **"Close"** a lead that is finished, **"Spam"** junk, **"Reopen"** a closed one. In **"Update lead"**, add an optional note before choosing the status. **"Saving…"** locks the note and status buttons until the request settles. A confirmed save clears the note; **"Update not confirmed"** preserves it so you can check the lead/contact history before retrying (a lost response does not prove nothing was saved). Drafts are kept only while that lead stays open, not across closing or reloading. If no contact is linked, notes are disabled with an explanation; status changes remain available.
   4. **"Export CSV"** downloads the leads in the current view as `leads.csv`.
+- **Next-step guidance:** each list row names the next step, with the owner visible on phones too. Open a lead to read **"Next step"**: it explains the recorded response deadline or escalation, missing contact details, an unassigned owner, or a failed automation step. **"Review call-back task"** opens the linked task for review and rescheduling; its presence does not prove the task is still open. Contacted leads suggest reviewing the next follow-up, closed/spam leads suggest no outreach, and test submissions are explicitly treated as tests. Guidance is rule-based, not an AI prediction; it sends nothing and changes no status. An automatic reply does not count as a personal response.
 - **Existing clients:** a form or booking from someone you already serve (their company has a
   Client 360 workspace, or they are on a won deal) is marked **"Existing client"**. It opens no new
   deal, and its task reads **"Reply to client: …"** instead of **"Call new lead now: …"**.
@@ -996,7 +1007,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   2. **"New task"**: **"What needs doing"** (required), **"Who it's about (optional)"**, a due date
      and time, **"Assign to"**, **"Notes (optional)"** → **"Add task"**. Unassigned tasks can be
      taken by anyone on the team.
-  3. Open a task to change it (**"Save changes"**), **"Mark done"** or **"Reopen"**.
+  3. Open a task to change it (**"Save changes"**), **"Mark done"** or **"Reopen"**. **"Reschedule"** offers **"In 1 hour"**, **"Tomorrow, 9 am"** (your local time), or **"No due date"**. These only fill the editable date/time fields; nothing changes on the server until you save. **"Assign to me"** also prepares a change rather than saving immediately. Admins can still choose an active teammate; members retain their existing self/unassigned choices.
+  4. On a phone, the task opens full-width with larger touch targets and 16px form controls. **"Save changes"** and **"Discard"** remain at the bottom while the details scroll. Discard restores the saved date and assignment. Save or discard edits before **"Mark done"** / **"Reopen"**; completion still offers **"Undo"** in its notification.
+- **Refresh behavior:** returning to Tasks or switching back to **"My tasks"** / **"Everyone"** reuses that view's recent data. Views are cached separately for the signed-in session, refresh every 30 seconds while visible, and refresh after task creation, edits, completion or Undo. Existing rows stay visible during background refreshes; a refresh error leaves the last available tasks in place with a warning. **"Refresh tasks"** retries the lists and overdue count. Signing out or changing accounts clears the cache.
 - **Common mistakes:** leaving a task unassigned when one person should own it.
 - **Saved when:** **"Task added"**, **"Changes saved"**; **"Undo"** on the message reverses a tick.
 
@@ -1310,7 +1323,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
   | Tab | What you can do | Admin only |
   |---|---|---|
-  | **"Next best actions"** | **"Refresh"**; **"Accept"** / **"Done"** / **"Snooze"** / **"Not relevant"** | — |
+  | **"Next best actions"** | **"Refresh"**; record-specific review links; **"Accept"** / **"Snooze"** (choose duration) / **"Mark reviewed"** (confirmation) / **"Dismiss"**; success-message **"Undo"** ([§7.1](#71-today)) | — |
   | **"Work queue"** | **"Acknowledge"**, **"Resolve"**; figures **"Open"**, **"Retry scheduled"**, **"Dead letter"**, **"Needs operator"** | **"Run recovery detection"**, **"Replay"** |
   | **"Recovery strategies"** | Read proposed strategies. The amber box **"Outbound channels not authorised"** ([§5.8](#58-verify-that-gmailsend-was-actually-granted)) | **"Compose strategies"** |
   | **"Approvals"** | Read what is waiting — including booking emails and form auto-replies | **"Approve"**, **"Reject"** |

@@ -32,6 +32,11 @@ jobs:
       - name: Lint (warnings are errors)
         working-directory: frontend
         run: yarn lint --max-warnings=0
+      - name: Frontend regression tests
+        working-directory: frontend
+        env:
+          CI: 'true'
+        run: yarn test --watchAll=false --runInBand
       - name: Build (warnings are errors)
         working-directory: frontend
         env:

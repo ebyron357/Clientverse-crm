@@ -1,22 +1,25 @@
 /* Leads inbox: every website lead with its speed-to-lead clock, what the automation did,
    and one-click follow-through. A lead that arrives while this page is open appears on
    the next refresh (every 30 seconds) and its clock ticks without a reload. */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
+import { useSharedRead } from "@/lib/sharedReads";
 import { activityEntries } from "@/lib/contactHistory";
 import { ActivityFeed } from "@/components/ContactRecord";
 import { Avatar, PageHeader, PropertyList, StatStrip, StatusDot, Toolbar, ViewTabs } from "@/components/page/Page";
-import { SurfaceEmpty } from "@/components/SurfaceState";
+import { SurfaceEmpty, SurfaceError } from "@/components/SurfaceState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { LeadStatusUpdate } from "@/components/LeadStatusUpdate";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlarmClock, CheckCircle2, CircleAlert, Download, Globe, Inbox, Mail, MessageSquare, Phone, RefreshCw, Search, ShieldAlert, Timer, UserPlus, Zap } from "lucide-react";
 import { describeLeadStep } from "@/lib/leadSteps";
+import { leadFollowUp } from "@/lib/leadFollowUp";
+import { LeadFollowUp } from "@/components/LeadFollowUp";
 
 const STATUS_TABS = [
   { key: "new", label: "New" },
@@ -142,7 +145,6 @@ function Timeline({ events }) {
 }
 
 function LeadPanel({ lead, onStatus, busy, refreshKey }) {
-  const [note, setNote] = useState("");
   // The contact this lead became: its name, its deals and what has been logged on it.
   // Read again after every update so a note saved below appears straight away.
   const [loaded, setLoaded] = useState(null);
@@ -165,7 +167,6 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
   const dealValue = formatMoney(deal ? deal.value : lead.estimated_value, (deal && deal.currency) || lead.currency);
   const notes = useMemo(() => activityEntries(contact?.timeline, contactName), [contact, contactName]);
   const history = useMemo(() => leadHistory(lead), [lead]);
-  const setStatus = async (status) => { await onStatus(lead, status, note); setNote(""); };
 
   const details = present([
     { label: "Form", value: lead.form_name },
@@ -225,7 +226,8 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
       </header>
 
       <div className="flex-1 lg:grid lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="min-w-0 space-y-7 px-5 pb-10 pt-5 sm:px-6">
+        <div className="min-w-0 flex flex-col gap-7 px-5 pb-10 pt-5 sm:px-6">
+          <LeadFollowUp lead={lead} />
           {lead.message && (
             <section>
               <PanelHeading>Message</PanelHeading>
@@ -233,19 +235,7 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
             </section>
           )}
 
-          <section>
-            <PanelHeading>Update</PanelHeading>
-            <div className="overflow-hidden rounded-xl border border-border bg-card transition-colors focus-within:border-ring">
-              <Textarea value={note} onChange={(event) => setNote(event.target.value)} aria-label="Note" placeholder="Optional note — saved to the contact's history" rows={3}
-                className="min-h-[76px] resize-none rounded-none border-0 bg-transparent text-[13px] shadow-none focus-visible:ring-0 focus-visible:ring-offset-0" data-testid="lead-note" />
-              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-muted/30 px-2.5 py-2">
-                {lead.status !== "new" && <Button size="sm" variant="ghost" disabled={busy} onClick={() => setStatus("new")}>Reopen</Button>}
-                {lead.status !== "spam" && <Button size="sm" variant="outline" className="text-red-700" disabled={busy} onClick={() => setStatus("spam")}>Spam</Button>}
-                {lead.status !== "closed" && <Button size="sm" variant="outline" disabled={busy} onClick={() => setStatus("closed")}>Close</Button>}
-                {lead.status !== "responded" && <Button size="sm" disabled={busy} onClick={() => setStatus("responded")}><CheckCircle2 aria-hidden="true" />Mark contacted</Button>}
-              </div>
-            </div>
-          </section>
+          <LeadStatusUpdate key={lead.id} lead={lead} onStatus={onStatus} busy={busy} />
 
           {lead.contact_id && (
             <section>
@@ -295,6 +285,7 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
 
 function LeadRow({ lead, showStatus, onOpen }) {
   const flag = speedFlag(lead);
+  const next = leadFollowUp(lead);
   const meta = [lead.form_name, lead.property_address, lead.listing_id && `MLS ${lead.listing_id}`, lead.phone, lead.email].filter(Boolean).join(" · ");
   return (
     <li className="border-b border-border/70 last:border-0">
@@ -309,6 +300,7 @@ function LeadRow({ lead, showStatus, onOpen }) {
             {showStatus && <StatusDot tone={STATUS_TONE[lead.status]} className="text-xs text-muted-foreground">{STATUS_LABEL[lead.status]}</StatusDot>}
           </div>
           <div className="truncate text-xs text-muted-foreground">{meta}</div>
+          <p className="mt-1 break-words text-sm text-foreground">{next.title}<span className="text-muted-foreground md:hidden"> · {next.owner}</span></p>
           {flag && <div className="mt-1 sm:hidden">{flag}</div>}
         </div>
         <div className="flex shrink-0 items-center gap-4 text-xs text-muted-foreground">
@@ -326,40 +318,30 @@ export default function Leads() {
   const [status, setStatus] = useState(searchParams.get("form") ? "all" : "new");
   const [formId, setFormId] = useState(searchParams.get("form") || "all");
   const [query, setQuery] = useState("");
-  const [leads, setLeads] = useState(null);
-  const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState(null);
-  const [forms, setForms] = useState([]);
-  const [error, setError] = useState("");
+  const list = useSharedRead("/leads", {
+    limit: 100, ...(status !== "all" ? { status } : {}),
+    ...(formId !== "all" ? { form_id: formId } : {}), ...(query.trim() ? { q: query.trim() } : {}),
+  });
+  const totals = useSharedRead("/leads/summary");
+  const formList = useSharedRead("/website-forms");
+  const leads = list.data?.items ?? null;
+  const total = list.data?.total || 0;
+  const summary = totals.data;
+  const forms = formList.data?.items || [];
+  const failure = list.error || totals.error || formList.error;
+  const error = failure ? (failure.response?.data?.detail ? formatErr(failure.response.data.detail) : list.data ? "Leads could not be refreshed. Showing the last available data." : "Leads could not be loaded. Please try again.") : "";
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [, setTick] = useState(0);
   const selectedId = searchParams.get("lead");
 
-  const load = useCallback(async () => {
-    const params = { limit: 100 };
-    if (status !== "all") params.status = status;
-    if (formId !== "all") params.form_id = formId;
-    if (query.trim()) params.q = query.trim();
-    try {
-      const [leadResponse, summaryResponse, formResponse] = await Promise.all([
-        api.get("/leads", { params }), api.get("/leads/summary"), api.get("/website-forms"),
-      ]);
-      setLeads(leadResponse.data.items); setTotal(leadResponse.data.total);
-      setSummary(summaryResponse.data); setForms(formResponse.data.items || []); setError("");
-    } catch (e) {
-      setError(formatErr(e.response?.data?.detail) || "Leads could not be loaded.");
-      setLeads((current) => current || []);
-    }
-  }, [status, formId, query]);
+  const load = () => Promise.allSettled([list.mutate(), totals.mutate(), formList.mutate()]);
 
-  useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    const refresh = setInterval(load, 30000);
     const tick = setInterval(() => setTick((value) => value + 1), 15000);
-    return () => { clearInterval(refresh); clearInterval(tick); };
-  }, [load]);
+    return () => clearInterval(tick);
+  }, []);
   useEffect(() => {
     if (!selectedId) { setSelected(null); return; }
     const inList = (leads || []).find((item) => item.id === selectedId);
@@ -374,12 +356,11 @@ export default function Leads() {
     setBusy(true);
     try {
       const { data } = await api.patch(`/leads/${lead.id}`, { status: next, note: note || undefined });
-      setSelected(data);
+      setSelected((current) => current?.id === lead.id ? data : current);
       setRefreshKey((value) => value + 1);
       toast.success(next === "responded" ? "Marked as contacted" : `Lead marked ${STATUS_LABEL[next].toLowerCase()}`);
-      load();
-    } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
-    finally { setBusy(false); }
+      return true;
+    } finally { setBusy(false); }
   };
 
   const exportCsv = async () => {
@@ -443,7 +424,9 @@ export default function Leads() {
       {error && <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-700" role="status"><CircleAlert className="size-4 shrink-0" aria-hidden="true" />{error}</div>}
 
       <div className="overflow-hidden rounded-xl border border-border bg-card">
-        {leads === null ? (
+        {list.error && !list.data ? (
+          <SurfaceError title="Leads unavailable" description={error} onRetry={load} testid="leads-error" />
+        ) : leads === null ? (
           <div className="space-y-2 p-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-11 rounded-lg" />)}</div>
         ) : leads.length === 0 ? (
           <div className="[&>.cv-empty]:rounded-none [&>.cv-empty]:border-0">
