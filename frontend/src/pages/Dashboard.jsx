@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { api, formatErr, formatMoneyByCurrency } from "@/lib/api";
 import { commandCenterService } from "@/lib/services";
 import { useAuth } from "@/context/AuthContext";
+import AssistantPanel from "@/components/AssistantPanel";
 import OnboardingChecklist from "@/components/OnboardingChecklist";
 import CommandCenterInsights from "@/components/CommandCenterInsights";
 import NextBestActions from "@/components/NextBestActions";
@@ -161,6 +162,7 @@ export default function Dashboard() {
       <Button variant="outline" size="sm" onClick={load} className="self-start sm:self-auto"><RefreshCw className="size-3.5" />Refresh</Button>
     </header>
 
+    <details className="mb-5 rounded-xl border border-border bg-card p-4"><summary className="min-h-11 cursor-pointer py-2 text-sm font-semibold">Prepare with AI</summary><AssistantPanel key={`${user?.tenant_id}:${user?.email}`} /></details>
     <section aria-label="Today in numbers" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <Stat label="Leads not acted on" value={stats.leads_waiting} tone={stats.leads_waiting ? "text-red-600" : undefined} to="/leads" testid="stat-leads-waiting"
         detail={stats.leads_waiting ? `Oldest waiting ${waited(stats.oldest_lead_minutes)}` : "Every lead has had a reply"} />
@@ -171,12 +173,12 @@ export default function Dashboard() {
         to="/operations?tab=approvals" testid="stat-waiting" detail={waitingDetail || "No approvals or risks"} />
     </section>
 
-    {portfolio && <OnboardingChecklist dashboard={portfolio} integrations={integrations} />}
+    {portfolio && <details className="mt-5 rounded-xl border border-border bg-card px-4"><summary className="min-h-11 cursor-pointer py-3 text-sm font-semibold">Workspace setup</summary><OnboardingChecklist dashboard={portfolio} integrations={integrations} /></details>}
 
     {/* The plan comes first on a phone; on a wide screen it heads the right-hand column. */}
     <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-3 xl:grid-rows-[auto_1fr] xl:items-start">
-      <div className="min-w-0 xl:col-start-3 xl:row-start-1">
-        <Panel title="Your plan" count={day.plan_total || undefined} detail={day.plan_total ? "In order, with the reason" : undefined} testid="dashboard-priority-panel">
+      <div className="min-w-0 xl:col-span-3">
+        <Panel title="Do next" count={day.plan_total || undefined} detail={day.plan_total ? "Recorded work, in priority order. Open an item to act." : undefined} testid="dashboard-priority-panel">
           {day.plan.length ? <>
             <ol className="divide-y divide-border/70">{plan.map((item, index) => {
               const kind = KIND[item.kind] || KIND.due_today;
@@ -186,7 +188,7 @@ export default function Dashboard() {
                   <span className="tabular mt-0.5 w-4 shrink-0 text-center text-xs font-semibold text-muted-foreground">{index + 1}</span>
                   <Icon className={cn("mt-0.5 size-4 shrink-0", kind.tone)} aria-hidden="true" />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-semibold text-foreground">{item.title}</span>
+                    <span className="block break-words text-sm font-semibold text-foreground">{item.title}</span>
                     <span className="block text-xs leading-5 text-muted-foreground">{[item.detail, item.reason].filter(Boolean).join(" · ")}</span>
                   </span>
                   <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground/60 group-hover:text-foreground" aria-hidden="true" />
@@ -197,7 +199,7 @@ export default function Dashboard() {
           </> : <Empty icon={CheckCircle2} title="You're clear">No lead waiting, nothing overdue, no decision pending.</Empty>}
         </Panel>
       </div>
-      <div className="min-w-0 space-y-5 xl:col-span-2 xl:col-start-1 xl:row-span-2 xl:row-start-1">
+      <div className="min-w-0 space-y-5 xl:col-span-2">
         <Panel title={<span className="flex items-center gap-2"><Zap className="size-4 text-amber-500" aria-hidden="true" />New leads waiting</span>} testid="today-leads"
           count={day.leads.length || undefined} countTone="bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-300"
           detail={day.leads.length ? "Oldest first · reply fast: it is the biggest lever on winning them" : undefined} action={<PanelLink to="/leads">All leads</PanelLink>}>
@@ -219,9 +221,9 @@ export default function Dashboard() {
               <span className={cn("tabular inline-flex items-center gap-1 text-[13px] font-semibold", lead.overdue ? "text-red-600" : "text-muted-foreground")} title={lead.goal_minutes ? `Goal: a reply within ${lead.goal_minutes} minutes` : undefined}>
                 <Clock className="size-3.5" aria-hidden="true" />{waited(lead.waiting_minutes)}
               </span>
-              {lead.phone && <Button asChild size="sm" className="h-8 bg-emerald-700 text-white hover:bg-emerald-800"><a href={`tel:${lead.phone}`} aria-label={`Call ${lead.name}`}><Phone className="size-3.5" />Call</a></Button>}
-              {lead.phone && <Button asChild size="sm" variant="outline" className="size-8 p-0"><a href={`sms:${lead.phone}`} aria-label={`Text ${lead.name}`}><MessageSquare className="size-3.5" /></a></Button>}
-              {lead.email && <Button asChild size="sm" variant="outline" className="size-8 p-0"><a href={`mailto:${lead.email}`} aria-label={`Email ${lead.name}`}><Mail className="size-3.5" /></a></Button>}
+              {lead.phone && <Button asChild size="sm" className="min-h-11 bg-emerald-700 text-white hover:bg-emerald-800"><a href={`tel:${lead.phone}`} aria-label={`Call ${lead.name}`}><Phone className="size-3.5" />Call</a></Button>}
+              {lead.phone && <Button asChild size="sm" variant="outline" className="size-11 p-0"><a href={`sms:${lead.phone}`} aria-label={`Text ${lead.name}`}><MessageSquare className="size-3.5" /></a></Button>}
+              {lead.email && <Button asChild size="sm" variant="outline" className="size-11 p-0"><a href={`mailto:${lead.email}`} aria-label={`Email ${lead.name}`}><Mail className="size-3.5" /></a></Button>}
             </div>
           </li>)}</ul> : <Empty icon={CheckCircle2} title="No lead is waiting">New website and booking leads appear here, oldest first, until someone replies.</Empty>}
         </Panel>
@@ -254,15 +256,17 @@ export default function Dashboard() {
           </Panel>
         </div>
 
-        <div data-testid="command-center-nba">
+        <details className="rounded-xl border border-border bg-card" data-testid="command-center-nba">
+          <summary className="min-h-11 cursor-pointer px-4 py-3 text-sm font-semibold">Additional recommendations</summary>
+          <p className="px-4 pb-3 text-sm text-muted-foreground">Suggestions are separate from recorded work. Queue feedback does not complete linked tasks or approvals.</p>
           <NextBestActions limit={6} compact title="Next best actions" onNavigate={(item) => navigate(`/workspaces/${item.workspace_id}`)} />
-        </div>
+        </details>
       </div>
 
-      <div className="min-w-0 space-y-5 xl:col-start-3 xl:row-start-2">
+      <div className="min-w-0 space-y-5">
         <Panel title="Appointments" testid="today-appointments"
           action={<div className="flex rounded-lg bg-muted p-0.5" role="group" aria-label="Appointments range">{[["today", "Today"], ["week", "Week"]].map(([value, label]) => <button key={value} type="button" onClick={() => setRange(value)} aria-pressed={range === value}
-            className={cn("h-7 rounded-md px-2.5 text-[12.5px] font-semibold transition-colors", range === value ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}</div>}>
+            className={cn("min-h-11 rounded-md px-3 text-sm font-semibold transition-colors", range === value ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}</div>}>
           {appointmentsByDay.length ? <div className="divide-y divide-border/70">{appointmentsByDay.map((group) => <div key={group.key} className="px-4 py-2.5">
             <div className="mb-1 text-xs font-semibold text-foreground">{group.label}</div>
             <ul className="space-y-1.5">{group.items.map((item) => <li key={item.id} className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-3 text-[13px]">
