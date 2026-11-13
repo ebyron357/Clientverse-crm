@@ -36,6 +36,7 @@ from starlette.middleware.gzip import GZipMiddleware
 
 import agency as agency_service
 import approval_queue as approval_service
+import assistant as assistant_service
 import attribution as attribution_service
 import automations
 import booking
@@ -5174,6 +5175,9 @@ async def health():
         payload["status"] = "degraded"
         payload["database"] = "down"
         return JSONResponse(status_code=503, content=payload)
+
+# Read-only assistance is separately opt-in; no generated text is executable.
+assistant_service.register_assistant_routes(api, db, get_current_user, now_iso, record_event)
 
 app.include_router(api)
 app.add_middleware(

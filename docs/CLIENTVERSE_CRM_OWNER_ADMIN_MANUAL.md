@@ -2824,3 +2824,49 @@ governing document.
   restored), update [Appendix B](#appendix-b-system-state-on-2026-10-19) and the governing
   document together.
 - Never add a secret value. Names only.
+
+
+## Proposed daily-work and assistance update (not production-verified)
+
+This section describes the review branch, not a released capability. Today now calls
+its full-width recorded-work queue **Do next**. Workspace setup and Additional
+recommendations are expandable so they do not compete with that queue. The latter
+still uses the existing recommendation service; its feedback does not complete work.
+PR #65 separately improves those feedback controls and is not merged by this change.
+
+**Prepare with AI** on Today offers Ask for records, Pipeline review, and Workflow
+outline. A contact's **Prepare** tab offers Customer brief, Follow-up draft, and Task
+suggestions. These are previews only: no Send, Save task, Merge, or Activate action is
+provided. Review the sources, then perform any real action in its existing screen.
+Task suggestions do not choose an owner or deadline for you. Workflow outlines are
+not executable configuration or evidence that an automation passed a dry run.
+Existing duplicate review remains under Contacts; its merge confirmation is unchanged.
+
+The new server boundary is off by default. It requires an approved existing AI-provider
+credential (`EMERGENT_LLM_KEY`) and an explicit `CRM_ASSISTANT_ENABLED=true` server
+configuration. Configure secrets directly in the backend host, never in chat or the
+frontend. The Vercel project deploys only the frontend and proxies API requests to the
+backend; publishing this PR preview does not deploy these new backend routes. Provider
+processing, retention, commercial terms, and tenant authorization must be approved before
+enabling. Do not enable it merely to make a preview look complete.
+
+Before each request, the user confirms sending the described context to the configured
+provider. Contact context contains only a limited sample of selected activities, related
+accessible tasks, deals, website inquiries, and up to 10 sent/delivered/received messages
+from five recent linked conversation threads. Draft messages are excluded. It does not promise the complete email
+history. Pipeline context is limited to 40 accessible deals; members see their own deals.
+Task context excludes colleagues' assignments for members. Search interpretation receives
+no customer records and can choose only unanswered leads, the user's overdue tasks (due before the current UTC date), or
+a link to review the pipeline. Unsupported requests return no interpretation, not a
+fabricated answer. Results list only the first 20 matches where applicable.
+
+Source references are validated against this request; that does not prove generated text
+is factually correct. Check every draft. No output is executed. Requests are capped at
+10 per tenant per minute and time out after 25 seconds. Budget records expire and audit
+events contain mode/source count/model, not prompt or generated content. Provider-side
+retention is not controlled or certified by this implementation.
+
+**Verification still needed:** deploy the backend through its established release process,
+verify provider connectivity with approved test data, verify a signed-in preview without
+using production credentials, and obtain the repository's Jev QC verdict. Local tests do
+not establish production availability or provider certification.

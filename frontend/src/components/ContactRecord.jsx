@@ -17,6 +17,7 @@ import {
 } from "@/lib/contactHistory";
 import { lifecycleOf, LIFECYCLE } from "@/lib/recordFields";
 import { Avatar, PropertyList, StatusDot } from "@/components/page/Page";
+import AssistantPanel from "@/components/AssistantPanel";
 import { CustomFieldsSection } from "@/components/CustomFields";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -624,6 +625,7 @@ export default function ContactRecord({ contactId, open, onOpenChange, companies
             details={details}
             detailsTitle={editing ? "Edit details" : "Details"}
             tabs={[
+              { value: "assistant", label: "Prepare", testid: "contact-tab-assistant", content: <AssistantPanel key={`${user?.tenant_id}:${contact.id}`} contactId={contact.id} /> },
               {
                 value: "activity", label: "Activity", count: history.length, testid: "contact-tab-activity",
                 content: (
