@@ -1,14 +1,15 @@
 /* Leads inbox: every website lead with its speed-to-lead clock, what the automation did,
    and one-click follow-through. A lead that arrives while this page is open appears on
    the next refresh (every 30 seconds) and its clock ticks without a reload. */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
+import { useSharedRead } from "@/lib/sharedReads";
 import { activityEntries } from "@/lib/contactHistory";
 import { ActivityFeed } from "@/components/ContactRecord";
 import { Avatar, PageHeader, PropertyList, StatStrip, StatusDot, Toolbar, ViewTabs } from "@/components/page/Page";
-import { SurfaceEmpty } from "@/components/SurfaceState";
+import { SurfaceEmpty, SurfaceError } from "@/components/SurfaceState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -326,40 +327,30 @@ export default function Leads() {
   const [status, setStatus] = useState(searchParams.get("form") ? "all" : "new");
   const [formId, setFormId] = useState(searchParams.get("form") || "all");
   const [query, setQuery] = useState("");
-  const [leads, setLeads] = useState(null);
-  const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState(null);
-  const [forms, setForms] = useState([]);
-  const [error, setError] = useState("");
+  const list = useSharedRead("/leads", {
+    limit: 100, ...(status !== "all" ? { status } : {}),
+    ...(formId !== "all" ? { form_id: formId } : {}), ...(query.trim() ? { q: query.trim() } : {}),
+  });
+  const totals = useSharedRead("/leads/summary");
+  const formList = useSharedRead("/website-forms");
+  const leads = list.data?.items ?? null;
+  const total = list.data?.total || 0;
+  const summary = totals.data;
+  const forms = formList.data?.items || [];
+  const failure = list.error || totals.error || formList.error;
+  const error = failure ? (failure.response?.data?.detail ? formatErr(failure.response.data.detail) : list.data ? "Leads could not be refreshed. Showing the last available data." : "Leads could not be loaded. Please try again.") : "";
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [, setTick] = useState(0);
   const selectedId = searchParams.get("lead");
 
-  const load = useCallback(async () => {
-    const params = { limit: 100 };
-    if (status !== "all") params.status = status;
-    if (formId !== "all") params.form_id = formId;
-    if (query.trim()) params.q = query.trim();
-    try {
-      const [leadResponse, summaryResponse, formResponse] = await Promise.all([
-        api.get("/leads", { params }), api.get("/leads/summary"), api.get("/website-forms"),
-      ]);
-      setLeads(leadResponse.data.items); setTotal(leadResponse.data.total);
-      setSummary(summaryResponse.data); setForms(formResponse.data.items || []); setError("");
-    } catch (e) {
-      setError(formatErr(e.response?.data?.detail) || "Leads could not be loaded.");
-      setLeads((current) => current || []);
-    }
-  }, [status, formId, query]);
+  const load = () => Promise.allSettled([list.mutate(), totals.mutate(), formList.mutate()]);
 
-  useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    const refresh = setInterval(load, 30000);
     const tick = setInterval(() => setTick((value) => value + 1), 15000);
-    return () => { clearInterval(refresh); clearInterval(tick); };
-  }, [load]);
+    return () => clearInterval(tick);
+  }, []);
   useEffect(() => {
     if (!selectedId) { setSelected(null); return; }
     const inList = (leads || []).find((item) => item.id === selectedId);
@@ -377,7 +368,6 @@ export default function Leads() {
       setSelected(data);
       setRefreshKey((value) => value + 1);
       toast.success(next === "responded" ? "Marked as contacted" : `Lead marked ${STATUS_LABEL[next].toLowerCase()}`);
-      load();
     } catch (e) { toast.error(formatErr(e.response?.data?.detail)); }
     finally { setBusy(false); }
   };
@@ -443,7 +433,9 @@ export default function Leads() {
       {error && <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-700" role="status"><CircleAlert className="size-4 shrink-0" aria-hidden="true" />{error}</div>}
 
       <div className="overflow-hidden rounded-xl border border-border bg-card">
-        {leads === null ? (
+        {list.error && !list.data ? (
+          <SurfaceError title="Leads unavailable" description={error} onRetry={load} testid="leads-error" />
+        ) : leads === null ? (
           <div className="space-y-2 p-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-11 rounded-lg" />)}</div>
         ) : leads.length === 0 ? (
           <div className="[&>.cv-empty]:rounded-none [&>.cv-empty]:border-0">

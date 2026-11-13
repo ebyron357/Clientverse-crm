@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, formatErr } from "@/lib/api";
+import { useSharedRead } from "@/lib/sharedReads";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -459,48 +460,35 @@ function RecoveryStrategiesPanel({ isAdmin, onCount }) {
 }
 
 function ApprovalQueuePanel({ isAdmin, onCount }) {
-  const [requests, setRequests] = useState(null);
-  const [summary, setSummary] = useState(null);
-  const [error, setError] = useState(null);
+  const list = useSharedRead("/approval-queue", { status: "open", limit: 100 });
+  const totals = useSharedRead("/approval-queue/summary");
+  const requests = list.data;
+  const summary = totals.data;
+  const failure = list.error || totals.error;
+  const error = failure ? (failure.response?.data?.detail ? formatErr(failure.response.data.detail) : "The approval queue could not be refreshed.") : null;
   const [busyId, setBusyId] = useState(null);
-  const [loadedAt, setLoadedAt] = useState(null);
+  const loadedAt = list.updatedAt;
+  const load = () => Promise.allSettled([list.mutate(), totals.mutate()]);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const [list, totals] = await Promise.all([
-        api.get("/approval-queue", { params: { status: "open", limit: 100 } }),
-        api.get("/approval-queue/summary"),
-      ]);
-      setRequests(list.data || []);
-      setSummary(totals.data || null);
-      setLoadedAt(new Date());
-      onCount?.(totals.data?.awaiting_decision);
-    } catch (e) {
-      setRequests([]);
-      setError(formatErr(e.response?.data?.detail) || "The approval queue could not be read.");
-    }
-  }, [onCount]);
-
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { onCount?.(summary?.awaiting_decision); }, [onCount, summary]);
 
   const decide = async (request, decision) => {
     setBusyId(request.id);
     try {
       await api.post(`/approval-queue/${request.id}/decision`, { decision });
       toast.success(decision === "approved" ? "Approved" : "Rejected");
-      await load();
     } catch (e) {
       toast.error(formatErr(e.response?.data?.detail) || "That decision could not be recorded");
     } finally { setBusyId(null); }
   };
 
-  if (requests === null) return <SurfaceLoading rows={3} testid="approval-queue-loading" />;
-  if (error) return <SurfaceError title="Approval queue unavailable" description={error}
+  if (error && !requests) return <SurfaceError title="Approval queue unavailable" description={error}
                                   onRetry={load} testid="approval-queue-error" />;
+  if (!requests) return <SurfaceLoading rows={3} testid="approval-queue-loading" />;
 
   return (
     <div className="space-y-4" data-testid="approval-queue-panel">
+      {error && <Notice title="Showing last available data">{error} Use Refresh to try again.</Notice>}
       {summary ? (
         <StatStrip items={[
           { label: "Awaiting decision", value: summary.awaiting_decision },
@@ -595,31 +583,18 @@ function ApprovalQueuePanel({ isAdmin, onCount }) {
 }
 
 function ConversationsPanel({ isAdmin, onCount }) {
-  const [threads, setThreads] = useState(null);
-  const [summary, setSummary] = useState(null);
+  const list = useSharedRead("/conversations", { status: "open", limit: 100 });
+  const totals = useSharedRead("/conversations/summary");
+  const threads = list.data;
+  const summary = totals.data;
   const [selected, setSelected] = useState(null);
-  const [error, setError] = useState(null);
+  const failure = list.error || totals.error;
+  const error = failure ? (failure.response?.data?.detail ? formatErr(failure.response.data.detail) : "Conversations could not be refreshed.") : null;
   const [busy, setBusy] = useState(false);
-  const [loadedAt, setLoadedAt] = useState(null);
+  const loadedAt = list.updatedAt;
+  const load = () => Promise.allSettled([list.mutate(), totals.mutate()]);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const [list, totals] = await Promise.all([
-        api.get("/conversations", { params: { status: "open", limit: 100 } }),
-        api.get("/conversations/summary"),
-      ]);
-      setThreads(list.data || []);
-      setSummary(totals.data || null);
-      setLoadedAt(new Date());
-      onCount?.(totals.data?.open_conversations);
-    } catch (e) {
-      setThreads([]);
-      setError(formatErr(e.response?.data?.detail) || "Conversations could not be read.");
-    }
-  }, [onCount]);
-
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { onCount?.(summary?.open_conversations); }, [onCount, summary]);
 
   const open = async (thread) => {
     setBusy(true);
@@ -638,21 +613,21 @@ function ConversationsPanel({ isAdmin, onCount }) {
       await api.post(`/conversations/${selected.id}/${path}`, body);
       toast.success(message);
       await open(selected);
-      await load();
     } catch (e) {
       toast.error(formatErr(e.response?.data?.detail) || "That action could not be completed");
     } finally { setBusy(false); }
   };
 
-  if (threads === null) return <SurfaceLoading rows={3} testid="conversations-loading" />;
-  if (error) return <SurfaceError title="Conversations unavailable" description={error}
+  if (error && !threads) return <SurfaceError title="Conversations unavailable" description={error}
                                   onRetry={load} testid="conversations-error" />;
+  if (!threads) return <SurfaceLoading rows={3} testid="conversations-loading" />;
 
   const providers = summary?.providers || [];
   const registered = providers.filter((p) => p.registered);
 
   return (
     <div className="space-y-4" data-testid="conversations-panel">
+      {error && <Notice title="Showing last available data">{error} Use Refresh to try again.</Notice>}
       {summary ? (
         <StatStrip items={[
           { label: "Open threads", value: summary.open_conversations },
@@ -901,22 +876,20 @@ const queueCount = (stats) => (stats ? (stats.open || 0) + (stats.failed || 0) +
  * much is waiting before it is opened. A panel reports its fresh figure after every reload.
  */
 function useTabCounts() {
+  const approvals = useSharedRead("/approval-queue/summary");
+  const conversations = useSharedRead("/conversations/summary");
   const [counts, setCounts] = useState({});
   useEffect(() => {
     let live = true;
     Promise.allSettled([
       api.get("/work-queue/stats"),
       api.get("/recovery-strategies/summary"),
-      api.get("/approval-queue/summary"),
-      api.get("/conversations/summary"),
-    ]).then(([queue, recovery, approvals, conversations]) => {
+    ]).then(([queue, recovery]) => {
       if (!live) return;
       const read = (result, pick) => (result.status === "fulfilled" ? pick(result.value.data || {}) : undefined);
       setCounts((current) => ({
         queue: read(queue, queueCount),
         recovery: read(recovery, (data) => data.proposed),
-        approvals: read(approvals, (data) => data.awaiting_decision),
-        conversations: read(conversations, (data) => data.open_conversations),
         ...current,
       }));
     });
@@ -925,7 +898,7 @@ function useTabCounts() {
   const report = useCallback((key) => (value) => {
     setCounts((current) => (current[key] === value ? current : { ...current, [key]: value }));
   }, []);
-  return [counts, report];
+  return [{ ...counts, approvals: approvals.data?.awaiting_decision, conversations: conversations.data?.open_conversations }, report];
 }
 
 export default function Operations() {

@@ -2,7 +2,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { api } from "@/lib/api";
+import { useMenuCounts } from "@/lib/sharedReads";
 import NotificationBell from "@/components/NotificationBell";
 import GlobalCommandDialog from "@/components/GlobalCommandDialog";
 import QuickCreateDialog from "@/components/QuickCreateDialog";
@@ -21,37 +21,6 @@ const readCollapsed = () => {
 const WIDE = "(min-width: 1024px)";
 const isWide = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(WIDE).matches;
 const SHORTCUT = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "") ? "⌘K" : "Ctrl K";
-
-// The counts beside menu items. Each comes from an endpoint a page already reads, so the
-// badge agrees with what the page shows. A failed or zero count shows no badge.
-const OPEN_TASK_STATUSES = "todo,in_progress,blocked";
-const COUNT_SOURCES = {
-  leads: () => api.get("/leads/summary").then(({ data }) => data?.open_now),
-  inbox: () => api.get("/conversations/summary").then(({ data }) => data?.open_conversations),
-  // The Tasks page's Overdue tab in its default view: my open tasks past due, plus unowned ones.
-  tasks: () => api.get("/tasks", {
-    params: { status: OPEN_TASK_STATUSES, due_before: new Date(Date.now() - 1).toISOString(), mine: true, include_unassigned: true, limit: 1 },
-  }).then(({ data }) => data?.total),
-  approvals: () => api.get("/approval-queue/summary").then(({ data }) => data?.awaiting_decision),
-};
-
-/** Fetches every count when the shell mounts and again whenever the page changes; never blocks rendering. */
-function useMenuCounts(locationKey) {
-  const [counts, setCounts] = useState({});
-  const latest = useRef(0);
-  useEffect(() => {
-    const run = ++latest.current;
-    const keys = Object.keys(COUNT_SOURCES);
-    Promise.allSettled(keys.map((key) => COUNT_SOURCES[key]())).then((results) => {
-      if (run !== latest.current) return;
-      setCounts(Object.fromEntries(keys.map((key, index) => {
-        const value = results[index].status === "fulfilled" ? Number(results[index].value) : 0;
-        return [key, Number.isFinite(value) && value > 0 ? value : 0];
-      })));
-    });
-  }, [locationKey]);
-  return counts;
-}
 
 export default function AppShell() {
   const { user, logout } = useAuth();
@@ -73,7 +42,7 @@ export default function AppShell() {
   const collapsed = collapsedPreference && wide;
   const activeEntry = useMemo(() => menuEntryFor(location), [location]);
   const crumbs = useMemo(() => breadcrumbFor(location), [location]);
-  const counts = useMenuCounts(`${location.pathname}${location.search}`);
+  const counts = useMenuCounts();
   const isAdmin = user?.role === "admin";
   const menu = MAIN_MENU.filter((entry) => !entry.adminOnly || isAdmin);
 
