@@ -17,7 +17,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import TaskScheduleShortcuts from "@/components/TaskScheduleShortcuts";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -169,6 +170,7 @@ function assigneeChoices({ me, isAdmin, team, current }) {
   const choices = isAdmin && team.length
     ? team.map((member) => ({ value: member.email, label: samePerson(member.email, me) ? `${member.name} (you)` : member.name }))
     : [{ value: me, label: "Me" }];
+  if (me && !choices.some((choice) => samePerson(choice.value, me))) choices.unshift({ value: me, label: "Me" });
   if (current && !choices.some((choice) => samePerson(choice.value, current))) choices.push({ value: current, label: current });
   return [...choices, { value: UNASSIGNED, label: "Unassigned" }];
 }
@@ -240,7 +242,7 @@ function TaskRow({ task, now, avatarName, busy, highlighted, onToggle, onOpen })
   const AboutIcon = ABOUT_ICON[about?.kind] || ArrowUpRight;
   return (
     <li id={`task-${task.id}`} data-testid={`task-row-${task.id}`}
-      className={`group relative flex items-center gap-2.5 border-b border-border/70 px-3 py-2 transition-colors last:border-0 hover:bg-muted/50 sm:px-4 ${highlighted ? "bg-brand-soft/60 hover:bg-brand-soft/60" : ""}`}>
+      className={`group relative grid grid-cols-[44px_minmax(0,1fr)_44px] items-start gap-2.5 border-b border-border/70 px-3 py-2 transition-colors last:border-0 hover:bg-muted/50 sm:flex sm:items-center sm:px-4 ${highlighted ? "bg-brand-soft/60 hover:bg-brand-soft/60" : ""}`}>
       <button type="button" onClick={() => onToggle(task)} disabled={busy} aria-pressed={done}
         aria-label={done ? `Reopen: ${task.title}` : `Mark done: ${task.title}`}
         className="relative z-10 -ml-1 flex size-7 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-muted disabled:opacity-50"
@@ -253,7 +255,7 @@ function TaskRow({ task, now, avatarName, busy, highlighted, onToggle, onOpen })
           className={`min-w-0 text-left text-[13px] font-medium leading-5 after:absolute after:inset-0 after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-ring ${done ? "text-muted-foreground line-through decoration-muted-foreground/50" : "text-foreground"}`}>
           <span className="line-clamp-2 break-words sm:line-clamp-1">{task.title}</span>
         </button>
-        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs sm:mt-0 sm:shrink-0">
+        <div className="flex min-w-0 flex-col items-start gap-1 text-sm sm:shrink-0 sm:flex-row sm:items-center sm:gap-2 sm:text-xs">
           <DueText task={task} now={now} className="sm:hidden" />
           {about && (about.to
             ? <Link to={about.to} data-testid={`task-about-${task.id}`}
@@ -264,7 +266,7 @@ function TaskRow({ task, now, avatarName, busy, highlighted, onToggle, onOpen })
             : <span className="inline-flex h-6 min-w-0 items-center gap-1 px-1.5 text-muted-foreground"><span className="truncate">{about.label}: {about.name}</span></span>)}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2.5 sm:gap-3">
+      <div className="flex shrink-0 flex-col items-center gap-2.5 pt-2 sm:flex-row sm:gap-3 sm:pt-0">
         <PriorityIcon priority={task.priority} className="hidden sm:block" />
         <DueText task={task} now={now} className="tabular hidden w-[8.75rem] justify-end text-right text-xs sm:inline-flex" />
         <AssigneeMark email={task.assignee} name={task.assignee ? avatarName(task.assignee) : null} />
@@ -373,7 +375,7 @@ function ActivityList({ entries, now }) {
 }
 
 /** One task, laid out like an issue: what it is and what happened on the left, its properties on the right. */
-function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, tabLabel, onToggle, onSave }) {
+export function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, tabLabel, onToggle, onSave }) {
   const initial = toLocalInputs(task.due_date);
   const choices = assigneeChoices({ me, isAdmin, team, current: task.assignee });
   const [date, setDate] = useState(initial.date);
@@ -387,28 +389,38 @@ function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, tabLabel, onTo
   const priority = PRIORITY[task.priority];
   const AboutIcon = ABOUT_ICON[about?.kind] || ArrowUpRight;
 
+  const dueChanged = touched.due && (date !== initial.date || (Boolean(date) && time !== initial.time));
+  const assigneeChanged = touched.assignee && assignee !== choiceFor(choices, task.assignee);
+  const hasChanges = dueChanged || assigneeChanged;
+  const discard = () => {
+    setDate(initial.date);
+    setTime(initial.time);
+    setAssignee(choiceFor(choices, task.assignee));
+    setTouched({ due: false, assignee: false });
+  };
   const save = () => {
+    if (busy || !hasChanges) return;
     const changes = {};
-    if (touched.due) changes.due_date = fromLocalInputs(date, time);
-    if (touched.assignee) changes.assignee = assignee === UNASSIGNED ? null : assignee;
+    if (dueChanged) changes.due_date = fromLocalInputs(date, time);
+    if (assigneeChanged) changes.assignee = assignee === UNASSIGNED ? null : assignee;
     onSave(task, changes);
   };
 
-  const field = "h-8 text-[13px]";
+  const field = "min-w-0 max-w-full h-11 text-base sm:h-8 sm:text-sm";
   const properties = [
     { label: "Status", value: <span className="inline-flex items-center gap-2"><StatusIcon status={task.status} />{STATUS_LABEL[task.status] || task.status}</span> },
     { label: "Priority", value: priority ? <span className="inline-flex items-center gap-2"><PriorityIcon priority={task.priority} />{priority.label}</span> : <span className="text-muted-foreground">No priority</span> },
     { label: "Due", value: <DueText task={task} now={now} /> },
     {
       label: "Assignee", value: (
-        <Select value={assignee} onValueChange={(value) => { setAssignee(value); setTouched((current) => ({ ...current, assignee: true })); }}>
+        <Select disabled={busy} value={assignee} onValueChange={(value) => { setAssignee(value); setTouched((current) => ({ ...current, assignee: true })); }}>
           <SelectTrigger id="task-assignee" aria-label="Assigned to" className={`${field} -ml-2 w-[calc(100%+0.5rem)] border-transparent bg-transparent px-2 shadow-none hover:bg-muted/60 focus:border-input`} data-testid="task-detail-assignee"><SelectValue /></SelectTrigger>
-          <SelectContent>{choices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}</SelectContent>
+          <SelectContent className="cv-task-surface"><SelectGroup>{choices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}</SelectGroup></SelectContent>
         </Select>
       ),
     },
-    { label: "Due date", value: <Input id="task-due-date" type="date" aria-label="Due date" value={date} onChange={(event) => { setDate(event.target.value); setTouched((value) => ({ ...value, due: true })); }} className={field} data-testid="task-detail-due-date" /> },
-    { label: "Time", value: <Input id="task-due-time" type="time" aria-label="Due time" value={time} onChange={(event) => { setTime(event.target.value); setTouched((value) => ({ ...value, due: true })); }} className={field} data-testid="task-detail-due-time" /> },
+    { label: "Due date", value: <Input disabled={busy} id="task-due-date" type="date" aria-label="Due date" value={date} onChange={(event) => { setDate(event.target.value); setTouched((value) => ({ ...value, due: true })); }} className={field} data-testid="task-detail-due-date" /> },
+    { label: "Time", value: <Input disabled={busy || !date} id="task-due-time" type="time" aria-label="Due time" value={time} onChange={(event) => { setTime(event.target.value); setTouched((value) => ({ ...value, due: true })); }} className={field} data-testid="task-detail-due-time" /> },
     { label: "Linked to", value: about ? (about.to
       ? <Link to={about.to} className="inline-flex max-w-full items-center gap-1.5 font-medium text-brand hover:underline"><AboutIcon className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{about.name}</span></Link>
       : <span className="text-muted-foreground">{about.name}</span>) : null },
@@ -417,16 +429,16 @@ function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, tabLabel, onTo
   ].filter(({ value }) => value != null);
 
   return (
-    <div className="flex min-h-full flex-col" data-testid="task-detail">
+    <div className="flex h-full min-h-0 flex-col" data-testid="task-detail">
       <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-5 pr-14 text-[13px] text-muted-foreground sm:px-6">
         <ListTodo className="size-4" aria-hidden="true" />Tasks<ChevronRight className="size-3.5" aria-hidden="true" /><span className="text-foreground">{tabLabel || STATUS_LABEL[task.status] || "Task"}</span>
       </div>
-      <div className="grid flex-1 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[auto_1fr]">
+      <div className="grid min-h-0 flex-1 overflow-y-auto overscroll-contain lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[auto_1fr]">
         <div className="min-w-0 px-5 pb-6 pt-6 sm:px-7">
           <SheetTitle className="break-words text-xl font-semibold leading-7 tracking-tight">{task.title}</SheetTitle>
           <SheetDescription className="mt-1 text-[13px]">{about ? `${about.label}: ${about.name}` : "A follow-up task"}</SheetDescription>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button size="sm" variant={done ? "outline" : "default"} disabled={busy} onClick={() => onToggle(task)} data-testid="task-detail-toggle">
+            <Button size="sm" variant={done ? "outline" : "default"} disabled={busy || hasChanges} onClick={() => onToggle(task)} data-testid="task-detail-toggle">
               {done ? <><RotateCcw aria-hidden="true" />Reopen</> : <><CheckCircle2 aria-hidden="true" />Mark done</>}
             </Button>
             {contact?.phone && (
@@ -444,10 +456,19 @@ function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, tabLabel, onTo
         </div>
 
         <aside className="border-y border-border bg-muted/20 px-5 py-5 sm:px-6 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:border-y-0 lg:border-l lg:px-5">
-          <h3 className="mb-1.5 text-xs font-medium text-muted-foreground">Properties</h3>
+          <TaskScheduleShortcuts disabled={busy} onChange={(value) => {
+            const next = toLocalInputs(value);
+            setDate(next.date);
+            setTime(next.time);
+            setTouched((current) => ({ ...current, due: true }));
+          }} />
+          <h3 className="mb-1.5 mt-5 text-sm font-medium text-muted-foreground">Properties</h3>
           <PropertyList className="[&>div]:grid-cols-[84px_minmax(0,1fr)] [&>div]:items-center [&>div]:min-h-[2.5rem]" items={properties} />
-          <Button size="sm" className="mt-4 w-full" disabled={busy || (!touched.due && !touched.assignee)} onClick={save} data-testid="task-detail-save">Save changes</Button>
-          {!task.assignee && <p className="mt-3 text-xs text-muted-foreground">Unassigned — anyone on the team can take it.</p>}
+          {me && !samePerson(assignee, me) && <Button type="button" variant="outline" size="sm" className="mt-3 w-full" disabled={busy} onClick={() => {
+            setAssignee(choiceFor(choices, me));
+            setTouched((current) => ({ ...current, assignee: true }));
+          }} data-testid="task-assign-me">Assign to me</Button>}
+          {assignee === UNASSIGNED && <p className="mt-3 text-xs text-muted-foreground">Unassigned — anyone on the team can take it.</p>}
           {!isAdmin && <p className="mt-2 text-xs text-muted-foreground">Only admins can see the team list, so you can take a task yourself or leave it unassigned.</p>}
         </aside>
 
@@ -455,6 +476,13 @@ function TaskDetail({ task, now, me, isAdmin, team, nameOf, busy, tabLabel, onTo
           <h3 className="mb-4 text-sm font-semibold text-foreground">Activity</h3>
           <ActivityList entries={activity} now={now} />
         </section>
+      </div>
+      <div className="cv-task-save-bar shrink-0 border-t border-border bg-background px-5 pt-3 sm:px-6">
+        <p className="mb-2 text-sm text-muted-foreground" role="status">{busy ? "Saving…" : hasChanges ? "Unsaved changes. Save or discard before marking done." : "Date and assignment changes apply when you save."}</p>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" disabled={busy || !hasChanges} onClick={discard} data-testid="task-detail-discard">Discard</Button>
+          <Button type="button" className="flex-1" disabled={busy || !hasChanges} onClick={save} data-testid="task-detail-save">{busy ? "Saving…" : "Save changes"}</Button>
+        </div>
       </div>
     </div>
   );
@@ -563,7 +591,7 @@ function NewTaskForm({ me, isAdmin, team, onCreated, onCancel }) {
         <Label htmlFor="new-task-assignee">Assign to</Label>
         <Select value={assignee} onValueChange={setAssignee}>
           <SelectTrigger id="new-task-assignee" aria-label="Assign to" data-testid="new-task-assignee"><SelectValue /></SelectTrigger>
-          <SelectContent>{choices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}</SelectContent>
+          <SelectContent className="cv-task-surface"><SelectGroup>{choices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}</SelectGroup></SelectContent>
         </Select>
       </div>
       <div className="grid gap-1.5">
@@ -731,7 +759,7 @@ export default function Tasks() {
   });
 
   return (
-    <div className="cv-page" data-testid="tasks-page">
+    <div className="cv-page cv-task-surface" data-testid="tasks-page">
       <PageHeader icon={ListTodo} title="Tasks"
         description="Every call-back and follow-up in one place, with what is late at the top."
         actions={<>
@@ -792,7 +820,7 @@ export default function Tasks() {
       )}
 
       <Sheet open={Boolean(focusId && focused)} onOpenChange={(value) => { if (!value) close(); }}>
-        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[860px]">
+        <SheetContent className="cv-task-surface cv-task-panel h-[100dvh] w-full overflow-hidden p-0 sm:max-w-[860px]">
           {focused && (
             <TaskDetail key={`${focused.id}:${focused.updated_at || ""}:${focused.status}`} task={focused} now={now} me={me}
               isAdmin={isAdmin} team={team} nameOf={nameOf} busy={busyId === focused.id} tabLabel={TABS.find(({ key }) => key === bucketOf(focused, now))?.label}
@@ -802,7 +830,7 @@ export default function Tasks() {
       </Sheet>
 
       <Dialog open={creating} onOpenChange={setCreating}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[520px]" data-testid="new-task-dialog">
+        <DialogContent className="cv-task-surface max-h-[90dvh] overflow-y-auto sm:max-w-[520px]" data-testid="new-task-dialog">
           <DialogHeader>
             <DialogTitle>New task</DialogTitle>
             <DialogDescription className="text-[13px]">It shows up in Tasks for whoever you assign it to.</DialogDescription>

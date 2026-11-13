@@ -18,6 +18,8 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlarmClock, CheckCircle2, CircleAlert, Download, Globe, Inbox, Mail, MessageSquare, Phone, RefreshCw, Search, ShieldAlert, Timer, UserPlus, Zap } from "lucide-react";
 import { describeLeadStep } from "@/lib/leadSteps";
+import { leadFollowUp } from "@/lib/leadFollowUp";
+import { LeadFollowUp } from "@/components/LeadFollowUp";
 
 const STATUS_TABS = [
   { key: "new", label: "New" },
@@ -226,7 +228,8 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
       </header>
 
       <div className="flex-1 lg:grid lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="min-w-0 space-y-7 px-5 pb-10 pt-5 sm:px-6">
+        <div className="min-w-0 flex flex-col gap-7 px-5 pb-10 pt-5 sm:px-6">
+          <LeadFollowUp lead={lead} />
           {lead.message && (
             <section>
               <PanelHeading>Message</PanelHeading>
@@ -296,6 +299,7 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
 
 function LeadRow({ lead, showStatus, onOpen }) {
   const flag = speedFlag(lead);
+  const next = leadFollowUp(lead);
   const meta = [lead.form_name, lead.property_address, lead.listing_id && `MLS ${lead.listing_id}`, lead.phone, lead.email].filter(Boolean).join(" · ");
   return (
     <li className="border-b border-border/70 last:border-0">
@@ -310,6 +314,7 @@ function LeadRow({ lead, showStatus, onOpen }) {
             {showStatus && <StatusDot tone={STATUS_TONE[lead.status]} className="text-xs text-muted-foreground">{STATUS_LABEL[lead.status]}</StatusDot>}
           </div>
           <div className="truncate text-xs text-muted-foreground">{meta}</div>
+          <p className="mt-1 break-words text-sm text-foreground">{next.title}<span className="text-muted-foreground md:hidden"> · {next.owner}</span></p>
           {flag && <div className="mt-1 sm:hidden">{flag}</div>}
         </div>
         <div className="flex shrink-0 items-center gap-4 text-xs text-muted-foreground">

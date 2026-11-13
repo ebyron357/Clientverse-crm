@@ -982,6 +982,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      happened.
   3. **"Close"** a lead that is finished, **"Spam"** junk, **"Reopen"** a closed one.
   4. **"Export CSV"** downloads the leads in the current view as `leads.csv`.
+- **Next-step guidance:** each list row names the next step, with the owner visible on phones too. Open a lead to read **"Next step"**: it explains the recorded response deadline or escalation, missing contact details, an unassigned owner, or a failed automation step. **"Review call-back task"** opens the linked task for review and rescheduling; its presence does not prove the task is still open. Contacted leads suggest reviewing the next follow-up, closed/spam leads suggest no outreach, and test submissions are explicitly treated as tests. Guidance is rule-based, not an AI prediction; it sends nothing and changes no status. An automatic reply does not count as a personal response.
 - **Existing clients:** a form or booking from someone you already serve (their company has a
   Client 360 workspace, or they are on a won deal) is marked **"Existing client"**. It opens no new
   deal, and its task reads **"Reply to client: …"** instead of **"Call new lead now: …"**.
@@ -1006,7 +1007,8 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   2. **"New task"**: **"What needs doing"** (required), **"Who it's about (optional)"**, a due date
      and time, **"Assign to"**, **"Notes (optional)"** → **"Add task"**. Unassigned tasks can be
      taken by anyone on the team.
-  3. Open a task to change it (**"Save changes"**), **"Mark done"** or **"Reopen"**.
+  3. Open a task to change it (**"Save changes"**), **"Mark done"** or **"Reopen"**. **"Reschedule"** offers **"In 1 hour"**, **"Tomorrow, 9 am"** (your local time), or **"No due date"**. These only fill the editable date/time fields; nothing changes on the server until you save. **"Assign to me"** also prepares a change rather than saving immediately. Admins can still choose an active teammate; members retain their existing self/unassigned choices.
+  4. On a phone, the task opens full-width with larger touch targets and 16px form controls. **"Save changes"** and **"Discard"** remain at the bottom while the details scroll. Discard restores the saved date and assignment. Save or discard edits before **"Mark done"** / **"Reopen"**; completion still offers **"Undo"** in its notification.
 - **Refresh behavior:** returning to Tasks or switching back to **"My tasks"** / **"Everyone"** reuses that view's recent data. Views are cached separately for the signed-in session, refresh every 30 seconds while visible, and refresh after task creation, edits, completion or Undo. Existing rows stay visible during background refreshes; a refresh error leaves the last available tasks in place with a warning. **"Refresh tasks"** retries the lists and overdue count. Signing out or changing accounts clears the cache.
 - **Common mistakes:** leaving a task unassigned when one person should own it.
 - **Saved when:** **"Task added"**, **"Changes saved"**; **"Undo"** on the message reverses a tick.
