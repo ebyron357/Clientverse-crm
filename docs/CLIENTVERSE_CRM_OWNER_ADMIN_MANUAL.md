@@ -1007,6 +1007,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      and time, **"Assign to"**, **"Notes (optional)"** → **"Add task"**. Unassigned tasks can be
      taken by anyone on the team.
   3. Open a task to change it (**"Save changes"**), **"Mark done"** or **"Reopen"**.
+- **Refresh behavior:** returning to Tasks or switching back to **"My tasks"** / **"Everyone"** reuses that view's recent data. Views are cached separately for the signed-in session, refresh every 30 seconds while visible, and refresh after task creation, edits, completion or Undo. Existing rows stay visible during background refreshes; a refresh error leaves the last available tasks in place with a warning. **"Refresh tasks"** retries the lists and overdue count. Signing out or changing accounts clears the cache.
 - **Common mistakes:** leaving a task unassigned when one person should own it.
 - **Saved when:** **"Task added"**, **"Changes saved"**; **"Undo"** on the message reverses a tick.
 

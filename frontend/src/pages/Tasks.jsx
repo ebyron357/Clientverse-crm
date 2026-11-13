@@ -5,10 +5,12 @@
    every 30 seconds, like the Leads inbox. Ticking a lead's call-back task off marks the
    lead as contacted; un-ticking it puts the lead back in the queue if that tick was what
    marked it. A link to /tasks?task=<id> opens that task. */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, formatErr } from "@/lib/api";
+import { OVERDUE_COUNT, TASK_BUCKETS, useSharedRead } from "@/lib/sharedReads";
+import { taskBoundaries as boundaries, TASK_DONE_DAYS as DONE_DAYS } from "@/lib/taskQueries";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar, PageHeader, PropertyList, Toolbar, ViewTabs } from "@/components/page/Page";
 import { Button } from "@/components/ui/button";
@@ -22,12 +24,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { SurfaceEmpty, SurfaceError } from "@/components/SurfaceState";
 import { AlarmClock, ArrowUpRight, Briefcase, Building2, CalendarClock, CheckCircle2, ChevronRight, CircleAlert, ListTodo, Pencil, Phone, Plus, RefreshCw, RotateCcw, Timer, User, UserRound, X, Zap } from "lucide-react";
 
-const OPEN_STATUSES = "todo,in_progress,blocked";
-const DONE_DAYS = 7;
 const MINUTE = 60 * 1000;
 const DAY = 24 * 60 * MINUTE;
 const UNASSIGNED = "__unassigned__";
-const PAGE = 200;
 
 const TABS = [
   { key: "overdue", label: "Overdue", empty: "Nothing is overdue." },
@@ -64,13 +63,6 @@ function startOfDay(date) {
   const day = new Date(date);
   day.setHours(0, 0, 0, 0);
   return day;
-}
-
-/** Now, the end of the local day, and the start of tomorrow: the edges of the tabs. */
-function boundaries(now = new Date()) {
-  const tomorrow = startOfDay(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return { now, tomorrow, endOfToday: new Date(tomorrow.getTime() - 1) };
 }
 
 function span(ms) {
@@ -124,23 +116,6 @@ function bucketOf(task, now = new Date()) {
   if (!due) return "upcoming";
   if (due < now) return "overdue";
   return due < boundaries(now).tomorrow ? "today" : "upcoming";
-}
-
-function tabQuery(key, { now, tomorrow, endOfToday }) {
-  if (key === "overdue") return { status: OPEN_STATUSES, due_before: new Date(now.getTime() - 1).toISOString() };
-  if (key === "today") return { status: OPEN_STATUSES, due_after: now.toISOString(), due_before: endOfToday.toISOString() };
-  if (key === "upcoming") return { status: OPEN_STATUSES, due_after: tomorrow.toISOString(), include_undated: true };
-  return { status: "done", completed_after: new Date(now.getTime() - DONE_DAYS * DAY).toISOString(), sort: "completed_at", order: "desc" };
-}
-
-/** Soonest first; tasks with no date at the end. */
-function byDue(a, b) {
-  const first = parseDate(a.due_date);
-  const second = parseDate(b.due_date);
-  if (!first && !second) return 0;
-  if (!first) return 1;
-  if (!second) return -1;
-  return first - second;
 }
 
 function toLocalInputs(value) {
@@ -617,53 +592,31 @@ export default function Tasks() {
   const focusId = searchParams.get("task");
   const [view, setView] = useState("mine");
   const [tab, setTab] = useState(null);
-  const [buckets, setBuckets] = useState(null);
-  const [error, setError] = useState("");
-  const [team, setTeam] = useState([]);
+  const taskRead = useSharedRead(TASK_BUCKETS, { view });
+  const overdueRead = useSharedRead(OVERDUE_COUNT);
+  // The team list is admin-only on the server; members assign to themselves.
+  const teamRead = useSharedRead(isAdmin ? "/team/members" : null);
+  const buckets = taskRead.data;
+  const failure = taskRead.error;
+  const error = failure ? (failure.response?.data?.detail ? formatErr(failure.response.data.detail) : buckets ? "Tasks could not be refreshed. Showing the last available tasks. Try Refresh again." : "Tasks could not be loaded. Check your connection and try again.") : "";
+  const team = useMemo(() => (Array.isArray(teamRead.data) ? teamRead.data : []).filter((member) => member.status === "active" && member.email)
+    .map((member) => ({ email: member.email, name: member.name || member.email })), [teamRead.data]);
   const [busyId, setBusyId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [fetched, setFetched] = useState(null);
   const [, setTick] = useState(0);
-  const loadSeq = useRef(0);
-  const ready = buckets !== null;
+  const ready = Boolean(buckets);
+  const load = () => Promise.allSettled([taskRead.mutate(), overdueRead.mutate(), teamRead.mutate()]);
 
-  const load = useCallback(async () => {
-    const sequence = ++loadSeq.current;
-    const bounds = boundaries();
-    const scope = view === "mine" ? { mine: true, include_unassigned: true } : {};
-    try {
-      const pages = await Promise.all(TABS.map(({ key }) => api.get("/tasks", {
-        params: { sort: "due_date", order: "asc", ...tabQuery(key, bounds), ...scope, expand: "related", limit: PAGE },
-      })));
-      if (sequence !== loadSeq.current) return;
-      const next = Object.fromEntries(TABS.map(({ key }, index) => {
-        const { items, total } = pages[index].data;
-        return [key, { items: key === "upcoming" ? [...items].sort(byDue) : items, total }];
-      }));
-      setBuckets(next);
-      setError("");
-      // Open on the most pressing list that has something in it, then leave the choice alone.
-      setTab((current) => current || TABS.slice(0, 3).find(({ key }) => next[key].total > 0)?.key || "today");
-    } catch (e) {
-      if (sequence !== loadSeq.current) return;
-      setError(e.response?.data?.detail ? formatErr(e.response.data.detail) : "Tasks could not be loaded. Check your connection and try again.");
-    }
-  }, [view]);
-
-  useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    const refresh = setInterval(load, 30000);
+    if (!buckets) return;
+    // Open on the most pressing list that has something in it, then leave the choice alone.
+    setTab((current) => current || TABS.slice(0, 3).find(({ key }) => buckets[key].total > 0)?.key || "today");
+  }, [buckets]);
+  useEffect(() => {
     const tick = setInterval(() => setTick((value) => value + 1), 15000);
-    return () => { clearInterval(refresh); clearInterval(tick); };
-  }, [load]);
-  useEffect(() => {
-    // The team list is admin-only on the server; members assign to themselves.
-    if (!isAdmin) return;
-    api.get("/team/members")
-      .then(({ data }) => setTeam((data || []).filter((member) => member.status === "active" && member.email)
-        .map((member) => ({ email: member.email, name: member.name || member.email }))))
-      .catch(() => setTeam([]));
-  }, [isAdmin]);
+    return () => clearInterval(tick);
+  }, []);
 
   // A link naming a task: fetch it, open the tab (and, for an admin, the view) it is in.
   useEffect(() => {
@@ -706,7 +659,7 @@ export default function Tasks() {
 
   const open = (task) => setSearchParams((params) => { params.set("task", task.id); return params; });
   const close = () => setSearchParams((params) => { params.delete("task"); return params; });
-  const switchView = (next) => { if (next === view) return; setBuckets(null); setView(next); };
+  const switchView = (next) => { if (next !== view) setView(next); };
 
   const setStatus = async (task, status, { undo = false } = {}) => {
     setBusyId(task.id);
@@ -729,7 +682,7 @@ export default function Tasks() {
           action: { label: "Undo", onClick: () => setStatus(updated, task.status || "todo", { undo: true }) },
         });
       }
-      await load();
+
     } catch (e) {
       toast.error(formatErr(e.response?.data?.detail));
     } finally { setBusyId(null); }
@@ -747,7 +700,7 @@ export default function Tasks() {
       const bucket = bucketOf(updated);
       if (bucket) setTab(bucket);
       toast.success("Changes saved", { description: "assignee" in changes && changes.assignee && !samePerson(changes.assignee, me) ? `${nameOf(changes.assignee)} will see it in their tasks.` : undefined });
-      await load();
+
     } catch (e) {
       toast.error(formatErr(e.response?.data?.detail));
     } finally { setBusyId(null); }
@@ -759,7 +712,6 @@ export default function Tasks() {
     if (bucket) setTab(bucket);
     const theirs = task.assignee && !samePerson(task.assignee, me);
     toast.success("Task added", { description: theirs ? `${nameOf(task.assignee)} will see it in their tasks.` : undefined });
-    load();
   };
 
   const now = new Date();

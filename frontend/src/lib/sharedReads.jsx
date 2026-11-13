@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import useSWR, { SWRConfig, useSWRConfig } from "swr";
 import { api } from "@/lib/api";
+import { byTaskDue, taskBoundaries, taskQuery, TASK_BUCKET_KEYS, TASK_PAGE_SIZE } from "@/lib/taskQueries";
 
 export const SHARED_READ_INTERVAL = 30000;
 export const OVERDUE_COUNT = "/tasks/overdue-count";
+export const TASK_BUCKETS = "/tasks/buckets";
 const PREFIX = "shared-read";
 const LEADS = ["/leads", "/leads/summary"];
-const TASKS = [OVERDUE_COUNT];
+const TASKS = [OVERDUE_COUNT, TASK_BUCKETS];
 const APPROVALS = ["/approval-queue", "/approval-queue/summary"];
 const CONVERSATIONS = ["/conversations", "/conversations/summary"];
 
@@ -15,6 +17,7 @@ export function affectedReads(config = {}) {
   const path = (config.url || "").split("?")[0];
   if (/^\/(?:crm\/)?tasks(?:\/|$)/.test(path)) return [...TASKS, ...LEADS];
   if (/^\/leads(?:\/|$)/.test(path)) return [...LEADS, ...TASKS];
+  if (/^\/team\/members(?:\/|$)/.test(path)) return ["/team/members", ...TASKS];
   if (/^\/approval-queue(?:\/|$)/.test(path)) return [...APPROVALS, ...CONVERSATIONS];
   if (/^\/conversations(?:\/|$)/.test(path)) return [...CONVERSATIONS, ...APPROVALS];
   // These operations can create follow-ups, approvals or conversations as side effects.
@@ -57,6 +60,19 @@ export function SharedReadsProvider({ user, children }) {
 }
 
 async function fetchRead([, path, params]) {
+  if (path === TASK_BUCKETS) {
+    // A stable view key reuses recent data; each fetch gets fresh clock and local-day boundaries.
+    const bounds = taskBoundaries();
+    const scope = params?.view === "everyone" ? {} : { mine: true, include_unassigned: true };
+    const buckets = await Promise.all(TASK_BUCKET_KEYS.map(async (key) => {
+      const { data } = await api.get("/tasks", {
+        params: { sort: "due_date", order: "asc", ...taskQuery(key, bounds), ...scope, expand: "related", limit: TASK_PAGE_SIZE },
+      });
+      if (!Array.isArray(data?.items) || !Number.isFinite(data?.total)) throw new Error("Invalid task response");
+      return [key, { items: key === "upcoming" ? [...data.items].sort(byTaskDue) : data.items, total: data.total }];
+    }));
+    return { payload: Object.fromEntries(buckets), updatedAt: new Date() };
+  }
   const overdue = path === OVERDUE_COUNT;
   const { data } = await api.get(overdue ? "/tasks" : path, {
     params: overdue ? {

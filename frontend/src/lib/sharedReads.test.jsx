@@ -3,7 +3,8 @@ import { createRoot } from "react-dom/client";
 /* global jest */
 import { afterEach, beforeEach, expect, test } from "@jest/globals";
 import { api } from "./api";
-import { affectedReads, OVERDUE_COUNT, SharedReadsProvider, SHARED_READ_INTERVAL, useMenuCounts, useSharedRead } from "./sharedReads";
+import { affectedReads, OVERDUE_COUNT, TASK_BUCKETS, SharedReadsProvider, SHARED_READ_INTERVAL, useMenuCounts, useSharedRead } from "./sharedReads";
+import { taskBoundaries, taskQuery, byTaskDue } from "./taskQueries";
 
 // CRA's Jest 27 needs Axios's CommonJS build rather than its ESM entry point.
 jest.mock("axios", () => jest.requireActual("axios/dist/node/axios.cjs"));
@@ -219,6 +220,111 @@ test("hidden tabs do not poll", async () => {
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
   await act(async () => { jest.advanceTimersByTime(SHARED_READ_INTERVAL + 1); });
   expect(count()).toBe(4);
+});
+
+function taskResponse(config) {
+  if (config.method !== "get" || config.url !== "/tasks") return {};
+  if (config.params.limit === 1) return { total: 1 };
+  const { params } = config;
+  const bucket = params.status === "done" ? "done" : params.include_undated ? "upcoming" : params.due_after ? "today" : "overdue";
+  return { items: [{ id: `${params.mine ? "mine" : "everyone"}-${bucket}` }], total: 1 };
+}
+
+test("task remounts and view switches reuse four reads per scope without mixing views", async () => {
+  respond = async (config) => taskResponse(config);
+  await render(<Reader path={TASK_BUCKETS} params={{ view: "mine" }} />);
+  await until(() => expect(read().data?.overdue.items[0].id).toBe("mine-overdue"));
+  expect(count("/tasks")).toBe(4);
+  await render(null);
+  await render(<Reader path={TASK_BUCKETS} params={{ view: "mine" }} />);
+  expect(read().data.overdue.items[0].id).toBe("mine-overdue");
+  expect(count("/tasks")).toBe(4);
+  const pending = deferred();
+  respond = async (config) => { await pending.promise; return taskResponse(config); };
+  await render(<Reader path={TASK_BUCKETS} params={{ view: "everyone" }} />);
+  expect(read().data).toBeUndefined();
+  await act(async () => pending.resolve());
+  await until(() => expect(read().data?.overdue.items[0].id).toBe("everyone-overdue"));
+  await render(<Reader path={TASK_BUCKETS} params={{ view: "mine" }} />);
+  expect(read().data.overdue.items[0].id).toBe("mine-overdue");
+  expect(count("/tasks")).toBe(8);
+  expect(requests.slice(0, 4).every(({ params }) => params.mine && params.include_unassigned && params.expand === "related")).toBe(true);
+  expect(requests.slice(4).every(({ params }) => params.mine === undefined && params.include_unassigned === undefined)).toBe(true);
+});
+
+test.each([
+  ["post", "/crm/tasks", { title: "Call back" }],
+  ["patch", "/crm/tasks/one", { status: "done" }],
+  ["patch", "/crm/tasks/one", { status: "todo" }],
+  ["patch", "/crm/tasks/one", { assignee: "teammate@example.com" }],
+  ["delete", "/crm/tasks/one", undefined],
+])("%s %s %j refreshes task buckets and sidebar once", async (method, url, data) => {
+  let generation = 1;
+  respond = async (config) => {
+    if (config.method !== "get") { generation += 1; return {}; }
+    const result = taskResponse(config);
+    return { ...result, total: generation };
+  };
+  await render(<><Reader path={TASK_BUCKETS} params={{ view: "mine" }} /><Reader path={OVERDUE_COUNT} name="count" /></>);
+  await until(() => expect(read().data?.overdue.total).toBe(1));
+  await act(async () => api.request({ method, url, data }));
+  await until(() => expect(read().data?.overdue.total).toBe(2));
+  expect(read("count").data.total).toBe(2);
+  expect(count("/tasks")).toBe(10);
+});
+
+test("a failed bucket refresh keeps the whole previous snapshot, then recovers on retry", async () => {
+  respond = async (config) => taskResponse(config);
+  await render(<Reader path={TASK_BUCKETS} params={{ view: "mine" }} />);
+  await until(() => expect(read().data?.today.total).toBe(1));
+  const previous = read().data;
+  respond = async (config) => {
+    if (config.params.include_undated) throw new Error("offline");
+    return { items: [], total: 0 };
+  };
+  await act(async () => { await handles.page.mutate().catch(() => undefined); });
+  expect(read()).toMatchObject({ data: previous, loading: false, error: true });
+  respond = async () => ({ items: [], total: 0 });
+  await act(async () => handles.page.mutate());
+  expect(read()).toMatchObject({ data: { overdue: { total: 0 }, today: { total: 0 } }, error: false });
+});
+
+test("HTML or malformed task responses are failures, not an empty successful list", async () => {
+  respond = async () => "<!doctype html>";
+  await render(<Reader path={TASK_BUCKETS} params={{ view: "mine" }} />);
+  await until(() => expect(read().error).toBe(true));
+  expect(read().data).toBeUndefined();
+});
+
+test("task polling recalculates midnight boundaries instead of freezing the cached query", async () => {
+  jest.useFakeTimers();
+  const before = new Date(2026, 10, 13, 23, 59, 50);
+  jest.setSystemTime(before);
+  respond = async (config) => taskResponse(config);
+  await render(<Reader path={TASK_BUCKETS} params={{ view: "mine" }} />);
+  const first = requests.filter(({ params }) => params.include_undated)[0];
+  expect(new Date(first.params.due_after).getDate()).toBe(14);
+  await act(async () => { jest.advanceTimersByTime(SHARED_READ_INTERVAL + 1); });
+  const second = requests.filter(({ params }) => params.include_undated)[1];
+  expect(new Date(second.params.due_after).getDate()).toBe(15);
+  expect(count("/tasks")).toBe(8);
+});
+
+test("task windows do not overlap at now or local midnight, and undated tasks sort last", () => {
+  const now = new Date(2026, 10, 13, 13, 0, 0);
+  const bounds = taskBoundaries(now);
+  const overdue = taskQuery("overdue", bounds);
+  const today = taskQuery("today", bounds);
+  const upcoming = taskQuery("upcoming", bounds);
+  const done = taskQuery("done", bounds);
+  expect(Date.parse(overdue.due_before) + 1).toBe(Date.parse(today.due_after));
+  expect(Date.parse(today.due_before) + 1).toBe(Date.parse(upcoming.due_after));
+  expect(upcoming.include_undated).toBe(true);
+  expect(new Date(upcoming.due_after).getHours()).toBe(0);
+  expect(now - Date.parse(done.completed_after)).toBe(7 * 24 * 60 * 60 * 1000);
+  expect(done).toMatchObject({ sort: "completed_at", order: "desc", status: "done" });
+  const tasks = [{ id: "undated" }, { id: "later", due_date: "2026-11-15" }, { id: "earlier", due_date: "2026-11-14" }];
+  expect(tasks.sort(byTaskDue).map(({ id }) => id)).toEqual(["earlier", "later", "undated"]);
 });
 
 test("mutation routing does not invalidate on reads, failed feedback or unrelated writes", () => {
