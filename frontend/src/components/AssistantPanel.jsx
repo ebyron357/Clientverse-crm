@@ -19,6 +19,9 @@ export default function AssistantPanel({ contactId = null }) {
   const [result, setResult] = useState(null);
   const generation = useRef(0);
   const heading = useRef(null);
+  const Heading = contactId ? "h3" : "h2";
+  const ResultHeading = contactId ? "h4" : "h3";
+  const GroupHeading = contactId ? "h5" : "h4";
   const modes = contactId ? CONTACT_MODES : GENERAL_MODES;
   useEffect(() => {
     let active = true;
@@ -43,7 +46,7 @@ export default function AssistantPanel({ contactId = null }) {
   };
   const reset = () => { generation.current += 1; setResult(null); setError(""); setBusy(false); };
   return <section className="space-y-5" aria-label="Read-only AI assistance" data-testid="assistant-panel">
-    <div><h3 className="text-base font-semibold">Prepare your next action</h3>
+    <div><Heading className="text-base font-semibold">Prepare your next action</Heading>
       <p className="mt-2 text-sm leading-6 text-muted-foreground">AI can help prepare work, not complete it. Verify every draft against its sources. No message is sent, task created, contact merged, or workflow activated here.</p></div>
     {available === null ? <p role="status">Checking availability…</p> : !available ? <div role="status" className="rounded-lg border border-border p-4 text-sm leading-6">
       AI assistance is not configured on this server. Your existing records, search, duplicate review, and automations still work. No sample AI answer is shown in place of a real response.
@@ -63,10 +66,10 @@ export default function AssistantPanel({ contactId = null }) {
     </form>}
     {error && <p role="alert" className="rounded-lg border border-destructive p-3 text-sm">{error}</p>}
     {result && <div className="space-y-5 border-t border-border pt-5" data-testid="assistant-result">
-      <h4 ref={heading} tabIndex={-1} className="text-base font-semibold">Review before using</h4>
+      <ResultHeading ref={heading} tabIndex={-1} className="text-base font-semibold">Review before using</ResultHeading>
       <p className="text-sm leading-6 text-muted-foreground">{result.notice}</p>
       {[["summary", "AI summary to verify"], ["suggestions", mode === "follow_up" ? "Draft wording" : "Suggestions to review"]].map(([key, title]) => result[key]?.length > 0 && <section key={key} aria-label={title}>
-        <h5 className="font-medium">{title}</h5><ul className="mt-3 space-y-4">{result[key].map((item, index) => <li key={index} className="space-y-2 rounded-lg border border-border p-4">
+        <GroupHeading className="font-medium">{title}</GroupHeading><ul className="mt-3 space-y-4">{result[key].map((item, index) => <li key={index} className="space-y-2 rounded-lg border border-border p-4">
           <p className="whitespace-pre-wrap break-words text-sm leading-6">{item.text}</p>
           <div className="flex flex-wrap gap-3">{item.source_refs.map((ref) => {
             const source = result.sources.find((entry) => entry.ref === ref);

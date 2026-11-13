@@ -46,7 +46,14 @@ try {
     await page.route("**/api/**", async route => {
       const url = new URL(route.request().url());
       const key = url.pathname.replace(/^\/api/, "");
-      if (route.request().method() !== "GET") mutations.push(key);
+      if (route.request().method() === "OPTIONS") {
+        await route.fulfill({ status: 204, headers: {
+          "Access-Control-Allow-Origin": base, "Access-Control-Allow-Credentials": "true",
+          "Access-Control-Allow-Methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS", "Access-Control-Allow-Headers": "content-type,authorization",
+        } });
+        return;
+      }
+      if (["POST", "PATCH", "PUT", "DELETE"].includes(route.request().method())) mutations.push(key);
       let data;
       let status = 200;
       if (key === "/assistant/status") data = { available };
@@ -55,7 +62,7 @@ try {
         if (providerError) { status = 502; data = { detail: "Provider unavailable; nothing changed" }; }
         else data = { summary: [{ text: "Fixture recorded fact", source_refs: ["contact:0"] }], suggestions: [{ text: "Fixture draft; verify before using", source_refs: ["contact:0"] }], sources: [{ ref: "contact:0", label: "Fixture contact record", href: "/contacts?contact=c-a", facts: { name: "Fixture contact" } }], intent: body.mode === "search" ? "unanswered_leads" : "none", matches: [{ label: "Fixture inquiry", href: "/leads?lead=l-a" }], read_only: true, notice: "Fixture response, not a real AI generation. No customer records changed." };
       } else data = responses[key] ?? (key.endsWith("summary") ? {} : []);
-      await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(data) });
+      await route.fulfill({ status, headers: { "Access-Control-Allow-Origin": base, "Access-Control-Allow-Credentials": "true" }, contentType: "application/json", body: JSON.stringify(data) });
     });
     console.log("Dashboard", viewport.width);
     await page.goto(`${base}/dashboard`);
