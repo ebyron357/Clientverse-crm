@@ -12,9 +12,10 @@ const TASKS = [OVERDUE_COUNT, TASK_BUCKETS];
 const APPROVALS = ["/approval-queue", "/approval-queue/summary"];
 const CONVERSATIONS = ["/conversations", "/conversations/summary"];
 
-export function affectedReads(config = {}) {
-  if (!["post", "put", "patch", "delete"].includes(config.method?.toLowerCase())) return [];
+export function affectedReads(config = {}, response = null) {
   const path = (config.url || "").split("?")[0];
+  if (config.method?.toLowerCase() === "get" && /^\/leads\/[^/]+\/operations\/[^/]+$/.test(path) && response?.state === "committed") return [...LEADS, ...TASKS];
+  if (!["post", "put", "patch", "delete"].includes(config.method?.toLowerCase())) return [];
   if (/^\/(?:crm\/)?tasks(?:\/|$)/.test(path)) return [...TASKS, ...LEADS];
   if (/^\/leads(?:\/|$)/.test(path)) return [...LEADS, ...TASKS];
   if (/^\/team\/members(?:\/|$)/.test(path)) return ["/team/members", ...TASKS];
@@ -32,7 +33,7 @@ function RefreshAfterWrites({ children }) {
   useEffect(() => {
     let active = true;
     const interceptor = api.interceptors.response.use((response) => {
-      const paths = affectedReads(response.config);
+      const paths = affectedReads(response.config, response.data);
       if (active && paths.length) {
         // Keep the last confirmed data while refetching; failures must not reject a saved write.
         void mutate(

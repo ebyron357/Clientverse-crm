@@ -227,6 +227,110 @@ test("unmount cleans up the browser unload warning", async () => {
   expect(leaveEvent().defaultPrevented).toBe(false);
 });
 
+const safeLead = { ...lead, version: 3, mutation_contract: "receipt-v1" };
+const confirmed = (operation) => ({ state: "committed", operation_id: operation.operation_id, lead: { ...safeLead, status: operation.status, version: operation.expected_version + 1 } });
+async function safeRender(props = {}) {
+  let sequence = 0;
+  Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => `operation-${++sequence}-test-safe` } });
+  onStatus.mockImplementation(async (_lead, _status, _note, operation) => confirmed(operation));
+  await render({ lead: safeLead, ...props });
+}
+const safeClick = (id) => act(async () => get(id).click());
+
+test("safe saves carry version and intent, then clear only a matching committed receipt", async () => {
+  await safeRender();
+  await typeNote("One intention");
+  await click("responded");
+  const operation = onStatus.mock.calls[0][3];
+  expect(operation).toMatchObject({ expected_version: 3, status: "responded", note: "One intention" });
+  expect(operation.operation_id).toBeTruthy();
+  expect(draft()).toBe("");
+  expect(container.textContent).toContain("Saved — confirmed by the server");
+});
+
+test("safe unknown result locks new intent, preserves the original ID and blocks departure even without a note", async () => {
+  await safeRender();
+  onStatus.mockRejectedValueOnce(new Error("Offline"));
+  await click("closed");
+  const first = onStatus.mock.calls[0][3];
+  expect(get("lead-status-responded").disabled).toBe(true);
+  expect(leaveEvent().defaultPrevented).toBe(true);
+  await navigate("/contacts");
+  expect(document.querySelector("[role=alertdialog]").textContent).toContain("Update outcome not confirmed");
+  expect(guardButton("lead-note-discard")).toBeNull();
+  await act(async () => guardButton("lead-note-keep").click());
+  await safeClick("lead-retry");
+  expect(onStatus.mock.calls[1][3]).toEqual(first);
+  expect(leaveEvent().defaultPrevented).toBe(false);
+});
+
+test("receipt reconciliation never resends a mutation", async () => {
+  const onReceipt = jest.fn().mockImplementation(async (_lead, operation) => confirmed(operation));
+  await safeRender({ onReceipt });
+  onStatus.mockRejectedValueOnce(new Error("Response lost"));
+  await typeNote("Save once");
+  await click("responded");
+  expect(draft()).toBe("Save once");
+  await safeClick("lead-check-outcome");
+  expect(onStatus).toHaveBeenCalledTimes(1);
+  expect(onReceipt).toHaveBeenCalledTimes(1);
+  expect(draft()).toBe("");
+});
+
+test("conflict reload preserves note and requires explicit reapply with a new ID and reviewed version", async () => {
+  const onReload = jest.fn().mockResolvedValue({ ...safeLead, version: 5, status: "closed" });
+  await safeRender({ onReload });
+  onStatus.mockRejectedValueOnce({ response: { status: 409, data: { detail: { code: "version_conflict", message: "Another person changed this lead." } } } });
+  await typeNote("Keep my draft");
+  await click("responded");
+  const first = onStatus.mock.calls[0][3];
+  expect(get("lead-update-error").textContent).toContain("This lead has changed");
+  expect(document.activeElement).toBe(get("lead-update-error"));
+  await safeClick("lead-reload");
+  expect(draft()).toBe("Keep my draft");
+  expect(onStatus).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain("Latest saved status: Closed");
+  await safeClick("lead-reapply");
+  const second = onStatus.mock.calls[1][3];
+  expect(second.operation_id).not.toBe(first.operation_id);
+  expect(second).toMatchObject({ expected_version: 5, note: "Keep my draft", status: "responded" });
+  expect(draft()).toBe("");
+});
+
+test("safe same-lead polling cannot change the draft's expected version", async () => {
+  await safeRender();
+  await typeNote("Based on what I saw");
+  await render({ lead: { ...safeLead, version: 9, status: "closed" } });
+  await click("responded");
+  expect(onStatus.mock.calls[0][3].expected_version).toBe(3);
+});
+
+test("safe save note only does not imply a status change", async () => {
+  await safeRender();
+  await typeNote("Context without contact");
+  await safeClick("lead-save-note");
+  expect(onStatus.mock.calls[0][3]).toMatchObject({ status: "new", note: "Context without contact" });
+});
+
+test("mismatched receipt is not success and does not erase the draft", async () => {
+  await safeRender();
+  onStatus.mockResolvedValueOnce({ state: "committed", operation_id: "wrong", lead: safeLead });
+  await typeNote("Do not erase");
+  await click("responded");
+  expect(draft()).toBe("Do not erase");
+  expect(get("lead-check-outcome")).not.toBeNull();
+});
+
+test("rollout being disabled during an uncertain operation cannot downgrade to legacy writes", async () => {
+  await safeRender();
+  onStatus.mockRejectedValueOnce(new Error("Offline"));
+  await click("closed");
+  const first = onStatus.mock.calls[0][3];
+  await render({ lead: { ...safeLead, mutation_contract: null } });
+  await safeClick("lead-retry");
+  expect(onStatus.mock.calls[1][3]).toEqual(first);
+});
+
 test("refreshing the same lead preserves a draft, switching leads clears it", async () => {
   await render();
   await typeNote("Only for lead one");

@@ -80,18 +80,8 @@ jobs:
   backend:
     name: Backend API tests
     runs-on: ubuntu-latest
-    services:
-      mongo:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
     env:
-      MONGO_URL: mongodb://localhost:27017
+      MONGO_URL: mongodb://localhost:27017/?replicaSet=rs0
       DB_NAME: clientverse_ci
       CORS_ORIGINS: http://localhost:3000
       FRONTEND_URL: http://localhost:3000
@@ -113,6 +103,19 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: pip install -r requirements.txt
+      - name: Start MongoDB replica set
+        run: |
+          docker run -d --name mongo-rs --network host mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            if docker exec mongo-rs mongosh --quiet --eval 'db.adminCommand({ping:1})'; then break; fi
+            sleep 2
+          done
+          docker exec mongo-rs mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+          for i in $(seq 1 30); do
+            if docker exec mongo-rs mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)'; then exit 0; fi
+            sleep 2
+          done
+          exit 1
       - name: Generate ephemeral CI secrets
         run: |
           {

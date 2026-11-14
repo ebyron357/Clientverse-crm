@@ -994,7 +994,23 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   - Marking a real person as spam.
   - Treating a lead tagged **"Test lead"** as real: it came from **"Send a test lead"**
     ([§7.6](#76-website-forms)).
-- **Saved when:** **"Marked as contacted"**, **"Lead marked closed"**, **"Lead marked spam"**.
+- **Saved when:** **"Marked as contacted"**, **"Lead marked closed"**, **"Lead marked spam"** on the legacy path. In the opt-in retry-safe cohort, only **"Saved — confirmed by the server"** / **"Lead update confirmed"** confirms a committed receipt.
+
+#### Retry-safe lead saves — opt-in release, not enabled in production
+
+When **"Retry-safe save"** appears, the note, lead status, linked task/contact/deal effects, audit events and operation receipt commit together. **"Save note only"** records context without claiming contact or a status change. A missing linked contact rejects the entire note-plus-status update. Spam archives only records created for that submission; reopening the lead reopens its task and clears the response clock but does **not** silently restore the archived contact/deal. Restore those separately through their existing record controls.
+
+- **Update not confirmed:** the outcome may still be unknown or processing. **"Check outcome"** reads the receipt without resending; **"Retry same update"** keeps the exact operation ID, version, status and note. Do not create a second update in another tab. Notes and new status actions remain locked until resolved. Navigation and browser-unload protection remain active even with no note. Closing the app can still lose the page-local draft and operation identity; no offline replay or stored drafts are promised.
+- **This lead has changed:** **"Reload latest and review"** fetches the current record and history while keeping your draft. Review the saved and proposed status, then choose **"Reapply my update"** (a new intent against the reviewed version) or **"Edit instead"**. Another intervening change produces another conflict; the app never silently overwrites it.
+- **Update not saved:** validation or rollout preparation prevented this new intent. Your draft remains. Resolve the stated cause before submitting again. If a previously uncertain retry encounters a rollout failure, it stays uncertain rather than unlocking a new intent.
+
+**Engineering/owner rollout procedure (explicit approval required):** deploy the compatible server and client first, with `LEAD_MUTATION_TENANTS` unset. In the approved target environment, run `python scripts/prepare_lead_mutations.py` to inspect readiness; authorize `--apply` to create the additive unique `(tenant_id, operation_id)` index in `lead_operation_receipts` if needed. It refuses standalone MongoDB. Missing lead versions are read as zero and advanced conditionally on first mutation; no bulk backfill or customer-data rewrite runs at startup. Verify backup/restore, topology, exact-head CI, receipt access, scheduler/queue health and Jev before setting `LEAD_MUTATION_TENANTS` to explicit comma-separated pilot tenant IDs. There is deliberately no wildcard cohort. No production preparation or enablement was performed in this change.
+
+Enabled tenants refuse old `PATCH /leads/{id}` clients with HTTP 428 and a refresh instruction; the new client uses `POST /leads/{id}/mutations`. Old `/tasks/{id}` writes for a lead-linked task also refuse and direct the user to Tasks, whose `/crm/tasks/{id}` writes participate in the transaction. Other tenants retain the compatible legacy behavior, without a new transactional guarantee. Never downgrade a failed safe save to a legacy write.
+
+**Post-commit work:** transactionally enqueued `domain_event.dispatch` jobs run through the existing system work queue. This guarantees a durable dispatch obligation, not delivered email or webhook evidence. Webhook fan-out has stable event/hook delivery identity; queue replay does not automatically resend a delivery left `sending` after a crash. Inspect existing delivery records before any manual retry. Provider sending certification remains separate.
+
+**Rollback:** stop pilot writes and reconcile outstanding receipts first. Remove cohort IDs to stop new safe mutations; receipt lookup and completed-operation replay remain available. Retain receipts, versions, audit events and queued jobs—never delete them to roll back. Do not send an uncertain intent through the legacy endpoint or restore application code that ignores its receipts. Investigate duplicate effects, state divergence or authorization failure before re-enabling. Server-side drafts and generic undo remain deferred.
 
 ### 7.3 Tasks
 

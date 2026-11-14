@@ -362,7 +362,7 @@ def spawn_background(coro) -> asyncio.Task:
 async def record_event(event_type: str, resource_type: str, resource_id: str,
                        tenant_id: str, actor: str, workspace_id: Optional[str] = None,
                        payload: Optional[dict] = None, source: str = "system",
-                       privacy: str = "internal"):
+                       privacy: str = "internal", session=None):
     ev = {
         "id": new_id("evt"), "event_type": event_type, "event_version": "v1",
         "tenant_id": tenant_id, "workspace_id": workspace_id, "actor": actor,
@@ -370,8 +370,13 @@ async def record_event(event_type: str, resource_type: str, resource_id: str,
         "timestamp": now_iso(), "correlation_id": new_id("cor"),
         "causation_id": None, "payload": payload or {}, "privacy": privacy,
     }
-    await db.domain_events.insert_one(ev)
+    await db.domain_events.insert_one(ev, **({"session": session} if session else {}))
     clean = {k: v for k, v in ev.items() if k != "_id"}
+    if session:
+        await WorkQueue(db).enqueue(tenant_id=tenant_id, queue="system",
+                                    item_type="domain_event.dispatch", payload={"event_id": ev["id"]},
+                                    idempotency_key=f"event:{ev['id']}", actor=actor, session=session)
+        return clean
     try:
         spawn_background(dispatch_webhooks_for_event(clean))
     except Exception:
@@ -1583,7 +1588,12 @@ async def update_task(task_id: str, inp: TaskStatus, user=Depends(get_current_us
     t = await db.tasks.find_one({"id": task_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not t:
         raise HTTPException(status_code=404, detail="Not found")
-    await db.tasks.update_one({"id": task_id}, {"$set": {"status": inp.status}})
+    if website_forms.mutations_enabled(user["tenant_id"]):
+        lead = await db[detectors.WEB_ENQUIRIES].find_one(
+            {"tenant_id": user["tenant_id"], "task_id": task_id}, {"_id": 1})
+        if lead:
+            raise HTTPException(428, detail="Use the Tasks page to update this lead-linked task safely.")
+    await db.tasks.update_one({"id": task_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": inp.status}})
     if inp.status == "done":
         await record_event("task.completed", "task", task_id, user["tenant_id"], user["email"], workspace_id=t["workspace_id"], payload={"title": t["title"]})
     return {"ok": True}
@@ -4910,10 +4920,10 @@ async def _after_activity_logged(activity: dict) -> None:
     await lead_pipeline.recognise_activity(activity)
 
 
-async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: str) -> None:
+async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: str, session=None) -> None:
     # A call-back task ticked off on the Tasks page is the lead's response, so the lead
     # pipeline hears about it at once. `lead_pipeline` is created just below.
-    await lead_pipeline.task_status_changed(task, previous, actor)
+    await lead_pipeline.task_status_changed(task, previous, actor, session=session)
 
 
 record_fields.register_record_field_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
@@ -5084,7 +5094,36 @@ async def _handle_run_recovery_case(item: dict) -> dict:
         actor="work-queue", audit=record_event)
 
 
+async def _handle_committed_event(item: dict) -> dict:
+    event = await db.domain_events.find_one(
+        {"id": item["payload"]["event_id"], "tenant_id": item["tenant_id"]}, {"_id": 0})
+    if not event:
+        raise ValueError("Committed event missing")
+    if event.get("workspace_id") and event["event_type"] in HEALTH_AFFECTING:
+        await record_health_snapshot(event["tenant_id"], event["workspace_id"])
+    if event.get("source") != automations.SOURCE and event["event_type"] in automations.TRIGGERS:
+        await automation_engine.handle(event)
+    hooks = await db.webhooks.find({"tenant_id": item["tenant_id"], "enabled": True}, {"_id": 0}).to_list(100)
+    for hook in hooks:
+        if not event_matches(event["event_type"], hook.get("events")):
+            continue
+        delivery_id = "whd_" + hashlib.sha256(f"{item['tenant_id']}:{event['id']}:{hook['id']}".encode()).hexdigest()
+        delivery = {"id": delivery_id, "tenant_id": item["tenant_id"], "webhook_id": hook["id"],
+                    "webhook_name": hook.get("name"), "event_type": event["event_type"],
+                    "event_id": event["id"], "payload": {"event": event}, "status": "pending",
+                    "attempts": [], "dlq": False, "created_at": now_iso()}
+        await db.webhook_deliveries.update_one({"_id": delivery_id}, {"$setOnInsert": delivery}, upsert=True)
+        claimed = await db.webhook_deliveries.update_one(
+            {"_id": delivery_id, "tenant_id": item["tenant_id"], "status": "pending"},
+            {"$set": {"status": "sending"}})
+        if claimed.modified_count:
+            await _do_delivery(delivery, hook)
+        # A crash during sending is uncertain, not permission to send again on queue replay.
+    return {"event_id": event["id"], "dispatched": True}
+
+
 WORK_QUEUE_HANDLERS = {
+    "domain_event.dispatch": _handle_committed_event,
     JOB_GENERATE_NEXT_BEST_ACTIONS: _handle_generate_next_best_actions,
     recovery_runner_service.JOB_RUN_RECOVERY_CASE: _handle_run_recovery_case,
 }

@@ -5,6 +5,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { LeadNoteGuard } from "@/components/LeadNoteGuard";
+import { RetrySafeLeadUpdate } from "@/components/RetrySafeLeadUpdate";
 
 const actions = [
   { status: "new", label: "Reopen", variant: "ghost" },
@@ -13,7 +14,13 @@ const actions = [
   { status: "responded", label: "Mark contacted", variant: "default" },
 ];
 
-export function LeadStatusUpdate({ lead, onStatus, busy = false }) {
+export function LeadStatusUpdate(props) {
+  // A rollout change must not downgrade an editor with an unresolved operation.
+  const [retrySafe] = useState(props.lead.mutation_contract === "receipt-v1");
+  return retrySafe ? <RetrySafeLeadUpdate {...props} /> : <LegacyLeadStatusUpdate {...props} />;
+}
+
+function LegacyLeadStatusUpdate({ lead, onStatus, busy = false }) {
   const id = useId();
   const [note, setNote] = useState("");
   const [pending, setPending] = useState(null);

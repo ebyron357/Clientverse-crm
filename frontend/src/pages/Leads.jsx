@@ -144,7 +144,7 @@ function Timeline({ events }) {
   </ol>;
 }
 
-function LeadPanel({ lead, onStatus, busy, refreshKey }) {
+function LeadPanel({ lead, onStatus, onReload, onReceipt, busy, refreshKey }) {
   // The contact this lead became: its name, its deals and what has been logged on it.
   // Read again after every update so a note saved below appears straight away.
   const [loaded, setLoaded] = useState(null);
@@ -235,7 +235,7 @@ function LeadPanel({ lead, onStatus, busy, refreshKey }) {
             </section>
           )}
 
-          <LeadStatusUpdate key={lead.id} lead={lead} onStatus={onStatus} busy={busy} />
+          <LeadStatusUpdate key={lead.id} lead={lead} onStatus={onStatus} onReload={onReload} onReceipt={onReceipt} busy={busy} />
 
           {lead.contact_id && (
             <section>
@@ -352,9 +352,35 @@ export default function Leads() {
   const open = (lead) => setSearchParams((current) => { const params = new URLSearchParams(current); params.set("lead", lead.id); return params; });
   const close = () => setSearchParams((current) => { const params = new URLSearchParams(current); params.delete("lead"); return params; });
 
-  const changeStatus = async (lead, next, note) => {
+  const applyReceipt = (lead, operation, receipt) => {
+    if (receipt?.state === "committed" && receipt.operation_id === operation.operation_id && receipt.lead?.id === lead.id) {
+      setSelected((current) => current?.id === lead.id ? receipt.lead : current);
+      setRefreshKey((value) => value + 1);
+      void load();
+      toast.success("Lead update confirmed");
+    }
+    return receipt;
+  };
+
+  const reloadLead = async (lead) => {
+    const { data } = await api.get(`/leads/${lead.id}`);
+    setSelected((current) => current?.id === lead.id ? data : current);
+    setRefreshKey((value) => value + 1);
+    return data;
+  };
+
+  const checkReceipt = async (lead, operation) => {
+    const { data } = await api.get(`/leads/${lead.id}/operations/${operation.operation_id}`, { timeout: 25000 });
+    return applyReceipt(lead, operation, data);
+  };
+
+  const changeStatus = async (lead, next, note, operation) => {
     setBusy(true);
     try {
+      if (operation) {
+        const { data } = await api.post(`/leads/${lead.id}/mutations`, operation, { timeout: 25000 });
+        return applyReceipt(lead, operation, data);
+      }
       const { data } = await api.patch(`/leads/${lead.id}`, { status: next, note: note || undefined });
       setSelected((current) => current?.id === lead.id ? data : current);
       setRefreshKey((value) => value + 1);
@@ -455,8 +481,8 @@ export default function Leads() {
       </div>
 
       <Sheet open={Boolean(selected)} onOpenChange={(value) => { if (!value) close(); }}>
-        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[840px]">
-          {selected && <LeadPanel lead={selected} onStatus={changeStatus} busy={busy} refreshKey={refreshKey} />}
+        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[840px] [&>button]:flex [&>button]:min-h-11 [&>button]:min-w-11 [&>button]:items-center [&>button]:justify-center">
+          {selected && <LeadPanel lead={selected} onStatus={changeStatus} onReload={reloadLead} onReceipt={checkReceipt} busy={busy} refreshKey={refreshKey} />}
         </SheetContent>
       </Sheet>
     </div>

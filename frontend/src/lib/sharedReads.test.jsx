@@ -75,6 +75,12 @@ async function until(assertion) {
   }
 }
 
+test("only committed operation receipts refresh lead and task reads", () => {
+  const config = { method: "get", url: "/leads/lead-one/operations/op-one" };
+  expect(affectedReads(config, { state: "unknown" })).toEqual([]);
+  expect(affectedReads(config, { state: "committed" })).toEqual(expect.arrayContaining(["/leads", "/leads/summary", OVERDUE_COUNT, TASK_BUCKETS]));
+});
+
 test("six rapid navigations share four menu reads, including page summaries", async () => {
   const paths = ["/leads/summary", "/conversations/summary", "/approval-queue/summary", "/leads/summary", "/approval-queue/summary", "/conversations/summary"];
   for (const path of paths) {

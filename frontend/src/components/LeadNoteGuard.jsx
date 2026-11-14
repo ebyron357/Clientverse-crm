@@ -5,7 +5,8 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-export function LeadNoteGuard({ dirty, saving, noteRef }) {
+export function LeadNoteGuard({ dirty, saving: inFlight, unresolved = false, noteRef }) {
+  const saving = inFlight || unresolved;
   const blocker = useBlocker(({ currentLocation, nextLocation }) =>
     (dirty || saving) && (currentLocation.pathname !== nextLocation.pathname ||
       new URLSearchParams(currentLocation.search).get("lead") !== new URLSearchParams(nextLocation.search).get("lead")));
@@ -35,9 +36,10 @@ export function LeadNoteGuard({ dirty, saving, noteRef }) {
           noteRef.current?.focus();
         }}>
         <AlertDialogHeader>
-          <AlertDialogTitle>{saving ? "Update still saving" : "Discard your unsaved note?"}</AlertDialogTitle>
+          <AlertDialogTitle>{unresolved && !inFlight ? "Update outcome not confirmed" : saving ? "Update still saving" : "Discard your unsaved note?"}</AlertDialogTitle>
           <AlertDialogDescription>
-            {saving ? "Please wait for the update to finish. Leaving now could make its outcome unclear."
+            {unresolved && !inFlight ? "Stay on this lead to check the outcome or retry the same operation safely. Leaving does not cancel a save the server may already have received."
+              : saving ? "Please wait for the update to finish. Leaving now could make its outcome unclear."
               : "This note has not been saved. Keep editing to save it with a status update, or discard it to continue. This does not change the lead’s saved status."}
           </AlertDialogDescription>
         </AlertDialogHeader>
