@@ -1,5 +1,5 @@
 import { lazy, Suspense, useLayoutEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { createBrowserRouter, RouterProvider, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import "@/App.css";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider } from "next-themes";
@@ -129,13 +129,13 @@ function ThemedApp() {
   );
 }
 
+const router = createBrowserRouter([{ path: "*", element: <ThemedApp /> }]);
+
 export default function App() {
   return (
     <AppErrorBoundary>
       <AuthProvider>
-        <BrowserRouter>
-          <ThemedApp />
-        </BrowserRouter>
+        <RouterProvider router={router} />
       </AuthProvider>
     </AppErrorBoundary>
   );

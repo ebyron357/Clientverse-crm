@@ -4,6 +4,7 @@ import { formatErr } from "@/lib/api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { LeadNoteGuard } from "@/components/LeadNoteGuard";
 
 const actions = [
   { status: "new", label: "Reopen", variant: "ghost" },
@@ -19,6 +20,7 @@ export function LeadStatusUpdate({ lead, onStatus, busy = false }) {
   const [error, setError] = useState("");
   const inFlight = useRef(false);
   const errorRef = useRef(null);
+  const noteRef = useRef(null);
   const saving = busy || pending !== null;
   useEffect(() => {
     if (error) errorRef.current?.focus();
@@ -43,16 +45,17 @@ export function LeadStatusUpdate({ lead, onStatus, busy = false }) {
 
   return (
     <section aria-labelledby={`${id}-heading`} className="flex flex-col gap-3" data-testid="lead-update">
+      <LeadNoteGuard dirty={Boolean(note.trim())} saving={saving} noteRef={noteRef} />
       <h3 id={`${id}-heading`} className="text-sm font-medium">Update lead</h3>
       <fieldset disabled={saving} className="min-w-0 flex flex-col gap-3" aria-busy={saving}>
         <legend className="sr-only">Note and status</legend>
         <label htmlFor={`${id}-note`} className="text-sm font-medium">Note (optional)</label>
-        <Textarea id={`${id}-note`} value={note} onChange={(event) => setNote(event.target.value)}
+        <Textarea ref={noteRef} id={`${id}-note`} className="text-base" value={note} onChange={(event) => setNote(event.target.value)}
           disabled={saving || !lead.contact_id} aria-describedby={`${id}-help`} rows={3}
           placeholder={lead.contact_id ? "What happened in the conversation?" : "No linked contact"}
           data-testid="lead-note" />
         <p id={`${id}-help`} className="text-sm text-muted-foreground">
-          {lead.contact_id ? "Saved to the contact’s history with your status update. Drafts are kept only while this lead stays open." : "Notes need a linked contact. You can still change this lead’s status."}
+          {lead.contact_id ? "Saved to the contact’s history with your status update. You’ll be asked before leaving with an unsaved note; drafts are not stored." : "Notes need a linked contact. You can still change this lead’s status."}
         </p>
         <div className="flex flex-wrap justify-end gap-2">
           {actions.filter((action) => action.status !== lead.status).map((action) => (

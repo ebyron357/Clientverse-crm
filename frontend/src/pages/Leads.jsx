@@ -349,8 +349,8 @@ export default function Leads() {
     api.get(`/leads/${selectedId}`).then((response) => setSelected(response.data)).catch(() => setSelected(null));
   }, [selectedId, leads]);
 
-  const open = (lead) => setSearchParams((params) => { params.set("lead", lead.id); return params; });
-  const close = () => setSearchParams((params) => { params.delete("lead"); return params; });
+  const open = (lead) => setSearchParams((current) => { const params = new URLSearchParams(current); params.set("lead", lead.id); return params; });
+  const close = () => setSearchParams((current) => { const params = new URLSearchParams(current); params.delete("lead"); return params; });
 
   const changeStatus = async (lead, next, note) => {
     setBusy(true);
