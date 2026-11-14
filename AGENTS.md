@@ -151,6 +151,8 @@
 
 ## Jev QC verification gate (mandatory before claiming completion)
 
+**Owner-authorized exception — 2026-11-14:** the owner explicitly stated, "I give permission to override the Jev requirement." This waives Jev as a completion/release prerequisite only for the current bounded R0/R1 lead-save release, C-40 / PR #65, task `clientverse-r1-lead-mutations-20261114` (implementation commit `f13575b`). Report **OWNER-WAIVED — NOT JEV VERIFIED**, preserve the original gate error, and use the actual test/build evidence. This is not permission to claim Jev `VERIFIED_COMPLETE`, merge, deploy, enable a cohort, or bypass any other acceptance, security, scheduler, topology/index, or backup gate. The gate remains unchanged for other tasks; do not disable its script or production workflow. Canonical release record: §3.2.1; owner procedure: manual §7.2.
+
 **Rule: no agent may report a task VERIFIED COMPLETE until the Jev QC gate has returned
 `qc_status: VERIFIED_COMPLETE` for that task.** The gate is the production n8n *Jev QC
 Central Verification Gate*, which relays to TypeSafe Jev and returns the decision.

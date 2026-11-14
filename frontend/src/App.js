@@ -1,5 +1,5 @@
 import { lazy, Suspense, useLayoutEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { createBrowserRouter, RouterProvider, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import "@/App.css";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider } from "next-themes";
@@ -11,6 +11,7 @@ import Login from "@/pages/Login";
 import { CLIENTVERSE_MODULES, MODULE_STATES } from "@/platform/modules";
 import { ChooseOwnPassword } from "@/components/ChangePassword";
 import PageLoading from "@/components/PageLoading";
+import { SharedReadsProvider } from "@/lib/sharedReads";
 
 // Each page is its own chunk, loaded the first time someone opens it. The app shipped all
 // 31 pages (and the charting library) in one 1.9 MB bundle before anyone could sign in.
@@ -51,7 +52,7 @@ function Protected({ children }) {
   if (loading) return <div className="flex min-h-screen items-center justify-center bg-canvas p-6"><div className="cv-card w-full max-w-sm p-7"><div className="h-2 w-20 animate-pulse rounded-full bg-brand-soft" /><div className="mt-5 h-7 w-44 animate-pulse rounded-lg bg-muted" /><div className="mt-3 h-4 w-full animate-pulse rounded-lg bg-muted" /><div className="mt-2 h-4 w-4/5 animate-pulse rounded-lg bg-muted" /></div></div>;
   if (!user) return <Navigate to="/login" replace />;
   if (user.must_change_password) return <ChooseOwnPassword />;
-  return children;
+  return <SharedReadsProvider user={user}>{children}</SharedReadsProvider>;
 }
 
 function AppRouter() {
@@ -128,13 +129,13 @@ function ThemedApp() {
   );
 }
 
+const router = createBrowserRouter([{ path: "*", element: <ThemedApp /> }]);
+
 export default function App() {
   return (
     <AppErrorBoundary>
       <AuthProvider>
-        <BrowserRouter>
-          <ThemedApp />
-        </BrowserRouter>
+        <RouterProvider router={router} />
       </AuthProvider>
     </AppErrorBoundary>
   );

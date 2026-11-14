@@ -148,6 +148,7 @@ class WorkQueue:
         evidence: Optional[dict] = None,
         actor: str = "system",
         workspace_id: Optional[str] = None,
+        session=None,
     ) -> dict:
         """Insert an item, or return the existing one when it is a duplicate.
 
@@ -211,8 +212,10 @@ class WorkQueue:
             "history": [_history("enqueued", actor, {"queue": queue, "type": item_type})],
         }
         try:
-            await self.collection.insert_one(dict(item))
+            await self.collection.insert_one(dict(item), **({"session": session} if session else {}))
         except Exception as exc:  # a concurrent producer won the race
+            if session:
+                raise  # A duplicate aborts a MongoDB transaction; never continue on it.
             if "duplicate key" not in str(exc).lower():
                 raise
             criteria = None
