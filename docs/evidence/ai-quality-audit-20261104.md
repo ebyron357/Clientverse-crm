@@ -49,12 +49,12 @@ Severity: P0 exploitable or data loss now · P1 fix before more customers · P2 
 | C-23 | P3 | 10 Performance | Render-blocking Google Fonts link for a font already bundled | `public/index.html` | **Fixed, PR #58** |
 | C-24 | P3 | 5 Accessibility | Command dialog list empty on open (`aria-required-children`, known `cmdk` issue); Directory empty-state heading order | axe | **Open** |
 | C-25 | P3 | 7 Backend | `/webhook-deliveries?limit` unbounded | `server.py` | **Fixed, PR #57** (max 500) |
-| C-26 | P3 | 7 Backend | Status fields accept any string; non-unique memberships index; concurrent same-email registration leaves an empty org; long search input can 500 | `TaskStatus`, startup indexes, `crm_core._escape_regex` | **Open** |
+| C-26 | P3 | 7 Backend | Status fields accept any string; non-unique memberships index; concurrent same-email registration leaves an empty org; long search input can 500 | `TaskStatus`, startup indexes, `crm_core._escape_regex` | **Fixed in PR #67 (not merged)**: record-specific status validation, unique tenant/user index, cleanup of losing duplicate-email registration, truncate before regex escaping |
 | C-27 | P3 | 2 Hygiene | ~27 unused UI components; unused frontend and backend packages; dev tools in the production image | `components/ui/*`, `package.json`, `requirements.txt`, Dockerfile | **Open** |
 | C-28 | P3 | 1 Visual | 542 raw palette classes, dark mode patched by ~40 global `!important` overrides | `index.css`, components | **Open** |
 | C-29 | P3 | 3 Functional UI | Search box searches pages only, not records; an out-of-date note on placeholder pages | `GlobalCommandDialog.jsx`, `ModuleStatus.jsx` | **Open** |
-| C-30 | P3 | 6 Security | Runtime frontend packages with advisories (axios, react-router, zod) | `yarn audit` | **Open** |
-| C-31 | P3 | 6 Security | SSRF residual: the HTTP library resolves again after the check | `outbound_url.py` docstring | **Open**, pin the connection to the checked address |
+| C-30 | P3 | 6 Security | Runtime frontend packages with advisories (axios, react-router, zod) | `yarn audit` | **Fixed in PR #67 (not merged)**: axios 1.20.0, react-router/dom 7.18.2, zod 4.6.6; no registry advisories for these packages on 2026-11-15; other dependency findings remain |
+| C-31 | P3 | 6 Security | SSRF residual: the HTTP library resolves again after the check | `outbound_url.py` docstring | **Fixed in PR #67 (not merged)**: connect to checked numeric address with original TLS identity and Host; no redirects, environment proxies or implicit retries |
 | C-32 | P3 | 6 Security | Lockout residual: many addresses can still lock one email for 15 minutes | lockout design | **Open**, owner decision (CAPTCHA or softer lock) |
 | C-33 | P3 | 13 Testing | Rollback documented but never rehearsed | closeout handoff §rollback | **Open** |
 | C-40 | — | 6 Security | Known: legacy webhook secret in git history; `Mongo_url` variable to delete; Atlas backups unverified | `REMAINING_WORK.md`, owner manual | **Open, owner action** (not new) |

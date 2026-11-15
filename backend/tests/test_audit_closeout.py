@@ -3,6 +3,8 @@ import asyncio
 import os
 import re
 import socket
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -146,3 +148,42 @@ def test_mixed_public_private_resolution_never_opens_a_pool(monkeypatch):
     monkeypatch.setattr(outbound_url.urllib3, "HTTPSConnectionPool", forbidden)
     with pytest.raises(outbound_url.DestinationRefused, match="blocked_destination"):
         outbound_url.post_webhook("https://hooks.example.com", data=b"", headers={})
+
+
+def test_actual_transport_uses_checked_address_and_does_not_follow_redirect(monkeypatch):
+    """Exercise urllib3 on a real local socket, with an unresolvable URL hostname.
+
+    Private targets are allowed only for this development-mode transport test.
+    Production refusal is covered separately, including mixed DNS answers.
+    """
+    received = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append((self.headers["Host"], self.path,
+                             self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.2/forbidden")
+            self.end_headers()
+        def log_message(self, *args):
+            pass
+    listener = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=listener.serve_forever, daemon=True)
+    thread.start()
+    port = listener.server_port
+    resolutions = []
+    def resolve(host, requested_port, **kwargs):
+        resolutions.append(host)
+        assert len(resolutions) == 1
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", requested_port))]
+    monkeypatch.setattr(outbound_url, "_getaddrinfo", resolve)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.2:1")
+    try:
+        status = outbound_url.post_webhook(f"http://rebind.invalid:{port}/hook?x=1",
+                                           data=b"signed-body", headers={}, allow_private=True)
+        assert status == 302
+        assert resolutions == ["rebind.invalid"]
+        assert received == [(f"rebind.invalid:{port}", "/hook?x=1", b"signed-body")]
+    finally:
+        listener.shutdown()
+        listener.server_close()
+        thread.join(timeout=2)
