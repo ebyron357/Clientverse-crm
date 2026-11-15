@@ -79,4 +79,29 @@ The unique index intentionally refuses startup if legacy duplicate memberships e
 it does not choose permissions or discard records. Review and reconcile such data
 before a later deployment. This PR does not change production data.
 
-Validation results will be recorded after the local runs finish.
+## Validation
+
+- PR [#67](https://github.com/ebyron357/Clientverse-crm/pull/67), one branch against main; not merged.
+- CI [43681981818](https://github.com/ebyron357/Clientverse-crm/actions/runs/43681981818)
+  passed on implementation commit `0325b229af9ca5babac4eb6c4afd463168eff152`:
+  backend full suite **1,267 passed, 4 skipped** against MongoDB 7 replica set;
+  release smoke, frontend build/tests, lint, blocking types, dependency scan and config checks passed.
+- Local production frontend build passed (`CI=true`, production mode, no source maps,
+  same-origin API). **116 frontend tests passed**. Frontend and backend lint passed.
+- Local focused audit suite **23 passed** against real MongoDB, including the additional
+  real-socket transport test. It proves an unresolvable URL hostname is delivered through
+  the checked IP with its original Host and signed bytes, while redirects and environment
+  proxies are ignored.
+- Local full backend suite was started against real MongoDB; stopped after the full CI
+  suite passed to release scarce host memory. It is not reported as a completed local pass.
+- Type gate: zero findings in the 16 blocking modules; 138 existing findings in the
+  nonblocking modules. Configuration validation passed.
+- Fresh Yarn registry audit: zero findings for axios, react-router and zod. The overall
+  tree still reports 207 findings (12 low, 51 moderate, 141 high, 3 critical), outside
+  this bounded package fix; no claim that the entire dependency tree is clean.
+- Jev: `node scripts/jev_qc.mjs local-qc-payload.json` returned
+  **QC GATE ERROR — FAIL CLOSED**, `JEV_QC_WEBHOOK_URL is not set`, no execution id.
+  No Jev VERIFIED_COMPLETE claim. This task is not covered by the separate PR #65 waiver.
+
+The additional transport regression and this evidence update are submitted as new
+commits on the same branch; no history rewrite. See the PR checks for the final head's result.
