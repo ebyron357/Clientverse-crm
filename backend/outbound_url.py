@@ -17,9 +17,9 @@ Two checks close that:
    Deliveries also never follow redirects, so a public URL cannot bounce the request to
    a private one.
 
-A small window remains between the check and the connection (the HTTP library resolves
-again). Closing it fully means pinning the connection to the checked address; that is
-recorded as follow-up in the audit record rather than hidden.
+Delivery connects to a checked numeric address while preserving the original TLS
+server name, certificate verification and Host header. No proxy or redirect can
+resolve the hostname a second time.
 
 `WEBHOOK_ALLOW_PRIVATE_TARGETS=1` lets local development and the test harness deliver
 to their own machine. It is ignored when the app runs in production.
@@ -31,6 +31,9 @@ import os
 import socket
 from typing import Optional
 from urllib.parse import urlsplit
+
+import certifi
+import urllib3
 
 # The resolver this module uses. Tests replace this name, never `socket.getaddrinfo`
 # itself: patching the socket module would also redirect the database driver.
@@ -79,32 +82,78 @@ def webhook_url_problem(url: str, *, allow_private: bool = False) -> Optional[st
     return None if _is_public(literal) else "Webhooks must point to a public address."
 
 
-def resolve_public_addresses(url: str, *, allow_private: bool = False) -> Optional[str]:
-    """Resolve the URL's host and return a coarse refusal reason, or None when every
-    address it resolves to is public. Blocking: call it off the event loop."""
-    problem = webhook_url_problem(url, allow_private=allow_private)
-    if problem:
-        return "blocked_destination"
-    if allow_private:
-        return None
+class DestinationRefused(ValueError):
+    """A fixed public error label, never raw resolver details."""
+
+
+def checked_addresses(url: str, *, allow_private: bool = False) -> list[str]:
+    if webhook_url_problem(url, allow_private=allow_private):
+        raise DestinationRefused("blocked_destination")
     parts = urlsplit(url.strip())
-    host = (parts.hostname or "").rstrip(".")
-    port = parts.port or 443
+    host = (parts.hostname or "").rstrip(".").encode("idna").decode("ascii")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
-        infos = _getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        infos = _getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError):
-        return "dns_error"
-    addresses = {info[4][0] for info in infos}
+        raise DestinationRefused("dns_error") from None
+    addresses = list(dict.fromkeys(info[4][0] for info in infos))
     if not addresses:
-        return "dns_error"
+        raise DestinationRefused("dns_error")
     for raw in addresses:
         try:
-            address = ipaddress.ip_address(raw.split("%", 1)[0])
+            address = ipaddress.ip_address(raw)
         except ValueError:
-            return "blocked_destination"
-        if not _is_public(address):
-            return "blocked_destination"
+            raise DestinationRefused("blocked_destination") from None
+        if not allow_private and not _is_public(address):
+            raise DestinationRefused("blocked_destination")
+    return addresses
+
+
+def resolve_public_addresses(url: str, *, allow_private: bool = False) -> Optional[str]:
+    """Compatibility check for callers that only need a refusal reason."""
+    try:
+        checked_addresses(url, allow_private=allow_private)
+    except DestinationRefused as exc:
+        return str(exc)
     return None
+
+
+def post_webhook(url: str, *, data: bytes, headers: dict, timeout: float = 6,
+                 allow_private: bool = False) -> int:
+    """Resolve once per attempt and send only to that checked address.
+
+    urllib3's explicit pool ignores environment proxies. TLS still verifies the URL
+    hostname, not the IP. The caller owns retries, each with a fresh resolution.
+    Only response headers are read; webhook bodies can be unbounded.
+    """
+    addresses = checked_addresses(url, allow_private=allow_private)
+    parts = urlsplit(url.strip())
+    host = (parts.hostname or "").rstrip(".").encode("idna").decode("ascii")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    authority = f"[{host}]" if ":" in host else host
+    if parts.port:
+        authority += f":{port}"
+    target = parts.path or "/"
+    if parts.query:
+        target += "?" + parts.query
+    options = {"timeout": urllib3.Timeout(connect=timeout, read=timeout), "retries": False}
+    if parts.scheme == "https":
+        pool = urllib3.HTTPSConnectionPool(addresses[0], port, server_hostname=host,
+                                           assert_hostname=host, cert_reqs="CERT_REQUIRED",
+                                           ca_certs=certifi.where(), **options)
+    else:
+        pool = urllib3.HTTPConnectionPool(addresses[0], port, **options)
+    try:
+        response = pool.urlopen("POST", target, body=data,
+                                headers={**headers, "Host": authority},
+                                redirect=False, retries=False, preload_content=False,
+                                assert_same_host=False)
+        try:
+            return response.status
+        finally:
+            response.close()
+    finally:
+        pool.close()
 
 
 def delivery_error_reason(error: BaseException) -> str:

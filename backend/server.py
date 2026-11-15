@@ -13,14 +13,14 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlencode, urlparse
 
 import bcrypt
 import jwt
-import requests
 from dotenv import load_dotenv
 from fastapi.responses import RedirectResponse
+from pymongo.errors import DuplicateKeyError
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -638,11 +638,16 @@ async def register(inp: RegisterInput, response: Response):
     tenant_id = new_id("ten")
     await db.tenants.insert_one({"tenant_id": tenant_id, "name": f"{inp.name}'s Org", "created_at": now_iso()})
     uid = new_id("user")
-    await db.users.insert_one({
-        "user_id": uid, "email": email, "name": inp.name, "role": "admin",
-        "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
-        "picture": None, "created_at": now_iso(), "auth": "password",
-    })
+    try:
+        await db.users.insert_one({
+            "user_id": uid, "email": email, "name": inp.name, "role": "admin",
+            "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
+            "picture": None, "created_at": now_iso(), "auth": "password",
+        })
+    except DuplicateKeyError:
+        # Only remove the organization allocated by this losing registration.
+        await db.tenants.delete_one({"tenant_id": tenant_id})
+        raise HTTPException(status_code=400, detail="Email already registered")
     await db.memberships.insert_one({
         "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
         "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
@@ -1565,12 +1570,18 @@ def compute_health(commitments, tasks, deliverables, requests_):
 
 # ----------------------------- Tasks / Deliverables / Requests / Approvals / Commitments -----------------------------
 
+TaskState = Literal["todo", "in_progress", "done"]
+DeliverableState = Literal["draft", "in_review", "approved"]
+RequestState = Literal["open", "in_progress", "done"]
+CommitmentState = Literal["open", "at_risk", "breached", "fulfilled"]
+
+
 class TaskInput(BaseModel):
     workspace_id: str
     title: str
     assignee: Optional[str] = None
     due_date: Optional[str] = None
-    status: str = "todo"
+    status: TaskState = "todo"
 
 @api.post("/tasks")
 async def create_task(inp: TaskInput, user=Depends(get_current_user)):
@@ -1581,7 +1592,16 @@ async def create_task(inp: TaskInput, user=Depends(get_current_user)):
     return {k: v for k, v in doc.items() if k != "_id"}
 
 class TaskStatus(BaseModel):
-    status: str
+    status: TaskState
+
+class DeliverableStatus(BaseModel):
+    status: DeliverableState
+
+class RequestStatus(BaseModel):
+    status: RequestState
+
+class ApprovalDecision(BaseModel):
+    status: Literal["approved", "rejected"]
 
 @api.patch("/tasks/{task_id}")
 async def update_task(task_id: str, inp: TaskStatus, user=Depends(get_current_user)):
@@ -1602,7 +1622,7 @@ class DeliverableInput(BaseModel):
     workspace_id: str
     title: str
     description: Optional[str] = None
-    status: str = "draft"
+    status: DeliverableState = "draft"
 
 @api.post("/deliverables")
 async def create_deliverable(inp: DeliverableInput, user=Depends(get_current_user)):
@@ -1613,7 +1633,7 @@ async def create_deliverable(inp: DeliverableInput, user=Depends(get_current_use
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/deliverables/{dlv_id}")
-async def approve_deliverable(dlv_id: str, inp: TaskStatus, user=Depends(get_current_user)):
+async def approve_deliverable(dlv_id: str, inp: DeliverableStatus, user=Depends(get_current_user)):
     d = await db.deliverables.find_one({"id": dlv_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1626,7 +1646,7 @@ class RequestInput(BaseModel):
     workspace_id: str
     title: str
     priority: str = "medium"
-    status: str = "open"
+    status: RequestState = "open"
 
 @api.post("/client-requests")
 async def create_request(inp: RequestInput, user=Depends(get_current_user)):
@@ -1637,7 +1657,7 @@ async def create_request(inp: RequestInput, user=Depends(get_current_user)):
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/client-requests/{req_id}")
-async def update_request(req_id: str, inp: TaskStatus, user=Depends(get_current_user)):
+async def update_request(req_id: str, inp: RequestStatus, user=Depends(get_current_user)):
     r = await db.client_requests.find_one({"id": req_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not r:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1648,7 +1668,7 @@ class ApprovalInput(BaseModel):
     workspace_id: str
     title: str
     kind: str = "external_effect"
-    status: str = "requested"
+    status: Literal["requested"] = "requested"
 
 @api.post("/approvals")
 async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
@@ -1672,7 +1692,7 @@ async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
     return doc
 
 @api.patch("/approvals/{apr_id}")
-async def decide_approval(apr_id: str, inp: TaskStatus, user=Depends(require_role("admin"))):
+async def decide_approval(apr_id: str, inp: ApprovalDecision, user=Depends(require_role("admin"))):
     """Decide an approval request.
 
     The decision itself is delegated to `approval_queue` so this long-standing route and
@@ -1700,7 +1720,7 @@ class CommitmentInput(BaseModel):
     title: str
     owner: Optional[str] = None
     due_date: Optional[str] = None
-    status: str = "open"
+    status: CommitmentState = "open"
 
 @api.post("/commitments")
 async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)):
@@ -1711,7 +1731,7 @@ async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)
     return {k: v for k, v in doc.items() if k != "_id"}
 
 class CommitmentPatch(BaseModel):
-    status: Optional[str] = None
+    status: Optional[CommitmentState] = None
     due_date: Optional[str] = None
 
 @api.patch("/commitments/{cmt_id}")
@@ -1967,7 +1987,10 @@ async def seed():
     await seed_registries()
     await seed_team()
     await db.users.create_index("email", unique=True)
-    await db.memberships.create_index([("tenant_id", 1), ("user_id", 1)])
+    # MongoDB 5+ permits this alongside the legacy non-unique index. Build first;
+    # existing duplicates fail closed without deleting or choosing a membership.
+    await db.memberships.create_index([("tenant_id", 1), ("user_id", 1)],
+                                      unique=True, name="tenant_user_unique")
     await db.invitations.create_index("token_hash")
 
 async def seed_team():
@@ -2466,22 +2489,18 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
     attempts = list(delivery.get("attempts", []))
     allow_private = outbound_url.private_targets_allowed(IS_PRODUCTION)
     for n in range(len(attempts) + 1, WEBHOOK_MAX_ATTEMPTS + 1):
-        # Re-checked before every attempt: the name may have started resolving to a
-        # private address since the webhook was saved. See outbound_url.py.
-        refusal = await asyncio.to_thread(outbound_url.resolve_public_addresses, webhook["url"],
-                                          allow_private=allow_private)
-        if refusal:
-            attempts.append({"n": n, "status_code": None, "error": refusal, "at": now_iso()})
-            break
         try:
-            resp = await asyncio.to_thread(requests.post, webhook["url"], data=body, headers=headers,
-                                           timeout=6, allow_redirects=False)
-            code = resp.status_code
+            code = await asyncio.to_thread(outbound_url.post_webhook, webhook["url"],
+                                           data=body, headers=headers, timeout=6,
+                                           allow_private=allow_private)
             attempts.append({"n": n, "status_code": code, "error": None, "at": now_iso()})
             if 200 <= code < 300:
                 await db.webhook_deliveries.update_one({"id": delivery["id"]},
                     {"$set": {"status": "delivered", "attempts": attempts, "delivered_at": now_iso(), "dlq": False}})
                 return "delivered"
+        except outbound_url.DestinationRefused as exc:
+            attempts.append({"n": n, "status_code": None, "error": str(exc), "at": now_iso()})
+            break
         except Exception as e:
             attempts.append({"n": n, "status_code": None, "error": outbound_url.delivery_error_reason(e), "at": now_iso()})
         await asyncio.sleep(0.25 * n)
@@ -2627,6 +2646,8 @@ async def snapshot_outcome(o):
     pct = min(100, round((o.get("current_value", 0) / o["target_value"]) * 100))
     await db.outcome_snapshots.insert_one({"id": new_id("os"), "tenant_id": o["tenant_id"], "outcome_id": o["id"], "pct": pct, "at": now_iso()})
 
+OutcomeState = Literal["on_track", "at_risk", "off_track"]
+
 class OutcomeInput(BaseModel):
     workspace_id: str
     title: str
@@ -2634,13 +2655,13 @@ class OutcomeInput(BaseModel):
     target_value: Optional[float] = None
     current_value: float = 0
     unit: Optional[str] = None
-    status: str = "on_track"
+    status: OutcomeState = "on_track"
     linked_commitment_ids: list[str] = []
 
 class OutcomePatch(BaseModel):
     current_value: Optional[float] = None
     target_value: Optional[float] = None
-    status: Optional[str] = None
+    status: Optional[OutcomeState] = None
     title: Optional[str] = None
 
 @api.patch("/outcomes/{oid}")

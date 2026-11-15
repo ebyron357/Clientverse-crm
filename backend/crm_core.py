@@ -130,7 +130,8 @@ def csv_safe(value: Any) -> Any:
 
 
 def _escape_regex(value: str) -> str:
-    return re.escape(value.strip())[:200]
+    # Truncate the literal, never an escape sequence (a trailing backslash is invalid).
+    return re.escape(value.strip()[:200])
 
 
 def phone_digits(value: Optional[str]) -> str:
