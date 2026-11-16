@@ -64,6 +64,7 @@ import snapshots
 import today as today_service
 import website_forms
 from client_value import register_client_value_routes
+from drafts import register_draft_routes
 from operations_routes import register_operations_routes
 from work_queue import WorkQueue, run_worker_tick
 
@@ -5064,6 +5065,18 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
 
 work_queue = register_operations_routes(api, db, record_event, get_current_user, require_role,
                                         on_approval_decided=_apply_approval_side_effects)
+
+
+async def _draft_target_access(user: dict, record_type: str, record_id: str) -> None:
+    if record_type == "lead":
+        found = await db[detectors.WEB_ENQUIRIES].find_one(
+            {"id": record_id, "tenant_id": user["tenant_id"]}, {"_id": 1})
+        if found:
+            return
+    raise HTTPException(status_code=404, detail="Not found")
+
+
+draft_store = register_draft_routes(api, db, get_current_user, _draft_target_access)
 
 # The durable queue carries two kinds of work.
 #   * SYSTEM_QUEUE — machine-executable jobs the worker tick claims, runs, retries and
