@@ -278,6 +278,13 @@ CONTENT_SECURITY_POLICY = "; ".join([
 @app.middleware("http")
 async def production_security_headers(request: Request, call_next):
     response = await call_next(request)
+    # API responses can contain tenant records, exports, tokens and public-link data
+    # even without an authenticated request. Never let a route opt them into browser
+    # or shared-proxy storage. Static asset caching remains a separate policy.
+    if request.url.path == "/api" or request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     # The hosted website-form page is the one document meant to be framed by an

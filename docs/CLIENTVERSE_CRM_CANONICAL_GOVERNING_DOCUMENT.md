@@ -1,7 +1,7 @@
 # ClientVerse CRM — Canonical Governing Document
 
-**Version:** 1.29 — complete replacement
-**Effective:** 2026-10-26
+**Version:** 1.30 — complete replacement
+**Effective:** 2026-11-16
 **Owner/admin handoff guide:** [`docs/CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md`](CLIENTVERSE_CRM_OWNER_ADMIN_MANUAL.md) — the official owner/admin source of truth for operating production (§0.5)
 **Status:** ACTIVE — this is the single source of truth for ClientVerse CRM product scope, capability status, and implementation order.
 **Repository:** `ebyron357/Clientverse-crm`
@@ -744,6 +744,95 @@ on an owner decision, not on more building.
 
 ---
 
+### 12.1 Regulated-data readiness — owner directive 2026-11-16
+
+**Status: NOT ASSESSED / NOT AUTHORIZED FOR REGULATED-DATA RELEASE.** The owner
+confirmed intended ePHI, FCI and CUI use and requested the highest of the options
+presented: HIPAA safeguards, SOC 2 Type II, FedRAMP High, and CMMC Level 3. These
+are planning targets, not current capabilities, legal findings, or contractually
+validated applicability. HIPAA has no numbered certification tier; SOC 2 Type II
+is an examination over a period, not a higher impact level. Proposed SOC 2 scope
+includes all five Trust Services Categories, subject to CPA scoping.
+
+This section supplements, and does not waive, §12, §13, the independent security
+review, or the task-specific Jev gate. No production configuration, data migration,
+provider purchase, audit engagement, or merge/deployment is approved by this record.
+Owner procedures remain solely in the manual (§13.8).
+
+#### Boundary evidence and immediate dependency
+
+Baseline inspected: `main@dd576c372980feb597ff1316130701ec04f9e0d5`. This is source
+inspection, not a fresh production audit. `frontend/vercel.json` forwards `/api/*`
+to the Railway backend. `Dockerfile` also supports a combined SPA/API deployment;
+`AGENTS.md` documents a Vercel copy and a Railway production system. The inventory
+must therefore reconcile both before deciding what is inside the regulated enclave.
+The repository uses MongoDB, Google/Gmail/Calendar and Stripe; scheduling, CI,
+backups, observability, support tools and any AI providers also need classification
+and boundary review. No current provider agreement, authorization package, physical
+safeguard evidence, or organization-wide control operation was inspected here.
+
+**Blocking architecture decision:** obtain a provider/service-specific hosting and
+subprocessor review for the entire proposed High boundary, including data/metadata,
+identity, keys, CI/CD, logs, backups, integrations and privileged administration.
+Do not assume a vendor's SOC 2 report, HIPAA BAA, or an underlying cloud provider's
+FedRAMP authorization authorizes this application. Do not assume that a different
+hosting plan alone resolves the boundary. Keep real ePHI/FCI/CUI out of testing and
+previews; the intended use does not establish that such data is currently stored.
+
+#### Initial control work register (not an exhaustive control crosswalk)
+
+Role owners below are proposed accountabilities, **not named or accepted assignments**.
+Every row needs exact implementation references, scoped tests, deployment identity,
+reviewer, date and operating evidence before it can be accepted. No row is marked
+compliant. The assessor-reviewed SSP and complete requirement/objective mapping must
+include the applicable baseline version, organization-defined parameters, inherited
+controls and customer responsibilities; this initial register is not that mapping.
+
+| ID | Workstream / targets | Inspected evidence or gap | Required next evidence / proposed owner |
+|---|---|---|---|
+| RG-01 | Scope and risk / all | Data inventory and category 12 review remain unchecked in `AI_SOFTWARE_QUALITY_ADOPTION.md`; 2026-11-04 audit excluded regulatory readiness | Data flows, ePHI/FCI/CUI categories, contracts, FIPS 199 categorization, HIPAA risk analysis and signed scope / security official + counsel |
+| RG-02 | Hosting and vendors / all | API rewrite to Railway in source; no approved full-boundary provider package inspected | Named services/regions, isolation and administrative access design, authorization/inheritance review, BAAs for relevant processors, supplier responsibility matrix / platform + procurement |
+| RG-03 | Identity and sessions / all | `server.py` issues seven-day JWTs; `frontend/src/lib/api.js` persists bearer tokens in localStorage; manual documents password-only login | Assessor-reviewed MFA/SSO and emergency-access design, minimum privilege, session idle/absolute limits, safer browser token handling and recovery, role/tenant/revocation tests / identity engineering |
+| RG-04 | Access governance / all | Existing tenant and role checks are not an organization-wide access review | Approved permission matrix, joiner/mover/leaver controls, privileged-access reviews, managed endpoints and personnel eligibility evidence / IT + security |
+| RG-05 | Cryptography / HIPAA, High, L3 | Integration credentials use Fernet in source; that is not evidence of validated cryptographic modules or complete data-at-rest protection | Crypto/module inventory and required validation evidence, key custody/rotation/recovery, TLS and storage/backup encryption evidence / platform + security |
+| RG-06 | API cache storage / all | Branch change forces `Cache-Control: no-store`, `Pragma: no-cache`, `Expires: 0` at the API boundary, including handled errors, redirects and exports | Exact-head tests; verify edge does not override origin policy after approved deployment. Does not erase existing caches, disable UI memory, or prove all non-API pages safe / backend + platform |
+| RG-07 | Audit and monitoring / all | Domain audit feed exists; no immutable central log or retention/coverage assessment performed | Auth/read/export/admin/security event coverage, minimization/redaction, synchronized time, restricted tamper-resistant storage, approved retention and alert drills / security operations |
+| RG-08 | Data lifecycle / all | Archive/export features exist; regulatory lifecycle not established | Minimum-necessary collection, retention/legal holds, deletion including replicas/backups, export approval, tenant offboarding and evidence / privacy + data engineering |
+| RG-09 | Network and egress / High, L3 | No approved enclave/egress architecture inspected; webhook hardening has pending PR #67 | Segmentation, deny-by-default egress, service identities, approved provider endpoints, boundary tests and assessment of PR #67 without duplicate implementation / platform + application security |
+| RG-10 | Vulnerability and change management / all | CI and November audit exist; open PRs and stale audit entries require reconciliation | Current SAST/SCA/secret/container scans, penetration test, remediation SLAs, signed/traceable artifacts, protected releases and exact-head review / application security + release engineering |
+| RG-11 | Backup and continuity / all | Restore drill workflow exists; repository records Atlas backups as unverified | Agreed RPO/RTO, encrypted/isolated backups, actual approved-environment restore and failover exercises, incident-time access procedures / operations |
+| RG-12 | Incident and workforce / all | No organization-wide training, physical/personnel or exercise evidence assessed | Assigned security/privacy officials, policies, training, physical safeguards, incident/breach reporting and tabletop records / management + security + privacy |
+| RG-13 | Integrations and AI / all | Email/calendar/payment and proposed AI paths cross system boundaries | Per-provider data minimization, contract/BAA/authorization applicability, human approvals, disabled unapproved data-sharing paths, synthetic-data egress tests / integration engineering + privacy |
+| RG-14 | SOC 2 Type II / SOC 2 | No CRM-specific independent report or operating-period evidence inspected | CPA-agreed system description, category scope, control design, operating period and independent examination / management + CPA |
+| RG-15 | FedRAMP High / High | No CRM-specific High authorization evidence inspected | Applicable official High baseline and parameters, SSP, complete control implementation/inheritance matrix, assessment package, POA&M as allowed, authorization and continuous monitoring through the applicable program path / authorizing stakeholders + assessment team |
+| RG-16 | CMMC Level 3 / L3 | No scoped Final Level 2 or Level 3 assessment evidence inspected | Final Level 2 (C3PAO) for the Level 3 scope before Level 3 DCMA DIBCAC assessment, objective-level evidence, required affirmations and reassessments / contracting/security + authorized assessors |
+
+#### Sequencing and acceptance
+
+1. Resolve RG-01/02 and assign accountable people; approve an architecture and the
+   applicable full control/objective baseline. Preserve the present service while that
+   decision is pending; no silent migration or production shutdown.
+2. Address identity/session, network, cryptographic and data-flow design before enabling
+   regulated use. Implement reviewed increments with regression tests and synthetic data.
+   Review pending PRs #56 and #67 for recovery and security overlap, not automatic merge.
+3. Operate the controls and collect restricted evidence. Never place raw regulated data,
+   keys, exploitable private findings, or detailed internal boundary diagrams in public PRs.
+4. Obtain the independent assessments, agreements, applicable authorizations and signed
+   release decision. A build, a README, this register or one caching fix cannot substitute.
+
+The only runtime change in this initial branch is RG-06. Its unit/in-process results
+are limited to response-header behavior, not a complete security audit. No hosting
+eligibility, MFA, FIPS validation, vendor agreement or certification is established.
+
+Primary scoping references (reviewed 2026-11-16):
+- [HHS Security Rule summary](https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html): risk analysis, safeguards, responsible official, training, contingency and BAAs.
+- [AICPA SOC 2 scope](https://www.aicpa-cima.com/topic/audit-assurance/audit-and-assurance-greater-than-soc-2/): five Trust Services Categories.
+- [FedRAMP authorization boundary guidance](https://www.fedramp.gov/resources/documents/CSP_A_FedRAMP_Authorization_Boundary_Guidance.pdf): account for federal information and metadata and external services.
+- [32 CFR 170.18](https://www.ecfr.gov/current/title-32/subtitle-A/chapter-I/subchapter-G/part-170/subpart-D/section-170.18): Level 3 prerequisites, assessment and maintenance.
+- [Vercel compliance](https://vercel.com/docs/security/compliance) and [HIPAA guide](https://vercel.com/kb/guide/hipaa-compliance-guide-vercel): provider scope and shared responsibility; a BAA does not guarantee application compliance. These are not evidence of this CRM's FedRAMP authorization.
+
+---
+
 ## 13. Definition of done for the CRM program
 
 ClientVerse CRM is closed only when all of the following hold:
@@ -767,6 +856,7 @@ ClientVerse CRM is closed only when all of the following hold:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.30 | 2026-11-16 | Owner-selected high-assurance planning targets; §12.1 records source-inspected boundary, initial control gaps and external release blockers. Initial branch implements only API no-store protection, not regulatory completion or production authorization. |
 | 1.29 | 2026-10-26 | Added C-39 (self-serve import and export, and company editing; `TESTED` on branch). §1.5 must-haves 11 and 14 and §8 #29 updated. Manual v1.14 (§4.3, §7.4, §7.20, §7.21, §8.1). |
 | 1.28 | 2026-10-26 | Restores the record of the 2026-10-19 deployments of PR #45 (`4873f67`) and PR #46 (`394f095`), which the 1.27 closeout merge had rolled back. §1.5 reports against `main@6d0d4c6` again, with the Phase 1 and 2 items as in production: must-haves 2, 7, 9, 12 and 14, value-add 5, 7, 10 and 14, and agency 2 and 3. C-32 to C-38 are `DEPLOYED`, each naming its deployment. §3.2 regains the two 2026-10-19 entries, and the §4 note again says which rows name a later deployment. The header lists PR #45 and PR #44 among the earlier heads, and M-01 records the 2026-10-19 reconnection and inbox read. Documentation only: no change to scope, status rules or owner actions. |
 | 1.27 | 2026-10-24 | **Production closeout (PR #48, `main@6d0d4c6`).**<br>**Releases:** PR #47's intake repair, plus the gaps found in its review (C-30): alias precedence, budgets as one answer, list-picked and open-ended budgets, changed resubmissions, compare-and-set re-pricing and the form alert switches. Also: the prototype Google sign-in is retired (`410`); the job ledger is limited to the owner's organization; and UI fixes from an end-to-end browser pass (portal link shown and revocable, honest copy feedback, wide tables, contrast, the member MCP switch).<br>**New workflows:** *Production acceptance* and the *Backup and restore drill*. §8 #24 and #25 are delivered.<br>**Production:** verified from outside (§3.2).<br>**Pull requests:** PR #36 closed as superseded and PR #47 merged through #48 (§3.4).<br>**Owner items:** O-17 and O-18 added.<br>**Closeout package:** the owner manual v1.13 becomes Part 2 of the closeout package (§0.5). Nothing moves to `LIVE VERIFIED` under §12, because the Jev gate did not run. |
