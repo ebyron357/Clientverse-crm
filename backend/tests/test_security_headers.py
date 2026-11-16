@@ -42,6 +42,7 @@ def test_response_includes_a_content_security_policy_header():
     with TestClient(server.app) as client:
         r = client.get("/api/health")
     assert r.status_code == 200
+    assert r.headers.get("cache-control") == "no-store"
     csp = r.headers.get("content-security-policy")
     assert csp, "expected a Content-Security-Policy header on every response"
     assert "default-src 'self'" in csp
@@ -54,3 +55,62 @@ def test_existing_security_headers_are_unchanged_by_the_csp_addition():
     assert r.headers.get("x-content-type-options") == "nosniff"
     assert r.headers.get("x-frame-options") == "SAMEORIGIN"
     assert r.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+
+# Exercise the production middleware without a database or authentication fixtures.
+# Sensitive payloads include signed-out responses (tokens, public portal records),
+# so the policy must follow the API boundary, not only the Authorization header.
+def _cache_policy_app():
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import RedirectResponse, Response, StreamingResponse
+
+    app = FastAPI()
+    app.middleware("http")(server.production_security_headers)
+
+    @app.get("/api/records")
+    @app.get("/api")
+    def records():
+        # A handler must not accidentally opt a tenant's data into shared caching.
+        return Response("synthetic record", headers={"Cache-Control": "public, max-age=3600"})
+
+    @app.get("/api/export")
+    def export():
+        return StreamingResponse(iter([b"synthetic export"]), media_type="text/csv")
+
+    @app.get("/api/denied")
+    def denied():
+        raise HTTPException(status_code=403, detail="denied")
+
+    @app.get("/api/redirect")
+    def redirect():
+        return RedirectResponse("/api/records")
+
+    @app.get("/static/js/main.hash.js")
+    @app.get("/apiculture")
+    def asset():
+        return Response("bundle", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+    return app
+
+
+def test_api_responses_cannot_be_stored_even_when_a_handler_enables_caching():
+    client = TestClient(_cache_policy_app())
+    for path in ("/api", "/api/records", "/api/export", "/api/denied", "/api/redirect", "/api/missing"):
+        response = client.get(path, follow_redirects=False)
+        assert response.headers.get("cache-control") == "no-store", path
+        assert response.headers.get("pragma") == "no-cache", path
+        assert response.headers.get("expires") == "0", path
+    assert client.get("/api/records").text == "synthetic record"
+    assert client.get("/api/export").text == "synthetic export"
+    assert client.get("/api/denied").status_code == 403
+    assert client.get("/api/missing").status_code == 404
+    assert client.get("/api/redirect", follow_redirects=False).status_code == 307
+
+
+def test_api_cache_policy_preserves_static_asset_caching_and_path_boundaries():
+    client = TestClient(_cache_policy_app())
+    for path in ("/static/js/main.hash.js", "/apiculture"):
+        response = client.get(path)
+        assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+        assert "pragma" not in response.headers
+        assert "expires" not in response.headers

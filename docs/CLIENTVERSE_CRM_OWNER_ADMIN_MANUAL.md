@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.14 |
-| **Date** | 2026-10-26 |
+| **Version** | 1.15 |
+| **Date** | 2026-11-16 |
 | **Repository** | `ebyron357/Clientverse-crm` |
 | **Branch documented** | `main` with self-serve import and export (2026-10-26), after the closeout release (PR #48, 2026-10-24). Read the running commit from `/api/health` → `git_sha` ([§2.2](#22-confirm-you-are-on-the-correct-deployment)) |
 | **Production environment** | Railway project `welcoming-vibrancy` → environment `production` → service `clientverse-crm-production` |
@@ -2510,6 +2510,34 @@ compromised and **rotate it** (§13.4), even if you deleted the message.
 
 ---
 
+### 13.8 Regulated-data use — release blocked pending evidence
+
+**Planning targets requested 2026-11-16:** HIPAA safeguards, SOC 2 Type II,
+FedRAMP High and CMMC Level 3. **Not assessed, not certified/authorized, and not
+approved for ePHI/FCI/CUI use by this update.** Current production suitability was
+not established. The initial no-store header fix is a branch change, not evidence
+of a production release or comprehensive safeguards.
+
+Until a scoped review and signed release decision:
+
+1. Do not import or enter real ePHI, FCI or CUI into the CRM, previews, test fixtures,
+   AI prompts, logs, support tickets or screenshots. Use synthetic examples only.
+2. If you believe regulated data is already present, notify your designated
+   security/privacy lead privately for containment and incident evaluation. Do not
+   attach records or unilaterally delete evidence. No presence of such data has been
+   established in this engineering review.
+3. Identify a security/privacy official and contracting lead. Have them confirm the
+   data categories, customer obligations, boundary, service-specific hosting evidence
+   and BAAs, and authorize procurement/assessment work with appropriate professionals.
+   A vendor BAA, SOC 2 report or platform plan is not an application approval.
+4. Require the evidence and review gates in governing document §12.1 before enabling
+   regulated workflows. SOC 2 needs an independent CPA examination; CMMC Level 3 needs
+   Final Level 2 for the scope first and DCMA DIBCAC assessment. FedRAMP authorization
+   and HIPAA obligations cannot be completed by merging an application PR.
+
+Engineering tracks the gaps in [governing document §12.1](CLIENTVERSE_CRM_CANONICAL_GOVERNING_DOCUMENT.md#121-regulated-data-readiness--owner-directive-2026-11-16).
+No production migration, shutdown, add-on purchase or automatic approval was performed.
+
 ## 14. Production Verification Checklist
 
 Mark each item **PASS**, **FAIL**, **BLOCKED** or **NOT TESTED**. Definitions are in
@@ -2829,6 +2857,7 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.15 | 2026-11-16 | §13.8 records high-assurance targets, unverified regulated-data readiness, synthetic-data restriction, and the owner/professional release dependencies. No production release or certification claimed. |
 | 1.14 | 2026-10-26 | Self-serve import and export. **Settings → Import and export** (§4.3, §7.20, §8.1): an admin imports contacts, companies or deals from a CSV file by matching its columns to fields (your own fields included) and reading a preview of every row before anything is saved; anyone exports contacts, companies, deals and tasks as CSV. **Import** buttons on Contacts, Companies and Pipeline. Companies are edited, archived and restored from their side panel, with **Show archived** on the Companies tab (§7.4, §7.21). The engineering-only rows for these are gone (§8.12, §13.5, §15). |
 | 1.13 | 2026-10-24 | Production closeout (PR #48). The manual is now Part 2 of the closeout package; Part 1 is [the closeout handoff](closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md). Changes: **"Continue with Google" removed**, so email and password is the only sign-in (§1.1, §1.2, §3.1, §8.3, §9.6, §10.1, §12). The job ledger is limited to the owner's organization (§8.1). Client portal links stay on screen with **"Copy"** and can be **"Revoke"**d (§7.15, §8.12, §12). The MCP kill switch is greyed out for members (§7.18). All procedures use `https://crm.clientverse.io` (§1.1, §1.2, §2.2, §11.4, Appendices A and C); the Google redirect address is the custom domain (§5.5). Google status is consistent with the 2026-10-19 reconnection (§1.4, §10.1, §14 row 12). The custom-domain switch is recorded as done (§13.3). |
 | 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |
