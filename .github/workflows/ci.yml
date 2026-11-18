@@ -43,6 +43,20 @@ jobs:
           CI: 'true'
           REACT_APP_BACKEND_URL: http://localhost:8001
         run: yarn build
+      - name: Install recovery browser test runtime
+        working-directory: frontend
+        run: yarn playwright install --with-deps chromium
+      - name: Password recovery UI, keyboard and accessibility checks
+        env:
+          RECOVERY_SCREENSHOT_PATH: /tmp/password-recovery.png
+        run: node scripts/password_recovery_browser.mjs
+      - name: Upload password recovery screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: password-recovery-ui
+          path: /tmp/password-recovery.png
+          if-no-files-found: ignore
 
   backend-static-analysis:
     name: Backend lint and types
