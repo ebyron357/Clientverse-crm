@@ -17,7 +17,7 @@ import asyncio
 import math
 import os
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -627,7 +627,7 @@ async def _keep_lease_alive(queue: WorkQueue, item: dict, worker_id: str,
 
 async def run_worker_tick(
     queue: WorkQueue,
-    handlers: dict[str, Callable[[dict], Awaitable[dict]]],
+    handlers: Mapping[str, Callable[[dict], Awaitable[dict]]],
     *,
     worker_id: Optional[str] = None,
     limit: int = 25,
@@ -649,7 +649,8 @@ async def run_worker_tick(
                                 lease_seconds=lease_seconds)
     processed, failed, lost = 0, 0, 0
     for item in claimed:
-        handler = handlers.get(item.get("type"))
+        item_type = item.get("type")
+        handler = handlers.get(item_type) if isinstance(item_type, str) else None
         if handler is None:
             try:
                 await queue.fail(item["id"], tenant_id=item["tenant_id"],

@@ -399,6 +399,73 @@ async def run_detection(db, queue, tenant_id: str, *, actor: str = "second-chanc
     }
 
 
+# What a dry run reports for each detection.
+PREVIEW_WOULD_OPEN = "would_open_case"
+PREVIEW_ALREADY_OPEN = "already_open"
+PREVIEW_CLOSED = "closed_case_skipped"
+
+
+async def preview(db, tenant_id: str, *, limit: int = 100) -> dict:
+    """Dry run: what the next Second Chance sweep would find for one tenant.
+
+    Runs the same two detectors as `run_detection` and looks each detection up against the
+    tenant's existing Recovery Cases, but writes nothing -- no case, no work item, no audit
+    event, no reconciliation -- and contacts nobody. Detection never contacts anyone in any
+    case; this exists so an owner can see what a first run will put in front of them before
+    it does.
+
+    One difference from a real sweep is stated in the result: a real sweep reconciles first,
+    so a case whose deal has since closed or been won is closed then, and is not counted
+    here as `already_open`.
+    """
+    stalled = await detect_stalled_leads(db, None, tenant_id)
+    missed = await detect_missed_followups(db, None, tenant_id)
+    rows: list[dict] = []
+    counts = {PREVIEW_WOULD_OPEN: 0, PREVIEW_ALREADY_OPEN: 0, PREVIEW_CLOSED: 0}
+    for detection in stalled + missed:
+        kind = detection.get("record_kind") or "opportunity"
+        existing = await recovery_case.find_by_source_event(
+            db, tenant_id, SOURCE_FOR_TYPE[detection["type"]],
+            f"{kind}:{detection['record_id']}")
+        if existing is None:
+            outcome = PREVIEW_WOULD_OPEN
+        elif existing.get("state") in recovery_case.TERMINAL_STATES:
+            outcome = PREVIEW_CLOSED
+        else:
+            outcome = PREVIEW_ALREADY_OPEN
+        counts[outcome] += 1
+        if len(rows) < max(1, int(limit)):
+            rows.append({
+                "type": detection["type"],
+                "record_kind": kind,
+                "record_id": detection["record_id"],
+                "title": detection.get("title"),
+                "reason": detection.get("reason"),
+                "outcome": outcome,
+                "recovery_case_id": (existing or {}).get("id"),
+                "recovery_case_state": (existing or {}).get("state"),
+            })
+    return {
+        "tenant_id": tenant_id,
+        "dry_run": True,
+        "writes": 0,
+        "contacts_anyone": False,
+        "stalled_leads_detected": len(stalled),
+        "missed_followups_detected": len(missed),
+        "would_open_cases": counts[PREVIEW_WOULD_OPEN],
+        "already_open_cases": counts[PREVIEW_ALREADY_OPEN],
+        "closed_cases_skipped": counts[PREVIEW_CLOSED],
+        "detections": rows,
+        "truncated": len(stalled) + len(missed) > len(rows),
+        "note": ("A real sweep reconciles open cases first, so a case whose deal has since "
+                 "closed is closed then rather than counted as already open."),
+        "thresholds": {
+            "stalled_lead_days": STALLED_LEAD_DAYS,
+            "missed_followup_grace_hours": MISSED_FOLLOWUP_GRACE_HOURS,
+        },
+    }
+
+
 async def run_detection_all_tenants(db, queue, *, actor: str = "cron",
                                     audit: Optional[Callable[..., Awaitable[Any]]] = None) -> dict:
     tenant_ids = await db.tenants.distinct("tenant_id")

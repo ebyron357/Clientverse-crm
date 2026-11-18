@@ -71,7 +71,8 @@ async def _register(email, password):
 
 
 async def _login(email, password):
-    return await server.login(server.LoginInput(email=email, password=password), FakeResponse())
+    request = server.Request({"type": "http", "headers": [], "client": (email, 0)})
+    return await server.login(server.LoginInput(email=email, password=password), FakeResponse(), request)
 
 
 def _unique_email():
