@@ -108,18 +108,14 @@ follow_imports = "skip"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# The typed surface. These modules pass cleanly today and CI blocks on them, so the
-# checked set only ever grows: a module joins this list when it is clean, and nothing
-# can make it dirty again without failing the build. The rest of the backend is
-# checked in a reporting pass that does not block, because bringing the pre-existing
-# Optional-narrowing findings to zero is a refactor, not a gate. The route modules
-# (`crm_core`, `recovery_intake`, `client_value`, `operations_routes`) are out of the
-# blocking set for a different reason: they are dozens of FastAPI closures whose
-# signatures FastAPI itself reads, and annotating every one buys nothing a route test
-# does not already catch.
+# The stricter annotation surface. Every checked backend module now passes mypy and
+# scripts/typecheck.py blocks on any finding. These modules additionally require
+# complete annotations on partially typed signatures and reject Any return values.
+# Route modules keep FastAPI's closure signatures and use the general rules above;
+# they still must pass the same zero-finding release gate.
 module = ["attribution", "automations", "cron_ledger", "detectors", "email_inbound",
           "gmail_provider", "recovery_lifecycle", "recovery_proof",
           "industry_templates", "recovery_reconcile", "scheduler", "setup_loader", "snapshots", "agency",
-          "today", "data_transfer"]
+          "today", "data_transfer", "password_recovery", "outbound_url"]
 disallow_incomplete_defs = true
 warn_return_any = true

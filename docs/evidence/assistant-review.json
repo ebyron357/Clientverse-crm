@@ -1,0 +1,78 @@
+{
+  "status": "INTEGRATED_FOR_REVIEW_VALIDATION_IN_PROGRESS_NOT_PRODUCTION_VERIFIED",
+  "validated_at_utc": "2026-11-18 00:46:49 UTC",
+  "source": {
+    "original_pr_head": "34b9d9f6f3a54fadd825caaf3394f9e7d0bc21dd",
+    "previous_verified_assistant_head": "3f85248b8323146d07d34dc82fdf58d431aabdad",
+    "integrated_main": "dd576c372980feb597ff1316130701ec04f9e0d5",
+    "integrated_core_local": "2c8c526a8d822f63636df174d260c639235e658f",
+    "integrated_core_remote": "ad05bfc2fc4095de45404e131fbaae40d06b184a",
+    "assistant_application_and_layout_files_unchanged": true
+  },
+  "integration": [
+    "Preserves the core fixes and the all-module type gate.",
+    "Combines one Chromium install with both recovery and assistant fixtures and both artifact uploads.",
+    "Backend tests retain requirements-dev.txt and the real MongoDB replica-set suite."
+  ],
+  "completed_local_checks": {
+    "types": {
+      "findings": 0,
+      "checked_source_files": 38,
+      "stricter_modules": 18,
+      "gate": "Every checked backend module blocks on findings."
+    },
+    "ruff": "PASS",
+    "configuration_validation": "PASS",
+    "frontend_frozen_dependency_install": "PASS",
+    "frontend_lint": "PASS",
+    "frontend_regression_tests": {
+      "passed": 116,
+      "suites_passed": 6
+    },
+    "browser_script_syntax": "PASS"
+  },
+  "pending_integrated_checks": [
+    "Full local backend suite and 82-assertion CRM release smoke. A prior interrupted run is not counted as a pass.",
+    "Production frontend build. A prior interrupted build is not counted as a pass.",
+    "Exact integrated-head hosted CI and both browser fixtures."
+  ],
+  "previous_assistant_ci": {
+    "head_sha": "3f85248b8323146d07d34dc82fdf58d431aabdad",
+    "run_url": "https://github.com/ebyron357/Clientverse-crm/actions/runs/44208700285",
+    "conclusion": "success",
+    "backend": {
+      "passed": 1264,
+      "skipped": 4
+    },
+    "release_smoke": {
+      "passed": 82,
+      "failed": 0
+    },
+    "frontend": {
+      "passed": 113,
+      "suites_passed": 5,
+      "production_build": "PASS",
+      "assistant_desktop_mobile_fixture": "PASS"
+    },
+    "artifact": {
+      "id": 14385810018,
+      "name": "assistant-ui-fixtures"
+    },
+    "scope": "Previous assistant head only; synthetic local API fixtures and mocked provider, not provider certification."
+  },
+  "local_runtime": {
+    "python": "3.12.14",
+    "node": "24.22.1",
+    "ci_runtime": "Python 3.11 and Node 20."
+  },
+  "jev_qc": {
+    "verdict": "NOT_RUN_FOR_THIS_INTEGRATION",
+    "verified_complete": false
+  },
+  "remaining_verification": [
+    "Exact integrated-head CI and completed local checks listed above.",
+    "Signed-in hosted assistant flows, real provider behavior and representative model evaluations.",
+    "Independent quality review and production release acceptance."
+  ],
+  "safety": "Assistant remains disabled by default. Local checks use synthetic data and perform no real provider calls or customer actions. The original assistant layout and read-only output behavior are preserved."
+}

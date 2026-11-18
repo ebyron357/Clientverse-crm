@@ -111,7 +111,7 @@ def test_a_name_that_resolves_inside_is_never_contacted(monkeypatch):
     _reset_motor_client()
     posts = []
     monkeypatch.setattr(outbound_url, "_getaddrinfo", _fake_resolution("10.1.2.3"))
-    monkeypatch.setattr(server.requests, "post", lambda *a, **k: posts.append((a, k)))
+    monkeypatch.setattr(outbound_url.urllib3.HTTPSConnectionPool, "urlopen", lambda *a, **k: posts.append((a, k)))
     with TestClient(server.app) as client:
         token = _register(client).json()["token"]
         hook = client.post("/api/webhooks", headers=_h(token),
@@ -127,19 +127,19 @@ def test_deliveries_do_not_follow_redirects_and_store_only_coarse_errors(monkeyp
     _reset_motor_client()
     calls = []
 
-    def failing_post(url, **kwargs):
+    def failing_post(self, method, url, **kwargs):
         calls.append(kwargs)
-        raise server.requests.exceptions.ConnectionError(
+        raise outbound_url.urllib3.exceptions.NewConnectionError(None,
             "HTTPConnectionPool(host='10.0.0.9', port=6379): Max retries exceeded")
 
     monkeypatch.setattr(outbound_url, "_getaddrinfo", _fake_resolution("93.184.216.34"))
-    monkeypatch.setattr(server.requests, "post", failing_post)
+    monkeypatch.setattr(outbound_url.urllib3.HTTPSConnectionPool, "urlopen", failing_post)
     with TestClient(server.app) as client:
         token = _register(client).json()["token"]
         hook = client.post("/api/webhooks", headers=_h(token),
                            json={"name": "down", "url": "https://down.example.com/in", "events": ["*"]}).json()
         client.post(f"/api/webhooks/{hook['id']}/test", headers=_h(token))
-        assert calls and all(kwargs.get("allow_redirects") is False for kwargs in calls)
+        assert calls and all(kwargs.get("redirect") is False for kwargs in calls)
         delivery = client.get("/api/webhook-deliveries", headers=_h(token)).json()[0]
         errors = {a["error"] for a in delivery["attempts"]}
         assert errors == {"connection_error"}, errors

@@ -311,7 +311,7 @@ async def record_gate(db, *, tenant_id: str, component_id: str, gate: str, check
         "scanner_results": scanner_results or current.get("scanner_results", []),
         "findings": findings if findings is not None else current.get("findings", []),
     }
-    updates = {gate: gate_doc, "updated_at": now}
+    updates: dict[str, object] = {gate: gate_doc, "updated_at": now}
     if component.get("state") == DISCOVERED:
         updates["state"] = UNDER_REVIEW
     elif component.get("state") in EXECUTABLE_STATES:

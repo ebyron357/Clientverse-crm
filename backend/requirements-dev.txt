@@ -1,7 +1,10 @@
 # Test-only dependencies.
 #
+# CI installs this file for the assistant's isolated route fixtures as well as
+# the complete application suite, which still connects to real MongoDB.
+#
 # The behavioural suite is written against a real MongoDB and CI runs it that way
-# (see .github/workflows/ci.yml, which starts a mongo:7 service). Some environments
+# (see .github/workflows/ci.yml, which starts a mongo:7 replica set). Some environments
 # cannot reach a mongod at all; setting MONGO_URL to `mongomock://local` makes the
 # application and the suite run against an in-process substitute instead. That is a
 # development convenience, not the release gate: unique-index enforcement and any test
