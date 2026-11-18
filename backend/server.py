@@ -13,14 +13,16 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, NoReturn, NotRequired, Optional, TypedDict
 from urllib.parse import urlencode, urlparse
 
 import bcrypt
 import jwt
-import requests
 from dotenv import load_dotenv
 from fastapi.responses import RedirectResponse
+from pymongo.errors import DuplicateKeyError
+
+import password_recovery
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -49,6 +51,7 @@ import gmail_provider
 import industry_templates
 import next_best_action as nba_service
 import outbound_url
+import public_url
 import record_fields
 import recovery_case as recovery_case_service
 import recovery_intake
@@ -71,6 +74,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clientverse")
 
 mongo_url = os.environ['MONGO_URL']
+mclient: AsyncIOMotorClient
 if mongo_url.startswith("mongomock://"):
     # Local/CI fallback for environments where no MongoDB server can be reached.
     # `mongomock://` is not a scheme any real deployment can use, so production
@@ -84,16 +88,22 @@ else:
     mclient = AsyncIOMotorClient(mongo_url)
 db = mclient[os.environ['DB_NAME']]
 
+APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
+IS_PRODUCTION = APP_ENV in {"production", "prod"}
 JWT_SECRET = os.environ['JWT_SECRET']
 _UNSAFE_JWT_DEFAULTS = {
     "", "changeme", "secret", "jwt_secret", "replace-with-a-long-random-hex-string",
 }
 if len(JWT_SECRET) < 32 or JWT_SECRET.strip().lower() in _UNSAFE_JWT_DEFAULTS:
-    if os.environ.get("ALLOW_INSECURE_JWT", "").lower() not in ("1", "true", "yes"):
+    local_override = (
+        APP_ENV in {"development", "dev", "local", "test", "testing"}
+        and os.environ.get("ALLOW_INSECURE_JWT", "").strip().lower() in {"1", "true", "yes"}
+    )
+    if not local_override:
         raise RuntimeError(
             "JWT_SECRET must be a strong secret (>=32 chars). "
             "Generate with: openssl rand -hex 32. "
-            "Set ALLOW_INSECURE_JWT=1 only for disposable local/dev environments."
+            "ALLOW_INSECURE_JWT=1 is accepted only in disposable local/dev/test environments."
         )
 JWT_ALG = "HS256"
 _RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
@@ -106,12 +116,18 @@ FRONTEND_URL = (
 )
 _cors_raw = os.environ.get("CORS_ORIGINS") or FRONTEND_URL
 CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
-APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
-IS_PRODUCTION = APP_ENV in {"production", "prod"}
-
 if IS_PRODUCTION:
     if not FRONTEND_URL.startswith("https://"):
         raise RuntimeError("FRONTEND_URL must use HTTPS in production")
+    # Every link the CRM sends (invitations, booking, website forms, the Google return
+    # page) starts with FRONTEND_URL. A local or malformed one cannot work for anyone, so
+    # it stops the boot; a preview/copy host still works today, so it is logged loudly
+    # and shown on /api/cron/health instead of taking production down.
+    _frontend_findings = public_url.check(FRONTEND_URL, production=True, name="FRONTEND_URL")
+    if public_url.fatal(_frontend_findings):
+        raise RuntimeError(" ".join(f.message for f in public_url.fatal(_frontend_findings)))
+    for _finding in _frontend_findings:
+        logger.error("Public URL check: %s", _finding.message)
     if not CORS_ORIGINS or any(origin == "*" or not origin.startswith("https://") for origin in CORS_ORIGINS):
         raise RuntimeError("CORS_ORIGINS must contain explicit HTTPS origins in production")
     missing_production_secrets = [
@@ -180,6 +196,8 @@ class StaticGZipMiddleware:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await seed()
+    recovery = password_recovery.PasswordRecovery(db)
+    await recovery.ensure_indexes()
     # Each index is built on its own. They used to share one try block, so the first
     # failure (an index that existing data violates, say) silently skipped every index
     # after it -- including uniqueness guarantees later modules depend on.
@@ -243,9 +261,15 @@ async def lifespan(_: FastAPI):
     job_scheduler.start()
     # Automation runs parked on a wait step resume from here (AUTOMATION_WATCHER=0 turns it off).
     automation_engine.start_watcher()
+    recovery_worker = asyncio.create_task(recovery.run())
     try:
         yield
     finally:
+        recovery_worker.cancel()
+        try:
+            await recovery_worker
+        except asyncio.CancelledError:
+            pass
         await job_scheduler.stop()
         await lead_pipeline.stop_watcher()
         await automation_engine.stop_watcher()
@@ -278,6 +302,17 @@ CONTENT_SECURITY_POLICY = "; ".join([
 @app.middleware("http")
 async def production_security_headers(request: Request, call_next):
     response = await call_next(request)
+    # API responses can contain tenant records, exports, tokens and public-link data
+    # even without an authenticated request. Never let a route opt them into browser
+    # or shared-proxy storage. Static asset caching remains a separate policy.
+    if request.url.path == "/api" or request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    if request.url.path in {"/forgot-password", "/reset-password", "/api/auth/forgot-password", "/api/auth/reset-password"}:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     # The hosted website-form page is the one document meant to be framed by an
@@ -315,7 +350,8 @@ def verify_password(pw: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(user_id: str, email: str, acting_tenant: Optional[str] = None) -> str:
+def create_access_token(user_id: str, email: str, acting_tenant: Optional[str] = None,
+                        session_version: Optional[str] = None) -> str:
     # jti keeps two tokens issued in the same second from being byte-identical (JWT
     # exp/iat only have second granularity) -- without it, revoking one login's token
     # would also revoke a different login's token that happened to match exactly.
@@ -325,6 +361,8 @@ def create_access_token(user_id: str, email: str, acting_tenant: Optional[str] =
     payload = {"sub": user_id, "email": email, "type": "access", "jti": secrets.token_hex(16),
                "iat": int(now.timestamp()), "iat_ms": int(now.timestamp() * 1000),
                "exp": now + timedelta(days=7)}
+    if session_version:
+        payload["session_version"] = session_version
     if acting_tenant:
         # An agency admin working in one of its client accounts (agency.act_as checks it
         # again on every request).
@@ -441,6 +479,8 @@ def _issued_before_password_change(payload: dict, user: dict) -> bool:
     Sessions are dated by `iat_ms`; one issued before tokens carried it is dated from its
     7-day expiry. The session that made the change is re-issued after it, so it survives.
     """
+    if user.get("session_version") and payload.get("session_version") != user["session_version"]:
+        return True
     changed = _parse_dt(user.get("password_changed_at"))
     if not changed:
         return False
@@ -638,11 +678,16 @@ async def register(inp: RegisterInput, response: Response):
     tenant_id = new_id("ten")
     await db.tenants.insert_one({"tenant_id": tenant_id, "name": f"{inp.name}'s Org", "created_at": now_iso()})
     uid = new_id("user")
-    await db.users.insert_one({
-        "user_id": uid, "email": email, "name": inp.name, "role": "admin",
-        "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
-        "picture": None, "created_at": now_iso(), "auth": "password",
-    })
+    try:
+        await db.users.insert_one({
+            "user_id": uid, "email": email, "name": inp.name, "role": "admin",
+            "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
+            "picture": None, "created_at": now_iso(), "auth": "password",
+        })
+    except DuplicateKeyError:
+        # Only remove the organization allocated by this losing registration.
+        await db.tenants.delete_one({"tenant_id": tenant_id})
+        raise HTTPException(status_code=400, detail="Email already registered")
     await db.memberships.insert_one({
         "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
         "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
@@ -655,7 +700,7 @@ async def register(inp: RegisterInput, response: Response):
     return {"user": await session_user(u), "token": token}
 
 @api.post("/auth/login")
-async def login(inp: LoginInput, response: Response, request: Request = None):
+async def login(inp: LoginInput, response: Response, request: Request):
     email = inp.email.lower()
     ip = website_forms.client_ip(request) if request is not None else None
     if await _login_ip_blocked(ip):
@@ -671,7 +716,7 @@ async def login(inp: LoginInput, response: Response, request: Request = None):
         await _record_login_ip_failure(ip)
         raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     await _reset_login_failures(email)
-    token = create_access_token(user["user_id"], email)
+    token = create_access_token(user["user_id"], email, session_version=user.get("session_version"))
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     u = await resolve_membership(u)
@@ -723,12 +768,21 @@ def has_permission(role, perm):
 
 async def resolve_membership(user):
     """Attach effective role from the tenant membership; block disabled members. Self-heals legacy users."""
-    m = await db.memberships.find_one({"tenant_id": user.get("tenant_id"), "user_id": user.get("user_id")}, {"_id": 0})
+    scope = {"tenant_id": user.get("tenant_id"), "user_id": user.get("user_id")}
+    m = await db.memberships.find_one(scope, {"_id": 0})
     if m is None:
         m = {"id": new_id("mem"), "tenant_id": user.get("tenant_id"), "user_id": user.get("user_id"),
              "email": user.get("email"), "role": user.get("role", "member"), "status": "active",
              "invited_by": None, "invited_at": None, "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()}
-        await db.memberships.insert_one(dict(m))
+        try:
+            await db.memberships.insert_one(dict(m))
+        except DuplicateKeyError:
+            # Another request may have repaired this legacy membership first. Its
+            # stored role/status is authoritative, including a concurrent disable.
+            m = await db.memberships.find_one(scope, {"_id": 0})
+            if m is None:
+                # A different uniqueness collision is not a successful repair.
+                raise
     if m.get("status") == "disabled":
         raise HTTPException(status_code=403, detail="Your access to this workspace has been disabled")
     user["role"] = m.get("role", user.get("role", "member"))
@@ -1096,6 +1150,48 @@ class PasswordChangeInput(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(max_length=256)
 
+
+class ForgotPasswordInput(BaseModel):
+    email: EmailStr = Field(max_length=254)
+
+
+class ResetPasswordInput(BaseModel):
+    token: str = Field(max_length=128)
+    new_password: str = Field(max_length=256)
+
+
+def _recovery_request_ip(request: Request):
+    # Use the ASGI peer, never parse arbitrary Forwarded/X-Forwarded-For headers.
+    # The deployment must only trust its actual reverse proxy in uvicorn.
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") not in _OWN_ORIGINS:
+        raise HTTPException(403, "Open password recovery from ClientVerse itself.")
+    return request.client.host if request.client else "unknown"
+
+
+@api.post("/auth/forgot-password", status_code=202)
+async def forgot_password(inp: ForgotPasswordInput, request: Request):
+    await password_recovery.PasswordRecovery(db).request(inp.email.lower(), _recovery_request_ip(request))
+    return {"message": password_recovery.GENERIC_MESSAGE}
+
+
+@api.post("/auth/reset-password")
+async def recover_password(inp: ResetPasswordInput, request: Request, response: Response):
+    user = await password_recovery.PasswordRecovery(db).reset(
+        inp.token, inp.new_password, _recovery_request_ip(request), hash_password, _new_password_problem)
+    response.delete_cookie("access_token", path="/")
+    try:
+        await record_event("auth.password_recovered", "user", user["user_id"], user["tenant_id"],
+                           "password-recovery", payload={"sessions_revoked": True})
+    except Exception:
+        # PasswordRecovery already committed the credential and invalidated sessions.
+        # An unavailable timeline must not tell the owner that the reset failed.
+        logger.warning("Password recovery committed; domain event unavailable")
+    if not user["recovery_lockout_cleared"]:
+        return {"message": "Your password has been reset. A temporary sign-in lock could not be cleared. "
+                           f"Wait {LOGIN_LOCKOUT_MINUTES} minutes, then sign in with your new password."}
+    return {"message": "Your password has been reset. Sign in with your new password."}
+
 @api.post("/auth/change-password")
 async def change_password(inp: PasswordChangeInput, request: Request, response: Response,
                           user=Depends(get_current_user)):
@@ -1119,10 +1215,13 @@ async def change_password(inp: PasswordChangeInput, request: Request, response: 
         raise HTTPException(status_code=422, detail=problem)
     if inp.new_password == inp.current_password:
         raise HTTPException(status_code=422, detail="Choose a password different from your current one.")
-    await db.users.update_one(
-        {"user_id": user["user_id"]},
+    session_version = uuid.uuid4().hex
+    changed = await db.users.update_one(
+        {"user_id": user["user_id"], "password_hash": record["password_hash"]},
         {"$set": {"password_hash": hash_password(inp.new_password), "password_changed_at": now_iso(),
-                  "must_change_password": False}})
+                  "session_version": session_version, "must_change_password": False}})
+    if changed.modified_count != 1:
+        raise HTTPException(409, "Your password changed during this request. Please sign in again.")
     await _reset_login_failures(email)
     old_token = _extract_token(request)
     if old_token:
@@ -1131,7 +1230,7 @@ async def change_password(inp: PasswordChangeInput, request: Request, response: 
     # still in the client account it was working in, if any.
     await db.user_sessions.delete_many({"user_id": user["user_id"]})
     acting = (user.get("acting") or {}).get("tenant_id")
-    token = create_access_token(user["user_id"], email, acting_tenant=acting)
+    token = create_access_token(user["user_id"], email, acting_tenant=acting, session_version=session_version)
     set_auth_cookie(response, token)
     await record_event("auth.password_changed", "user", user["user_id"], user.get("home_tenant_id") or user["tenant_id"],
                        email, payload={"temporary_cleared": bool(user.get("must_change_password"))})
@@ -1166,7 +1265,7 @@ async def reset_member_password(target_user_id: str, user=Depends(require_role("
     await db.users.update_one(
         {"user_id": target_user_id, "tenant_id": user["tenant_id"]},
         {"$set": {"password_hash": hash_password(temporary), "password_changed_at": now_iso(),
-                  "must_change_password": True}})
+                  "session_version": uuid.uuid4().hex, "must_change_password": True}})
     await db.user_sessions.delete_many({"user_id": target_user_id})
     await _reset_login_failures(target["email"].lower())
     await record_event("team.password_reset", "membership", target_user_id, user["tenant_id"], user["email"],
@@ -1565,12 +1664,18 @@ def compute_health(commitments, tasks, deliverables, requests_):
 
 # ----------------------------- Tasks / Deliverables / Requests / Approvals / Commitments -----------------------------
 
+TaskState = Literal["todo", "in_progress", "done"]
+DeliverableState = Literal["draft", "in_review", "approved"]
+RequestState = Literal["open", "in_progress", "done"]
+CommitmentState = Literal["open", "at_risk", "breached", "fulfilled"]
+
+
 class TaskInput(BaseModel):
     workspace_id: str
     title: str
     assignee: Optional[str] = None
     due_date: Optional[str] = None
-    status: str = "todo"
+    status: TaskState = "todo"
 
 @api.post("/tasks")
 async def create_task(inp: TaskInput, user=Depends(get_current_user)):
@@ -1581,7 +1686,16 @@ async def create_task(inp: TaskInput, user=Depends(get_current_user)):
     return {k: v for k, v in doc.items() if k != "_id"}
 
 class TaskStatus(BaseModel):
-    status: str
+    status: TaskState
+
+class DeliverableStatus(BaseModel):
+    status: DeliverableState
+
+class RequestStatus(BaseModel):
+    status: RequestState
+
+class ApprovalDecision(BaseModel):
+    status: Literal["approved", "rejected"]
 
 @api.patch("/tasks/{task_id}")
 async def update_task(task_id: str, inp: TaskStatus, user=Depends(get_current_user)):
@@ -1602,7 +1716,7 @@ class DeliverableInput(BaseModel):
     workspace_id: str
     title: str
     description: Optional[str] = None
-    status: str = "draft"
+    status: DeliverableState = "draft"
 
 @api.post("/deliverables")
 async def create_deliverable(inp: DeliverableInput, user=Depends(get_current_user)):
@@ -1613,7 +1727,7 @@ async def create_deliverable(inp: DeliverableInput, user=Depends(get_current_use
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/deliverables/{dlv_id}")
-async def approve_deliverable(dlv_id: str, inp: TaskStatus, user=Depends(get_current_user)):
+async def approve_deliverable(dlv_id: str, inp: DeliverableStatus, user=Depends(get_current_user)):
     d = await db.deliverables.find_one({"id": dlv_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1626,7 +1740,7 @@ class RequestInput(BaseModel):
     workspace_id: str
     title: str
     priority: str = "medium"
-    status: str = "open"
+    status: RequestState = "open"
 
 @api.post("/client-requests")
 async def create_request(inp: RequestInput, user=Depends(get_current_user)):
@@ -1637,7 +1751,7 @@ async def create_request(inp: RequestInput, user=Depends(get_current_user)):
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/client-requests/{req_id}")
-async def update_request(req_id: str, inp: TaskStatus, user=Depends(get_current_user)):
+async def update_request(req_id: str, inp: RequestStatus, user=Depends(get_current_user)):
     r = await db.client_requests.find_one({"id": req_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not r:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1648,7 +1762,7 @@ class ApprovalInput(BaseModel):
     workspace_id: str
     title: str
     kind: str = "external_effect"
-    status: str = "requested"
+    status: Literal["requested"] = "requested"
 
 @api.post("/approvals")
 async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
@@ -1672,7 +1786,7 @@ async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
     return doc
 
 @api.patch("/approvals/{apr_id}")
-async def decide_approval(apr_id: str, inp: TaskStatus, user=Depends(require_role("admin"))):
+async def decide_approval(apr_id: str, inp: ApprovalDecision, user=Depends(require_role("admin"))):
     """Decide an approval request.
 
     The decision itself is delegated to `approval_queue` so this long-standing route and
@@ -1700,7 +1814,7 @@ class CommitmentInput(BaseModel):
     title: str
     owner: Optional[str] = None
     due_date: Optional[str] = None
-    status: str = "open"
+    status: CommitmentState = "open"
 
 @api.post("/commitments")
 async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)):
@@ -1711,7 +1825,7 @@ async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)
     return {k: v for k, v in doc.items() if k != "_id"}
 
 class CommitmentPatch(BaseModel):
-    status: Optional[str] = None
+    status: Optional[CommitmentState] = None
     due_date: Optional[str] = None
 
 @api.patch("/commitments/{cmt_id}")
@@ -1719,7 +1833,7 @@ async def update_commitment(cmt_id: str, inp: CommitmentPatch, user=Depends(get_
     c = await db.commitments.find_one({"id": cmt_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Not found")
-    upd = {}
+    upd: dict[str, Optional[str]] = {}
     if inp.status is not None:
         upd["status"] = inp.status
     if inp.due_date is not None:
@@ -1846,7 +1960,7 @@ async def dashboard(user=Depends(get_current_user)):
     # Outcome (goal) rollup across portfolio
     outcomes = await db.outcomes.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     osnaps = await db.outcome_snapshots.find({"tenant_id": t}, {"_id": 0}).sort("at", 1).to_list(5000)
-    trend_map = {}
+    trend_map: dict[str, list[float]] = {}
     for s in osnaps:
         trend_map.setdefault(s["outcome_id"], []).append(s["pct"])
     def gpct(g):
@@ -1946,9 +2060,9 @@ async def ai_generate(inp: AIInput, user=Depends(get_current_user)):
 
 async def seed():
     admin_email = os.environ["ADMIN_EMAIL"].lower()
-    admin_pw = os.environ["ADMIN_PASSWORD"]
     existing = await db.users.find_one({"email": admin_email})
     if existing is None:
+        admin_pw = os.environ["ADMIN_PASSWORD"]
         tenant_id = new_id("ten")
         await db.tenants.insert_one({"tenant_id": tenant_id, "name": "ClientVerse HQ", "created_at": now_iso()})
         uid = new_id("user")
@@ -1960,14 +2074,16 @@ async def seed():
             logger.info("Seeded initial administrator and explicit demo data")
         else:
             logger.info("Seeded initial administrator without fictional demo data")
-    else:
-        if existing.get("password_hash") and not verify_password(admin_pw, existing["password_hash"]):
-            await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pw)}})
+    # ADMIN_PASSWORD is bootstrap-only. Never replace an existing owner's chosen
+    # password on a deploy, including after signed-out recovery.
     # registries seed (idempotent by name)
     await seed_registries()
     await seed_team()
     await db.users.create_index("email", unique=True)
-    await db.memberships.create_index([("tenant_id", 1), ("user_id", 1)])
+    # MongoDB 5+ permits this alongside the legacy non-unique index. Build first;
+    # existing duplicates fail closed without deleting or choosing a membership.
+    await db.memberships.create_index([("tenant_id", 1), ("user_id", 1)],
+                                      unique=True, name="tenant_user_unique")
     await db.invitations.create_index("token_hash")
 
 async def seed_team():
@@ -2076,7 +2192,38 @@ async def seed_registries():
 MCP_SERVER_ID = "clientverse-read-tools"
 MCP_RATE_LIMIT_PER_MIN = 30
 
-MCP_TOOL_CATALOG = [
+class MCPInputSpec(TypedDict):
+    type: str
+    required: bool
+    placeholder: NotRequired[str]
+
+
+class MCPTool(TypedDict):
+    name: str
+    level: int
+    version: str
+    provider: str
+    publisher: str
+    category: str
+    description: str
+    scopes: list[str]
+    records_read: list[str]
+    records_written: list[str]
+    tenant_scoped: bool
+    workspace_scoped: bool
+    approval_required: bool
+    rate_limit_per_min: int
+    cost_behavior: str
+    timeout_seconds: float
+    idempotent: bool
+    input_schema: dict[str, MCPInputSpec]
+    reversible: NotRequired[bool]
+    external: NotRequired[bool]
+    source_url: NotRequired[str]
+    digest: NotRequired[Optional[str]]
+
+
+MCP_TOOL_CATALOG: list[MCPTool] = [
     {
         "name": "search_contacts", "level": 1, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
         "category": "relationships", "description": "Search stakeholder contacts by name, email, or role.",
@@ -2214,6 +2361,8 @@ async def execute_pending_mcp(pending_id, user):
     tool = MCP_TOOLS.get(p["tool"])
     start = time.perf_counter()
     try:
+        if tool is None:
+            raise ValueError(f"Tool '{p['tool']}' is no longer available")
         result = await asyncio.wait_for(TOOL_IMPL_L2[p["tool"]](user, p["args"]), timeout=tool["timeout_seconds"])
         latency = int((time.perf_counter() - start) * 1000)
         await db.mcp_pending_actions.update_one({"id": pending_id}, {"$set": {"status": "executed"}})
@@ -2270,7 +2419,7 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
     correlation_id = new_id("cor")
     inv_id = new_id("mcpinv")
 
-    async def fail(status_code, reason, level=None):
+    async def fail(status_code: int, reason: str, level: Optional[int] = None) -> NoReturn:
         await db.mcp_tool_invocations.insert_one({
             "id": inv_id, "tenant_id": tenant, "tool": inp.tool, "level": level, "args": inp.args,
             "status": "failed", "error": reason, "latency_ms": 0, "correlation_id": correlation_id,
@@ -2466,22 +2615,18 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
     attempts = list(delivery.get("attempts", []))
     allow_private = outbound_url.private_targets_allowed(IS_PRODUCTION)
     for n in range(len(attempts) + 1, WEBHOOK_MAX_ATTEMPTS + 1):
-        # Re-checked before every attempt: the name may have started resolving to a
-        # private address since the webhook was saved. See outbound_url.py.
-        refusal = await asyncio.to_thread(outbound_url.resolve_public_addresses, webhook["url"],
-                                          allow_private=allow_private)
-        if refusal:
-            attempts.append({"n": n, "status_code": None, "error": refusal, "at": now_iso()})
-            break
         try:
-            resp = await asyncio.to_thread(requests.post, webhook["url"], data=body, headers=headers,
-                                           timeout=6, allow_redirects=False)
-            code = resp.status_code
+            code = await asyncio.to_thread(outbound_url.post_webhook, webhook["url"],
+                                           data=body, headers=headers, timeout=6,
+                                           allow_private=allow_private)
             attempts.append({"n": n, "status_code": code, "error": None, "at": now_iso()})
             if 200 <= code < 300:
                 await db.webhook_deliveries.update_one({"id": delivery["id"]},
                     {"$set": {"status": "delivered", "attempts": attempts, "delivered_at": now_iso(), "dlq": False}})
                 return "delivered"
+        except outbound_url.DestinationRefused as exc:
+            attempts.append({"n": n, "status_code": None, "error": str(exc), "at": now_iso()})
+            break
         except Exception as e:
             attempts.append({"n": n, "status_code": None, "error": outbound_url.delivery_error_reason(e), "at": now_iso()})
         await asyncio.sleep(0.25 * n)
@@ -2489,7 +2634,9 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
         {"$set": {"status": "failed", "attempts": attempts, "dlq": True}})
     return "failed"
 
-def event_matches(event_type: str, patterns) -> bool:
+def event_matches(event_type: Optional[str], patterns) -> bool:
+    if not event_type:
+        return False
     for p in (patterns or []):
         if p == "*" or p == event_type:
             return True
@@ -2549,7 +2696,7 @@ async def patch_webhook(wid: str, inp: WebhookPatch, user=Depends(require_role("
     wh = await db.webhooks.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not wh:
         raise HTTPException(status_code=404, detail="Not found")
-    upd = {}
+    upd: dict[str, bool | str] = {}
     if inp.enabled is not None:
         upd["enabled"] = inp.enabled
     if inp.rotate_secret:
@@ -2601,10 +2748,11 @@ class PreviewInput(BaseModel):
 async def webhook_match_preview(inp: PreviewInput, user=Depends(get_current_user)):
     events = await db.domain_events.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("timestamp", -1).to_list(100)
     matched = [e for e in events if event_matches(e["event_type"], inp.patterns)]
-    counts = {}
+    counts: dict[str, int] = {}
     for e in matched:
         counts[e["event_type"]] = counts.get(e["event_type"], 0) + 1
-    by_type = sorted([{"event_type": k, "count": v} for k, v in counts.items()], key=lambda x: -x["count"])
+    by_type = [{"event_type": k, "count": v}
+               for k, v in sorted(counts.items(), key=lambda item: -item[1])]
     return {"scanned": len(events), "matched": len(matched), "by_type": by_type,
             "samples": [{"event_type": e["event_type"], "timestamp": e["timestamp"], "actor": e["actor"]} for e in matched[:8]]}
 
@@ -2627,6 +2775,8 @@ async def snapshot_outcome(o):
     pct = min(100, round((o.get("current_value", 0) / o["target_value"]) * 100))
     await db.outcome_snapshots.insert_one({"id": new_id("os"), "tenant_id": o["tenant_id"], "outcome_id": o["id"], "pct": pct, "at": now_iso()})
 
+OutcomeState = Literal["on_track", "at_risk", "off_track"]
+
 class OutcomeInput(BaseModel):
     workspace_id: str
     title: str
@@ -2634,13 +2784,13 @@ class OutcomeInput(BaseModel):
     target_value: Optional[float] = None
     current_value: float = 0
     unit: Optional[str] = None
-    status: str = "on_track"
+    status: OutcomeState = "on_track"
     linked_commitment_ids: list[str] = []
 
 class OutcomePatch(BaseModel):
     current_value: Optional[float] = None
     target_value: Optional[float] = None
-    status: Optional[str] = None
+    status: Optional[OutcomeState] = None
     title: Optional[str] = None
 
 @api.patch("/outcomes/{oid}")
@@ -2943,6 +3093,7 @@ async def cron_approval_expiry(request: Request):
 # ============================================================================
 import httpx
 import stripe as _stripe
+from stripe.params import PaymentIntentCreateParams
 
 PROVIDERS = ["gmail", "google_calendar", "stripe"]
 ADAPTER_VERSION = "1.0"
@@ -2955,6 +3106,24 @@ _PUBLIC_BACKEND = (os.environ.get("PUBLIC_BACKEND_URL") or FRONTEND_URL).rstrip(
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI") or (
     f"{_PUBLIC_BACKEND}/api/integrations/google/callback" if _PUBLIC_BACKEND else None
 )
+# Google calls this address with the OAuth code. In production it must be a public,
+# https, non-preview address ending in the callback path; otherwise starting a connection
+# is refused with the reason (see `google_connect`) rather than sending the owner to
+# Google with a callback that cannot reach production.
+GOOGLE_REDIRECT_FINDINGS = (public_url.check_google_redirect(GOOGLE_REDIRECT_URI, production=True)
+                            if IS_PRODUCTION and GOOGLE_REDIRECT_URI else [])
+for _finding in GOOGLE_REDIRECT_FINDINGS:
+    logger.error("Public URL check: %s Google connections are refused until it is fixed.",
+                 _finding.message)
+
+
+def public_url_report() -> list[dict]:
+    """Host and findings for each outward-facing address. Never includes a full value."""
+    frontend = public_url.check(FRONTEND_URL, production=IS_PRODUCTION, name="FRONTEND_URL")
+    redirect = (public_url.check_google_redirect(GOOGLE_REDIRECT_URI, production=IS_PRODUCTION)
+                if GOOGLE_REDIRECT_URI else [])
+    return [public_url.report("FRONTEND_URL", FRONTEND_URL, frontend),
+            public_url.report("GOOGLE_REDIRECT_URI", GOOGLE_REDIRECT_URI, redirect)]
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     # Sending is a separate, narrower grant than full mailbox access: `gmail.send` can
@@ -3427,30 +3596,30 @@ async def sync_stripe(tenant_id, actor):
     # they belong to, matched in the same pass as customers below.
     customer_contact = {}
 
-    for it in _stripe.Customer.list(limit=50).data:
-        rec = normalize_stripe_customer(it)
+    for customer in _stripe.Customer.list(limit=50).data:
+        rec = normalize_stripe_customer(customer)
         contact_id, company_id = match_by_email(rec.get("email"))
-        customer_contact[it.get("id")] = (contact_id, company_id)
+        customer_contact[customer.get("id")] = (contact_id, company_id)
         if not contact_id:
             skipped += 1
             continue
         await store(rec, contact_id, company_id)
         matched += 1
 
-    for it in _stripe.Invoice.list(limit=50).data:
-        rec = normalize_stripe_invoice(it)
+    for invoice in _stripe.Invoice.list(limit=50).data:
+        rec = normalize_stripe_invoice(invoice)
         contact_id, company_id = match_by_email(rec.get("email"))
         if not contact_id:
-            contact_id, company_id = customer_contact.get(it.get("customer"), (None, None))
+            contact_id, company_id = customer_contact.get(invoice.get("customer"), (None, None))
         if not contact_id:
             skipped += 1
             continue
         await store(rec, contact_id, company_id)
         matched += 1
 
-    for it in _stripe.Subscription.list(limit=50).data:
-        rec = normalize_stripe_subscription(it)
-        contact_id, company_id = customer_contact.get(it.get("customer"), (None, None))
+    for subscription in _stripe.Subscription.list(limit=50).data:
+        rec = normalize_stripe_subscription(subscription)
+        contact_id, company_id = customer_contact.get(subscription.get("customer"), (None, None))
         if not contact_id:
             skipped += 1
             continue
@@ -3517,6 +3686,12 @@ async def google_connect(user=Depends(require_role("admin"))):
         raise HTTPException(
             status_code=400,
             detail="Google OAuth redirect is not configured. Set GOOGLE_REDIRECT_URI or PUBLIC_BACKEND_URL.",
+        )
+    if GOOGLE_REDIRECT_FINDINGS:
+        raise HTTPException(
+            status_code=400,
+            detail="Google OAuth redirect is misconfigured: "
+                   + " ".join(f.message for f in GOOGLE_REDIRECT_FINDINGS),
         )
     await ensure_connections(user["tenant_id"])
     state = secrets.token_urlsafe(24)
@@ -3854,7 +4029,10 @@ async def cron_health(request: Request, window_minutes: int = 120):
     never making a request. A scheduler is expected to fail its own run on this.
     """
     await _authorize_cron_observer(request)
-    return await cron_ledger.health(db, window_minutes=window_minutes)
+    health = await cron_ledger.health(db, window_minutes=window_minutes)
+    # The addresses links and callbacks are built from, by host only, so a wrong
+    # FRONTEND_URL or Google callback is visible here and not just in the boot log.
+    return {**health, "public_urls": public_url_report()}
 
 
 
@@ -3914,7 +4092,7 @@ async def create_stripe_payment_intent(
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Invoice total must be greater than zero")
     _stripe.api_key = key
-    params = {
+    params: PaymentIntentCreateParams = {
         "amount": amount,
         "currency": (invoice.get("currency") or "usd").lower(),
         "payment_method_types": ["card"],
@@ -3923,14 +4101,15 @@ async def create_stripe_payment_intent(
             "clientverse_invoice_id": invoice_id,
         },
         "description": f"ClientVerse invoice {invoice_id}",
+        "idempotency_key": f"clientverse:{user['tenant_id']}:{invoice_id}:payment-intent:v1",
     }
     if inp.payment_method_id:
-        params.update({"payment_method": inp.payment_method_id, "confirm": True})
+        params["payment_method"] = inp.payment_method_id
+        params["confirm"] = True
     try:
         intent = await asyncio.to_thread(
             _stripe.PaymentIntent.create,
             **params,
-            idempotency_key=f"clientverse:{user['tenant_id']}:{invoice_id}:payment-intent:v1",
         )
     except Exception as exc:
         error_code = getattr(exc, "code", None) or getattr(exc, "decline_code", None) or "payment_failed"
@@ -4067,7 +4246,7 @@ async def stripe_webhook(request: Request):
             payment_status = status_by_type[event_type]
             amount_matches = True
             currency_matches = True
-            if payment_status == "paid" and intent_matches:
+            if payment_status == "paid" and intent_matches and invoice is not None:
                 expected_amount = round(float(invoice.get("total") or 0) * 100)
                 expected_currency = (invoice.get("currency") or "usd").lower()
                 amount_matches = obj.get("amount_received") == expected_amount
@@ -4105,7 +4284,7 @@ async def stripe_webhook(request: Request):
         )
         if completion.modified_count != 1:
             raise HTTPException(status_code=503, detail="Stripe event processing lease was lost")
-        if event_to_record:
+        if event_to_record and invoice_id and tenant_id:
             try:
                 await record_event(event_to_record[0], "invoice", invoice_id, tenant_id,
                                    "stripe", payload={"payment_status": event_to_record[1]}, source="stripe")
@@ -4980,6 +5159,8 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
     result: dict = {}
     actor = user.get("email", "system")
     tenant_id = approval.get("tenant_id") or user.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        raise HTTPException(status_code=400, detail="Approval requires a tenant context")
     status = approval.get("status")
     subject_type, subject_id = approval.get("subject_type"), approval.get("subject_id")
 
@@ -5013,7 +5194,7 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
             approval_service.APPROVED: recovery_service.STATE_APPROVED,
             approval_service.REJECTED: recovery_service.STATE_REJECTED,
             approval_service.CANCELLED: recovery_service.STATE_WITHDRAWN,
-        }.get(status)
+        }.get(status or "")
         if strategy_state:
             strategy = None
             try:
@@ -5077,6 +5258,8 @@ JOB_GENERATE_NEXT_BEST_ACTIONS = "next_best_action.generate"
 
 async def _handle_generate_next_best_actions(item: dict) -> dict:
     tenant_id = (item.get("payload") or {}).get("tenant_id") or item.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        raise ValueError("Work item requires a tenant context")
     return await nba_service.generate(db, tenant_id, actor="work-queue")
 
 
@@ -5089,6 +5272,8 @@ async def _handle_run_recovery_case(item: dict) -> dict:
     """
     payload = item.get("payload") or {}
     tenant_id = payload.get("tenant_id") or item.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        raise ValueError("Work item requires a tenant context")
     return await recovery_runner_service.run_case(
         db, tenant_id=tenant_id, case_id=payload["case_id"],
         actor="work-queue", audit=record_event)

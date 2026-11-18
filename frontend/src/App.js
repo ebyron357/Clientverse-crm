@@ -15,6 +15,7 @@ import { SharedReadsProvider } from "@/lib/sharedReads";
 
 // Each page is its own chunk, loaded the first time someone opens it. The app shipped all
 // 31 pages (and the charting library) in one 1.9 MB bundle before anyone could sign in.
+const PasswordRecovery = lazy(() => import("@/pages/PasswordRecovery"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Pipeline = lazy(() => import("@/pages/Pipeline"));
 const Directory = lazy(() => import("@/pages/Directory"));
@@ -60,6 +61,8 @@ function AppRouter() {
     <Suspense fallback={<PageLoading />}>
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/forgot-password" element={<PasswordRecovery key="forgot" />} />
+      <Route path="/reset-password" element={<PasswordRecovery key="reset" reset />} />
       <Route path="/invite" element={<AcceptInvite />} />
       <Route path="/portal/:token" element={<ClientPortal />} />
       {/* Public booking pages: outside the signed-in app, and /book/:key may be framed. */}

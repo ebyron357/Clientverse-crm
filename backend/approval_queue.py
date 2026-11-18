@@ -33,7 +33,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, overload
 
 COLLECTION = "approvals"
 
@@ -148,8 +148,16 @@ async def ensure_indexes(db) -> None:
     await collection.create_index([("tenant_id", 1), ("subject_type", 1), ("subject_id", 1)])
 
 
+@overload
+def _public(doc: dict) -> dict: ...
+
+
+@overload
+def _public(doc: None) -> None: ...
+
+
 def _public(doc: Optional[dict]) -> Optional[dict]:
-    if not doc:
+    if doc is None:
         return None
     return {k: v for k, v in doc.items() if k not in ("_id", "active_dedupe_key")}
 

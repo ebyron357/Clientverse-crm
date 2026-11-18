@@ -43,6 +43,20 @@ jobs:
           CI: 'true'
           REACT_APP_BACKEND_URL: http://localhost:8001
         run: yarn build
+      - name: Install recovery browser test runtime
+        working-directory: frontend
+        run: yarn playwright install --with-deps chromium
+      - name: Password recovery UI, keyboard and accessibility checks
+        env:
+          RECOVERY_SCREENSHOT_PATH: /tmp/password-recovery.png
+        run: node scripts/password_recovery_browser.mjs
+      - name: Upload password recovery screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: password-recovery-ui
+          path: /tmp/password-recovery.png
+          if-no-files-found: ignore
 
   backend-static-analysis:
     name: Backend lint and types
@@ -63,8 +77,8 @@ jobs:
       - name: Lint
         working-directory: backend
         run: ruff check .
-      # Types are a ratchet, not a cliff. The modules that pass cleanly today are
-      # blocking; the rest are reported so the number is visible and can only go down.
+      # The historical type backlog is clean. Every checked backend module blocks
+      # on new findings; the configured strict modules retain their extra rules.
       - name: Type check
         run: python scripts/typecheck.py backend
       # Dependency vulnerabilities. Blocking, because it passes today and a new

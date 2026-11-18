@@ -74,7 +74,8 @@ async def _register_and_login():
         FakeResponse(),
     )
     result = await server.login(
-        server.LoginInput(email=email, password="CorrectHorseBattery1!"), FakeResponse()
+        server.LoginInput(email=email, password="CorrectHorseBattery1!"), FakeResponse(),
+        server.Request({"type": "http", "headers": [], "client": (email, 0)}),
     )
     return result["token"]
 
@@ -104,11 +105,13 @@ def test_fresh_login_after_logout_issues_a_working_new_token():
         server.RegisterInput(email=email, password="CorrectHorseBattery1!", name="Revocation Test 2"),
         FakeResponse(),
     ))
-    first_login = run(server.login(server.LoginInput(email=email, password="CorrectHorseBattery1!"), FakeResponse()))
+    first_login = run(server.login(server.LoginInput(email=email, password="CorrectHorseBattery1!"), FakeResponse(),
+                                   server.Request({"type": "http", "headers": [], "client": (email, 0)})))
     first_token = first_login["token"]
     run(server.logout(FakeRequest(token=first_token), FakeResponse()))
 
-    second_login = run(server.login(server.LoginInput(email=email, password="CorrectHorseBattery1!"), FakeResponse()))
+    second_login = run(server.login(server.LoginInput(email=email, password="CorrectHorseBattery1!"), FakeResponse(),
+                                    server.Request({"type": "http", "headers": [], "client": (email, 0)})))
     second_token = second_login["token"]
 
     user = run(server.get_current_user(FakeRequest(token=second_token)))

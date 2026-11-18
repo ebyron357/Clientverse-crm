@@ -360,6 +360,33 @@ def test_a_proven_rejection_becomes_a_retryable_failure(db, registry):
     assert cv.PENDING_APPROVAL in cv.MESSAGE_TRANSITIONS[cv.FAILED]
 
 
+def test_provider_removed_during_approval_claim_is_proven_unsent(db, registry, monkeypatch):
+    conversation = make_conversation(db)
+    authorize_email(db)
+    grant_consent(db, conversation["id"])
+    provider = RecordingProvider()
+    registry.register(provider)
+    message = approved_message(db, conversation["id"])
+    consume = aq.consume
+
+    async def consume_then_disconnect(*args, **kwargs):
+        result = await consume(*args, **kwargs)
+        registry.unregister(cv.CHANNEL_EMAIL)
+        return result
+
+    monkeypatch.setattr(aq, "consume", consume_then_disconnect)
+    result = run(cv.attempt_delivery(db, tenant_id=TENANT, message_id=message["id"],
+                                     actor="worker-1", registry=registry))
+
+    assert result["status"] == cv.FAILED
+    assert "No delivery provider remains registered" in result["error"]
+    assert result["provider"] is None
+    assert provider.sent == []
+    assert provider.keys == []
+    approval = run(aq.get(db, TENANT, message["approval_id"]))
+    assert approval["execution"]["state"] == aq.EXECUTION_CONSUMED
+
+
 def test_a_lost_response_is_an_unknown_outcome_not_a_failure(db, registry):
     """A timeout after the provider accepted looks identical to a rejection from here.
     Recording it as `failed` would invite a retry that sends the client a second copy."""

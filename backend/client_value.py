@@ -8,7 +8,7 @@ payment-provider traffic without a separately certified connection.
 import hashlib
 import secrets
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, TypedDict
 
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field, HttpUrl
@@ -42,6 +42,20 @@ class EstimateLine(BaseModel):
     label: str = Field(min_length=1, max_length=160)
     quantity: float = Field(default=1, gt=0)
     unit_price: float = Field(default=0, ge=0)
+
+
+class EstimateLineRecord(TypedDict):
+    label: str
+    quantity: float
+    unit_price: float
+    total: float
+
+
+class CapacityRecord(TypedDict):
+    owner: str
+    open_tasks: int
+    overdue: int
+    workspace_ids: set[str]
 
 
 class EstimateInput(BaseModel):
@@ -290,7 +304,7 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
     @router.post("/estimates")
     async def create_estimate(inp: EstimateInput, user=Depends(require_role("admin"))):
         await visible_workspace(user, inp.workspace_id)
-        lines = [{"label": line.label, "quantity": line.quantity, "unit_price": line.unit_price, "total": round(line.quantity * line.unit_price, 2)} for line in inp.lines]
+        lines: list[EstimateLineRecord] = [{"label": line.label, "quantity": line.quantity, "unit_price": line.unit_price, "total": round(line.quantity * line.unit_price, 2)} for line in inp.lines]
         total = round(sum(line["total"] for line in lines), 2)
         doc = {"id": new_id("est"), "tenant_id": user["tenant_id"], "workspace_id": inp.workspace_id, "title": inp.title,
                "currency": inp.currency.upper(), "lines": lines, "total": total, "valid_until": inp.valid_until, "status": "draft",
@@ -538,7 +552,7 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
     @router.get("/delivery/capacity")
     async def delivery_capacity(user=Depends(get_current_user)):
         rows = await db.tasks.find({"tenant_id": user["tenant_id"], "status": {"$ne": "done"}}, {"_id": 0}).to_list(2000)
-        people = {}
+        people: dict[str, CapacityRecord] = {}
         now = datetime.now(timezone.utc)
         for task in rows:
             owner = task.get("assignee") or "Unassigned"
@@ -555,7 +569,7 @@ def register_client_value_routes(router, db, new_id, now_iso, record_event, asse
                         item["overdue"] += 1
                 except ValueError:
                     pass
-        return {"people": [{**item, "active_workspaces": len(item.pop("workspace_ids"))} for item in people.values()]}
+        return {"people": [{**item, "active_workspaces": len(item["workspace_ids"])} for item in people.values()]}
 
     @router.get("/playbooks")
     async def list_playbooks(user=Depends(get_current_user)):

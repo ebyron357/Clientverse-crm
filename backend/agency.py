@@ -130,7 +130,8 @@ def register_agency_routes(router: Any, db: Any, loader: setup_loader.SetupLoade
         old = extract_token(request)
         if old:
             await revoke_token(old)
-        token = create_access_token(user["user_id"], user["email"], acting_tenant=acting)
+        token = create_access_token(user["user_id"], user["email"], acting_tenant=acting,
+                                    session_version=user.get("session_version"))
         set_auth_cookie(response, token)
         me: Optional[dict] = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
         resolved = await resolve_membership(me or {})

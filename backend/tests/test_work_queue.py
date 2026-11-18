@@ -301,6 +301,24 @@ def test_worker_tick_retries_a_failing_handler(queue_env):
     assert "upstream unavailable" in after["last_error"]
 
 
+@pytest.mark.parametrize("invalid_type", [None, ["known.job"]])
+def test_worker_tick_dead_letters_malformed_type_without_calling_handler(queue_env, invalid_type):
+    item = run(queue_env.enqueue(tenant_id=TENANT, queue="system", item_type="known.job"))
+    run(queue_env.collection.update_one({"id": item["id"]}, {"$set": {"type": invalid_type}}))
+    called = []
+
+    async def handler(item):
+        called.append(item["id"])
+        return {"handled": True}
+
+    result = run(run_worker_tick(queue_env, {"known.job": handler}, queue_name="system"))
+
+    assert result["failed"] == 1
+    assert result["processed"] == 0
+    assert called == []
+    assert run(queue_env.get(item["id"], tenant_id=TENANT))["status"] == DEAD_LETTER
+
+
 def test_claim_rotates_across_tenants_rather_than_starving_them(queue_env):
     """A tenant with a backlog must not consume the whole bounded tick."""
     for i in range(30):

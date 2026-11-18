@@ -50,6 +50,10 @@ def check_scheduler_contract() -> set[str]:
         fail(str(path),
              "the unconfigured path does not fail the run; a scheduler that reports "
              "success without calling production is the defect this check exists for")
+    if "public_url.py scheduler" not in guard:
+        fail(str(path),
+             "the scheduler does not check CLIENTVERSE_PRODUCTION_URL before calling it; a "
+             "preview or local address would receive the cron secret")
     for required in ("Require the scheduler to be configured",
                      "No request reached production",
                      "Verify production recorded this run"):
