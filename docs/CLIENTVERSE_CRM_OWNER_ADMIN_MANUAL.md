@@ -3,10 +3,10 @@
 | | |
 |---|---|
 | **Document** | ClientVerse CRM Owner/Admin Manual |
-| **Version** | 1.15 |
-| **Date** | 2026-11-04 |
+| **Version** | 1.14 |
+| **Date** | 2026-10-26 |
 | **Repository** | `ebyron357/Clientverse-crm` |
-| **Branch documented** | Password recovery on `codex/secure-password-recovery`, based on `main@e75bb71`. Recovery is not deployed or provider-certified. Other procedures retain their dated production evidence. |
+| **Branch documented** | `main` with self-serve import and export (2026-10-26), after the closeout release (PR #48, 2026-10-24). Read the running commit from `/api/health` → `git_sha` ([§2.2](#22-confirm-you-are-on-the-correct-deployment)) |
 | **Production environment** | Railway project `welcoming-vibrancy` → environment `production` → service `clientverse-crm-production` |
 | **Production URL** | https://crm.clientverse.io (the Railway address https://clientverse-crm-production-production.up.railway.app reaches the same CRM) |
 | **Sign-in page** | https://crm.clientverse.io/login |
@@ -34,11 +34,10 @@
   - **UNVERIFIED — OWNER/ENGINEERING INPUT REQUIRED** — could not be confirmed. Do not rely on it
     until someone confirms it and this manual is updated.
 
-**How the screens were verified.** Recovery procedures describe the proposed branch, not live
-production. Local browser, keyboard and automated accessibility checks passed. On 2026-11-04,
-a direct production health read confirmed `e75bb71` with the database up, and OpenAPI confirmed
-both recovery endpoints absent. Other screen descriptions retain their dated production evidence.
-The owner's walk-through in [Chapter 14](#14-production-verification-checklist) remains required.
+**How the screens were verified.** Every screen description comes from the code deployed in
+production. The engineering environment that wrote this manual cannot open the production
+website itself (its network policy refuses the connection), so the owner's own walk-through in
+[Chapter 14](#14-production-verification-checklist) is the final live confirmation.
 
 ---
 
@@ -251,12 +250,10 @@ weekly until it is published.
   organization in **Settings** → **"Organization"** → **"Business name"**. Verified (code).
 - The owner already knows this address. It is deliberately not written here. To look it up, open
   Railway → service → **Variables**. Only the Railway dashboard is an approved place to read it.
-- **After the recovery release is deployed, `ADMIN_PASSWORD` is bootstrap-only.** It creates
-  the first owner account but never replaces an existing password on restart. A password chosen
-  in Settings or through recovery remains in effect. The old deployed release still overwrites
-  it at startup; do not claim this repair is live until the release is verified.
-- Recover the existing account through [§9.2](#92-forgotten-password); do not create a new workspace.
-
+- **Your password is re-applied at every restart and every deploy.** The server resets the owner
+  account's password to whatever `ADMIN_PASSWORD` holds, and every merge to `main` redeploys. So
+  a change made in **Settings** → **"Change password"** ([§3.9](#39-change-your-own-password))
+  lasts only until the next deploy. Change the owner password in Railway ([§9.2](#92-forgotten-password)).
 - **Warning: never change `ADMIN_EMAIL`.** At the next start the server would create a brand-new,
   empty **"ClientVerse HQ"** organization for the new address. Your existing data would stay with
   the old account. If the owner login address must change, escalate to engineering.
@@ -296,7 +293,7 @@ Verified (code); defaults, which the recorded production variable list does not 
 - While it is locked, even the **correct** password shows **"Invalid email or password"**.
 - A wrong **current** password in **"Change password"** counts as a failed sign-in too.
 - The failure count resets only on a successful sign-in, or when an admin resets that person's
-  password, or after a successful email recovery in the recovery release. So after a lockout ends, **one more wrong password locks it again** for another
+  password. So after a lockout ends, **one more wrong password locks it again** for another
   15 minutes. Make your next attempt count.
 - The lock follows the email address, on every device and browser. See [§9.3](#93-account-locked-out).
 
@@ -309,7 +306,7 @@ The value of `ADMIN_PASSWORD` or any password (including temporary ones), and `J
 That also covers:
 
 - session cookies and tokens (`access_token`, `cv_access_token`)
-- invitation links (`/invite?token=…`) and password reset links (`/reset-password#token=…`)
+- invitation links (`/invite?token=…`)
 - client-portal links (`/portal/…`) and booking manage links (`/booking/manage/…`)
 - webhook signing secrets
 
@@ -325,7 +322,7 @@ See [Chapter 13](#13-security-and-owner-safety).
    computer signed in to your account is signed out. If you were working in a client account
    ([§7.25](#725-agency-and-client-accounts)), you stay in it.
 
-- **Owner account:** after the recovery release, this change is durable across deploys (§3.3).
+- **Owner account:** see the warning in [§3.3](#33-which-account-the-owner-uses) — use Railway.
 - An account that signs in only with Google has no ClientVerse password to change.
 
 ---
@@ -337,7 +334,7 @@ See [Chapter 13](#13-security-and-owner-safety).
 | Landmark | Where | What it does |
 |---|---|---|
 | **Main menu** (the dark sidebar) | Left edge | The eleven everyday pages — **Today**, **Leads**, **Inbox**, **Contacts**, **Pipeline**, **Calendar**, **Tasks**, **Approvals**, **Clients**, **Automations**, **Reports** — with **"Settings"** pinned at the bottom ([§4.3](#43-main-menu-and-settings-map--every-item-and-whether-it-is-active)). The **"Collapse navigation"** button shrinks it to icons (the browser remembers). On a phone it opens from the menu button. |
-| **Counts** beside menu items | Main menu | **Leads**: new leads nobody has contacted. **Inbox**: open conversations. **Tasks**: your overdue tasks, plus overdue tasks nobody owns. **Approvals**: requests waiting for a decision. Red means act now; grey is a count to get to today. No badge means zero, or the count could not be read. |
+| **Counts** beside menu items | Main menu | **Leads**: new leads nobody has contacted. **Inbox**: open conversations. **Tasks**: your overdue tasks, plus overdue tasks nobody owns. **Approvals**: requests waiting for a decision. Red means act now; grey is a count to get to today. No badge means zero, or no count has been read yet. Counts share a session-only cache with Leads, Inbox and Approvals, refresh every 30 seconds while visible, and refresh after relevant successful saves (including task completion and Undo). Navigation reuses recent reads rather than requesting every count again. Last-known content stays visible during background refreshes; page refresh errors are shown beside cached content. Use the page's Refresh control to retry. Signing out or switching accounts discards the cache. |
 | **Search** | Top bar: **"Search or jump to…"** (Ctrl/⌘ K) | Jumps to a *page or action*. It does **not** search your records ([§7.19](#719-search)). |
 | **Menu footer** | Bottom of the main menu | Your initials, name and role (**"Workspace admin"** / **"Team member"**), the theme button (light → dark → match device) and the sign-out icon. |
 | **Breadcrumb** | Top bar, left | Where the page sits, for example *Contacts*, *Pipeline › Deals* or *Settings › Audit log*. |
@@ -380,8 +377,9 @@ things are on your plan, and **"Refresh"**. From top to bottom:
    and email buttons. **"All leads"** opens **Leads**.
 5. **"Pipeline"** — deals and value per stage. **"Clients"** — client health and commitments at
    risk.
-6. **"Next best actions"** — ranked recommendations across all clients, with **"Accept"**,
-   **"Done"**, **"Snooze"** and **"Not relevant"**.
+6. **"Next best actions"** — ranked recommendations across all clients, with record-specific
+     review links, **"Accept"**, **"Snooze"**, **"Mark reviewed"** and **"Dismiss"**. Expand
+     **"Why this is recommended"** to inspect evidence and source references.
 7. On the right (below, on a narrow screen): **"Appointments"** (**"Today"** / **"Week"**),
    **"Tasks"** (tick one to mark it done; **"Call N new leads now"** → **"Start"** opens Leads),
    **"Operational alerts"** (with **"Scan now"**) and **"Connection health"** (admins only).
@@ -947,8 +945,14 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
      from your phone or computer. Then log the call on their record, or mark the lead in **Leads**:
      calling from here records nothing by itself.
   3. In **"Tasks"**, tick a task to mark it done.
-  4. In **"Next best actions"**, choose **"Accept"**, **"Done"**, **"Snooze"** (a day) or
-     **"Not relevant"**.
+  4. In **"Next best actions"**, use the record-specific link (for example **"Review approval"**
+     or **"Open task"**) to do the work. **"Accept"** keeps the recommendation in your queue.
+     **"Snooze"** offers **1 hour**, **4 hours**, **1 day**, **3 days**, or **1 week**.
+     **"Mark reviewed"** asks for confirmation before removing the recommendation; choose
+     **"Keep in queue"** to cancel. **"Dismiss"** hides a recommendation as not relevant.
+     Neither action changes the linked task, commitment, approval, integration, or client.
+     Use **"Undo"** in the success message within 10 seconds to restore the previous open
+     state (an expired snooze returns as new). Feedback and undo are saved on the server.
   5. Under **"Operational alerts"**, click **"Scan now"** for a fresh alert check. Use the ✓ and ✕
      icons to acknowledge or resolve.
 - **Common mistakes:**
@@ -956,9 +960,12 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   - Expecting **"Connection health"**, or approval items on the plan, to show for members — they are
     admin-only.
   - Expecting **"Call"** to mark the lead contacted. It only dials.
-- **Saved when:** **"Task done"**, **"Alert scan complete (N new)"**; recommendation buttons change
-  the list, and only failures show a message (the server's reason, **"The task was not updated"** or
-  **"Could not record that decision"**).
+- **Saved when:** **"Task done"**, **"Alert scan complete (N new)"**; recommendation feedback
+  shows a success message with **"Undo"** and refreshes the recommendation queues. Reviewed
+  and dismissed messages explicitly say **"linked records unchanged"**. Failed feedback
+  keeps the recommendation available and shows the server's reason or **"Could not record
+  that decision"**. A failed queue refresh shows **"Next best actions unavailable"** with
+  **"Retry"** instead of claiming there is nothing to do.
 
 ### 7.2 Leads
 
@@ -973,8 +980,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   2. Click a lead to open it. Use **"Call …"** / **"Text"** to reach the person from your phone,
      then **"Mark contacted"**. Or open the contact (**"Open contact to log a call"**) and log what
      happened.
-  3. **"Close"** a lead that is finished, **"Spam"** junk, **"Reopen"** a closed one.
+  3. **"Close"** a lead that is finished, **"Spam"** junk, **"Reopen"** a closed one. In **"Update lead"**, add an optional note before choosing the status. **"Saving…"** locks the note and status buttons until the request settles. A confirmed save clears the note; **"Update not confirmed"** preserves it so you can check the lead/contact history before retrying (a lost response does not prove nothing was saved). Closing the panel, opening another lead, following a contact/task link or going back asks **"Discard your unsaved note?"** when the note contains text. Choose **"Keep editing"** to preserve it or **"Discard note"** to continue without saving or changing status. While saving, **"Update still saving"** keeps you on the lead until the request settles; it does not automatically resume navigation. Reloading or leaving the site requests the browser’s native warning, subject to browser support (mobile app termination may show no warning). Drafts are not stored across reloads or confirmed departures. If no contact is linked, notes are disabled with an explanation; status changes remain available.
   4. **"Export CSV"** downloads the leads in the current view as `leads.csv`.
+- **Next-step guidance:** each list row names the next step, with the owner visible on phones too. Open a lead to read **"Next step"**: it explains the recorded response deadline or escalation, missing contact details, an unassigned owner, or a failed automation step. **"Review call-back task"** opens the linked task for review and rescheduling; its presence does not prove the task is still open. Contacted leads suggest reviewing the next follow-up, closed/spam leads suggest no outreach, and test submissions are explicitly treated as tests. Guidance is rule-based, not an AI prediction; it sends nothing and changes no status. An automatic reply does not count as a personal response.
 - **Existing clients:** a form or booking from someone you already serve (their company has a
   Client 360 workspace, or they are on a won deal) is marked **"Existing client"**. It opens no new
   deal, and its task reads **"Reply to client: …"** instead of **"Call new lead now: …"**.
@@ -986,7 +994,23 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   - Marking a real person as spam.
   - Treating a lead tagged **"Test lead"** as real: it came from **"Send a test lead"**
     ([§7.6](#76-website-forms)).
-- **Saved when:** **"Marked as contacted"**, **"Lead marked closed"**, **"Lead marked spam"**.
+- **Saved when:** **"Marked as contacted"**, **"Lead marked closed"**, **"Lead marked spam"** on the legacy path. In the opt-in retry-safe cohort, only **"Saved — confirmed by the server"** / **"Lead update confirmed"** confirms a committed receipt.
+
+#### Retry-safe lead saves — opt-in release, not enabled in production
+
+When **"Retry-safe save"** appears, the note, lead status, linked task/contact/deal effects, audit events and operation receipt commit together. **"Save note only"** records context without claiming contact or a status change. A missing linked contact rejects the entire note-plus-status update. Spam archives only records created for that submission; reopening the lead reopens its task and clears the response clock but does **not** silently restore the archived contact/deal. Restore those separately through their existing record controls.
+
+- **Update not confirmed:** the outcome may still be unknown or processing. **"Check outcome"** reads the receipt without resending; **"Retry same update"** keeps the exact operation ID, version, status and note. Do not create a second update in another tab. Notes and new status actions remain locked until resolved. Navigation and browser-unload protection remain active even with no note. Closing the app can still lose the page-local draft and operation identity; no offline replay or stored drafts are promised.
+- **This lead has changed:** **"Reload latest and review"** fetches the current record and history while keeping your draft. Review the saved and proposed status, then choose **"Reapply my update"** (a new intent against the reviewed version) or **"Edit instead"**. Another intervening change produces another conflict; the app never silently overwrites it.
+- **Update not saved:** validation or rollout preparation prevented this new intent. Your draft remains. Resolve the stated cause before submitting again. If a previously uncertain retry encounters a rollout failure, it stays uncertain rather than unlocking a new intent.
+
+**Engineering/owner rollout procedure (explicit approval required):** deploy the compatible server and client first, with `LEAD_MUTATION_TENANTS` unset. In the approved target environment, run `python scripts/prepare_lead_mutations.py` to inspect readiness; authorize `--apply` to create the additive unique `(tenant_id, operation_id)` index in `lead_operation_receipts` if needed. It refuses standalone MongoDB. Missing lead versions are read as zero and advanced conditionally on first mutation; no bulk backfill or customer-data rewrite runs at startup. Verify backup/restore, topology, exact-head CI, receipt access and scheduler/queue health before setting `LEAD_MUTATION_TENANTS` to explicit comma-separated pilot tenant IDs. Jev normally remains required; on 2026-11-14 the owner explicitly waived it for this bounded R0/R1 release only (C-40 / PR #65, task `clientverse-r1-lead-mutations-20261114`, implementation commit `f13575b`). Record **OWNER-WAIVED — NOT JEV VERIFIED**, retaining the original gate error and actual test evidence. This waiver does not approve deployment, cohort enablement or any other gate bypass; other tasks retain the Jev requirement. There is deliberately no wildcard cohort. No production preparation or enablement was performed in this change.
+
+Enabled tenants refuse old `PATCH /leads/{id}` clients with HTTP 428 and a refresh instruction; the new client uses `POST /leads/{id}/mutations`. Old `/tasks/{id}` writes for a lead-linked task also refuse and direct the user to Tasks, whose `/crm/tasks/{id}` writes participate in the transaction. Other tenants retain the compatible legacy behavior, without a new transactional guarantee. Never downgrade a failed safe save to a legacy write.
+
+**Post-commit work:** transactionally enqueued `domain_event.dispatch` jobs run through the existing system work queue. This guarantees a durable dispatch obligation, not delivered email or webhook evidence. Webhook fan-out has stable event/hook delivery identity; queue replay does not automatically resend a delivery left `sending` after a crash. Inspect existing delivery records before any manual retry. Provider sending certification remains separate.
+
+**Rollback:** stop pilot writes and reconcile outstanding receipts first. Remove cohort IDs to stop new safe mutations; receipt lookup and completed-operation replay remain available. Retain receipts, versions, audit events and queued jobs—never delete them to roll back. Do not send an uncertain intent through the legacy endpoint or restore application code that ignores its receipts. Investigate duplicate effects, state divergence or authorization failure before re-enabling. Server-side drafts and generic undo remain deferred.
 
 ### 7.3 Tasks
 
@@ -999,7 +1023,9 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
   2. **"New task"**: **"What needs doing"** (required), **"Who it's about (optional)"**, a due date
      and time, **"Assign to"**, **"Notes (optional)"** → **"Add task"**. Unassigned tasks can be
      taken by anyone on the team.
-  3. Open a task to change it (**"Save changes"**), **"Mark done"** or **"Reopen"**.
+  3. Open a task to change it (**"Save changes"**), **"Mark done"** or **"Reopen"**. **"Reschedule"** offers **"In 1 hour"**, **"Tomorrow, 9 am"** (your local time), or **"No due date"**. These only fill the editable date/time fields; nothing changes on the server until you save. **"Assign to me"** also prepares a change rather than saving immediately. Admins can still choose an active teammate; members retain their existing self/unassigned choices.
+  4. On a phone, the task opens full-width with larger touch targets and 16px form controls. **"Save changes"** and **"Discard"** remain at the bottom while the details scroll. Discard restores the saved date and assignment. Save or discard edits before **"Mark done"** / **"Reopen"**; completion still offers **"Undo"** in its notification.
+- **Refresh behavior:** returning to Tasks or switching back to **"My tasks"** / **"Everyone"** reuses that view's recent data. Views are cached separately for the signed-in session, refresh every 30 seconds while visible, and refresh after task creation, edits, completion or Undo. Existing rows stay visible during background refreshes; a refresh error leaves the last available tasks in place with a warning. **"Refresh tasks"** retries the lists and overdue count. Signing out or changing accounts clears the cache.
 - **Common mistakes:** leaving a task unassigned when one person should own it.
 - **Saved when:** **"Task added"**, **"Changes saved"**; **"Undo"** on the message reverses a tick.
 
@@ -1313,7 +1339,7 @@ Each section gives: **Purpose**, **Where**, **Common actions**, **Common mistake
 
   | Tab | What you can do | Admin only |
   |---|---|---|
-  | **"Next best actions"** | **"Refresh"**; **"Accept"** / **"Done"** / **"Snooze"** / **"Not relevant"** | — |
+  | **"Next best actions"** | **"Refresh"**; record-specific review links; **"Accept"** / **"Snooze"** (choose duration) / **"Mark reviewed"** (confirmation) / **"Dismiss"**; success-message **"Undo"** ([§7.1](#71-today)) | — |
   | **"Work queue"** | **"Acknowledge"**, **"Resolve"**; figures **"Open"**, **"Retry scheduled"**, **"Dead letter"**, **"Needs operator"** | **"Run recovery detection"**, **"Replay"** |
   | **"Recovery strategies"** | Read proposed strategies. The amber box **"Outbound channels not authorised"** ([§5.8](#58-verify-that-gmailsend-was-actually-granted)) | **"Compose strategies"** |
   | **"Approvals"** | Read what is waiting — including booking emails and form auto-replies | **"Approve"**, **"Reject"** |
@@ -1877,8 +1903,8 @@ For a teammate who forgot their password, or is locked out.
 - The reset also clears a lockout on their address.
 - **Not available** for yourself (use [§3.9](#39-change-your-own-password)), for disabled members,
   or for accounts that sign in only with Google.
-- **The locked-out owner can use signed-out recovery after release**, without another
-  admin or a Railway password overwrite ([§9.2](#92-forgotten-password)).
+- **Do not reset the owner account this way.** Its password comes from Railway
+  ([§9.2](#92-forgotten-password)).
 
 ### 8.9 Offboard a user (disable)
 
@@ -1912,7 +1938,8 @@ For a teammate who forgot their password, or is locked out.
 
 - **Keep at least two active admins.** If one is locked out or leaves, the other can still manage
   the team and integrations, and reset passwords.
-- The owner account is tied to `ADMIN_EMAIL`; after the recovery release, `ADMIN_PASSWORD` is only used to create a missing owner (§3.3).
+- The owner account is tied to `ADMIN_EMAIL`, and its password is always reset to `ADMIN_PASSWORD`
+  at each deploy ([§3.3](#33-which-account-the-owner-uses)).
 - **To hand day-to-day ownership to someone:** invite them as **admin**, confirm they can sign in,
   then decide with engineering whether `ADMIN_EMAIL` stays as is. Never change it yourself.
 - Records carry an "owner". Deals and tasks can be reassigned in their side panels, and a
@@ -1925,7 +1952,7 @@ For a teammate who forgot their password, or is locked out.
 | Delete a user, or change a user's email address | No screen or API |
 | Change `ADMIN_EMAIL` | It would create a new, empty organization |
 | Delete a record, or edit a Client 360 workspace | Not possible, even through the API. Archive the record instead. |
-| Recovery email never arrives or the owner cannot access their mailbox | Check recovery delivery and mailbox ownership; never bypass verification (§9.2) |
+| Clear a lockout on the owner account early | Database change ([§9.3](#93-account-locked-out)) |
 
 ---
 
@@ -1933,87 +1960,59 @@ For a teammate who forgot their password, or is locked out.
 
 ### 9.1 Wrong password
 
-1. Check the email address and Caps Lock. Use the password saved in your password manager.
-2. Stop after three failures; five failures lock sign-in for 15 minutes.
-3. If you have forgotten it, use §9.2. The Railway bootstrap password is not a copy of your
-   current password after the recovery release.
+1. Retype the password carefully. Check Caps Lock and the email address; the eye button shows
+   what you typed.
+2. **Stop after 3 failures.** At 5 the account locks for 15 minutes ([§3.7](#37-lockout-behaviour)).
+3. **Owner account:** copy the password from the Railway variable `ADMIN_PASSWORD` (Railway →
+   service → **Variables**) or from your password manager.
+4. Still failing: [§9.2](#92-forgotten-password).
 
 ### 9.2 Forgotten password
 
-**Release status (2026-11-04): implemented on the recovery branch; NOT DEPLOYED.** Railway
-still reports `e75bb71145b197c298991098c8ab0ca9a349b362`. Recovery email credentials are absent.
-The steps below become available after owner-approved release and the setup in §9.2.1.
+There is **no self-service "forgot password" email**. The sign-in page says *"Forgot it? Your
+workspace admin can reset it from Team & Access."*
 
-1. Open [CRM sign-in](https://crm.clientverse.io/login) and select **"Forgot password?"**.
-2. Enter the email of the existing account under **"Account email"** and select **"Send reset link"**.
-   The locked-out owner uses the existing `ADMIN_EMAIL` address. No CRM session or other admin is needed.
-3. The same message appears for every address: **"If an account can be recovered, you will
-   receive an email with a reset link."** This does not confirm an account exists or that mail arrived.
-4. Check that mailbox, including spam, for **"Reset your ClientVerse password"**. Open its link.
-   Links last **20 minutes**, work once, and do not change the password merely by being opened.
-5. Under **"Choose a new password"**, enter **"New password"** and **"Confirm new password"**.
-   Use at least 8 characters (maximum 72 UTF-8 bytes); a unique password-manager-generated
-   password of at least 16 characters is recommended. Select **"Save new password"**.
-6. Select **"Back to sign in"** and sign in with that password. Recovery does not sign you in
-   automatically. All older sessions and reset links stop working, and the login lockout clears.
-7. Store the new password in your password manager. Restarting or deploying will not replace it.
-   A separate **"Your ClientVerse password was changed"** email is queued as a security notice.
+**Member account:** an admin resets it ([§8.8](#88-reset-a-members-password)). The member then
+signs in with the temporary password and chooses their own.
 
-If a link is missing, expired, used, or the page was refreshed after it removed the secret from
-the address bar, select **"Request a new link"**. Requests are limited to three per address per
-hour and twenty per network address per 15 minutes, with a system-wide cap of 100/hour.
-Limits use fixed time windows; another request does not invalidate an earlier valid link.
-Wait before retrying. If mail still does not arrive, engineering checks delivery events and
-provider configuration without sharing any token, password, or full email body.
+**Owner account — reset it in Railway** (the owner can do this):
 
-An account with no active workspace membership cannot recover access this way. Recovery
-does not create accounts, change roles, re-enable disabled access, or transfer data. A member
-may still ask an active workspace admin for the existing temporary-password reset (§8.8).
-If the owner cannot access the registered mailbox, stop and escalate for verified ownership
-and mailbox recovery; there is no public override or security-question shortcut.
+1. Sign in to Railway → project `welcoming-vibrancy` → service `clientverse-crm-production` →
+   **Variables**.
+2. Edit **`ADMIN_PASSWORD`**. Paste a new strong password from your password manager, then save.
+   If Railway shows the change as staged, click **Deploy** to apply it.
+3. **Do not touch any other variable** — above all, not `ADMIN_EMAIL`.
+4. Wait until the new deployment shows **SUCCESS** (about 2–5 minutes).
+5. Sign in with the new password. If you were locked out, wait out the 15 minutes first.
+   Changing the password does not lift a lockout.
 
-If you did not request a reset email, ignore it: the password is unchanged. If a password-change
-notice arrives that you did not cause, secure the mailbox, recover the CRM account, and escalate.
+Why not **Settings** → **"Change password"** for the owner: the next deploy puts the Railway value
+back ([§3.3](#33-which-account-the-owner-uses)) — unless Railway is set to the same new password, as
+below.
 
-#### 9.2.1 Recovery email setup and production acceptance
+**If the owner password may be known to someone else** (leaked, shared, typed on a shared
+computer), the Railway change above is not enough on its own. It replaces the password but signs
+nobody out: a browser already signed in stays signed in for up to 7 days. Do this instead:
 
-**Owner/provider setup required; no secrets in chat or GitHub files.** This release uses Resend
-transactional email over HTTPS. It is independent of Google/Gmail OAuth, notification settings,
-and the CRM's client-outreach consent gate. It sends only requested account-security messages.
-
-1. In Resend, verify a sending domain you control using its required DNS records, including
-   SPF and DKIM. Use a real sender on that domain, for example `ClientVerse <security@clientverse.io>`
-   only after that domain is verified. The recipient may be a Gmail address; the sender must be
-   your verified domain. Turn off link/open tracking for security emails.
-2. Create a sending-only API key scoped to that sending domain. Enter it directly in Railway
-   project `welcoming-vibrancy`, service `clientverse-crm-production`, production Variables as
-   **`PASSWORD_RECOVERY_RESEND_API_KEY`**. Set **`PASSWORD_RECOVERY_FROM`** to the verified sender.
-   These two names were absent in the 2026-11-04 Railway names-only inspection.
-3. Verify **`FRONTEND_URL=https://crm.clientverse.io`**, without a path/query/fragment. Keep
-   **`INTEGRATION_ENC_KEY`** and **`JWT_SECRET`** stable; both already exist. Do not rotate them
-   merely to enable recovery. The first encrypts queued recipients; the second signs sessions
-   and protects rate-limit identifiers. No new owner-password secret is needed for recovery.
-4. Engineering obtains owner approval, merges the reviewed branch, and verifies Railway's
-   successful deployment and `/api/health` SHA match. MongoDB indexes are created at startup;
-   failure to create the recovery indexes stops startup. No destructive data migration is required.
-5. Before claiming live delivery, use an authorized disposable staging mailbox/account: request
-   signed out, receive the email, reset, sign in, reject old password and replayed link, reject
-   an expired link, and verify another tenant remains inaccessible. Verify the change survives
-   a restart and that old browser sessions stop working. Never store test data in a customer tenant.
-6. The owner then performs steps 1–7 of §9.2 privately. Record only PASS/FAIL, deployment SHA,
-   timestamps, and redacted event outcomes. Never collect the reset link or chosen password.
-   Mail accepted by Resend is not proof it reached the inbox. Jev QC and independent security
-   review remain release/closeout gates; this manual is not their substitute.
-
-If configuration or delivery is unavailable, requests still display the generic response.
-No password changes. Engineering must resolve the recorded delivery/configuration failure.
-Do not substitute an environment-password overwrite or expose a reset token in logs.
+1. Sign in, then **Settings** → **"Change password"** to a new password
+   ([§3.9](#39-change-your-own-password)). Every other phone and computer is signed out.
+2. **Straight away**, set Railway `ADMIN_PASSWORD` to that **same** new password and deploy (steps
+   1–4 above). Until you do, the next deploy puts the old password back.
+3. If you cannot sign in, reset the password in Railway first (steps 1–5 above), sign in with it,
+   then do steps 1 and 2 with a second new password. Settings refuses a new password that matches
+   the current one.
 
 ### 9.3 Account locked out
 
-Stop guessing and wait 15 minutes, then try once with the correct password. After the recovery
-release, completing email recovery also clears the lock; merely requesting an email does not.
-An admin's existing member reset still clears the member's lock. Disabled memberships remain disabled.
+1. Stop trying — attempts while locked do not help.
+2. Wait **15 minutes** after the fifth failure.
+3. Try **once**, carefully, with the correct password. One more failure re-locks the account for
+   another 15 minutes.
+4. If you do not know the correct password, reset it first ([§9.2](#92-forgotten-password)), then
+   wait out the lock.
+5. **A member** can be let in at once: an admin's **"Reset password"** also clears the lock
+   ([§8.8](#88-reset-a-members-password)). For the owner account, only engineering can clear a lock
+   early, in the database.
 
 ### 9.4 Stale browser session
 
@@ -2044,9 +2043,9 @@ instead, and engineering can remove the stray organization.
 Likely causes, most likely first:
 
 1. The account is **locked** — wait 15 minutes ([§9.3](#93-account-locked-out)).
-2. **The password was changed:** **"Change password"** or email recovery on
+2. **The password was changed:** `ADMIN_PASSWORD` in Railway (owner), **"Change password"** on
    another device, or an admin reset (members get a temporary password from the admin).
-3. The recovery release is not deployed or its email service is unavailable — see §9.2.1.
+3. A **deployment is still in progress** after a password change — wait for SUCCESS.
 4. **The email address is different** — for example a typo, or another alias of the same mailbox.
    The owner account is the exact `ADMIN_EMAIL` value.
 5. The site is down or degraded — check `/api/health` ([§2.3](#23-if-the-site-does-not-load)).
@@ -2065,12 +2064,12 @@ Likely causes, most likely first:
 
 | Problem | Owner, in the CRM | Owner, in Railway | Engineering |
 |---|---|---|---|
-| Forgotten **owner** password | Signed-out email recovery after release (§9.2) | Provider setup (§9.2.1) | Delivery failures or mailbox ownership escalation |
+| Forgotten **owner** password | — | ✓ `ADMIN_PASSWORD` ([§9.2](#92-forgotten-password)) | — |
 | Forgotten **member** password | ✓ **"Reset password"** ([§8.8](#88-reset-a-members-password)) | — | — |
 | Member locked out | ✓ **"Reset password"**, or wait 15 minutes | — | ✓ Clear early |
 | Owner locked out | Wait 15 minutes | — | ✓ Clear early |
 | Member disabled | ✓ **"Enable access"** (another admin) | — | — |
-| All admins locked out | Signed-out email recovery after release (§9.2) | Provider setup only | Delivery/mailbox escalation |
+| All admins locked out | — | ✓ Reset the owner password | ✓ |
 | Stale session | ✓ Reload / reset (§9.4, §9.8) | — | — |
 | Site down / database down | — | Restart the latest SUCCESS deployment once | ✓ |
 | Wrong `ADMIN_EMAIL` or stray organizations | — | — | ✓ |
@@ -2370,9 +2369,9 @@ adding jobs, or any failure that is not explained in §11.5.
 | Problem | Likely cause | Exact owner action | Escalate when |
 |---|---|---|---|
 | **Cannot log in** (any reason) | Wrong password, lockout, wrong address, stale session, site down | 1. Check `/api/health` (§2.3). 2. Check the email is exactly right (owner: the `ADMIN_EMAIL` value). 3. See the rows below. | After §9.1–§9.8 fail, or the site is down |
-| **Wrong password** — "Invalid email or password" | Typo, Caps Lock, or the password changed | Use your password manager or email recovery after release (§9.2). Members may ask an admin (§8.8). Stop after 3 tries. (§9.1) | Never needed |
-| **Forgot password** | — | Owner and members: signed-out email recovery after release (§9.2); admin reset remains available for members (§8.8). | No admin can sign in |
-| **Account locked** — the right password is still refused | 5 failures → 15-minute lock | Wait 15 minutes, then try **once** (§9.3), or complete email recovery after release. | The owner needs access sooner |
+| **Wrong password** — "Invalid email or password" | Typo, Caps Lock, or the password changed | Owner: copy it from Railway `ADMIN_PASSWORD` or your password manager. Member: an admin resets it (§8.8). Stop after 3 tries. (§9.1) | Never needed |
+| **Forgot password** | — | Owner: change `ADMIN_PASSWORD` in Railway (§9.2). Member: **"Reset password"** (§8.8). | No admin can sign in |
+| **Account locked** — the right password is still refused | 5 failures → 15-minute lock | Wait 15 minutes, then try **once** (§9.3). A member: an admin's reset clears it. | The owner needs access sooner |
 | **"Choose your own password"** appears after sign-in | You signed in with a temporary password | Type it again under **"Temporary password"**, choose your own, **"Save my password"** (§8.8) | It reappears after saving |
 | **"Your password was changed. Please sign in again."** | Your password was changed elsewhere, or reset by an admin | Sign in with the new password (§9.4) | You did not change it and no admin reset it — treat as a security problem (§13.6) |
 | **"Continue with Google" missing** | Removed on 2026-10-24 | Use email + password (§3.1, §9.6) | Someone ended up in a stray organization before the removal |
@@ -2428,7 +2427,7 @@ adding jobs, or any failure that is not explained in §11.5.
 - **Session tokens and cookies** — `access_token`, `cv_access_token`, or anything copied from the
   browser's developer tools.
 - **Links that grant access:**
-  - invitation links (`/invite?token=…`) and password reset links (`/reset-password#token=…`)
+  - invitation links (`/invite?token=…`)
   - client-portal links (`/portal/…`)
   - booking manage links (`/booking/manage/…`)
   - webhook signing secrets
@@ -2452,8 +2451,8 @@ compromised and **rotate it** (§13.4), even if you deleted the message.
 
 | Safe for the owner | Needs engineering review first |
 |---|---|
-| **In the CRM:** notification preferences, team invites, roles, disable/enable, password resets, your own password (including the owner's after release — §3.3), business name, Google connect/re-authorize/disconnect, webhook endpoints you own | **Railway:** any variable other than the recovery email settings (§9.2.1) and `WEBHOOK_CRON_SECRET` — including `IN_PROCESS_SCHEDULER` |
-| **Railway:** recovery email settings (§9.2.1); `WEBHOOK_CRON_SECRET` together with GitHub (§11.8); **Restart** of the latest SUCCESS deployment | **Railway:** `ADMIN_PASSWORD` (bootstrap only after recovery release, never a recovery procedure); Rollback / Redeploy of an older commit; changing the production address (done once, 2026-10-19: `FRONTEND_URL`, `GOOGLE_REDIRECT_URI` and `CORS_ORIGINS` change together, and an OAuth attempt in progress fails) |
+| **In the CRM:** notification preferences, team invites, roles, disable/enable, password resets, your own password (not the owner's — §3.3), business name, Google connect/re-authorize/disconnect, webhook endpoints you own | **Railway:** any variable other than `ADMIN_PASSWORD` and `WEBHOOK_CRON_SECRET` — including `IN_PROCESS_SCHEDULER` |
+| **Railway:** `ADMIN_PASSWORD` (§9.2); `WEBHOOK_CRON_SECRET` together with GitHub (§11.8); **Restart** of the latest SUCCESS deployment | **Railway:** Rollback / Redeploy of an older commit; changing the production address (done once, 2026-10-19: `FRONTEND_URL`, `GOOGLE_REDIRECT_URI` and `CORS_ORIGINS` change together, and an OAuth attempt in progress fails) |
 | **GitHub:** Actions secrets; enabling or disabling the workflow; manual runs | **Never:** `ADMIN_EMAIL`, `MONGO_URL`, `DB_NAME`, `INTEGRATION_ENC_KEY` (changing it makes every stored integration permission unreadable), `JWT_SECRET` (changing it signs everyone out), `APP_ENV`, `SEED_DEMO_DATA` (must stay false) |
 | **Google Cloud:** consent-screen test users | **Google Cloud:** redirect URIs, client secret rotation (Railway must be updated at the same moment) |
 | **DNS:** the records Railway shows for the custom domain (O-12) | **MongoDB Atlas:** network access, users, backups |
@@ -2475,8 +2474,9 @@ compromised and **rotate it** (§13.4), even if you deleted the message.
 
 **Open rotations (governing document O-04, O-05):**
 
-- If the owner password may be compromised, change it in Settings or complete email recovery after release (§9.2). Both revoke older sessions. Do not synchronize the chosen password back into Railway.
-
+- Rotate `ADMIN_PASSWORD` if it has ever left the Railway dashboard. If someone else may know it,
+  follow §9.2 *"If the owner password may be known to someone else"*: a Railway-only change does
+  not sign out a browser that is already signed in.
 - Rotate the legacy Stripe webhook secret recoverable from old git history when Stripe is set up.
 - Delete the unused misspelled Railway variable `Mongo_url`.
 - Rotate the Jev QC webhook path, and enable its header authentication.
@@ -2638,7 +2638,7 @@ A first-time owner must be able to answer each question from this manual alone.
 | How do I send a real email? | Engineer-assisted test today (no compose screen), or approve a booking email / form auto-reply — after reconnecting and certification | [§6.1](#61-read-this-first--current-status), [§6.4](#64-procedure-a--send-one-real-outbound-email), [App. C](#appendix-c-engineer-assisted-email-verification) |
 | How do I verify the reply came back? | Operations → Conversations → the same thread shows inbound **"Received"** within ~35 minutes | [§6.6](#66-procedure-c--capture-the-reply) |
 | How do I manage users? | Team & Access → **"Invite"**, role menu, **"⋯"** → **"Reset password"** / **"Disable access"** | [§8](#8-users-roles-and-administration) |
-| How do I recover access? | After release: **"Forgot password?"** for owners and members (§9.2); locked: recover or wait 15 minutes | [§9](#9-account-recovery) |
+| How do I recover access? | Owner: change `ADMIN_PASSWORD` in Railway; members: an admin resets it; locked: wait 15 minutes | [§9](#9-account-recovery) |
 | How do I know scheduled automations are healthy? | `/api/cron/health` shows `scheduled_jobs_running: true` and a recent `in_process.last_run_at` — or, when the GitHub workflow runs too, a recent `last_authenticated_call_at` | [§11.4](#114-verify-that-automation-is-healthy) |
 | What does 401 mean? | Not signed in, or the session expired (workflow: secret mismatch) | [§12](#12-troubleshooting-matrix), [§11.5](#115-what-the-results-mean) |
 | What does 500 mean? | A server error — retry once, then escalate with evidence | [§12](#12-troubleshooting-matrix) |
@@ -2696,7 +2696,7 @@ BASE=https://crm.clientverse.io
 
 # 1. Admin session: hidden password prompt; the token stays in this shell only.
 read -r  -p "Admin email: " CV_EMAIL
-read -rs -p "Current admin password (from your password manager, not shown): " CV_PASSWORD; echo
+read -rs -p "Admin password (from Railway, not shown): " CV_PASSWORD; echo
 TOKEN=$(CV_EMAIL="$CV_EMAIL" CV_PASSWORD="$CV_PASSWORD" python3 -c \
   'import json,os; print(json.dumps({"email": os.environ["CV_EMAIL"], "password": os.environ["CV_PASSWORD"]}))' \
   | curl -sS -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' --data-binary @- \
@@ -2754,9 +2754,7 @@ governing document (M-01), with the ids — never the token.
 | Name | Where | Status (recorded) | Purpose |
 |---|---|---|---|
 | `ADMIN_EMAIL` | Railway | Set | Owner account email. **Never change.** |
-| `ADMIN_PASSWORD` | Railway | Set | Initial owner bootstrap only after the recovery release; never overwrites an existing password |
-| `PASSWORD_RECOVERY_RESEND_API_KEY` | Railway | NOT SET (names-only check 2026-11-04) | Sending-only transactional mail key (§9.2.1) |
-| `PASSWORD_RECOVERY_FROM` | Railway | NOT SET (2026-11-04) | Sender on a verified domain (§9.2.1) |
+| `ADMIN_PASSWORD` | Railway | Set | Owner password, re-applied every boot |
 | `APP_ENV` | Railway | Set | `production` mode (strict security checks) |
 | `MONGO_URL`, `DB_NAME` | Railway | Set | Database connection (contains credentials) |
 | `Mongo_url` | Railway | Set — **unused duplicate, delete** (O-05) | — |
@@ -2831,7 +2829,6 @@ governing document.
 
 | Version | Date | Change |
 |---|---|---|
-| 1.15 | 2026-11-04 | Full replacement: signed-out recovery procedures and deployment prerequisites; bootstrap-only owner credential; session/link invalidation; exact provider setup. Implemented on branch, not deployed or live-certified. |
 | 1.14 | 2026-10-26 | Self-serve import and export. **Settings → Import and export** (§4.3, §7.20, §8.1): an admin imports contacts, companies or deals from a CSV file by matching its columns to fields (your own fields included) and reading a preview of every row before anything is saved; anyone exports contacts, companies, deals and tasks as CSV. **Import** buttons on Contacts, Companies and Pipeline. Companies are edited, archived and restored from their side panel, with **Show archived** on the Companies tab (§7.4, §7.21). The engineering-only rows for these are gone (§8.12, §13.5, §15). |
 | 1.13 | 2026-10-24 | Production closeout (PR #48). The manual is now Part 2 of the closeout package; Part 1 is [the closeout handoff](closeout/CLIENTVERSE_CRM_CLOSEOUT_HANDOFF.md). Changes: **"Continue with Google" removed**, so email and password is the only sign-in (§1.1, §1.2, §3.1, §8.3, §9.6, §10.1, §12). The job ledger is limited to the owner's organization (§8.1). Client portal links stay on screen with **"Copy"** and can be **"Revoke"**d (§7.15, §8.12, §12). The MCP kill switch is greyed out for members (§7.18). All procedures use `https://crm.clientverse.io` (§1.1, §1.2, §2.2, §11.4, Appendices A and C); the Google redirect address is the custom domain (§5.5). Google status is consistent with the 2026-10-19 reconnection (§1.4, §10.1, §14 row 12). The custom-domain switch is recorded as done (§13.3). |
 | 1.12 | 2026-10-19 | The account switcher (§7.25) shows as soon as an agency admin signs in, not only after a reload. Changing your password while working in a client account keeps you in it (§3.9). |

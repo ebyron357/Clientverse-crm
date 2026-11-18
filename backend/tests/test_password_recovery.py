@@ -372,3 +372,108 @@ def test_resend_transport_contract_and_failure_redaction(monkeypatch):
         assert status != 200
         with pytest.raises(RuntimeError, match=r"^recovery_delivery_failed$"):
             asyncio.run(recovery.send_mail("recipient@example.com", "Reset", "test-only-body", "test-id"))
+
+
+def test_disabled_home_membership_cannot_recover_via_another_active_membership(env):
+    client, db, sent = env
+    email, _, user = account(env)
+    token = link(env, email)
+    client.portal.call(db.memberships.update_many, {"tenant_id": user["tenant_id"], "user_id": user["user_id"]},
+                       {"$set": {"status": "disabled"}})
+    client.portal.call(db.memberships.insert_one, {"tenant_id": "different-tenant", "user_id": user["user_id"],
+                                                  "status": "active", "role": "member"})
+    assert reset(env, token).status_code == 400
+    request(env, email)
+    deliver(env)
+    assert len(sent) == 1  # Only the original, now-ineligible link was sent.
+
+
+@pytest.mark.parametrize("failure", ["completion_audit", "grant_cleanup", "legacy_cleanup", "lockout_cleanup",
+                                     "confirmation_queue", "domain_event"])
+def test_committed_reset_is_reported_truthfully_when_followup_writes_fail(env, monkeypatch, caplog, failure):
+    client, db, _ = env
+    email, session, user = account(env)
+    token = link(env, email)
+    legacy = f"legacy-{uuid.uuid4().hex}"
+    client.portal.call(db.user_sessions.insert_one, {
+        "user_id": user["user_id"], "session_token": legacy,
+        "created_at": (recovery.utcnow() - timedelta(minutes=1)).isoformat(),
+        "expires_at": recovery.utcnow() + timedelta(hours=1),
+    })
+    client.portal.call(db.login_lockouts.insert_one, {
+        "email": email, "failed_count": 99,
+        "locked_until": (recovery.utcnow() + timedelta(minutes=15)).isoformat(),
+    })
+    if failure == "completion_audit":
+        original = recovery.PasswordRecovery.audit
+
+        async def broken_audit(self, outcome, **kwargs):
+            if outcome == "reset_completed":
+                raise RuntimeError("sensitive-database-error")
+            return await original(self, outcome, **kwargs)
+
+        monkeypatch.setattr(recovery.PasswordRecovery, "audit", broken_audit)
+    elif failure == "domain_event":
+        async def broken_event(*args, **kwargs):
+            raise RuntimeError("sensitive-database-error")
+
+        monkeypatch.setattr(server, "record_event", broken_event)
+    else:
+        collection_name, method = {
+            "grant_cleanup": ("password_recovery_grants", "delete_many"),
+            "legacy_cleanup": ("user_sessions", "delete_many"),
+            "lockout_cleanup": ("login_lockouts", "update_one"),
+            "confirmation_queue": ("password_recovery_jobs", "insert_one"),
+        }[failure]
+        collection_type = type(db[collection_name])
+        original = getattr(collection_type, method)
+
+        async def broken_write(collection, *args, **kwargs):
+            if collection.name == collection_name:
+                raise RuntimeError("sensitive-database-error")
+            return await original(collection, *args, **kwargs)
+
+        monkeypatch.setattr(collection_type, method, broken_write)
+    response = reset(env, token)
+    assert response.status_code == 200, response.text
+    assert response.json()["message"].startswith("Your password has been reset.")
+    assert ("temporary sign-in lock" in response.json()["message"]) == (failure == "lockout_cleanup")
+    stored = client.portal.call(db.users.find_one, {"user_id": user["user_id"]})
+    assert server.verify_password(NEW, stored["password_hash"])
+    assert not server.verify_password(OLD, stored["password_hash"])
+    for revoked in (session, legacy):
+        assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {revoked}"}).status_code == 401
+    assert reset(env, token).status_code == 400
+    assert "sensitive-database-error" not in caplog.text
+    assert token not in caplog.text and NEW not in caplog.text and email not in caplog.text
+
+
+def test_accepted_email_link_survives_delivery_audit_failure(env, monkeypatch, caplog):
+    client, db, _ = env
+    email, _, _ = account(env)
+    original = recovery.PasswordRecovery.audit
+
+    async def broken_audit(self, outcome, **kwargs):
+        if outcome == "delivery_accepted":
+            raise RuntimeError("sensitive-provider-audit-error")
+        return await original(self, outcome, **kwargs)
+
+    monkeypatch.setattr(recovery.PasswordRecovery, "audit", broken_audit)
+    token = link(env, email)
+    assert client.portal.call(db.password_recovery_grants.find_one, {"_id": recovery.digest(token)})
+    assert reset(env, token).status_code == 200
+    assert "sensitive-provider-audit-error" not in caplog.text
+
+
+def test_owner_password_change_survives_restart_without_bootstrap_password(env, monkeypatch):
+    client, _, _ = env
+    email = os.environ["ADMIN_EMAIL"].lower()
+    token = client.post("/api/auth/login", json={"email": email, "password": OLD}).json()["token"]
+    changed = client.post("/api/auth/change-password", headers={"Authorization": f"Bearer {token}"},
+                          json={"current_password": OLD, "new_password": NEW})
+    assert changed.status_code == 200, changed.text
+    monkeypatch.delenv("ADMIN_PASSWORD")
+    client.portal.call(server.seed)
+    client.cookies.clear()
+    assert client.post("/api/auth/login", json={"email": email, "password": OLD}).status_code == 401
+    assert client.post("/api/auth/login", json={"email": email, "password": NEW}).status_code == 200

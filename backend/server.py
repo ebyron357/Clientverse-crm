@@ -34,6 +34,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 import agency as agency_service
 import approval_queue as approval_service
@@ -49,6 +50,7 @@ import email_inbound
 import gmail_provider
 import industry_templates
 import next_best_action as nba_service
+import outbound_url
 import record_fields
 import recovery_case as recovery_case_service
 import recovery_intake
@@ -134,15 +136,47 @@ def demo_seed_enabled() -> bool:
 
 
 class ClientVerseStaticFiles(StaticFiles):
-    """Serve the compiled SPA while preserving API routes and asset 404 responses."""
+    """Serve the compiled SPA while preserving API routes and asset 404 responses.
+
+    Caching: files under static/ carry a content hash in their name, so a browser may keep
+    them for a year; index.html (and every SPA deep link served from it) must be checked on
+    each visit, or a deploy would leave visitors running the old bundle.
+    """
 
     async def get_response(self, path, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404 and "." not in Path(path).name:
-                return await super().get_response("index.html", scope)
+                response = await super().get_response("index.html", scope)
+                response.headers["Cache-Control"] = "no-cache"
+                return response
             raise
+        if response.status_code == 200:
+            if path.startswith("static/"):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif path in ("", ".", "index.html") or path.endswith(".html"):
+                response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+class StaticGZipMiddleware:
+    """Gzip the frontend's files, never the API.
+
+    The 1.9 MB bundle went out uncompressed. API responses are left alone on purpose: some
+    carry session tokens next to text a user supplied, which is the mix compression-length
+    attacks (BREACH) need, and they are small enough that compression buys little.
+    """
+
+    def __init__(self, app, minimum_size: int = 1024):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not scope.get("path", "").startswith("/api"):
+            await self.gzip(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -165,6 +199,7 @@ async def lifespan(_: FastAPI):
         ("crm_billing", lambda: db.crm_billing.create_index([("tenant_id", 1), ("workspace_id", 1)])),
         ("revoked_tokens", lambda: db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)),
         ("login_lockouts", lambda: db.login_lockouts.create_index("email", unique=True)),
+        ("login_ip_failures", lambda: db.login_ip_failures.create_index("expires_at", expireAfterSeconds=0)),
         ("cron_runs", lambda: db.cron_runs.create_index("run_id", unique=True)),
         ("cron_ledger", lambda: cron_ledger.ensure_indexes(db)),
         ("crm_core", lambda: crm_core.ensure_indexes(db)),
@@ -270,7 +305,10 @@ async def production_security_headers(request: Request, call_next):
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
-    if request.url.scheme == "https":
+    # Behind Railway's edge uvicorn sees plain http (it does not trust forwarded headers by
+    # default), so the scheme check alone never sent HSTS in production. Production is
+    # HTTPS-only by configuration (startup refuses non-https CORS origins), so send it there.
+    if request.url.scheme == "https" or IS_PRODUCTION:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
@@ -341,7 +379,7 @@ def spawn_background(coro) -> asyncio.Task:
 async def record_event(event_type: str, resource_type: str, resource_id: str,
                        tenant_id: str, actor: str, workspace_id: Optional[str] = None,
                        payload: Optional[dict] = None, source: str = "system",
-                       privacy: str = "internal"):
+                       privacy: str = "internal", session=None):
     ev = {
         "id": new_id("evt"), "event_type": event_type, "event_version": "v1",
         "tenant_id": tenant_id, "workspace_id": workspace_id, "actor": actor,
@@ -349,8 +387,13 @@ async def record_event(event_type: str, resource_type: str, resource_id: str,
         "timestamp": now_iso(), "correlation_id": new_id("cor"),
         "causation_id": None, "payload": payload or {}, "privacy": privacy,
     }
-    await db.domain_events.insert_one(ev)
+    await db.domain_events.insert_one(ev, **({"session": session} if session else {}))
     clean = {k: v for k, v in ev.items() if k != "_id"}
+    if session:
+        await WorkQueue(db).enqueue(tenant_id=tenant_id, queue="system",
+                                    item_type="domain_event.dispatch", payload={"event_id": ev["id"]},
+                                    idempotency_key=f"event:{ev['id']}", actor=actor, session=session)
+        return clean
     try:
         spawn_background(dispatch_webhooks_for_event(clean))
     except Exception:
@@ -543,6 +586,13 @@ async def _login_is_locked(email: str) -> bool:
 
 async def _record_login_failure(email: str):
     now = datetime.now(timezone.utc)
+    # A lockout that has run its course starts the count again. Without this the count
+    # stayed at the threshold after the lock expired, so one more wrong guess (anyone's)
+    # re-locked the account at once and the owner could be kept out indefinitely.
+    existing = await db.login_lockouts.find_one({"email": email})
+    expired_lock = _parse_dt(existing.get("locked_until")) if existing else None
+    if expired_lock and now >= expired_lock:
+        await db.login_lockouts.update_one({"email": email}, {"$set": {"failed_count": 0, "locked_until": None}})
     await db.login_lockouts.update_one(
         {"email": email},
         {"$inc": {"failed_count": 1}, "$set": {"last_failure_at": now.isoformat()},
@@ -553,6 +603,33 @@ async def _record_login_failure(email: str):
     if rec and rec.get("failed_count", 0) >= LOGIN_LOCKOUT_THRESHOLD:
         locked_until = now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
         await db.login_lockouts.update_one({"email": email}, {"$set": {"locked_until": locked_until.isoformat()}})
+
+# Per-address limit on failed sign-ins. The per-email lockout above protects one account;
+# it does nothing against one address trying many emails (credential stuffing). Counted in
+# fixed windows, kept in a TTL collection so old windows disappear on their own.
+LOGIN_IP_FAILURE_LIMIT = int(os.environ.get("LOGIN_IP_FAILURE_LIMIT", "30"))
+LOGIN_IP_WINDOW_MINUTES = int(os.environ.get("LOGIN_IP_WINDOW_MINUTES", "15"))
+
+def _login_ip_key(ip: str, now: datetime) -> str:
+    window = int(now.timestamp() // (LOGIN_IP_WINDOW_MINUTES * 60))
+    return f"{ip}:{window}"
+
+async def _login_ip_blocked(ip: Optional[str]) -> bool:
+    if not ip:
+        return False
+    rec = await db.login_ip_failures.find_one({"key": _login_ip_key(ip, datetime.now(timezone.utc))})
+    return bool(rec and rec.get("count", 0) >= LOGIN_IP_FAILURE_LIMIT)
+
+async def _record_login_ip_failure(ip: Optional[str]):
+    if not ip:
+        return
+    now = datetime.now(timezone.utc)
+    await db.login_ip_failures.update_one(
+        {"key": _login_ip_key(ip, now)},
+        {"$inc": {"count": 1},
+         "$setOnInsert": {"expires_at": now + timedelta(minutes=2 * LOGIN_IP_WINDOW_MINUTES)}},
+        upsert=True,
+    )
 
 async def _reset_login_failures(email: str):
     await db.login_lockouts.update_one(
@@ -570,6 +647,11 @@ async def session_user(user: dict) -> dict:
 @api.post("/auth/register")
 async def register(inp: RegisterInput, response: Response):
     email = inp.email.lower()
+    # The same rule invitations and password changes enforce: this account becomes the
+    # new organization's admin, so it must not be the one door that takes "a".
+    problem = _new_password_problem(inp.password)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="Email already registered")
     tenant_id = new_id("ten")
@@ -592,8 +674,11 @@ async def register(inp: RegisterInput, response: Response):
     return {"user": await session_user(u), "token": token}
 
 @api.post("/auth/login")
-async def login(inp: LoginInput, response: Response):
+async def login(inp: LoginInput, response: Response, request: Request = None):
     email = inp.email.lower()
+    ip = website_forms.client_ip(request) if request is not None else None
+    if await _login_ip_blocked(ip):
+        raise HTTPException(status_code=429, detail="Too many sign-in attempts. Please wait a few minutes and try again.")
     if await _login_is_locked(email):
         # Reject before even checking the password: a correct password must not bypass
         # an active lockout, and the response must be indistinguishable from a plain
@@ -602,6 +687,7 @@ async def login(inp: LoginInput, response: Response):
     user = await db.users.find_one({"email": email})
     if not user or not user.get("password_hash") or not verify_password(inp.password, user["password_hash"]):
         await _record_login_failure(email)
+        await _record_login_ip_failure(ip)
         raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     await _reset_login_failures(email)
     token = create_access_token(user["user_id"], email, session_version=user.get("session_version"))
@@ -1059,8 +1145,16 @@ async def recover_password(inp: ResetPasswordInput, request: Request, response: 
     user = await password_recovery.PasswordRecovery(db).reset(
         inp.token, inp.new_password, _recovery_request_ip(request), hash_password, _new_password_problem)
     response.delete_cookie("access_token", path="/")
-    await record_event("auth.password_recovered", "user", user["user_id"], user["tenant_id"],
-                       "password-recovery", payload={"sessions_revoked": True})
+    try:
+        await record_event("auth.password_recovered", "user", user["user_id"], user["tenant_id"],
+                           "password-recovery", payload={"sessions_revoked": True})
+    except Exception:
+        # PasswordRecovery already committed the credential and invalidated sessions.
+        # An unavailable timeline must not tell the owner that the reset failed.
+        logger.warning("Password recovery committed; domain event unavailable")
+    if not user["recovery_lockout_cleared"]:
+        return {"message": "Your password has been reset. A temporary sign-in lock could not be cleared. "
+                           f"Wait {LOGIN_LOCKOUT_MINUTES} minutes, then sign in with your new password."}
     return {"message": "Your password has been reset. Sign in with your new password."}
 
 @api.post("/auth/change-password")
@@ -1558,7 +1652,12 @@ async def update_task(task_id: str, inp: TaskStatus, user=Depends(get_current_us
     t = await db.tasks.find_one({"id": task_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not t:
         raise HTTPException(status_code=404, detail="Not found")
-    await db.tasks.update_one({"id": task_id}, {"$set": {"status": inp.status}})
+    if website_forms.mutations_enabled(user["tenant_id"]):
+        lead = await db[detectors.WEB_ENQUIRIES].find_one(
+            {"tenant_id": user["tenant_id"], "task_id": task_id}, {"_id": 1})
+        if lead:
+            raise HTTPException(428, detail="Use the Tasks page to update this lead-linked task safely.")
+    await db.tasks.update_one({"id": task_id, "tenant_id": user["tenant_id"]}, {"$set": {"status": inp.status}})
     if inp.status == "done":
         await record_event("task.completed", "task", task_id, user["tenant_id"], user["email"], workspace_id=t["workspace_id"], payload={"title": t["title"]})
     return {"ok": True}
@@ -2428,9 +2527,18 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
         "X-ClientVerse-Timestamp": delivery["created_at"],
     }
     attempts = list(delivery.get("attempts", []))
+    allow_private = outbound_url.private_targets_allowed(IS_PRODUCTION)
     for n in range(len(attempts) + 1, WEBHOOK_MAX_ATTEMPTS + 1):
+        # Re-checked before every attempt: the name may have started resolving to a
+        # private address since the webhook was saved. See outbound_url.py.
+        refusal = await asyncio.to_thread(outbound_url.resolve_public_addresses, webhook["url"],
+                                          allow_private=allow_private)
+        if refusal:
+            attempts.append({"n": n, "status_code": None, "error": refusal, "at": now_iso()})
+            break
         try:
-            resp = await asyncio.to_thread(requests.post, webhook["url"], data=body, headers=headers, timeout=6)
+            resp = await asyncio.to_thread(requests.post, webhook["url"], data=body, headers=headers,
+                                           timeout=6, allow_redirects=False)
             code = resp.status_code
             attempts.append({"n": n, "status_code": code, "error": None, "at": now_iso()})
             if 200 <= code < 300:
@@ -2438,7 +2546,7 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
                     {"$set": {"status": "delivered", "attempts": attempts, "delivered_at": now_iso(), "dlq": False}})
                 return "delivered"
         except Exception as e:
-            attempts.append({"n": n, "status_code": None, "error": str(e)[:200], "at": now_iso()})
+            attempts.append({"n": n, "status_code": None, "error": outbound_url.delivery_error_reason(e), "at": now_iso()})
         await asyncio.sleep(0.25 * n)
     await db.webhook_deliveries.update_one({"id": delivery["id"]},
         {"$set": {"status": "failed", "attempts": attempts, "dlq": True}})
@@ -2489,6 +2597,9 @@ async def reveal_webhook_secret(wid: str, user=Depends(require_role("admin"))):
 
 @api.post("/webhooks")
 async def create_webhook(inp: WebhookInput, user=Depends(require_role("admin"))):
+    problem = outbound_url.webhook_url_problem(inp.url, allow_private=outbound_url.private_targets_allowed(IS_PRODUCTION))
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
     doc = {"id": new_id("wh"), "tenant_id": user["tenant_id"], "name": inp.name, "url": inp.url,
            "events": inp.events, "status": "AVAILABLE", "signed": True, "enabled": True,
            "secret": "whsec_" + secrets.token_hex(16), "description": "Custom endpoint.", "created_at": now_iso()}
@@ -2525,7 +2636,7 @@ async def test_webhook(wid: str, user=Depends(get_current_user)):
     return {"status": status, "delivery_id": delivery["id"]}
 
 @api.get("/webhook-deliveries")
-async def list_deliveries(limit: int = Query(100), user=Depends(get_current_user)):
+async def list_deliveries(limit: int = Query(100, ge=1, le=500), user=Depends(get_current_user)):
     return await db.webhook_deliveries.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("created_at", -1).to_list(limit)
 
 @api.post("/webhook-deliveries/{did}/replay")
@@ -4872,10 +4983,10 @@ async def _after_activity_logged(activity: dict) -> None:
     await lead_pipeline.recognise_activity(activity)
 
 
-async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: str) -> None:
+async def _lead_task_status_changed(task: dict, previous: Optional[str], actor: str, session=None) -> None:
     # A call-back task ticked off on the Tasks page is the lead's response, so the lead
     # pipeline hears about it at once. `lead_pipeline` is created just below.
-    await lead_pipeline.task_status_changed(task, previous, actor)
+    await lead_pipeline.task_status_changed(task, previous, actor, session=session)
 
 
 record_fields.register_record_field_routes(api, db, new_id, now_iso, record_event, get_current_user, require_role)
@@ -5046,7 +5157,36 @@ async def _handle_run_recovery_case(item: dict) -> dict:
         actor="work-queue", audit=record_event)
 
 
+async def _handle_committed_event(item: dict) -> dict:
+    event = await db.domain_events.find_one(
+        {"id": item["payload"]["event_id"], "tenant_id": item["tenant_id"]}, {"_id": 0})
+    if not event:
+        raise ValueError("Committed event missing")
+    if event.get("workspace_id") and event["event_type"] in HEALTH_AFFECTING:
+        await record_health_snapshot(event["tenant_id"], event["workspace_id"])
+    if event.get("source") != automations.SOURCE and event["event_type"] in automations.TRIGGERS:
+        await automation_engine.handle(event)
+    hooks = await db.webhooks.find({"tenant_id": item["tenant_id"], "enabled": True}, {"_id": 0}).to_list(100)
+    for hook in hooks:
+        if not event_matches(event["event_type"], hook.get("events")):
+            continue
+        delivery_id = "whd_" + hashlib.sha256(f"{item['tenant_id']}:{event['id']}:{hook['id']}".encode()).hexdigest()
+        delivery = {"id": delivery_id, "tenant_id": item["tenant_id"], "webhook_id": hook["id"],
+                    "webhook_name": hook.get("name"), "event_type": event["event_type"],
+                    "event_id": event["id"], "payload": {"event": event}, "status": "pending",
+                    "attempts": [], "dlq": False, "created_at": now_iso()}
+        await db.webhook_deliveries.update_one({"_id": delivery_id}, {"$setOnInsert": delivery}, upsert=True)
+        claimed = await db.webhook_deliveries.update_one(
+            {"_id": delivery_id, "tenant_id": item["tenant_id"], "status": "pending"},
+            {"$set": {"status": "sending"}})
+        if claimed.modified_count:
+            await _do_delivery(delivery, hook)
+        # A crash during sending is uncertain, not permission to send again on queue replay.
+    return {"event_id": event["id"], "dispatched": True}
+
+
 WORK_QUEUE_HANDLERS = {
+    "domain_event.dispatch": _handle_committed_event,
     JOB_GENERATE_NEXT_BEST_ACTIONS: _handle_generate_next_best_actions,
     recovery_runner_service.JOB_RUN_RECOVERY_CASE: _handle_run_recovery_case,
 }
@@ -5150,6 +5290,7 @@ app.add_middleware(
 # to CORS_ORIGINS instead would let their scripts act as a signed-in CRM user, because
 # the session cookie is SameSite=None.
 app.add_middleware(website_forms.PublicFormCORSMiddleware)
+app.add_middleware(StaticGZipMiddleware)
 
 # Production containers build the React application into this directory. Mounting
 # it last preserves explicit API routes while supporting direct SPA deep links.

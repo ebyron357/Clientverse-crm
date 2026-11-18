@@ -142,6 +142,7 @@ class PasswordRecovery:
         if not job:
             return False
         grant_id = None
+        delivery_accepted = False
         try:
             origin, _, _, cipher = configuration()
             email = cipher.decrypt(job["recipient"].encode()).decode()
@@ -153,7 +154,9 @@ class PasswordRecovery:
             else:
                 user = await self.db.users.find_one({"email": email})
                 # Never create accounts or change memberships through recovery.
-                member = await self.db.memberships.find_one({"user_id": user["user_id"], "status": "active"}) if user else None
+                member = await self.db.memberships.find_one({
+                    "tenant_id": user["tenant_id"], "user_id": user["user_id"], "status": "active"
+                }) if user else None
                 if not user or not user.get("password_hash") or not member:
                     await self.audit("ineligible", subject=job["subject"], job_id=job["_id"])
                     return True
@@ -175,8 +178,14 @@ class PasswordRecovery:
                                 f"Reset your password: {origin}/reset-password#token={token}\n\n"
                                 f"This link expires in {TOKEN_MINUTES} minutes and works once. "
                                 "If you did not request it, ignore this email; your password has not changed.", job["_id"])
+            delivery_accepted = True
             await self.audit("delivery_accepted", subject=job["subject"], job_id=job["_id"])
         except Exception:
+            # An audit outage after the provider accepted the email must not revoke
+            # the link the recipient just received. Transport failures remain closed.
+            if delivery_accepted:
+                logger.warning("Password recovery delivery accepted; audit write failed")
+                return True
             if grant_id:
                 await self.db.password_recovery_grants.delete_one({"_id": grant_id})
             await self.audit("delivery_failed", subject=job["subject"], job_id=job["_id"])
@@ -197,7 +206,9 @@ class PasswordRecovery:
             raise HTTPException(400, INVALID_LINK)
         grant = await self.db.password_recovery_grants.find_one({"_id": digest(token), "expires_at": {"$gt": utcnow()}})
         user = await self.db.users.find_one({"user_id": grant["user_id"]}) if grant else None
-        active = await self.db.memberships.find_one({"user_id": user["user_id"], "status": "active"}) if user else None
+        active = await self.db.memberships.find_one({
+            "tenant_id": user["tenant_id"], "user_id": user["user_id"], "status": "active"
+        }) if user else None
         if (not grant or not user or not active or not user.get("password_hash")
                 or not hmac.compare_digest(grant.get("email_fingerprint", ""), digest(user["email"]))
                 or not hmac.compare_digest(grant["password_fingerprint"], digest(user["password_hash"]))):
@@ -218,13 +229,30 @@ class PasswordRecovery:
         if changed.modified_count != 1:
             await self.audit("reset_rejected")
             raise HTTPException(400, INVALID_LINK)
-        # The credential fingerprint now rejects every older link even if cleanup fails.
-        await self.audit("reset_completed", user_id=user["user_id"])
-        await self.db.password_recovery_grants.delete_many({
-            "user_id": user["user_id"], "password_fingerprint": grant["password_fingerprint"]})
-        await self.db.user_sessions.delete_many({"user_id": user["user_id"]})
-        await self.db.login_lockouts.update_one({"email": user["email"]}, {
-            "$set": {"failed_count": 0, "locked_until": None}}, upsert=True)
+        # The credential and session version are now committed. Older grants fail
+        # their fingerprint check; JWTs and legacy sessions fail their version/time
+        # checks even when cleanup is unavailable. Never turn a confirmed password
+        # change into a generic error because later bookkeeping failed.
+        try:
+            await self.audit("reset_completed", user_id=user["user_id"])
+        except Exception:
+            logger.warning("Password recovery committed; completion audit unavailable")
+        for name, collection, criteria in (
+            ("grants", self.db.password_recovery_grants,
+             {"user_id": user["user_id"], "password_fingerprint": grant["password_fingerprint"]}),
+            ("legacy sessions", self.db.user_sessions, {"user_id": user["user_id"]}),
+        ):
+            try:
+                await collection.delete_many(criteria)
+            except Exception:
+                logger.warning("Password recovery committed; %s cleanup unavailable", name)
+        lockout_cleared = True
+        try:
+            await self.db.login_lockouts.update_one({"email": user["email"]}, {
+                "$set": {"failed_count": 0, "locked_until": None}}, upsert=True)
+        except Exception:
+            lockout_cleared = False
+            logger.warning("Password recovery committed; sign-in lock cleanup unavailable")
         try:
             _, _, _, cipher = configuration()
             await self.db.password_recovery_jobs.insert_one({
@@ -233,8 +261,12 @@ class PasswordRecovery:
                 "created_at": utcnow(), "expires_at": utcnow() + timedelta(minutes=TOKEN_MINUTES),
             })
         except Exception:
-            await self.audit("confirmation_failed", user_id=user["user_id"])
-        return dict(user)
+            logger.warning("Password recovery committed; confirmation email could not be queued")
+            try:
+                await self.audit("confirmation_failed", user_id=user["user_id"])
+            except Exception:
+                logger.warning("Password recovery committed; confirmation audit unavailable")
+        return {**user, "recovery_lockout_cleared": lockout_cleared}
 
     async def run(self) -> None:
         while True:

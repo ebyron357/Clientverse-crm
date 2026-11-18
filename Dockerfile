@@ -7,6 +7,8 @@ RUN corepack enable && yarn install --frozen-lockfile
 COPY frontend/ ./
 # Leave empty so browser API calls resolve to same-origin /api.
 ENV REACT_APP_BACKEND_URL=""
+# No public source maps: they would publish the full frontend source.
+ENV GENERATE_SOURCEMAP=false
 RUN CI=true yarn build
 
 FROM python:3.12-slim AS runtime

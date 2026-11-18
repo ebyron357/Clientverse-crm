@@ -52,6 +52,14 @@ def main() -> int:
     output = result.stdout + result.stderr
     print(output)
 
+    # mypy exits 0 (clean) or 1 (type errors found); anything else, or output without its
+    # summary line, means it did not run (not installed, crashed, bad config). That used to
+    # print "clean" and pass the gate.
+    ran = result.returncode in (0, 1) and re.search(r"^(Success: no issues found|Found \d+ error)", output, re.M)
+    if not ran:
+        print(f"\nmypy did not complete (exit {result.returncode}); failing the type-check gate.")
+        return 2
+
     pattern = re.compile(rf"^({'|'.join(re.escape(m) for m in modules)})\.py:")
     blocking = [line for line in output.splitlines()
                 if pattern.match(line) and ": error:" in line]

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { toast } from "sonner";
 
 // A blank base URL is deliberate for single-container production deployments:
 // the React app and FastAPI API share one HTTPS origin at /api.
@@ -78,6 +79,23 @@ export function formatErr(detail) {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) return detail.map((e) => e?.msg || JSON.stringify(e)).join(" ");
   return String(detail);
+}
+
+/**
+ * Runs a save and reports a failure instead of swallowing it. axios throws on any non-2xx,
+ * so a handler written as `await api.patch(...); toast.success(...)` showed nothing at all
+ * when the server refused: the dialog stayed open and the click looked ignored. Returns
+ * true when the action completed, so callers can skip their success path.
+ */
+export async function attempt(action, fallback = "That didn't save. Please try again.") {
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    const detail = error?.response?.data?.detail;
+    toast.error(detail != null ? formatErr(detail) : fallback);
+    return false;
+  }
 }
 
 export const money = (n) => "$" + (n || 0).toLocaleString();

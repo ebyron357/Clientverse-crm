@@ -682,9 +682,9 @@ def test_round_robin_spreads_bookings_and_keeps_a_returning_client_with_their_ag
     assert book(client, page, shared, email="s2@example.com", phone="5550300002").status_code == 200
     assert shared not in slots(client, page)
     # A returning client goes back to the agent who owns them, when that agent is free.
-    first_host = find_one(client, "appointments", {"booking.person.email": "rr0@example.com"})["owner"]
+    first_host = find_one(client, "appointments", {"tenant_id": owner["tenant_id"], "booking.person.email": "rr0@example.com"})["owner"]
     book(client, page, times[14], email="rr0@example.com", phone="5550200000")
-    again = find_all(client, "appointments", {"booking.person.email": "rr0@example.com"})
+    again = find_all(client, "appointments", {"tenant_id": owner["tenant_id"], "booking.person.email": "rr0@example.com"})
     assert {a["owner"] for a in again} == {first_host}
 
 

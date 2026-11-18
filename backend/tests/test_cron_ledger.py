@@ -14,6 +14,7 @@ import asyncio
 import os
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -274,3 +275,99 @@ def test_a_window_with_only_rejected_calls_is_not_reported_as_healthy_traffic():
     assert health["receiving_scheduled_traffic"] is False, (
         "a scheduler hammering production with the wrong secret is not healthy traffic")
     assert health["last_rejected_call_at"]
+
+
+# ---------------------------------------------------------------------- reading it back
+#
+# The scheduler's read-back (`GET /api/cron/runs?limit=100`) began answering 500 on
+# 2026-11-09 while every job call still returned 200. The read sorted the whole ledger
+# in memory: `to_list(limit)` stops reading after `limit` rows but never tells the
+# server, and no index could serve an unfiltered sort on `received_at`.
+
+class _RecordingCursor:
+    def __init__(self):
+        self.calls = []
+
+    def sort(self, *args, **kwargs):
+        self.calls.append(("sort", args))
+        return self
+
+    def limit(self, n):
+        self.calls.append(("limit", n))
+        return self
+
+    async def to_list(self, length=None):
+        self.calls.append(("to_list", length))
+        return []
+
+
+class _RecordingCollection:
+    def __init__(self):
+        self.cursor = _RecordingCursor()
+        self.indexes = []
+
+    def find(self, *args, **kwargs):
+        return self.cursor
+
+    async def create_index(self, keys, **kwargs):
+        self.indexes.append(keys)
+
+
+def test_reading_the_ledger_asks_the_server_for_only_the_rows_it_returns():
+    ledger = _RecordingCollection()
+    asyncio.run(cron_ledger.list_runs({cron_ledger.COLLECTION: ledger}, limit=100))
+    assert ("limit", 100) in ledger.cursor.calls, (
+        "without a server-side limit the server sorts every entry before returning any")
+
+
+def test_an_unfiltered_read_of_the_ledger_has_an_index_to_sort_on():
+    ledger = _RecordingCollection()
+    asyncio.run(cron_ledger.ensure_indexes({cron_ledger.COLLECTION: ledger}))
+    leading = [keys[0][0] if isinstance(keys, list) else keys for keys in ledger.indexes]
+    assert "received_at" in leading
+
+
+def test_the_read_back_survives_a_ledger_too_big_to_sort_in_memory():
+    """Cap the server's in-memory sort at 1 MB with no spill to disk, put more than that
+    in the ledger, and read it back the way the scheduler does. Needs a real mongod."""
+    source = _new_run_id("bulk-ledger")
+    sort_cap = "internalQueryMaxBlockingSortMemoryUsageBytes"
+    disk_use = "allowDiskUseByDefault"
+
+    async def scenario():
+        admin = server.mclient.admin
+        try:
+            saved = await admin.command({"getParameter": 1, sort_cap: 1, disk_use: 1})
+        except Exception:
+            return None
+        if not isinstance(saved, dict) or sort_cap not in saved or disk_use not in saved:
+            return None
+        # Old enough to stay out of every health window the other tests read.
+        oldest = datetime.now(timezone.utc) - timedelta(days=2)
+        await server.db[cron_ledger.COLLECTION].insert_many([
+            {"id": f"cronlog_{uuid.uuid4().hex[:16]}", "job": "work-queue",
+             "run_id": f"{source}-{i}", "status": cron_ledger.SUCCEEDED,
+             "origin": cron_ledger.ORIGIN_EXTERNAL, "source": source,
+             "received_at": (oldest + timedelta(seconds=i)).isoformat(),
+             "detail": {"padding": "x" * 1000}}
+            for i in range(1500)
+        ])
+        try:
+            try:
+                await admin.command({"setParameter": 1, sort_cap: 1024 * 1024, disk_use: False})
+            except Exception:
+                return None
+            try:
+                return await cron_ledger.list_runs(server.db, limit=100)
+            finally:
+                await admin.command({"setParameter": 1, sort_cap: saved[sort_cap],
+                                     disk_use: saved[disk_use]})
+        finally:
+            await server.db[cron_ledger.COLLECTION].delete_many({"source": source})
+
+    rows = run(scenario())
+    if rows is None:
+        pytest.skip("needs a real mongod that lets the test cap in-memory sort size")
+    assert len(rows) == 100
+    stamps = [row["received_at"] for row in rows]
+    assert stamps == sorted(stamps, reverse=True), "newest entries first"
