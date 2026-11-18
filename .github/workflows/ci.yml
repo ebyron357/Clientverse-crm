@@ -32,12 +32,32 @@ jobs:
       - name: Lint (warnings are errors)
         working-directory: frontend
         run: yarn lint --max-warnings=0
+      - name: Frontend regression tests
+        working-directory: frontend
+        env:
+          CI: 'true'
+        run: yarn test --watchAll=false --runInBand
       - name: Build (warnings are errors)
         working-directory: frontend
         env:
           CI: 'true'
           REACT_APP_BACKEND_URL: http://localhost:8001
         run: yarn build
+      - name: Install Chromium for assistant fixtures
+        working-directory: frontend
+        run: yarn playwright install --with-deps chromium
+      # This serves the built UI against synthetic local API fixtures. It never
+      # uses a hosted account or calls an AI provider.
+      - name: Assistant UI fixtures (desktop and mobile)
+        working-directory: frontend
+        run: node scripts/assistant-ui-smoke.mjs
+      - name: Upload assistant UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-ui-fixtures
+          path: /tmp/crm-assistant-ui
+          if-no-files-found: ignore
 
   backend-static-analysis:
     name: Backend lint and types
@@ -75,18 +95,8 @@ jobs:
   backend:
     name: Backend API tests
     runs-on: ubuntu-latest
-    services:
-      mongo:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
     env:
-      MONGO_URL: mongodb://localhost:27017
+      MONGO_URL: mongodb://localhost:27017/?replicaSet=rs0
       DB_NAME: clientverse_ci
       CORS_ORIGINS: http://localhost:3000
       FRONTEND_URL: http://localhost:3000
@@ -104,10 +114,27 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
       - name: Install dependencies
         working-directory: backend
-        run: pip install -r requirements.txt
+        # Includes the production requirements plus isolated assistant fixtures.
+        # The application suite below still runs against the real replica set.
+        run: pip install -r requirements-dev.txt
+      - name: Start MongoDB replica set
+        run: |
+          docker run -d --name mongo-rs --network host mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            if docker exec mongo-rs mongosh --quiet --eval 'db.adminCommand({ping:1})'; then break; fi
+            sleep 2
+          done
+          docker exec mongo-rs mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+          for i in $(seq 1 30); do
+            if docker exec mongo-rs mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)'; then exit 0; fi
+            sleep 2
+          done
+          exit 1
       - name: Generate ephemeral CI secrets
         run: |
           {

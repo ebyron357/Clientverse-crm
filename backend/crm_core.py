@@ -37,6 +37,8 @@ from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 import record_fields
+from lead_mutations import enabled as mutations_enabled
+from lead_mutations import require_ready, transact
 
 logger = logging.getLogger("clientverse.crm_core")
 
@@ -621,7 +623,7 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
     def tenant_of(user) -> str:
         return user["tenant_id"]
 
-    async def load(collection: str, record_id: str, user) -> dict:
+    async def load(collection: str, record_id: str, user, *, session=None) -> dict:
         """Read one record inside the caller's tenant, or 404.
 
         A record in another tenant answers exactly as a record that does not exist.
@@ -629,7 +631,8 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
         an attacker the id was real.
         """
         doc = await db[collection].find_one(
-            {"id": record_id, "tenant_id": tenant_of(user)}, {"_id": 0})
+            {"id": record_id, "tenant_id": tenant_of(user)}, {"_id": 0},
+            **({"session": session} if session else {}))
         if not doc:
             raise HTTPException(status_code=404, detail="Not found")
         return doc
@@ -650,8 +653,9 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
 
     async def apply_patch(collection: str, record_id: str, user, changes: dict,
                           event_type: str, resource_type: str,
-                          action: str = "updated") -> dict:
-        existing = await load(collection, record_id, user)
+                          action: str = "updated", *, session=None) -> dict:
+        opts = {"session": session} if session else {}
+        existing = await load(collection, record_id, user, **opts)
         changed = {k: v for k, v in changes.items() if existing.get(k) != v}
         if not changed:
             return existing
@@ -661,10 +665,10 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
             {"id": record_id, "tenant_id": tenant_of(user)},
             {"$set": update,
              "$push": {"history": _history_entry(action, user["email"],
-                                                 {"changed": sorted(changed), "from": before})}})
+                                                 {"changed": sorted(changed), "from": before})}}, **opts)
         await record_event(event_type, resource_type, record_id, tenant_of(user),
-                           user["email"], payload={"changed": sorted(changed)})
-        return await load(collection, record_id, user)
+                           user["email"], payload={"changed": sorted(changed)}, **opts)
+        return await load(collection, record_id, user, **opts)
 
     async def patch_with_custom(collection: str, object_name: str, record_id: str, user,
                                 changes: dict, event_type: str, resource_type: str) -> dict:
@@ -1566,20 +1570,30 @@ def register_crm_core_routes(router, db, new_id, now_iso, record_event,
                                 detail=f"status must be one of {', '.join(TASK_STATUSES)}")
         if "due_date" in changes:
             changes["due_date"] = _parse_date(changes["due_date"], "due_date")
-        before = await load(TASKS, task_id, user)
-        if changes.get("status") == "done" and before.get("status") != "done":
-            changes["completed_at"] = now_iso()
-        if changes.get("status") and changes["status"] != "done":
-            changes["completed_at"] = None
-        updated = await apply_patch(TASKS, task_id, user, changes, "task.updated", "task")
-        if changes.get("status") == "done" and before.get("status") != "done":
-            await record_event("task.completed", "task", task_id, tenant_of(user),
-                               user["email"], workspace_id=before.get("workspace_id"),
-                               payload={"title": before.get("title")})
-        if updated.get("status") != before.get("status") and on_task_status_changed:
-            # Whatever else hangs off a task -- a website lead's response clock -- moves
-            # with it now, not on the next sweep.
-            await on_task_status_changed(updated, before.get("status"), user["email"])
+        async def commit(session=None):
+            opts = {"session": session} if session else {}
+            before = await load(TASKS, task_id, user, **opts)
+            patch = dict(changes)
+            if patch.get("status") == "done" and before.get("status") != "done":
+                patch["completed_at"] = now_iso()
+            if patch.get("status") and patch["status"] != "done":
+                patch["completed_at"] = None
+            updated = await apply_patch(TASKS, task_id, user, patch, "task.updated", "task", **opts)
+            if patch.get("status") == "done" and before.get("status") != "done":
+                await record_event("task.completed", "task", task_id, tenant_of(user),
+                                   user["email"], workspace_id=before.get("workspace_id"),
+                                   payload={"title": before.get("title")}, **opts)
+            if updated.get("status") != before.get("status") and on_task_status_changed:
+                # Whatever else hangs off a task -- a website lead's response clock -- moves
+                # with it now, not on the next sweep.
+                await on_task_status_changed(updated, before.get("status"), user["email"], **opts)
+            return before, updated
+
+        if mutations_enabled(tenant_of(user)):
+            await require_ready(db)
+            before, updated = await transact(db, commit)
+        else:
+            before, updated = await commit()
         if changes.get("assignee") and changes["assignee"] != before.get("assignee") \
                 and not same_person(changes["assignee"], user["email"]):
             await notify_assignment(user, updated)

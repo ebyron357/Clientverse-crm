@@ -819,6 +819,10 @@ class FormPatch(BaseModel):
     settings: Optional[dict] = None
 
 
+from lead_mutations import LeadMutation, LeadMutations, public_lead, require_ready, transact, version_filter
+from lead_mutations import enabled as mutations_enabled
+
+
 class LeadPatch(BaseModel):
     status: str
     note: Optional[str] = Field(default=None, max_length=2000)
@@ -1448,8 +1452,8 @@ class LeadPipeline:
                   # A reused deal keeps its own currency; the form's is for a new one.
                   "currency": (opportunity or {}).get("currency") or settings["opportunity"]["currency"]}
         await self.db[detectors.WEB_ENQUIRIES].update_one(
-            {"id": enquiry["id"], "tenant_id": tenant_id}, {"$set": update})
-        enquiry = {**enquiry, **update}
+            {"id": enquiry["id"], "tenant_id": tenant_id}, {"$set": update, "$inc": {"version": 1}})
+        enquiry = {**enquiry, **update, "version": enquiry.get("version", 0) + 1}
 
         await self._notify_new_lead(form, enquiry, contact, assignee)
         await self.record_event("lead.received", "web_enquiry", enquiry["id"], tenant_id,
@@ -1965,19 +1969,78 @@ class LeadPipeline:
         await self._set_auto_reply(enquiry, status, sent.get("error") or "", conversation["id"])
         return {"status": status}
 
+    async def apply_lead_update(self, lead, status, note, actor, *, session=None):
+        db = self.db
+        opts = {"session": session} if session else {}
+        tenant = lead["tenant_id"]
+        if status == "responded" and lead["status"] == "new":
+            await self.mark_responded(lead, via="marked_in_inbox", actor=actor,
+                                      session=session, bump_version=False)
+        elif status != lead["status"]:
+            change = {"status": status, "status_changed_by": actor,
+                      "status_changed_at": self.now_iso()}
+            if status == "new":
+                # A reopened lead is waiting again: an earlier call must not close it on the next sweep.
+                change.update({"sla.first_response_at": None, "sla.response_minutes": None,
+                               "sla.responded_via": None, "responded_by": None,
+                               "response_window_started_at": self.now_iso()})
+            await db[detectors.WEB_ENQUIRIES].update_one(
+                {"id": lead["id"], "tenant_id": tenant}, {"$set": change}, **opts)
+            if status == "new" and lead.get("task_id"):
+                await db.tasks.update_one(
+                    {"id": lead["task_id"], "tenant_id": tenant, "status": {"$in": ["done", "cancelled"]}},
+                    {"$set": {"status": "todo", "completed_at": None, "updated_at": self.now_iso()},
+                     "$push": {"history": crm_core._history_entry("reopened", actor, {"via": "lead_reopened"})}}, **opts)
+            if status == "spam" and lead.get("created_contact"):
+                # The contact and deal exist only because of this submission, so they go
+                # with it -- archived, never deleted, and restorable.
+                stamp = self.now_iso()
+                for collection, key in ((db.contacts, "contact_id"), (db.opportunities, "opportunity_id")):
+                    if lead.get(key):
+                        await collection.update_one({"id": lead[key], "tenant_id": tenant},
+                                                    {"$set": {"archived_at": stamp, "archived_reason": "spam"}}, **opts)
+                if lead.get("task_id"):
+                    await db.tasks.update_one({"id": lead["task_id"], "tenant_id": tenant},
+                                              {"$set": {"status": "cancelled", "updated_at": stamp}}, **opts)
+        if note and lead.get("contact_id"):
+            await db.crm_activities.insert_one({
+                "id": self.new_id("act"), "tenant_id": tenant, "type": "note",
+                "related_type": "contact", "related_id": lead["contact_id"],
+                "subject": f"Lead {status}", "body": note, "occurred_at": self.now_iso(),
+                "duration_minutes": None, "participants": [], "outcome": None,
+                "actor": actor, "created_at": self.now_iso(), "logged_by": actor}, **opts)
+            await self.record_event("lead.note_added", "web_enquiry", lead["id"], tenant,
+                                    actor, payload={"contact_id": lead["contact_id"]}, **opts)
+        if status != lead["status"]:
+            await self.record_event("lead.status_changed", "web_enquiry", lead["id"], tenant,
+                                    actor, payload={"from": lead["status"], "to": status}, **opts)
+
     # ------------------------------------------------- response clock & SLA
 
     async def mark_responded(self, enquiry: dict, *, via: str, at: Optional[str] = None,
-                             actor: str = SYSTEM_ACTOR) -> bool:
+                             actor: str = SYSTEM_ACTOR, session=None, bump_version=True) -> bool:
+        if session is None and mutations_enabled(enquiry["tenant_id"]):
+            await require_ready(self.db)
+            async def commit(tx):
+                return await self.mark_responded(enquiry, via=via, at=at, actor=actor, session=tx)
+            return await transact(self.db, commit)
+        opts = {"session": session} if session else {}
+        if session and via == "task_completed" and enquiry.get("task_id"):
+            task = await self.db.tasks.find_one(
+                {"id": enquiry["task_id"], "tenant_id": enquiry["tenant_id"]}, session=session)
+            if not task or task.get("status") != "done":
+                return False
+            at = task.get("completed_at")
         at = at or self.now_iso()
         received = _parse(enquiry.get("received_at")) or _now()
         responded = _parse(at) or _now()
         minutes = max(0, int((responded - received).total_seconds() // 60))
         result = await self.db[detectors.WEB_ENQUIRIES].update_one(
-            {"id": enquiry["id"], "tenant_id": enquiry["tenant_id"], "status": "new"},
+            {"id": enquiry["id"], "tenant_id": enquiry["tenant_id"], "status": "new",
+             **(version_filter(enquiry.get("version", 0)) if bump_version else {})},
             {"$set": {"status": "responded", "sla.first_response_at": at,
                       "sla.response_minutes": minutes, "sla.responded_via": via,
-                      "responded_by": actor}})
+                      "responded_by": actor}, **({"$inc": {"version": 1}} if bump_version else {})}, **opts)
         if not result.modified_count:
             return False
         if enquiry.get("task_id") and via != "task_completed":
@@ -1986,14 +2049,14 @@ class LeadPipeline:
                  "status": {"$nin": ["done", "cancelled"]}},
                 {"$set": {"status": "done", "completed_at": at, "updated_at": at},
                  "$push": {"history": crm_core._history_entry("completed", actor,
-                                                              {"via": "lead_responded"})}})
+                                                              {"via": "lead_responded"})}}, **opts)
         await self.record_event("lead.responded", "web_enquiry", enquiry["id"],
                                 enquiry["tenant_id"], actor,
-                                payload={"via": via, "response_minutes": minutes})
+                                payload={"via": via, "response_minutes": minutes}, **opts)
         return True
 
     async def task_status_changed(self, task: dict, previous: Optional[str],
-                                  actor: str = SYSTEM_ACTOR) -> None:
+                                  actor: str = SYSTEM_ACTOR, session=None) -> None:
         """Keep a lead in step with its call-back task, both ways.
 
         Ticking the task off is the agent saying "I called them", so the lead is marked
@@ -2003,29 +2066,35 @@ class LeadPipeline:
         way (from the lead itself, or by a logged call) keeps its response. The sweep
         still catches a completion this misses, so a failure here never fails the edit.
         """
+        opts = {"session": session} if session else {}
         try:
+            if session:
+                task = await self.db.tasks.find_one(
+                    {"id": task["id"], "tenant_id": task["tenant_id"]}, {"_id": 0}, **opts)
             lead = await self.db[detectors.WEB_ENQUIRIES].find_one(
-                {"tenant_id": task["tenant_id"], "task_id": task["id"]}, {"_id": 0})
+                {"tenant_id": task["tenant_id"], "task_id": task["id"]}, {"_id": 0}, **opts)
             if not lead:
                 return
             status = task.get("status")
             if status == "done" and previous != "done":
                 await self.mark_responded(lead, via="task_completed",
-                                          at=task.get("completed_at"), actor=actor)
+                                          at=task.get("completed_at"), actor=actor, session=session)
                 return
             if previous != "done" or status in ("done", "cancelled"):
                 return
             reopened = await self.db[detectors.WEB_ENQUIRIES].update_one(
                 {"id": lead["id"], "tenant_id": lead["tenant_id"], "status": "responded",
-                 "sla.responded_via": "task_completed"},
+                 "sla.responded_via": "task_completed", **version_filter(lead.get("version", 0))},
                 {"$set": {"status": "new", "sla.first_response_at": None,
                           "sla.response_minutes": None, "sla.responded_via": None,
-                          "responded_by": None}})
+                          "responded_by": None, "response_window_started_at": self.now_iso()}, "$inc": {"version": 1}}, **opts)
             if reopened.modified_count:
                 await self.record_event("lead.reopened", "web_enquiry", lead["id"],
                                         lead["tenant_id"], actor,
-                                        payload={"via": "task_reopened", "task_id": task["id"]})
+                                        payload={"via": "task_reopened", "task_id": task["id"]}, **opts)
         except Exception:
+            if session:
+                raise
             logger.exception("Could not update the lead behind task %s", task.get("id"))
 
     async def sync_responses(self, tenant_id: Optional[str] = None,
@@ -2061,7 +2130,7 @@ class LeadPipeline:
                      "related_id": lead["contact_id"],
                      "type": {"$in": list(crm_core.OUTREACH_TYPES)},
                      "direction": {"$ne": "inbound"},
-                     "occurred_at": {"$gte": lead["received_at"]}},
+                     "occurred_at": {"$gte": lead.get("response_window_started_at") or lead["received_at"]}},
                     {"_id": 0, "occurred_at": 1, "type": 1, "actor": 1},
                     sort=[("occurred_at", 1)])
                 if activity:
@@ -2097,7 +2166,7 @@ class LeadPipeline:
             claimed = await self.db[detectors.WEB_ENQUIRIES].update_one(
                 {"id": lead["id"], "tenant_id": lead["tenant_id"], "status": "new",
                  "sla.escalated_at": None},
-                {"$set": {"sla.escalated_at": now}})
+                {"$set": {"sla.escalated_at": now}, "$inc": {"version": 1}})
             if not claimed.modified_count:
                 continue  # another worker got it first
             count += 1
@@ -2777,7 +2846,7 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             db, tenant_id, (lead.get("assigned_to") for lead in leads))
         for lead in leads:
             lead["assigned_name"] = names.get(lead.get("assigned_to") or "")
-        return leads
+        return [public_lead(lead) for lead in leads]
 
     @router.get("/leads")
     async def list_leads(status: Optional[str] = None, form_id: Optional[str] = None,
@@ -2909,57 +2978,26 @@ def register_website_form_routes(router, db, *, new_id, now_iso, record_event,
             {"id": lead_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
         if not lead:
             raise HTTPException(status_code=404, detail="Not found")
-        if inp.status == "responded" and lead["status"] == "new":
-            await pipeline.mark_responded(lead, via="marked_in_inbox", actor=user["email"])
-        elif inp.status != lead["status"]:
-            change = {"status": inp.status, "status_changed_by": user["email"],
-                      "status_changed_at": now_iso()}
-            if inp.status == "new":
-                # A reopened lead is waiting again: its old response stops counting, in the
-                # response-time figures and in lost-lead detection alike, exactly as when its
-                # call-back task is un-ticked.
-                change.update({"sla.first_response_at": None, "sla.response_minutes": None,
-                               "sla.responded_via": None})
-            await db[detectors.WEB_ENQUIRIES].update_one(
-                {"id": lead_id, "tenant_id": user["tenant_id"]}, {"$set": change})
-            if inp.status == "new" and lead.get("task_id"):
-                # Reopening a lead reopens its call-back task. Left finished, the next sweep
-                # reads the task as the response and marks the lead contacted again; left
-                # cancelled (by "spam"), the lead has no call-back on anyone's list.
-                await db.tasks.update_one(
-                    {"id": lead["task_id"], "tenant_id": user["tenant_id"],
-                     "status": {"$in": ["done", "cancelled"]}},
-                    {"$set": {"status": "todo", "completed_at": None, "updated_at": now_iso()},
-                     "$push": {"history": crm_core._history_entry(
-                         "reopened", user["email"], {"via": "lead_reopened"})}})
-            if inp.status == "spam" and lead.get("created_contact"):
-                # The contact and deal exist only because of this submission, so they go
-                # with it -- archived, never deleted, and restorable.
-                stamp = now_iso()
-                if lead.get("contact_id"):
-                    await db.contacts.update_one(
-                        {"id": lead["contact_id"], "tenant_id": user["tenant_id"]},
-                        {"$set": {"archived_at": stamp, "archived_reason": "spam"}})
-                if lead.get("opportunity_id"):
-                    await db.opportunities.update_one(
-                        {"id": lead["opportunity_id"], "tenant_id": user["tenant_id"]},
-                        {"$set": {"archived_at": stamp, "archived_reason": "spam"}})
-                if lead.get("task_id"):
-                    await db.tasks.update_one(
-                        {"id": lead["task_id"], "tenant_id": user["tenant_id"]},
-                        {"$set": {"status": "cancelled", "updated_at": stamp}})
-        if inp.note and lead.get("contact_id"):
-            await db.crm_activities.insert_one({
-                "id": new_id("act"), "tenant_id": user["tenant_id"], "type": "note",
-                "related_type": "contact", "related_id": lead["contact_id"],
-                "subject": f"Lead {inp.status}", "body": inp.note, "occurred_at": now_iso(),
-                "duration_minutes": None, "participants": [], "outcome": None,
-                "actor": user["email"], "created_at": now_iso(), "logged_by": user["email"]})
-        await record_event("lead.status_changed", "web_enquiry", lead_id, user["tenant_id"],
-                           user["email"], payload={"from": lead["status"], "to": inp.status})
+        if mutations_enabled(user["tenant_id"]):
+            raise HTTPException(428, detail={"code": "upgrade_required", "message": "Refresh ClientVerse to use retry-safe lead saves. This legacy update was not applied."})
+        await db[detectors.WEB_ENQUIRIES].update_one(
+            {"id": lead_id, "tenant_id": user["tenant_id"]}, {"$inc": {"version": 1}})
+        await pipeline.apply_lead_update(lead, inp.status, inp.note, user["email"])
         updated = await db[detectors.WEB_ENQUIRIES].find_one(
             {"id": lead_id, "tenant_id": user["tenant_id"]}, {"_id": 0, "visitor": 0})
         return (await with_assignee_names(user["tenant_id"], [updated]))[0]
+
+    mutations = LeadMutations(pipeline)
+
+    @router.post("/leads/{lead_id}/mutations")
+    async def mutate_lead(lead_id: str, inp: LeadMutation, user=Depends(get_current_user)):
+        return await mutations.save(lead_id, inp, user)
+
+    @router.get("/leads/{lead_id}/operations/{operation_id}")
+    async def lead_operation(lead_id: str, operation_id: str, user=Depends(get_current_user)):
+        receipt = await mutations.receipt(lead_id, operation_id, user)
+        # Absence is not proof of failure: another transaction may still be committing.
+        return receipt["response"] if receipt else {"state": "unknown", "operation_id": operation_id}
 
     # --------------------------------------------------------------- public
 

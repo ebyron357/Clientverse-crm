@@ -1167,14 +1167,14 @@ class BookingService:
         await self.db[detectors.WEB_ENQUIRIES].update_one(
             {"id": result["id"], "tenant_id": tenant_id, "status": "new"},
             {"$set": {"status": "responded", "sla.first_response_at": appointment["created_at"],
-                      "sla.responded_via": "booked_online", "responded_by": SYSTEM_ACTOR}})
+                      "sla.responded_via": "booked_online", "responded_by": SYSTEM_ACTOR}, "$inc": {"version": 1}})
         await self.db[detectors.WEB_ENQUIRIES].update_one(
             {"id": result["id"], "tenant_id": tenant_id},
             {"$set": {"appointment_id": appointment["id"],
                       "booking": {"event_type_id": event_type["id"],
                                   "event_type_name": event_type["name"],
                                   "start_at": appointment["start_at"],
-                                  "timezone": booking["timezone"], "host": appointment["owner"]}}})
+                                  "timezone": booking["timezone"], "host": appointment["owner"]}}, "$inc": {"version": 1}})
         linked = {"contact_id": result.get("contact_id") or enquiry.get("contact_id"),
                   "opportunity_id": result.get("opportunity_id") or enquiry.get("opportunity_id"),
                   "enquiry_id": result["id"]}
@@ -1717,7 +1717,7 @@ class BookingService:
             if updated.get("enquiry_id"):
                 await self.db[detectors.WEB_ENQUIRIES].update_one(
                     {"id": updated["enquiry_id"], "tenant_id": tenant_id},
-                    {"$set": {"booking.start_at": updated["start_at"], "booking.host": updated.get("owner")}})
+                    {"$set": {"booking.start_at": updated["start_at"], "booking.host": updated.get("owner")}, "$inc": {"version": 1}})
         return await self.db[APPOINTMENTS].find_one({"id": appointment["id"]}, {"_id": 0}) or updated
 
     async def cancel(self, appointment: dict, *, actor: str, reason: Optional[str],
