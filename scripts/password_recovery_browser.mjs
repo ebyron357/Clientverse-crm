@@ -28,30 +28,42 @@ const browser = await chromium.launch({ headless: true,
   ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
     ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
 let checks = 0;
-const check = (condition) => { assert.ok(condition); checks++; };
+const check = (condition, message) => { assert.ok(condition, message); checks++; };
+let page;
+let releaseForgotResponse = () => {};
 try {
-  const context = await browser.newContext();
-  const page = await context.newPage();
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  page = await context.newPage();
   const consoleErrors = [];
   page.on('pageerror', error => consoleErrors.push(error.message));
   await page.route('**/api/auth/me', route => route.fulfill({ status: 401, json: { detail: 'Not authenticated' } }));
   let requests = 0;
+  // Hold this synthetic response until the pending state has been checked. A
+  // fixed delay can expire before a busy runner reads the disabled button.
+  const forgotResponse = new Promise(resolve => { releaseForgotResponse = resolve; });
   await page.route('**/api/auth/forgot-password', async route => {
     requests++;
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await forgotResponse;
     await route.fulfill({ status: 202, json: { message: 'If an account can be recovered, you will receive an email with a reset link.' } });
   });
   await page.goto(`${base}/login`);
   await page.getByRole('link', { name: 'Forgot password?' }).click();
   await page.getByLabel('Account email').fill('local-test@example.com');
   await page.getByRole('button', { name: 'Send reset link' }).click();
-  check(await page.getByRole('button', { name: 'Please wait…' }).isDisabled());
+  const pendingButton = page.getByRole('button', { name: 'Please wait…' });
+  await pendingButton.waitFor({ state: 'visible' });
+  check(await pendingButton.isDisabled(), 'The reset request disables submission while pending.');
+  releaseForgotResponse();
   await page.getByRole('status').waitFor();
   check((await page.getByRole('status').innerText()).includes('If an account can be recovered'));
   check(requests === 1);
 
   await page.goto(`${base}/reset-password`);
-  check(await page.getByRole('link', { name: 'Request a new link' }).isVisible());
+  // page.goto completes document loading before React's lazy route necessarily
+  // renders. Wait for the required recovery UI, not an arbitrary sleep.
+  const newLink = page.getByRole('link', { name: 'Request a new link' });
+  await newLink.waitFor({ state: 'visible' });
+  check(await newLink.isVisible(), 'A reset URL without a token offers a new link.');
   const testToken = 'A'.repeat(43); // synthetic UI fixture, never a valid server token
   let submitted = null;
   await page.route('**/api/auth/reset-password', async route => {
@@ -103,7 +115,17 @@ try {
   check(consoleErrors.length === 0);
   if (process.env.RECOVERY_SCREENSHOT_PATH) await page.screenshot({ path: process.env.RECOVERY_SCREENSHOT_PATH, fullPage: true });
   console.log(`Password recovery UI: ${checks} checks passed (Chromium; 390/768/1440px; axe; keyboard).`);
+} catch (error) {
+  if (page && process.env.RECOVERY_SCREENSHOT_PATH) {
+    try {
+      await page.screenshot({ path: process.env.RECOVERY_SCREENSHOT_PATH, fullPage: true });
+    } catch (captureError) {
+      console.error(`Failure screenshot unavailable: ${captureError.message}`);
+    }
+  }
+  throw error;
 } finally {
+  releaseForgotResponse();
   await browser.close();
   await new Promise(resolve => server.close(resolve));
 }

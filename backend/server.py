@@ -13,7 +13,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, NoReturn, NotRequired, Optional, TypedDict
 from urllib.parse import urlencode, urlparse
 
 import bcrypt
@@ -74,6 +74,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clientverse")
 
 mongo_url = os.environ['MONGO_URL']
+mclient: AsyncIOMotorClient
 if mongo_url.startswith("mongomock://"):
     # Local/CI fallback for environments where no MongoDB server can be reached.
     # `mongomock://` is not a scheme any real deployment can use, so production
@@ -699,7 +700,7 @@ async def register(inp: RegisterInput, response: Response):
     return {"user": await session_user(u), "token": token}
 
 @api.post("/auth/login")
-async def login(inp: LoginInput, response: Response, request: Request = None):
+async def login(inp: LoginInput, response: Response, request: Request):
     email = inp.email.lower()
     ip = website_forms.client_ip(request) if request is not None else None
     if await _login_ip_blocked(ip):
@@ -1832,7 +1833,7 @@ async def update_commitment(cmt_id: str, inp: CommitmentPatch, user=Depends(get_
     c = await db.commitments.find_one({"id": cmt_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Not found")
-    upd = {}
+    upd: dict[str, Optional[str]] = {}
     if inp.status is not None:
         upd["status"] = inp.status
     if inp.due_date is not None:
@@ -1959,7 +1960,7 @@ async def dashboard(user=Depends(get_current_user)):
     # Outcome (goal) rollup across portfolio
     outcomes = await db.outcomes.find({"tenant_id": t}, {"_id": 0}).to_list(2000)
     osnaps = await db.outcome_snapshots.find({"tenant_id": t}, {"_id": 0}).sort("at", 1).to_list(5000)
-    trend_map = {}
+    trend_map: dict[str, list[float]] = {}
     for s in osnaps:
         trend_map.setdefault(s["outcome_id"], []).append(s["pct"])
     def gpct(g):
@@ -2191,7 +2192,38 @@ async def seed_registries():
 MCP_SERVER_ID = "clientverse-read-tools"
 MCP_RATE_LIMIT_PER_MIN = 30
 
-MCP_TOOL_CATALOG = [
+class MCPInputSpec(TypedDict):
+    type: str
+    required: bool
+    placeholder: NotRequired[str]
+
+
+class MCPTool(TypedDict):
+    name: str
+    level: int
+    version: str
+    provider: str
+    publisher: str
+    category: str
+    description: str
+    scopes: list[str]
+    records_read: list[str]
+    records_written: list[str]
+    tenant_scoped: bool
+    workspace_scoped: bool
+    approval_required: bool
+    rate_limit_per_min: int
+    cost_behavior: str
+    timeout_seconds: float
+    idempotent: bool
+    input_schema: dict[str, MCPInputSpec]
+    reversible: NotRequired[bool]
+    external: NotRequired[bool]
+    source_url: NotRequired[str]
+    digest: NotRequired[Optional[str]]
+
+
+MCP_TOOL_CATALOG: list[MCPTool] = [
     {
         "name": "search_contacts", "level": 1, "version": "1.0.0", "provider": "ClientVerse", "publisher": "ClientVerse",
         "category": "relationships", "description": "Search stakeholder contacts by name, email, or role.",
@@ -2329,6 +2361,8 @@ async def execute_pending_mcp(pending_id, user):
     tool = MCP_TOOLS.get(p["tool"])
     start = time.perf_counter()
     try:
+        if tool is None:
+            raise ValueError(f"Tool '{p['tool']}' is no longer available")
         result = await asyncio.wait_for(TOOL_IMPL_L2[p["tool"]](user, p["args"]), timeout=tool["timeout_seconds"])
         latency = int((time.perf_counter() - start) * 1000)
         await db.mcp_pending_actions.update_one({"id": pending_id}, {"$set": {"status": "executed"}})
@@ -2385,7 +2419,7 @@ async def mcp_invoke(inp: InvokeInput, user=Depends(get_current_user)):
     correlation_id = new_id("cor")
     inv_id = new_id("mcpinv")
 
-    async def fail(status_code, reason, level=None):
+    async def fail(status_code: int, reason: str, level: Optional[int] = None) -> NoReturn:
         await db.mcp_tool_invocations.insert_one({
             "id": inv_id, "tenant_id": tenant, "tool": inp.tool, "level": level, "args": inp.args,
             "status": "failed", "error": reason, "latency_ms": 0, "correlation_id": correlation_id,
@@ -2600,7 +2634,9 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
         {"$set": {"status": "failed", "attempts": attempts, "dlq": True}})
     return "failed"
 
-def event_matches(event_type: str, patterns) -> bool:
+def event_matches(event_type: Optional[str], patterns) -> bool:
+    if not event_type:
+        return False
     for p in (patterns or []):
         if p == "*" or p == event_type:
             return True
@@ -2660,7 +2696,7 @@ async def patch_webhook(wid: str, inp: WebhookPatch, user=Depends(require_role("
     wh = await db.webhooks.find_one({"id": wid, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not wh:
         raise HTTPException(status_code=404, detail="Not found")
-    upd = {}
+    upd: dict[str, bool | str] = {}
     if inp.enabled is not None:
         upd["enabled"] = inp.enabled
     if inp.rotate_secret:
@@ -2712,10 +2748,11 @@ class PreviewInput(BaseModel):
 async def webhook_match_preview(inp: PreviewInput, user=Depends(get_current_user)):
     events = await db.domain_events.find({"tenant_id": user["tenant_id"]}, {"_id": 0}).sort("timestamp", -1).to_list(100)
     matched = [e for e in events if event_matches(e["event_type"], inp.patterns)]
-    counts = {}
+    counts: dict[str, int] = {}
     for e in matched:
         counts[e["event_type"]] = counts.get(e["event_type"], 0) + 1
-    by_type = sorted([{"event_type": k, "count": v} for k, v in counts.items()], key=lambda x: -x["count"])
+    by_type = [{"event_type": k, "count": v}
+               for k, v in sorted(counts.items(), key=lambda item: -item[1])]
     return {"scanned": len(events), "matched": len(matched), "by_type": by_type,
             "samples": [{"event_type": e["event_type"], "timestamp": e["timestamp"], "actor": e["actor"]} for e in matched[:8]]}
 
@@ -3056,6 +3093,7 @@ async def cron_approval_expiry(request: Request):
 # ============================================================================
 import httpx
 import stripe as _stripe
+from stripe.params import PaymentIntentCreateParams
 
 PROVIDERS = ["gmail", "google_calendar", "stripe"]
 ADAPTER_VERSION = "1.0"
@@ -3558,30 +3596,30 @@ async def sync_stripe(tenant_id, actor):
     # they belong to, matched in the same pass as customers below.
     customer_contact = {}
 
-    for it in _stripe.Customer.list(limit=50).data:
-        rec = normalize_stripe_customer(it)
+    for customer in _stripe.Customer.list(limit=50).data:
+        rec = normalize_stripe_customer(customer)
         contact_id, company_id = match_by_email(rec.get("email"))
-        customer_contact[it.get("id")] = (contact_id, company_id)
+        customer_contact[customer.get("id")] = (contact_id, company_id)
         if not contact_id:
             skipped += 1
             continue
         await store(rec, contact_id, company_id)
         matched += 1
 
-    for it in _stripe.Invoice.list(limit=50).data:
-        rec = normalize_stripe_invoice(it)
+    for invoice in _stripe.Invoice.list(limit=50).data:
+        rec = normalize_stripe_invoice(invoice)
         contact_id, company_id = match_by_email(rec.get("email"))
         if not contact_id:
-            contact_id, company_id = customer_contact.get(it.get("customer"), (None, None))
+            contact_id, company_id = customer_contact.get(invoice.get("customer"), (None, None))
         if not contact_id:
             skipped += 1
             continue
         await store(rec, contact_id, company_id)
         matched += 1
 
-    for it in _stripe.Subscription.list(limit=50).data:
-        rec = normalize_stripe_subscription(it)
-        contact_id, company_id = customer_contact.get(it.get("customer"), (None, None))
+    for subscription in _stripe.Subscription.list(limit=50).data:
+        rec = normalize_stripe_subscription(subscription)
+        contact_id, company_id = customer_contact.get(subscription.get("customer"), (None, None))
         if not contact_id:
             skipped += 1
             continue
@@ -4054,7 +4092,7 @@ async def create_stripe_payment_intent(
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Invoice total must be greater than zero")
     _stripe.api_key = key
-    params = {
+    params: PaymentIntentCreateParams = {
         "amount": amount,
         "currency": (invoice.get("currency") or "usd").lower(),
         "payment_method_types": ["card"],
@@ -4063,14 +4101,15 @@ async def create_stripe_payment_intent(
             "clientverse_invoice_id": invoice_id,
         },
         "description": f"ClientVerse invoice {invoice_id}",
+        "idempotency_key": f"clientverse:{user['tenant_id']}:{invoice_id}:payment-intent:v1",
     }
     if inp.payment_method_id:
-        params.update({"payment_method": inp.payment_method_id, "confirm": True})
+        params["payment_method"] = inp.payment_method_id
+        params["confirm"] = True
     try:
         intent = await asyncio.to_thread(
             _stripe.PaymentIntent.create,
             **params,
-            idempotency_key=f"clientverse:{user['tenant_id']}:{invoice_id}:payment-intent:v1",
         )
     except Exception as exc:
         error_code = getattr(exc, "code", None) or getattr(exc, "decline_code", None) or "payment_failed"
@@ -4207,7 +4246,7 @@ async def stripe_webhook(request: Request):
             payment_status = status_by_type[event_type]
             amount_matches = True
             currency_matches = True
-            if payment_status == "paid" and intent_matches:
+            if payment_status == "paid" and intent_matches and invoice is not None:
                 expected_amount = round(float(invoice.get("total") or 0) * 100)
                 expected_currency = (invoice.get("currency") or "usd").lower()
                 amount_matches = obj.get("amount_received") == expected_amount
@@ -4245,7 +4284,7 @@ async def stripe_webhook(request: Request):
         )
         if completion.modified_count != 1:
             raise HTTPException(status_code=503, detail="Stripe event processing lease was lost")
-        if event_to_record:
+        if event_to_record and invoice_id and tenant_id:
             try:
                 await record_event(event_to_record[0], "invoice", invoice_id, tenant_id,
                                    "stripe", payload={"payment_status": event_to_record[1]}, source="stripe")
@@ -5120,6 +5159,8 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
     result: dict = {}
     actor = user.get("email", "system")
     tenant_id = approval.get("tenant_id") or user.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        raise HTTPException(status_code=400, detail="Approval requires a tenant context")
     status = approval.get("status")
     subject_type, subject_id = approval.get("subject_type"), approval.get("subject_id")
 
@@ -5153,7 +5194,7 @@ async def _apply_approval_side_effects(approval: dict, user: dict) -> dict:
             approval_service.APPROVED: recovery_service.STATE_APPROVED,
             approval_service.REJECTED: recovery_service.STATE_REJECTED,
             approval_service.CANCELLED: recovery_service.STATE_WITHDRAWN,
-        }.get(status)
+        }.get(status or "")
         if strategy_state:
             strategy = None
             try:
@@ -5217,6 +5258,8 @@ JOB_GENERATE_NEXT_BEST_ACTIONS = "next_best_action.generate"
 
 async def _handle_generate_next_best_actions(item: dict) -> dict:
     tenant_id = (item.get("payload") or {}).get("tenant_id") or item.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        raise ValueError("Work item requires a tenant context")
     return await nba_service.generate(db, tenant_id, actor="work-queue")
 
 
@@ -5229,6 +5272,8 @@ async def _handle_run_recovery_case(item: dict) -> dict:
     """
     payload = item.get("payload") or {}
     tenant_id = payload.get("tenant_id") or item.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        raise ValueError("Work item requires a tenant context")
     return await recovery_runner_service.run_case(
         db, tenant_id=tenant_id, case_id=payload["case_id"],
         actor="work-queue", audit=record_event)

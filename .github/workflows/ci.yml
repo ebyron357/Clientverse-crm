@@ -77,8 +77,8 @@ jobs:
       - name: Lint
         working-directory: backend
         run: ruff check .
-      # Types are a ratchet, not a cliff. The modules that pass cleanly today are
-      # blocking; the rest are reported so the number is visible and can only go down.
+      # The historical type backlog is clean. Every checked backend module blocks
+      # on new findings; the configured strict modules retain their extra rules.
       - name: Type check
         run: python scripts/typecheck.py backend
       # Dependency vulnerabilities. Blocking, because it passes today and a new

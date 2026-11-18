@@ -42,7 +42,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Protocol
+from typing import Any, NoReturn, Optional, Protocol, overload
 
 import approval_queue
 import recovery_strategy
@@ -196,8 +196,16 @@ def _history(action: str, actor: str, detail: Optional[dict] = None) -> dict:
     return {"action": action, "actor": actor, "at": _iso(_now()), "detail": detail or {}}
 
 
+@overload
+def _public(doc: dict) -> dict: ...
+
+
+@overload
+def _public(doc: None) -> None: ...
+
+
 def _public(doc: Optional[dict]) -> Optional[dict]:
-    if not doc:
+    if doc is None:
         return None
     return {k: v for k, v in doc.items() if k != "_id"}
 
@@ -310,8 +318,8 @@ class ProviderRegistry:
     def unregister(self, channel: str) -> None:
         self._providers.pop(channel, None)
 
-    def get(self, channel: str) -> Optional[ChannelProvider]:
-        return self._providers.get(channel)
+    def get(self, channel: Optional[str]) -> Optional[ChannelProvider]:
+        return self._providers.get(channel) if channel is not None else None
 
     def describe(self) -> list[dict]:
         return [{"channel": channel,
@@ -753,7 +761,7 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
                   f"is '{message.get('status')}'.")
         # Record the refusal where the state machine allows it. A message that is already
         # terminal (delivered, received) is simply not dispatchable and is left alone.
-        if BLOCKED in MESSAGE_TRANSITIONS.get(message.get("status"), set()):
+        if BLOCKED in MESSAGE_TRANSITIONS.get(message.get("status") or "", set()):
             await mark_refused(db, tenant_id=tenant_id, message_id=message_id, actor=actor,
                                reason=REFUSAL_NOT_DISPATCHABLE, detail=detail)
         raise DeliveryRefused(REFUSAL_NOT_DISPATCHABLE, detail)
@@ -764,7 +772,7 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
 
     channel = message["channel"]
 
-    async def refuse(reason: str, detail: str):
+    async def refuse(reason: str, detail: str) -> NoReturn:
         await mark_refused(db, tenant_id=tenant_id, message_id=message_id, actor=actor,
                            reason=reason, detail=detail)
         raise DeliveryRefused(reason, detail)
@@ -826,7 +834,8 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
 
     provider = registry.get(channel)
     sending = await _transition(db, tenant_id, message, SENDING, actor,
-                                extra={"provider": getattr(provider, "name", "internal")})
+                                extra={"provider": getattr(provider, "name",
+                                                            "internal" if channel == CHANNEL_INTERNAL else None)})
     if channel == CHANNEL_INTERNAL:
         # An internal message has no provider and never leaves the CRM; it is delivered
         # the moment it is recorded.
@@ -837,6 +846,10 @@ async def attempt_delivery(db, *, tenant_id: str, message_id: str, actor: str,
         return delivered
 
     try:
+        if provider is None:
+            # The registry can change while approval is being consumed. No adapter
+            # was called, so this is a proven rejection, not an unknown delivery.
+            raise DeliveryRejected(f"No delivery provider remains registered for {channel}.")
         result = await provider.send(message=sending, conversation=conversation,
                                      idempotency_key=dispatch_key(sending))
     except DeliveryRejected as exc:
@@ -906,8 +919,9 @@ async def reconcile_unknown(db, *, tenant_id: str, message_id: str, actor: str,
     if found:
         extra = {"provider_message_id": provider_message_id, "sent_at": _iso(_now()),
                  "error": None}
-        if (detail or {}).get("rfc822_message_id"):
-            extra["rfc822_message_id"] = detail["rfc822_message_id"]
+        rfc822_message_id = (detail or {}).get("rfc822_message_id")
+        if rfc822_message_id:
+            extra["rfc822_message_id"] = rfc822_message_id
         return await _transition(db, tenant_id, message, SENT, actor, extra=extra,
                                  detail={"reconciled": True, **(detail or {})})
     return await _transition(db, tenant_id, message, FAILED, actor,

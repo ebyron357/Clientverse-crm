@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
-"""Run mypy over the backend, blocking only on the modules that are clean today.
+"""Run mypy over the backend and block on every reported finding.
 
-The backend predates any type checking, so a single `mypy .` reports ~120 findings
-that are almost all the same shape: a value read from Mongo is `Optional[dict]` and
-the code knows it is not None. Fixing them is a refactor, and gating on them would
-mean either doing that refactor first or never turning the checker on at all.
-
-So the gate is a ratchet instead. The modules listed under `[[tool.mypy.overrides]]`
-in `backend/pyproject.toml` pass cleanly and are blocking: nothing can make them
-dirty again. Everything else is reported for visibility and does not fail the build.
-A module joins the blocking set by being clean, so the checked surface only grows.
+The historical reporting-only backlog is now clean. Every checked module is a
+release gate; the configured strict modules keep their additional annotation rules.
 
 Usage: python scripts/typecheck.py [backend_dir]
-Exit code 1 if any blocking module has a finding.
+Exit code 1 if any checked module has a finding; exit 2 if mypy cannot run.
 """
 
 from __future__ import annotations
@@ -66,13 +59,13 @@ def main() -> int:
     reported = [line for line in output.splitlines() if ": error:" in line]
 
     print(f"\nType checking: {len(reported)} finding(s) total, "
-          f"{len(blocking)} in the {len(modules)} blocking module(s).")
-    if blocking:
-        print("\nBlocking findings:")
-        for line in blocking:
+          f"{len(blocking)} in the {len(modules)} stricter module(s).")
+    if reported:
+        print("\nAll backend type findings block the gate:")
+        for line in reported:
             print(f"  {line}")
         return 1
-    print("Blocking modules are clean.")
+    print("All checked backend modules are clean.")
     return 0
 
 
