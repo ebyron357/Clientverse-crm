@@ -69,7 +69,7 @@ export default function NotificationBell() {
         <button
           type="button"
           data-testid="notification-bell-button"
-          className="relative inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          className="relative inline-flex size-11 shrink-0 items-center lg:size-8 justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
           aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}
         >
           <Bell className="size-[18px]" aria-hidden="true" />

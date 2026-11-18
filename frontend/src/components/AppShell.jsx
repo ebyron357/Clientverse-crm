@@ -131,7 +131,7 @@ export default function AppShell() {
         </button>
         {!collapsed && <>
           <button className="hidden rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground lg:inline-flex" onClick={() => setCollapsed(true)} aria-label="Collapse navigation" title="Collapse navigation"><PanelLeft className="size-4" /></button>
-          <button className="rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-4" /></button>
+          <button className="inline-flex size-11 items-center justify-center rounded-md text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-4" /></button>
         </>}
       </div>
       {collapsed && <div className="flex justify-center pb-2">
@@ -157,7 +157,7 @@ export default function AppShell() {
           </div>}
           <div className={`flex shrink-0 items-center ${collapsed ? "flex-col gap-1" : "-mr-1"}`}>
             <ThemeButton />
-            <button onClick={doLogout} className="rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground" aria-label="Sign out" title="Sign out" data-testid="sign-out-button"><LogOut className="size-4" /></button>
+            <button onClick={doLogout} className="inline-flex items-center justify-center rounded-md p-1.5 text-sidebar-muted max-lg:size-11 transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground" aria-label="Sign out" title="Sign out" data-testid="sign-out-button"><LogOut className="size-4" /></button>
           </div>
         </div>
       </div>
@@ -165,8 +165,9 @@ export default function AppShell() {
 
     <div className={`flex min-h-screen flex-col transition-[margin] duration-200 ${collapsed ? "lg:ml-[68px]" : "lg:ml-[228px]"}`}>
       <header className="sticky top-0 z-20 border-b border-border bg-card/95 backdrop-blur-xl">
-        <div className="flex h-[60px] items-center gap-2 px-4 sm:gap-3 sm:px-6">
-          <button ref={menuToggleRef} onClick={() => setMobileOpen(true)} className="-ml-1 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Open navigation" aria-expanded={mobileOpen}><Menu className="size-5" /></button>
+        {/* Below lg the header controls are 44px touch targets; a wide screen keeps the compact sizes. */}
+        <div className="flex h-[60px] items-center gap-1 px-3 sm:gap-3 sm:px-6">
+          <button ref={menuToggleRef} onClick={() => setMobileOpen(true)} className="inline-flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden" aria-label="Open navigation" aria-expanded={mobileOpen}><Menu className="size-5" /></button>
           <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
             {crumbs.map((crumb, index) => <span key={`${index}-${crumb}`} className="flex min-w-0 items-center gap-1.5">
               {index > 0 && <ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground/70 sm:block" aria-hidden="true" />}
@@ -178,10 +179,10 @@ export default function AppShell() {
             <span className="flex-1 truncate text-left">Search or jump to…</span>
             <kbd className="cv-kbd">{SHORTCUT}</kbd>
           </button>
-          <button onClick={() => openDialog(setCommandOpen)} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground md:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
+          <button onClick={() => openDialog(setCommandOpen)} className="inline-flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground md:hidden" aria-label="Search"><Search className="size-[18px]" /></button>
           {/* The dark theme's brand blue is light, so the label turns dark on it (as Calendar's today does). */}
           <button onClick={triggerQuickCreate} className="hidden h-9 items-center gap-1.5 rounded-lg bg-brand px-3.5 text-[13px] font-semibold text-brand-foreground shadow-xs transition-colors hover:bg-brand/90 dark:text-background sm:flex" data-testid="quick-create-button"><Plus className="size-4" aria-hidden="true" />Create</button>
-          <button onClick={triggerQuickCreate} className="inline-flex rounded-lg bg-brand p-2 text-brand-foreground dark:text-background sm:hidden" aria-label="Quick create"><Plus className="size-4" /></button>
+          <button onClick={triggerQuickCreate} className="group inline-flex size-11 shrink-0 items-center justify-center sm:hidden" aria-label="Quick create"><span className="inline-flex size-9 items-center justify-center rounded-lg bg-brand text-brand-foreground transition-colors group-hover:bg-brand/90 dark:text-background"><Plus className="size-4" aria-hidden="true" /></span></button>
           <NotificationBell />
         </div>
       </header>
@@ -204,7 +205,7 @@ function ThemeButton() {
   const current = THEMES[index];
   const next = THEMES[(index + 1) % THEMES.length];
   const Icon = current.icon;
-  return <button type="button" onClick={() => setTheme(next.value)} className="rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground" aria-label={`Theme: ${current.label}. Switch to ${next.label}`} title={`Theme: ${current.label}`} data-testid="theme-toggle"><Icon className="size-4" /></button>;
+  return <button type="button" onClick={() => setTheme(next.value)} className="inline-flex items-center justify-center rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground max-lg:size-11" aria-label={`Theme: ${current.label}. Switch to ${next.label}`} title={`Theme: ${current.label}`} data-testid="theme-toggle"><Icon className="size-4" /></button>;
 }
 
 const countText = (count) => (count > 99 ? "99+" : String(count));
@@ -215,7 +216,7 @@ function MenuLink({ entry, to, collapsed, active, count = 0 }) {
   const tone = entry.urgent ? "bg-sidebar-urgent text-sidebar-active-foreground" : "bg-sidebar-pill text-sidebar-foreground";
   const summary = count > 0 ? `${countText(count)} ${entry.countLabel}` : "";
   return <Link to={to} aria-current={active ? "page" : undefined} data-testid={entry.testid} title={collapsed ? [entry.label, summary].filter(Boolean).join(" · ") : undefined}
-    className={`group relative flex h-9 items-center rounded-[9px] text-[13.5px] font-semibold transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2.5"} ${active ? "bg-sidebar-accent text-sidebar-active-foreground" : "text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-active-foreground"}`}>
+    className={`group relative flex h-11 items-center lg:h-9 rounded-[9px] text-[13.5px] font-semibold transition-colors ${collapsed ? "justify-center px-2" : "gap-2.5 px-2.5"} ${active ? "bg-sidebar-accent text-sidebar-active-foreground" : "text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-active-foreground"}`}>
     <Icon className={`size-[18px] shrink-0 ${active ? "text-sidebar-active-foreground" : "text-sidebar-muted group-hover:text-sidebar-foreground"}`} strokeWidth={1.85} aria-hidden="true" />
     {collapsed ? <span className="sr-only">{entry.label}</span> : <span className="min-w-0 flex-1 truncate">{entry.label}</span>}
     {count > 0 && <>
