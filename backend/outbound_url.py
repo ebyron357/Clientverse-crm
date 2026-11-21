@@ -11,15 +11,15 @@ Two checks close that:
 1. `webhook_url_problem` runs when a webhook is saved. It needs no DNS: https only, a
    real hostname, no credentials in the URL, and no address or name that is private by
    construction (an IP literal in a private range, `localhost`, `*.internal`, ...).
-2. `resolve_public_addresses` runs immediately before every delivery attempt. It
+2. `post_webhook` resolves immediately before every delivery attempt. It
    resolves the host and refuses the attempt if ANY resolved address is not public, so a
    name that later starts pointing inside (DNS rebinding) is caught at send time.
    Deliveries also never follow redirects, so a public URL cannot bounce the request to
    a private one.
 
-A small window remains between the check and the connection (the HTTP library resolves
-again). Closing it fully means pinning the connection to the checked address; that is
-recorded as follow-up in the audit record rather than hidden.
+The connection uses a validated IP, never the hostname, while TLS SNI, certificate
+verification and the HTTP Host header retain the original hostname. There is no second
+hostname lookup and no environment proxy that could resolve the destination differently.
 
 `WEBHOOK_ALLOW_PRIVATE_TARGETS=1` lets local development and the test harness deliver
 to their own machine. It is ignored when the app runs in production.
@@ -31,6 +31,9 @@ import os
 import socket
 from typing import Optional
 from urllib.parse import urlsplit
+
+import urllib3
+from urllib3.util import parse_url
 
 # The resolver this module uses. Tests replace this name, never `socket.getaddrinfo`
 # itself: patching the socket module would also redirect the database driver.
@@ -79,32 +82,73 @@ def webhook_url_problem(url: str, *, allow_private: bool = False) -> Optional[st
     return None if _is_public(literal) else "Webhooks must point to a public address."
 
 
-def resolve_public_addresses(url: str, *, allow_private: bool = False) -> Optional[str]:
-    """Resolve the URL's host and return a coarse refusal reason, or None when every
-    address it resolves to is public. Blocking: call it off the event loop."""
+class DestinationRefused(ValueError):
+    """A fixed public error label; never includes resolver or network details."""
+
+
+def _checked_addresses(url: str, *, allow_private: bool = False) -> list[str]:
+    """Resolve once and keep the checked addresses for this attempt's connection."""
     problem = webhook_url_problem(url, allow_private=allow_private)
     if problem:
-        return "blocked_destination"
-    if allow_private:
-        return None
-    parts = urlsplit(url.strip())
-    host = (parts.hostname or "").rstrip(".")
-    port = parts.port or 443
+        raise DestinationRefused("blocked_destination")
+    parts = parse_url(url.strip())
+    host = (parts.host or "").strip("[]")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
         infos = _getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError):
-        return "dns_error"
-    addresses = {info[4][0] for info in infos}
+        raise DestinationRefused("dns_error")
+    addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
     if not addresses:
-        return "dns_error"
+        raise DestinationRefused("dns_error")
     for raw in addresses:
         try:
-            address = ipaddress.ip_address(raw.split("%", 1)[0])
+            address = ipaddress.ip_address(raw)
         except ValueError:
-            return "blocked_destination"
-        if not _is_public(address):
-            return "blocked_destination"
+            raise DestinationRefused("blocked_destination")
+        if not allow_private and ("%" in raw or not _is_public(address)):
+            raise DestinationRefused("blocked_destination")
+    return addresses
+
+
+def resolve_public_addresses(url: str, *, allow_private: bool = False) -> Optional[str]:
+    """Compatibility check for callers that only need the refusal reason."""
+    try:
+        _checked_addresses(url, allow_private=allow_private)
+    except DestinationRefused as exc:
+        return str(exc)
     return None
+
+
+def post_webhook(url: str, *, data: bytes, headers: dict[str, str],
+                 allow_private: bool = False, timeout: float = 6) -> int:
+    """Send one attempt off the event loop, pinned to the checked address.
+
+    Only the status is needed. Do not buffer an untrusted response body. Retries belong
+    to the delivery ledger, and redirects must never escape destination validation.
+    Direct pools deliberately ignore HTTP(S)_PROXY and requests' environment settings.
+    """
+    addresses = _checked_addresses(url, allow_private=allow_private)
+    target = parse_url(url.strip())
+    host = (target.host or "").strip("[]")
+    pool: urllib3.HTTPConnectionPool
+    if target.scheme == "https":
+        pool = urllib3.HTTPSConnectionPool(
+            addresses[0], port=target.port or 443, server_hostname=host,
+            assert_hostname=host, cert_reqs="CERT_REQUIRED", timeout=timeout, retries=False)
+    else:  # only the explicit non-production private-target override allows HTTP
+        pool = urllib3.HTTPConnectionPool(addresses[0], port=target.port or 80, timeout=timeout, retries=False)
+    try:
+        response = pool.urlopen(
+            "POST", target.request_uri, body=data,
+            headers={**headers, "Host": target.netloc or host},
+            redirect=False, retries=False, preload_content=False)
+        try:
+            return response.status
+        finally:
+            response.close()
+    finally:
+        pool.close()
 
 
 def delivery_error_reason(error: BaseException) -> str:

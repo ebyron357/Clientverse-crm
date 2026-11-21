@@ -1,0 +1,75 @@
+# PR #64 deployment investigation and C-26/C-30/C-31 fixes
+
+Inspected 2026-11-21. Repository: `ebyron357/Clientverse-crm`. Deployment investigation
+is read-only; this change is one pull request against `main`, with no merge or deployment.
+These IDs refer to the **2026-11-04 audit**, not the similarly numbered capability register.
+
+## Deployment findings
+
+- [PR #64](https://github.com/ebyron357/Clientverse-crm/pull/64) merged to `main` on
+  2026-11-10 at 11:05:46 EST (16:05:46 UTC), merge `916729f9cf1be320d26576f4659ca7c0b7ebe4d3`.
+- Railway was accessible through its connector. Project `welcoming-vibrancy`, production
+  service `clientverse-crm-production`, owns `crm.clientverse.io`.
+- The 50 most recent deployments cover September through November. There is **no deployment
+  for #64 and no deployment at all between November 4 and November 20**: no failed build,
+  skipped deployment, pending approval or queued deployment for that merge appears.
+- The November 4 deployment `f11316d9-ebdc-49e6-adaf-939a33e52d19` used `5fb563e` and is now
+  `REMOVED`. The current `SUCCESS` deployment is `07513bb6-160d-43ff-b380-6e6b504f91a5`,
+  created November 20 at 01:27:52 EST (06:27:52 UTC), using `dd576c372980feb597ff1316130701ec04f9e0d5`
+  (PR #65). Git ancestry confirms **this deployed commit includes PR #64**. The original
+  report that production still runs November 4 code is no longer current.
+- November 20 build logs show the Dockerfile frontend build completing, image export,
+  and a successful `/api/health` check at 06:29:42 UTC. Runtime logs contain successful
+  HTTP requests. No deployment was initiated during this investigation.
+- Current Railway source: `ebyron357/Clientverse-crm`, branch `main`, root `.`,
+  `checkSuites: false` (not waiting for CI). No watch-path restriction is present in the
+  returned configuration. `railway.json` selects the Dockerfile and `/api/health`.
+  Three older staged URL-variable changes exist; they were not applied.
+- GitHub `main` is unprotected, with no required status checks. The merge's
+  [push CI run](https://github.com/ebyron357/Clientverse-crm/actions/runs/42851123338)
+  was **cancelled**, not a failed build: frontend build and backend tests never ran.
+  The PR head `c511eda` passed both
+  [PR CI](https://github.com/ebyron357/Clientverse-crm/actions/runs/42851201284) and
+  [push CI](https://github.com/ebyron357/Clientverse-crm/actions/runs/42836385717).
+
+**Conclusion:** #64 was missed at deployment initiation, before a Railway build was
+created. A Railway compilation failure is not supported by the records. The exact
+underlying trigger cause is **unconfirmed**: the connector does not expose the historical
+auto-deploy/webhook delivery settings, the dashboard session is signed out, no Railway
+CLI/API token is available, and GitHub's repository-webhook API returns 403. The cancelled
+merge CI is a separate observed issue; current `checkSuites: false` does not establish
+that CI cancellation prevented the November 10 deployment. Distinguishing a disconnected
+or disabled trigger from a missed GitHub integration event requires historical Railway
+or GitHub App delivery records. No trigger setting was changed.
+
+## Fixes and validation scope
+
+- **C-26:** validate workspace task, deliverable, client-request, approval decision,
+  commitment and outcome states independently. Preserve supported states. Enforce one
+  membership per tenant/user with a named unique index that coexists with the legacy
+  non-unique index. Reserve the unique email before creating a sign-up organization;
+  compensate for subsequent creation errors using only that request's generated IDs.
+  Truncate search text before escaping it, so the regex cannot end in half an escape.
+- **C-30:** axios 1.21.1, react-router-dom/react-router 7.18.6 and follow-redirects 1.16.3.
+  Zod and `@hookform/resolvers` have no imports in the application and are removed.
+  `yarn audit --groups dependencies --json` reports no advisory for these packages
+  or any remaining direct dependency. The overall scan still reports 198 transitive
+  advisories (9 low, 51 moderate, 135 high, 3 critical), principally in the existing
+  build toolchain; this is not a claim that the whole dependency tree is clean.
+- **C-31:** a direct urllib3 pool connects to a checked IP. TLS certificate verification,
+  SNI and the Host header use the original hostname. Every resolved address must pass;
+  redirects, environment proxies and hidden HTTP retries are disabled. Responses are
+  closed without reading their untrusted bodies. Retry accounting and coarse error
+  labels stay in the delivery ledger. The development-only private-target switch
+  remains unavailable in production.
+- Regression coverage includes forced concurrent same-email registration, error cleanup,
+  unique-index upgrade on real MongoDB 7, valid/invalid resource states, long literal
+  searches, mixed private/public DNS answers, IPv4/IPv6 pinning, a DNS answer that changes
+  after validation, real TLS SNI/Host/body handling, redirects, and rejection of a
+  certificate for the wrong hostname.
+
+Release caveat: existing duplicate membership pairs must be reconciled before rollout;
+startup deliberately fails instead of selecting a role or deleting data. The owner
+procedure is in the Owner/Admin Manual §2.2. This PR does not inspect or mutate production
+memberships. Jev is not verified: the session has no `JEV_QC_WEBHOOK_URL` or token; the
+PR #65 waiver is explicitly scoped to that earlier task and is not reused here.

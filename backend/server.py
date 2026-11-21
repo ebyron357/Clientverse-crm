@@ -13,12 +13,11 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlencode, urlparse
 
 import bcrypt
 import jwt
-import requests
 from dotenv import load_dotenv
 from fastapi.responses import RedirectResponse
 
@@ -30,6 +29,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, 
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from pymongo.errors import DuplicateKeyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -636,18 +636,31 @@ async def register(inp: RegisterInput, response: Response):
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="Email already registered")
     tenant_id = new_id("ten")
-    await db.tenants.insert_one({"tenant_id": tenant_id, "name": f"{inp.name}'s Org", "created_at": now_iso()})
     uid = new_id("user")
-    await db.users.insert_one({
-        "user_id": uid, "email": email, "name": inp.name, "role": "admin",
-        "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
-        "picture": None, "created_at": now_iso(), "auth": "password",
-    })
-    await db.memberships.insert_one({
-        "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
-        "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
-        "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso(),
-    })
+    # Reserve the unique email before creating an organization. Concurrent sign-ups
+    # can both pass the lookup above, but the losing insert must leave no empty org.
+    try:
+        await db.users.insert_one({
+            "user_id": uid, "email": email, "name": inp.name, "role": "admin",
+            "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
+            "picture": None, "created_at": now_iso(), "auth": "password",
+        })
+    except DuplicateKeyError:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    try:
+        await db.tenants.insert_one({"tenant_id": tenant_id, "name": f"{inp.name}'s Org", "created_at": now_iso()})
+        await db.memberships.insert_one({
+            "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
+            "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
+            "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso(),
+        })
+    except Exception:
+        # Scope compensation to this request's generated IDs, never to the email
+        # shared with a concurrent request. Do not issue a session for a partial org.
+        await db.memberships.delete_many({"tenant_id": tenant_id, "user_id": uid})
+        await db.tenants.delete_one({"tenant_id": tenant_id})
+        await db.users.delete_one({"user_id": uid})
+        raise
     token = create_access_token(uid, email)
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
@@ -1565,12 +1578,17 @@ def compute_health(commitments, tasks, deliverables, requests_):
 
 # ----------------------------- Tasks / Deliverables / Requests / Approvals / Commitments -----------------------------
 
+TaskState = Literal["todo", "in_progress", "blocked", "done", "cancelled"]
+DeliverableState = Literal["draft", "in_review", "approved"]
+RequestState = Literal["open", "in_progress", "done"]
+CommitmentState = Literal["open", "at_risk", "breached", "fulfilled"]
+
 class TaskInput(BaseModel):
     workspace_id: str
     title: str
     assignee: Optional[str] = None
     due_date: Optional[str] = None
-    status: str = "todo"
+    status: TaskState = "todo"
 
 @api.post("/tasks")
 async def create_task(inp: TaskInput, user=Depends(get_current_user)):
@@ -1581,7 +1599,16 @@ async def create_task(inp: TaskInput, user=Depends(get_current_user)):
     return {k: v for k, v in doc.items() if k != "_id"}
 
 class TaskStatus(BaseModel):
-    status: str
+    status: TaskState
+
+class DeliverableStatus(BaseModel):
+    status: DeliverableState
+
+class RequestStatus(BaseModel):
+    status: RequestState
+
+class ApprovalDecision(BaseModel):
+    status: Literal["approved", "rejected"]
 
 @api.patch("/tasks/{task_id}")
 async def update_task(task_id: str, inp: TaskStatus, user=Depends(get_current_user)):
@@ -1602,7 +1629,7 @@ class DeliverableInput(BaseModel):
     workspace_id: str
     title: str
     description: Optional[str] = None
-    status: str = "draft"
+    status: DeliverableState = "draft"
 
 @api.post("/deliverables")
 async def create_deliverable(inp: DeliverableInput, user=Depends(get_current_user)):
@@ -1613,7 +1640,7 @@ async def create_deliverable(inp: DeliverableInput, user=Depends(get_current_use
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/deliverables/{dlv_id}")
-async def approve_deliverable(dlv_id: str, inp: TaskStatus, user=Depends(get_current_user)):
+async def approve_deliverable(dlv_id: str, inp: DeliverableStatus, user=Depends(get_current_user)):
     d = await db.deliverables.find_one({"id": dlv_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1626,7 +1653,7 @@ class RequestInput(BaseModel):
     workspace_id: str
     title: str
     priority: str = "medium"
-    status: str = "open"
+    status: RequestState = "open"
 
 @api.post("/client-requests")
 async def create_request(inp: RequestInput, user=Depends(get_current_user)):
@@ -1637,7 +1664,7 @@ async def create_request(inp: RequestInput, user=Depends(get_current_user)):
     return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.patch("/client-requests/{req_id}")
-async def update_request(req_id: str, inp: TaskStatus, user=Depends(get_current_user)):
+async def update_request(req_id: str, inp: RequestStatus, user=Depends(get_current_user)):
     r = await db.client_requests.find_one({"id": req_id, "tenant_id": user["tenant_id"]}, {"_id": 0})
     if not r:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1672,7 +1699,7 @@ async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
     return doc
 
 @api.patch("/approvals/{apr_id}")
-async def decide_approval(apr_id: str, inp: TaskStatus, user=Depends(require_role("admin"))):
+async def decide_approval(apr_id: str, inp: ApprovalDecision, user=Depends(require_role("admin"))):
     """Decide an approval request.
 
     The decision itself is delegated to `approval_queue` so this long-standing route and
@@ -1700,7 +1727,7 @@ class CommitmentInput(BaseModel):
     title: str
     owner: Optional[str] = None
     due_date: Optional[str] = None
-    status: str = "open"
+    status: CommitmentState = "open"
 
 @api.post("/commitments")
 async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)):
@@ -1711,7 +1738,7 @@ async def create_commitment(inp: CommitmentInput, user=Depends(get_current_user)
     return {k: v for k, v in doc.items() if k != "_id"}
 
 class CommitmentPatch(BaseModel):
-    status: Optional[str] = None
+    status: Optional[CommitmentState] = None
     due_date: Optional[str] = None
 
 @api.patch("/commitments/{cmt_id}")
@@ -1967,7 +1994,11 @@ async def seed():
     await seed_registries()
     await seed_team()
     await db.users.create_index("email", unique=True)
-    await db.memberships.create_index([("tenant_id", 1), ("user_id", 1)])
+    # MongoDB 5+ allows the old non-unique index and this unique index to coexist.
+    # A new name upgrades existing installations without dropping their index or
+    # silently choosing which duplicate membership (and permissions) to retain.
+    await db.memberships.create_index([("tenant_id", 1), ("user_id", 1)],
+                                      unique=True, name="membership_tenant_user_unique")
     await db.invitations.create_index("token_hash")
 
 async def seed_team():
@@ -2468,20 +2499,17 @@ async def _do_delivery(delivery: dict, webhook: dict) -> str:
     for n in range(len(attempts) + 1, WEBHOOK_MAX_ATTEMPTS + 1):
         # Re-checked before every attempt: the name may have started resolving to a
         # private address since the webhook was saved. See outbound_url.py.
-        refusal = await asyncio.to_thread(outbound_url.resolve_public_addresses, webhook["url"],
-                                          allow_private=allow_private)
-        if refusal:
-            attempts.append({"n": n, "status_code": None, "error": refusal, "at": now_iso()})
-            break
         try:
-            resp = await asyncio.to_thread(requests.post, webhook["url"], data=body, headers=headers,
-                                           timeout=6, allow_redirects=False)
-            code = resp.status_code
+            code = await asyncio.to_thread(outbound_url.post_webhook, webhook["url"],
+                                           data=body, headers=headers, allow_private=allow_private, timeout=6)
             attempts.append({"n": n, "status_code": code, "error": None, "at": now_iso()})
             if 200 <= code < 300:
                 await db.webhook_deliveries.update_one({"id": delivery["id"]},
                     {"$set": {"status": "delivered", "attempts": attempts, "delivered_at": now_iso(), "dlq": False}})
                 return "delivered"
+        except outbound_url.DestinationRefused as exc:
+            attempts.append({"n": n, "status_code": None, "error": str(exc), "at": now_iso()})
+            break
         except Exception as e:
             attempts.append({"n": n, "status_code": None, "error": outbound_url.delivery_error_reason(e), "at": now_iso()})
         await asyncio.sleep(0.25 * n)
@@ -2634,13 +2662,13 @@ class OutcomeInput(BaseModel):
     target_value: Optional[float] = None
     current_value: float = 0
     unit: Optional[str] = None
-    status: str = "on_track"
+    status: Literal["on_track", "at_risk", "off_track"] = "on_track"
     linked_commitment_ids: list[str] = []
 
 class OutcomePatch(BaseModel):
     current_value: Optional[float] = None
     target_value: Optional[float] = None
-    status: Optional[str] = None
+    status: Optional[Literal["on_track", "at_risk", "off_track"]] = None
     title: Optional[str] = None
 
 @api.patch("/outcomes/{oid}")
