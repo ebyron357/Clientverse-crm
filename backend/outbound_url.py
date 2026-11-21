@@ -130,14 +130,27 @@ def post_webhook(url: str, *, data: bytes, headers: dict[str, str],
     """
     addresses = _checked_addresses(url, allow_private=allow_private)
     target = parse_url(url.strip())
+    for index, address in enumerate(addresses):
+        try:
+            return _post_to_address(target, address, data=data, headers=headers, timeout=timeout)
+        except urllib3.exceptions.ConnectTimeoutError:
+            # Includes NewConnectionError: no HTTP request was sent. Preserve normal
+            # dual-stack failover, but only among this attempt's checked addresses.
+            # Read/TLS/protocol errors must not silently send a second POST here.
+            if index == len(addresses) - 1:
+                raise
+    raise DestinationRefused("dns_error")  # _checked_addresses refuses an empty result
+
+
+def _post_to_address(target, address: str, *, data: bytes, headers: dict[str, str], timeout: float) -> int:
     host = (target.host or "").strip("[]")
     pool: urllib3.HTTPConnectionPool
     if target.scheme == "https":
         pool = urllib3.HTTPSConnectionPool(
-            addresses[0], port=target.port or 443, server_hostname=host,
+            address, port=target.port or 443, server_hostname=host,
             assert_hostname=host, cert_reqs="CERT_REQUIRED", timeout=timeout, retries=False)
     else:  # only the explicit non-production private-target override allows HTTP
-        pool = urllib3.HTTPConnectionPool(addresses[0], port=target.port or 80, timeout=timeout, retries=False)
+        pool = urllib3.HTTPConnectionPool(address, port=target.port or 80, timeout=timeout, retries=False)
     try:
         response = pool.urlopen(
             "POST", target.request_uri, body=data,

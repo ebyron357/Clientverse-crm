@@ -60,13 +60,30 @@ or GitHub App delivery records. No trigger setting was changed.
   SNI and the Host header use the original hostname. Every resolved address must pass;
   redirects, environment proxies and hidden HTTP retries are disabled. Responses are
   closed without reading their untrusted bodies. Retry accounting and coarse error
-  labels stay in the delivery ledger. The development-only private-target switch
+  labels stay in the delivery ledger. Connection failures before sending may try the
+  next checked IP; read, TLS and protocol failures do not silently repeat the POST.
+  The development-only private-target switch
   remains unavailable in production.
 - Regression coverage includes forced concurrent same-email registration, error cleanup,
   unique-index upgrade on real MongoDB 7, valid/invalid resource states, long literal
   searches, mixed private/public DNS answers, IPv4/IPv6 pinning, a DNS answer that changes
   after validation, real TLS SNI/Host/body handling, redirects, and rejection of a
   certificate for the wrong hostname.
+
+Local validation: frontend lint, 113 frontend tests and the production build passed;
+backend lint, the 16 blocking type-check modules, configuration validation and pip-audit
+passed. The local release smoke passed 82/82 assertions. The full local suite could not
+complete: the disposable MongoDB container hit its host-enforced file-descriptor limit
+and exited with WiredTiger `Too many open files`. The focused regression suite uses a
+separate real MongoDB 7 instance; GitHub's full replica-set suite is the release check.
+
+An unrelated check on the PR is red: **Vercel — mighty-warriors-project-foundation**,
+deployment `dpl_4ff1wyUwwHhhwcqPyns7DLgRexmr`. The deployment metadata and build logs show
+that project linked to this repository with framework `nextjs` and entrypoint `.`;
+it fails `NEXT_NO_VERSION` because this repository is a React/CRACO frontend under
+`frontend/`, not a Next.js application. **Vercel — clientverse-crm** passed. No Vercel
+project settings were changed and no deployment command was invoked. These previews
+were started by the pre-existing Git integration on branch push/PR creation.
 
 Release caveat: existing duplicate membership pairs must be reconciled before rollout;
 startup deliberately fails instead of selecting a role or deleting data. The owner

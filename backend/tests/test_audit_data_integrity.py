@@ -1,6 +1,5 @@
 """C-26: invalid states, sign-up races, membership uniqueness and literal search."""
 import asyncio
-import os
 import re
 import uuid
 from types import SimpleNamespace

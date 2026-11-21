@@ -103,6 +103,39 @@ def test_pinning_does_not_disable_certificate_hostname_verification(https_hook, 
     assert received == []
 
 
+def test_unreachable_address_falls_back_only_to_an_already_checked_address(https_hook, monkeypatch):
+    port, ca, received, sni = https_hook
+    addresses = ["2606:4700:4700::1111", "93.184.216.34"]
+    monkeypatch.setattr(outbound_url, "_getaddrinfo", lambda *a, **kw: resolution(*addresses))
+    original_pool = urllib3.HTTPSConnectionPool
+    monkeypatch.setattr(urllib3, "HTTPSConnectionPool", lambda *a, **kw: original_pool(*a, ca_certs=ca, **kw))
+    dialed = []
+    def dial(destination, *args, **kwargs):
+        dialed.append(destination[0])
+        if destination[0] == addresses[0]:
+            raise ConnectionRefusedError("No IPv6 route in this environment")
+        assert destination[0] == addresses[1]
+        return socket.create_connection(("127.0.0.1", port), timeout=3)
+    monkeypatch.setattr(urllib3.util.connection, "create_connection", dial)
+    assert outbound_url.post_webhook(f"https://hooks.example.com:{port}/in", data=b"once", headers={}) == 302
+    assert dialed == addresses
+    assert len(received) == 1
+    assert sni == ["hooks.example.com"]
+
+
+def test_read_failure_does_not_silently_post_to_another_address(monkeypatch):
+    addresses = ["93.184.216.34", "1.1.1.1"]
+    monkeypatch.setattr(outbound_url, "_getaddrinfo", lambda *a, **kw: resolution(*addresses))
+    calls = []
+    def timed_out(pool, *args, **kwargs):
+        calls.append(pool.host)
+        raise urllib3.exceptions.ReadTimeoutError(pool, "/in", "The request may already have been received")
+    monkeypatch.setattr(urllib3.HTTPSConnectionPool, "urlopen", timed_out)
+    with pytest.raises(urllib3.exceptions.ReadTimeoutError):
+        outbound_url.post_webhook("https://hooks.example.com/in", data=b"once", headers={})
+    assert calls == [addresses[0]]
+
+
 @pytest.mark.parametrize("addresses", [
     ("93.184.216.34", "10.0.0.1"), ("93.184.216.34", "::1"),
     ("::ffff:127.0.0.1",), ("169.254.169.254",), (),
