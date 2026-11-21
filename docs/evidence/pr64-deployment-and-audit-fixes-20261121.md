@@ -10,9 +10,11 @@ These IDs refer to the **2026-11-04 audit**, not the similarly numbered capabili
   2026-11-10 at 11:05:46 EST (16:05:46 UTC), merge `916729f9cf1be320d26576f4659ca7c0b7ebe4d3`.
 - Railway was accessible through its connector. Project `welcoming-vibrancy`, production
   service `clientverse-crm-production`, owns `crm.clientverse.io`.
-- The 50 most recent deployments cover September through November. There is **no deployment
-  for #64 and no deployment at all between November 4 and November 20**: no failed build,
+- The 50 returned deployments cover September through November. **No record for #64 or
+  between November 4 and November 20 appears in that response**: no failed build,
   skipped deployment, pending approval or queued deployment for that merge appears.
+  This is an observation about the retrieved history, not proof that a deployment
+  was never created or that no historical record was omitted or removed.
 - The November 4 deployment `f11316d9-ebdc-49e6-adaf-939a33e52d19` used `5fb563e` and is now
   `REMOVED`. The current `SUCCESS` deployment is `07513bb6-160d-43ff-b380-6e6b504f91a5`,
   created November 20 at 01:27:52 EST (06:27:52 UTC), using `dd576c372980feb597ff1316130701ec04f9e0d5`
@@ -32,15 +34,36 @@ These IDs refer to the **2026-11-04 audit**, not the similarly numbered capabili
   [PR CI](https://github.com/ebyron357/Clientverse-crm/actions/runs/42851201284) and
   [push CI](https://github.com/ebyron357/Clientverse-crm/actions/runs/42836385717).
 
-**Conclusion:** #64 was missed at deployment initiation, before a Railway build was
-created. A Railway compilation failure is not supported by the records. The exact
-underlying trigger cause is **unconfirmed**: the connector does not expose the historical
-auto-deploy/webhook delivery settings, the dashboard session is signed out, no Railway
-CLI/API token is available, and GitHub's repository-webhook API returns 403. The cancelled
-merge CI is a separate observed issue; current `checkSuites: false` does not establish
-that CI cancellation prevented the November 10 deployment. Distinguishing a disconnected
-or disabled trigger from a missed GitHub integration event requires historical Railway
-or GitHub App delivery records. No trigger setting was changed.
+**Conclusion: root cause undetermined.** The available records neither establish the
+failure stage nor identify why #64 did not deploy at the time. A Railway compilation
+failure is not demonstrated; it cannot be ruled out solely by the absent record.
+The connector does not expose historical trigger/audit or webhook-delivery records,
+the dashboard session is signed out, no Railway CLI/API token is available, and GitHub's
+repository-webhook API returns 403. That repository-hook endpoint also does not establish
+access to Railway's GitHub App delivery records. The cancelled merge CI is a separate
+observed issue; current `checkSuites: false` does not establish that CI cancellation
+prevented the November 10 deployment. No trigger setting was changed.
+
+Evidence needed to determine the cause:
+
+- Railway workspace audit events that establish the source branch, autodeploy state,
+  watch paths, CI gating and integration changes in effect at the November 10 merge,
+  plus any deployment create/skip/delete events for this service.
+- Railway's receipt and processing trace for the GitHub push of
+  `916729f9cf1be320d26576f4659ca7c0b7ebe4d3` at `2026-11-10T16:05:46Z`, including any
+  rejection/skip reason or deployment ID. A deployment ID would allow its build logs
+  to be checked directly. A missing record by itself is not a root-cause finding.
+- Correlation of those events with GitHub's merge and CI records. If the necessary
+  records were not retained, the historical cause may remain unknowable.
+
+Railway's [audit-log documentation](https://docs.railway.com/enterprise/audit-logs)
+provides workspace-admin access and the `auditLogs` GraphQL query. Documented retention
+is 48 hours on Free/Trial/Hobby, 30 days on Pro, and 18 months on Enterprise; this
+workspace's plan was not established. Its
+[autodeploy troubleshooting guide](https://docs.railway.com/deployments/github-autodeploys)
+requests project/service/environment, repository, branch, commit SHA and UTC timestamp
+when escalating unexplained missing deployments to support. These are avenues for
+obtaining evidence, not evidence of a cause. No support message was sent.
 
 ## Fixes and validation scope
 
