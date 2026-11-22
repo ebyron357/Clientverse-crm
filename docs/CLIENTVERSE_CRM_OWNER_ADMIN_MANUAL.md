@@ -166,12 +166,19 @@ weekly until it is published.
 
 4. Compare `git_sha` with the commit shown on Railway's active deployment: Railway → service
    `clientverse-crm-production` → **Deployments** → the top **ACTIVE / SUCCESS** entry. They should
-   match. Every change merged to `main` redeploys automatically, so the deployment id changes with
-   each merge. Always read it from Railway, not from a document.
+   match. Railway is connected to `main`, but a merge alone does not prove a deployment
+   happened. Check the successful deployment and its commit, not just the GitHub merge.
    - Verified (live, 2026-10-19): the active deployment `e7790295-…` runs commit `838f00d…`; it
      was redeployed at 01:47 UTC to apply the custom-domain variables. Each start-up logged `Registered outbound channel provider: gmail` →
      `In-process scheduler started for 13 job(s): …` → `Application startup complete` →
      `GET /api/health 200`.
+
+**Pending audit-fix release (2026-11-21; not deployed by this work):** engineering must check
+for duplicate `(tenant_id, user_id)` pairs in `memberships` before releasing the C-26 fix.
+The new unique index is additive and can coexist with the old non-unique index on MongoDB
+5 or later. If duplicates exist, startup fails rather than silently choosing a member's
+role or permissions. Have engineering reconcile those records with the owner before a
+release; the change does not automatically delete or merge memberships.
 
 ### 2.3 If the site does not load
 
@@ -226,6 +233,11 @@ weekly until it is published.
 | **"Create a workspace"** (self-registration, at the bottom of the sign-in page) | Verified (code). It works, but always creates a **new, separate organization** with the new person as its admin. It gives no access to your data. | **No** for the owner. Team members join through invitations, which create their account directly inside your team ([§8.3](#83-what-to-tell-the-invitee-accepting-an-invitation)). |
 
 ### 3.2 Sign in with email and password
+
+**Pending C-26 fix (PR #72):** a new account becomes available to sign in only after
+its organization and team membership are ready. This also applies when joining by
+invitation. If setup fails before activation, the partial account is removed and an
+invitation can be tried again; an incomplete signup cannot open a session.
 
 1. Go to https://crm.clientverse.io/login.
 2. The heading reads **"Sign in to ClientVerse"**. If it reads **"Create your workspace"**, click
@@ -2175,6 +2187,15 @@ claiming work is complete. It is **not** a CRM feature, and it never touches CRM
   - update the receiver at the same time
 - **Disconnect:** switch the endpoint off. There is no delete button.
 - **Limitations:** the seeded example endpoints are placeholders until configured.
+
+**Pending C-31 fix (2026-11-21):** each attempt checks every resolved address and connects
+directly to a checked public IP, while still checking the receiving website's TLS
+certificate against its hostname. Redirects and environment proxies are not used.
+Each delivery attempt tries at most three checked addresses under one six-second
+connection/response timeout budget; a slow DNS lookup uses that budget too, and no
+connection starts if the lookup has already exhausted it.
+The delivery log reports fixed labels such as `blocked_destination`, `dns_error`,
+`tls_error` or `connection_error`; it does not reveal internal network details.
 
 ### 10.5 MCP server (governed AI tools)
 

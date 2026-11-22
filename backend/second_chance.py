@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional, get_args
 
 import crm_core
 import recovery_case
@@ -46,7 +46,8 @@ DETECTION_LIMIT = int(os.environ.get("SECOND_CHANCE_DETECTION_LIMIT", "200"))
 OPEN_OPPORTUNITY_STAGES = ("new", "qualified", "discovery", "proposal", "negotiation")
 CLOSED_STAGES = ("closed_won", "closed_lost", "won", "lost")
 
-RESOLVED_COMMITMENT_STATUSES = ("met", "resolved", "closed", "cancelled", "done", "complete", "completed")
+ResolvedCommitmentStatus = Literal["fulfilled", "met", "resolved", "closed", "cancelled", "done", "complete", "completed"]
+RESOLVED_COMMITMENT_STATUSES = get_args(ResolvedCommitmentStatus)
 DONE_TASK_STATUSES = ("done", "complete", "completed", "cancelled")
 
 

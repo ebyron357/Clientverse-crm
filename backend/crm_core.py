@@ -130,7 +130,9 @@ def csv_safe(value: Any) -> Any:
 
 
 def _escape_regex(value: str) -> str:
-    return re.escape(value.strip())[:200]
+    # Bound the literal before escaping: cutting the escaped pattern can leave a
+    # trailing backslash, which MongoDB rejects as an invalid regular expression.
+    return re.escape(value.strip()[:200])
 
 
 def phone_digits(value: Optional[str]) -> str:
