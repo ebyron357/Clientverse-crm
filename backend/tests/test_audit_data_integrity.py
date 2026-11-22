@@ -143,3 +143,53 @@ def test_registration_failure_cleans_only_its_own_records(client, monkeypatch):
         assert await database.tenants.count_documents({"name": f"{name}'s Org"}) == 0
         assert await database.memberships.count_documents({"email": email}) == 0
     client.portal.call(fail)
+
+
+def test_concurrent_legacy_membership_repair_creates_one_row(client):
+    user = _register(client).json()["user"]
+
+    async def repair():
+        await server.db.memberships.delete_many({"user_id": user["user_id"]})
+        results = await asyncio.gather(*(server.resolve_membership(dict(user)) for _ in range(8)))
+        assert all(item["membership_status"] == "active" for item in results)
+        assert await server.db.memberships.count_documents({"user_id": user["user_id"]}) == 1
+        # Repair may not overwrite an existing disable decision or stale user role.
+        await server.db.memberships.update_one({"user_id": user["user_id"]}, {"$set": {"status": "disabled"}})
+        with pytest.raises(HTTPException) as rejected:
+            await server.resolve_membership(dict(user))
+        assert rejected.value.status_code == 403
+    client.portal.call(repair)
+
+
+def test_duplicate_legacy_memberships_fail_closed_without_choosing_a_role(client):
+    async def check():
+        database = server.db.client[f"audit_duplicates_{uuid.uuid4().hex}"]
+        try:
+            await database.memberships.insert_many([
+                {"tenant_id": "one", "user_id": "person", "role": role} for role in ("admin", "member")])
+            with pytest.raises(DuplicateKeyError):
+                await server.ensure_identity_indexes(database)
+            assert await database.memberships.count_documents({}) == 2
+        finally:
+            await server.db.client.drop_database(database.name)
+    client.portal.call(check)
+
+
+def test_approval_status_is_validated_and_cannot_bypass_a_decision(client):
+    user = _register(client).json()
+    headers = {"Authorization": f"Bearer {user['token']}"}
+    workspace_id = f"ws_{uuid.uuid4().hex}"
+
+    async def workspace():
+        await server.db.workspaces.insert_one({"id": workspace_id, "tenant_id": user["user"]["tenant_id"]})
+    client.portal.call(workspace)
+    payload = {"workspace_id": workspace_id, "title": "Audit approval"}
+    assert client.post("/api/approvals", headers=headers, json={**payload, "status": "todo"}).status_code == 422
+    created = client.post("/api/approvals", headers=headers, json={**payload, "status": "approved"})
+    assert created.status_code == 200, created.text
+    approval = created.json()
+    assert approval["status"] == "requested"
+    assert client.patch(f"/api/approvals/{approval['id']}", headers=headers,
+                        json={"status": "done"}).status_code == 422
+    assert client.patch(f"/api/approvals/{approval['id']}", headers=headers,
+                        json={"status": "approved"}).status_code == 200

@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, 
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
@@ -741,7 +742,15 @@ async def resolve_membership(user):
         m = {"id": new_id("mem"), "tenant_id": user.get("tenant_id"), "user_id": user.get("user_id"),
              "email": user.get("email"), "role": user.get("role", "member"), "status": "active",
              "invited_by": None, "invited_at": None, "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()}
-        await db.memberships.insert_one(dict(m))
+        try:
+            m = await db.memberships.find_one_and_update(
+                {"tenant_id": m["tenant_id"], "user_id": m["user_id"]},
+                {"$setOnInsert": m}, upsert=True, return_document=ReturnDocument.AFTER)
+        except DuplicateKeyError:
+            # Another request repaired this legacy membership first. Read its role
+            # and disabled state instead of trusting the stale user record.
+            m = await db.memberships.find_one(
+                {"tenant_id": user["tenant_id"], "user_id": user["user_id"]})
     if m.get("status") == "disabled":
         raise HTTPException(status_code=403, detail="Your access to this workspace has been disabled")
     user["role"] = m.get("role", user.get("role", "member"))
@@ -1675,7 +1684,7 @@ class ApprovalInput(BaseModel):
     workspace_id: str
     title: str
     kind: str = "external_effect"
-    status: str = "requested"
+    status: Literal["requested", "approved", "rejected", "expired", "cancelled"] = "requested"
 
 @api.post("/approvals")
 async def create_approval(inp: ApprovalInput, user=Depends(get_current_user)):
@@ -1971,7 +1980,17 @@ async def ai_generate(inp: AIInput, user=Depends(get_current_user)):
 
 # ----------------------------- seed -----------------------------
 
+async def ensure_identity_indexes(database):
+    # A new name lets this coexist with the legacy non-unique index on MongoDB 5+.
+    # Establish identity invariants before any seed writes. Conflicting legacy rows
+    # fail startup without choosing a role or silently deleting memberships.
+    await database.users.create_index("email", unique=True)
+    await database.memberships.create_index(
+        [("tenant_id", 1), ("user_id", 1)], unique=True, name="membership_tenant_user_unique")
+
+
 async def seed():
+    await ensure_identity_indexes(db)
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_pw = os.environ["ADMIN_PASSWORD"]
     existing = await db.users.find_one({"email": admin_email})
@@ -1993,12 +2012,6 @@ async def seed():
     # registries seed (idempotent by name)
     await seed_registries()
     await seed_team()
-    await db.users.create_index("email", unique=True)
-    # MongoDB 5+ allows the old non-unique index and this unique index to coexist.
-    # A new name upgrades existing installations without dropping their index or
-    # silently choosing which duplicate membership (and permissions) to retain.
-    await db.memberships.create_index([("tenant_id", 1), ("user_id", 1)],
-                                      unique=True, name="membership_tenant_user_unique")
     await db.invitations.create_index("token_hash")
 
 async def seed_team():
