@@ -29,6 +29,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+from time import monotonic as _monotonic
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -41,6 +42,7 @@ _getaddrinfo = socket.getaddrinfo
 
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain", ".home.arpa")
 _BLOCKED_NAMES = {"localhost", "localhost.localdomain"}
+_MAX_ADDRESS_ATTEMPTS = 3
 
 
 def private_targets_allowed(is_production: bool) -> bool:
@@ -128,11 +130,17 @@ def post_webhook(url: str, *, data: bytes, headers: dict[str, str],
     to the delivery ledger, and redirects must never escape destination validation.
     Direct pools deliberately ignore HTTP(S)_PROXY and requests' environment settings.
     """
-    addresses = _checked_addresses(url, allow_private=allow_private)
+    deadline = _monotonic() + timeout
+    # Validate the entire answer before limiting connection attempts. A private
+    # address late in the DNS answer must still refuse the whole destination.
+    addresses = _checked_addresses(url, allow_private=allow_private)[:_MAX_ADDRESS_ATTEMPTS]
     target = parse_url(url.strip())
     for index, address in enumerate(addresses):
+        remaining = deadline - _monotonic()
+        if remaining <= 0:
+            raise urllib3.exceptions.ConnectTimeoutError("Webhook attempt deadline exceeded")
         try:
-            return _post_to_address(target, address, data=data, headers=headers, timeout=timeout)
+            return _post_to_address(target, address, data=data, headers=headers, timeout=remaining)
         except urllib3.exceptions.ConnectTimeoutError:
             # Includes NewConnectionError: no HTTP request was sent. Preserve normal
             # dual-stack failover, but only among this attempt's checked addresses.
@@ -144,13 +152,14 @@ def post_webhook(url: str, *, data: bytes, headers: dict[str, str],
 
 def _post_to_address(target, address: str, *, data: bytes, headers: dict[str, str], timeout: float) -> int:
     host = (target.host or "").strip("[]")
+    budget = urllib3.util.Timeout(total=timeout)
     pool: urllib3.HTTPConnectionPool
     if target.scheme == "https":
         pool = urllib3.HTTPSConnectionPool(
             address, port=target.port or 443, server_hostname=host,
-            assert_hostname=host, cert_reqs="CERT_REQUIRED", timeout=timeout, retries=False)
+            assert_hostname=host, cert_reqs="CERT_REQUIRED", timeout=budget, retries=False)
     else:  # only the explicit non-production private-target override allows HTTP
-        pool = urllib3.HTTPConnectionPool(address, port=target.port or 80, timeout=timeout, retries=False)
+        pool = urllib3.HTTPConnectionPool(address, port=target.port or 80, timeout=budget, retries=False)
     try:
         response = pool.urlopen(
             "POST", target.request_uri, body=data,

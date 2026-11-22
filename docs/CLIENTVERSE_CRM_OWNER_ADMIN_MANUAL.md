@@ -234,6 +234,11 @@ release; the change does not automatically delete or merge memberships.
 
 ### 3.2 Sign in with email and password
 
+**Pending C-26 fix (PR #72):** a new account becomes available to sign in only after
+its organization and team membership are ready. This also applies when joining by
+invitation. If setup fails before activation, the partial account is removed and an
+invitation can be tried again; an incomplete signup cannot open a session.
+
 1. Go to https://crm.clientverse.io/login.
 2. The heading reads **"Sign in to ClientVerse"**. If it reads **"Create your workspace"**, click
    **"Sign in"** at the bottom to switch back.
@@ -2186,6 +2191,9 @@ claiming work is complete. It is **not** a CRM feature, and it never touches CRM
 **Pending C-31 fix (2026-11-21):** each attempt checks every resolved address and connects
 directly to a checked public IP, while still checking the receiving website's TLS
 certificate against its hostname. Redirects and environment proxies are not used.
+Each delivery attempt tries at most three checked addresses under one six-second
+connection/response timeout budget; a slow DNS lookup uses that budget too, and no
+connection starts if the lookup has already exhausted it.
 The delivery log reports fixed labels such as `blocked_destination`, `dns_error`,
 `tls_error` or `connection_error`; it does not reveal internal network details.
 

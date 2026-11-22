@@ -91,7 +91,7 @@ def test_concurrent_same_email_registration_creates_only_one_org(client, monkeyp
 
         proxy = DatabaseProxy()
         proxy.users = SimpleNamespace(find_one=checked_find, insert_one=users.insert_one,
-                                      delete_one=users.delete_one)
+                                      delete_one=users.delete_one, update_one=users.update_one)
         monkeypatch.setattr(server, "db", proxy)
         inp = server.RegisterInput(email=email, name=name, password=STRONG)
         results = await asyncio.gather(server.register(inp, Response()), server.register(inp, Response()),
@@ -128,13 +128,13 @@ def test_registration_failure_cleans_only_its_own_records(client, monkeypatch):
 
     async def fail():
         database = server.db
-        async def unavailable(doc):
+        async def unavailable(*args, **kwargs):
             raise RuntimeError("membership write refused")
         class DatabaseProxy:
             def __getattr__(self, key):
                 return getattr(database, key)
         proxy = DatabaseProxy()
-        proxy.memberships = SimpleNamespace(insert_one=unavailable, delete_many=database.memberships.delete_many)
+        proxy.memberships = SimpleNamespace(find_one_and_update=unavailable, delete_many=database.memberships.delete_many)
         monkeypatch.setattr(server, "db", proxy)
         with pytest.raises(RuntimeError, match="membership write refused"):
             await server.register(server.RegisterInput(email=email, name=name, password=STRONG), Response())

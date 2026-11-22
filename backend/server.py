@@ -644,13 +644,13 @@ async def register(inp: RegisterInput, response: Response):
         await db.users.insert_one({
             "user_id": uid, "email": email, "name": inp.name, "role": "admin",
             "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
-            "picture": None, "created_at": now_iso(), "auth": "password",
+            "picture": None, "created_at": now_iso(), "auth": "password", "registration_pending": True,
         })
     except DuplicateKeyError:
         raise HTTPException(status_code=400, detail="Email already registered")
     try:
         await db.tenants.insert_one({"tenant_id": tenant_id, "name": f"{inp.name}'s Org", "created_at": now_iso()})
-        await db.memberships.insert_one({
+        await ensure_membership({
             "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
             "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso(),
@@ -662,6 +662,9 @@ async def register(inp: RegisterInput, response: Response):
         await db.tenants.delete_one({"tenant_id": tenant_id})
         await db.users.delete_one({"user_id": uid})
         raise
+    # Activate only after provisioning. Keep this outside compensation: if an
+    # activation acknowledgement is lost, another request may already be signed in.
+    await db.users.update_one({"user_id": uid}, {"$unset": {"registration_pending": ""}})
     token = create_access_token(uid, email)
     set_auth_cookie(response, token)
     u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password_hash": 0})
@@ -680,7 +683,7 @@ async def login(inp: LoginInput, response: Response, request: Request = None):
         # wrong-password/no-such-account rejection.
         raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     user = await db.users.find_one({"email": email})
-    if not user or not user.get("password_hash") or not verify_password(inp.password, user["password_hash"]):
+    if not user or user.get("registration_pending") or not user.get("password_hash") or not verify_password(inp.password, user["password_hash"]):
         await _record_login_failure(email)
         await _record_login_ip_failure(ip)
         raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
@@ -735,22 +738,28 @@ ROLE_PERMISSIONS = {
 def has_permission(role, perm):
     return perm in ROLE_PERMISSIONS.get(role, set())
 
+async def ensure_membership(document):
+    """Create once without overwriting an existing role, disable decision or metadata."""
+    key = {"tenant_id": document["tenant_id"], "user_id": document["user_id"]}
+    try:
+        return await db.memberships.find_one_and_update(
+            key, {"$setOnInsert": document}, upsert=True, return_document=ReturnDocument.AFTER)
+    except DuplicateKeyError:
+        # Concurrent upserts can lose the unique-key race. The winning row is the
+        # authority; never copy permissions back from a stale user record.
+        return await db.memberships.find_one(key)
+
+
 async def resolve_membership(user):
     """Attach effective role from the tenant membership; block disabled members. Self-heals legacy users."""
+    if user.get("registration_pending"):
+        raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
     m = await db.memberships.find_one({"tenant_id": user.get("tenant_id"), "user_id": user.get("user_id")}, {"_id": 0})
     if m is None:
         m = {"id": new_id("mem"), "tenant_id": user.get("tenant_id"), "user_id": user.get("user_id"),
              "email": user.get("email"), "role": user.get("role", "member"), "status": "active",
              "invited_by": None, "invited_at": None, "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()}
-        try:
-            m = await db.memberships.find_one_and_update(
-                {"tenant_id": m["tenant_id"], "user_id": m["user_id"]},
-                {"$setOnInsert": m}, upsert=True, return_document=ReturnDocument.AFTER)
-        except DuplicateKeyError:
-            # Another request repaired this legacy membership first. Read its role
-            # and disabled state instead of trusting the stale user record.
-            m = await db.memberships.find_one(
-                {"tenant_id": user["tenant_id"], "user_id": user["user_id"]})
+        m = await ensure_membership(m)
     if m.get("status") == "disabled":
         raise HTTPException(status_code=403, detail="Your access to this workspace has been disabled")
     user["role"] = m.get("role", user.get("role", "member"))
@@ -1044,14 +1053,15 @@ async def accept_invitation(inp: TokenInput, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="This invitation has already been used")
     tenant_id = inv["tenant_id"]
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"tenant_id": tenant_id, "role": inv["role"]}})
-    existing = await db.memberships.find_one({"tenant_id": tenant_id, "user_id": user["user_id"]}, {"_id": 0})
-    if existing:
-        await db.memberships.update_one({"tenant_id": tenant_id, "user_id": user["user_id"]},
-            {"$set": {"role": inv["role"], "status": "active", "accepted_at": now_iso(), "disabled_at": None}})
-    else:
-        await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": tenant_id, "user_id": user["user_id"], "email": user["email"],
-            "role": inv["role"], "status": "active", "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
-            "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
+    # An accepted invitation explicitly grants its role, including reactivating an
+    # existing membership. First ensure identity atomically; then apply that grant
+    # and its provenance, even if legacy login repair created the row concurrently.
+    await ensure_membership({"id": new_id("mem"), "tenant_id": tenant_id, "user_id": user["user_id"],
+                             "email": user["email"], "created_at": now_iso(),
+                             "role": inv["role"], "status": "active"})
+    await db.memberships.update_one({"tenant_id": tenant_id, "user_id": user["user_id"]},
+        {"$set": {"role": inv["role"], "status": "active", "accepted_at": now_iso(), "disabled_at": None,
+                  "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at")}})
     await record_event("team.invitation_accepted", "invitation", inv["id"], tenant_id, user["email"], payload={"email": user["email"], "role": inv["role"]})
     return {"ok": True, "tenant_id": tenant_id, "role": inv["role"]}
 
@@ -1089,22 +1099,26 @@ async def accept_invitation_new_account(inp: InviteSignupInput, response: Respon
         await db.users.insert_one({
             "user_id": uid, "email": email, "name": name, "role": role,
             "tenant_id": tenant_id, "password_hash": hash_password(inp.password),
-            "picture": None, "created_at": now_iso(), "auth": "password",
+            "picture": None, "created_at": now_iso(), "auth": "password", "registration_pending": True,
+        })
+        await ensure_membership({
+            "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
+            "role": role, "status": "active", "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
+            "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso(),
         })
     except Exception as exc:
         # Hand the invitation back whatever went wrong. A duplicate key means an account
         # for this email appeared after the check above (a concurrent sign-up); the unique
         # email index refused the second one, and the invitation can still be accepted by
         # signing in.
+        await db.memberships.delete_many({"tenant_id": tenant_id, "user_id": uid})
+        await db.users.delete_one({"user_id": uid})
         await _release_invitation(inv)
         if getattr(exc, "code", None) == 11000 or "E11000" in str(exc):
             raise HTTPException(status_code=409, detail=_EXISTING_ACCOUNT_DETAIL.format(email=email))
         raise
-    await db.memberships.insert_one({
-        "id": new_id("mem"), "tenant_id": tenant_id, "user_id": uid, "email": email,
-        "role": role, "status": "active", "invited_by": inv.get("invited_by"), "invited_at": inv.get("invited_at"),
-        "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso(),
-    })
+    # Do not roll back an account after it becomes available to authentication.
+    await db.users.update_one({"user_id": uid}, {"$unset": {"registration_pending": ""}})
     await record_event("team.invitation_accepted", "invitation", inv["id"], tenant_id, email,
                        payload={"email": email, "role": role, "new_account": True})
     await _reset_login_failures(email)
@@ -1590,7 +1604,7 @@ def compute_health(commitments, tasks, deliverables, requests_):
 TaskState = Literal["todo", "in_progress", "blocked", "done", "cancelled"]
 DeliverableState = Literal["draft", "in_review", "approved"]
 RequestState = Literal["open", "in_progress", "done"]
-CommitmentState = Literal["open", "at_risk", "breached", "fulfilled"]
+CommitmentState = Literal["open", "at_risk", "breached", second_chance_service.ResolvedCommitmentStatus]
 
 class TaskInput(BaseModel):
     workspace_id: str
@@ -2017,13 +2031,12 @@ async def seed():
 async def seed_team():
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     au = await db.users.find_one({"email": admin_email}, {"_id": 0})
-    if not au:
+    if not au or au.get("registration_pending"):
         return
     t = au["tenant_id"]
-    if not await db.memberships.find_one({"tenant_id": t, "user_id": au["user_id"]}):
-        await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": t, "user_id": au["user_id"], "email": admin_email,
-            "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
-            "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
+    await ensure_membership({"id": new_id("mem"), "tenant_id": t, "user_id": au["user_id"], "email": admin_email,
+        "role": "admin", "status": "active", "invited_by": None, "invited_at": None,
+        "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
     mem_email = (os.environ.get("DEMO_MEMBER_EMAIL") or "").lower()
     mem_pw = os.environ.get("DEMO_MEMBER_PASSWORD") or ""
     if not mem_email or not mem_pw:
@@ -2033,12 +2046,22 @@ async def seed_team():
     existing_member = await db.users.find_one({"email": mem_email})
     if not existing_member:
         muid = new_id("user")
-        await db.users.insert_one({"user_id": muid, "email": mem_email, "name": "Demo Member", "role": "member",
-            "tenant_id": t, "password_hash": hash_password(mem_pw), "picture": None, "created_at": now_iso(), "auth": "password"})
-        await db.memberships.insert_one({"id": new_id("mem"), "tenant_id": t, "user_id": muid, "email": mem_email,
-            "role": "member", "status": "active", "invited_by": admin_email, "invited_at": now_iso(),
+        try:
+            existing_member = await db.users.find_one_and_update({"email": mem_email}, {"$setOnInsert": {
+                "user_id": muid, "email": mem_email, "name": "Demo Member", "role": "member",
+                "tenant_id": t, "password_hash": hash_password(mem_pw), "picture": None, "created_at": now_iso(), "auth": "password"}},
+                upsert=True, return_document=ReturnDocument.AFTER)
+        except DuplicateKeyError:
+            existing_member = await db.users.find_one({"email": mem_email})
+    if existing_member is None:
+        raise RuntimeError("Seed member disappeared during provisioning")
+    if existing_member.get("registration_pending"):
+        return
+    if existing_member["tenant_id"] == t:
+        await ensure_membership({"id": new_id("mem"), "tenant_id": t, "user_id": existing_member["user_id"], "email": mem_email,
+            "role": existing_member.get("role", "member"), "status": "active", "invited_by": admin_email, "invited_at": now_iso(),
             "accepted_at": now_iso(), "disabled_at": None, "created_at": now_iso()})
-    elif existing_member.get("password_hash") and not verify_password(mem_pw, existing_member["password_hash"]):
+    if existing_member.get("password_hash") and not verify_password(mem_pw, existing_member["password_hash"]):
         await db.users.update_one({"email": mem_email}, {"$set": {"password_hash": hash_password(mem_pw)}})
 
 async def seed_demo(tenant_id, actor):

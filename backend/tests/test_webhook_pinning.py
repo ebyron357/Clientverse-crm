@@ -147,3 +147,51 @@ def test_all_resolved_addresses_must_be_public_before_connecting(monkeypatch, ad
     monkeypatch.setattr(urllib3, "HTTPSConnectionPool", unexpected_connection)
     with pytest.raises(outbound_url.DestinationRefused):
         outbound_url.post_webhook("https://hooks.example.com/in", data=b"secret", headers={})
+
+
+@pytest.mark.parametrize("elapsed,expected", [(2, [6, 4, 2]), (6, [6])])
+def test_address_fallback_shares_one_timeout_budget(monkeypatch, elapsed, expected):
+    clock, budgets = [100], []
+    monkeypatch.setattr(outbound_url, "_monotonic", lambda: clock[0], raising=False)
+    monkeypatch.setattr(outbound_url, "_getaddrinfo",
+                        lambda *a, **kw: resolution(*(f"93.184.216.{i}" for i in range(1, 9))))
+    def unreachable(pool, *args, **kwargs):
+        budgets.append(pool.timeout.total)
+        clock[0] += elapsed
+        raise urllib3.exceptions.ConnectTimeoutError("unreachable")
+    monkeypatch.setattr(urllib3.HTTPSConnectionPool, "urlopen", unreachable)
+    with pytest.raises(urllib3.exceptions.ConnectTimeoutError):
+        outbound_url.post_webhook("https://hooks.example.com/in", data=b"once", headers={}, timeout=6)
+    assert budgets == expected
+
+
+def test_fast_failures_cannot_walk_an_unbounded_dns_answer(monkeypatch):
+    calls = []
+    monkeypatch.setattr(outbound_url, "_getaddrinfo",
+                        lambda *a, **kw: resolution(*(f"93.184.216.{i}" for i in range(1, 50))))
+    def unreachable(pool, *args, **kwargs):
+        calls.append(pool.host)
+        raise urllib3.exceptions.NewConnectionError(None, "unreachable")
+    monkeypatch.setattr(urllib3.HTTPSConnectionPool, "urlopen", unreachable)
+    with pytest.raises(urllib3.exceptions.ConnectTimeoutError):
+        outbound_url.post_webhook("https://hooks.example.com/in", data=b"once", headers={})
+    assert calls == ["93.184.216.1", "93.184.216.2", "93.184.216.3"]
+
+
+def test_address_limit_does_not_skip_validation_of_later_dns_answers(monkeypatch):
+    test_all_resolved_addresses_must_be_public_before_connecting(
+        monkeypatch, [*(f"93.184.216.{i}" for i in range(1, 10)), "127.0.0.1"])
+
+
+def test_expired_budget_after_resolution_does_not_start_a_connection(monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(outbound_url, "_monotonic", lambda: clock[0], raising=False)
+    def slow_resolution(*args, **kwargs):
+        clock[0] += 7
+        return resolution("93.184.216.34")
+    monkeypatch.setattr(outbound_url, "_getaddrinfo", slow_resolution)
+    def unexpected_connection(*args, **kwargs):
+        pytest.fail("Resolution consumed the attempt's budget")
+    monkeypatch.setattr(urllib3, "HTTPSConnectionPool", unexpected_connection)
+    with pytest.raises(urllib3.exceptions.ConnectTimeoutError):
+        outbound_url.post_webhook("https://hooks.example.com/in", data=b"once", headers={}, timeout=6)
